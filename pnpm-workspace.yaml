@@ -1,3 +1,9 @@
 packages:
   - server
   - executor
+allowBuilds:
+  '@prisma/engines': true
+  esbuild: true
+  msgpackr-extract: false
+  prisma: true
+  workerd: false

@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+node_modules/
+dist/
+data/raw/
+data/out/
+executor/storageState.json
+*.log
+.DS_Store
+ios/**/xcuserdata/
+ios/**/DerivedData/

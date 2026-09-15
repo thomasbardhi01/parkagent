@@ -17,14 +17,15 @@ jobs:
       - run: pnpm -C server test
       - run: pnpm -C server build
 
-  # TODO(1.5): add the `ios` job once ios/ParkAgent.xcodeproj exists.
-  # It cannot run before then — xcodebuild has no project to point at.
-  #
-  #   ios:
-  #     runs-on: macos-latest
-  #     steps:
-  #       - uses: actions/checkout@v4
-  #       - run: xcodebuild -project ios/ParkAgent.xcodeproj -scheme ParkAgent -destination 'generic/platform=iOS Simulator' build CODE_SIGNING_ALLOWED=NO
-  #
-  # When it lands, add both `server` and `ios` as required status checks in
-  # branch protection (currently only `server` can be required).
+  ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The .xcodeproj is gitignored and generated from ios/project.yml.
+      - run: brew install xcodegen
+      # Config.xcconfig is gitignored; the example supplies an empty
+      # DEVELOPMENT_TEAM, which is all an unsigned simulator build needs.
+      - run: cp ios/Config.example.xcconfig ios/Config.xcconfig
+      - run: xcodegen generate
+        working-directory: ios
+      - run: xcodebuild -project ios/ParkAgent.xcodeproj -scheme ParkAgent -destination 'generic/platform=iOS Simulator' build CODE_SIGNING_ALLOWED=NO

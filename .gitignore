@@ -8,5 +8,6 @@ data/out/
 executor/storageState.json
 *.log
 .DS_Store
+.claude/settings.local.json
 ios/**/xcuserdata/
 ios/**/DerivedData/

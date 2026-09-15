@@ -12,6 +12,14 @@ cost-based rule. One city (NYC), two users, iOS only.
              the Xcode project is generated, see "iOS project" below
 - policy.json  Spending and extension rules; server reads it at boot
 
+## Prerequisites
+    brew install git gh nvm pnpm xcodegen flyctl stripe/stripe-cli/stripe
+    brew install python@3.12 uv
+
+`xcodegen` is required for any iOS work — `ios/ParkAgent.xcodeproj` does not
+exist in a fresh checkout until you generate it. Xcode is needed too, from the
+Mac App Store.
+
 ## Non-negotiables
 - Any code path that moves money checks DRY_RUN and policy.json first.
 - Never store card numbers or Playwright auth state in the repo. Stripe IDs only.

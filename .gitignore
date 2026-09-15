@@ -2,11 +2,13 @@
 .env.*
 !.env.example
 node_modules/
+.venv/
 dist/
 data/raw/
 data/out/
 executor/storageState.json
 *.log
 .DS_Store
+.claude/settings.local.json
 ios/**/xcuserdata/
 ios/**/DerivedData/

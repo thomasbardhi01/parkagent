@@ -24,6 +24,20 @@ cost-based rule. One city (NYC), two users, iOS only.
 - When touching Swift, note that background location and motion permissions
   are already configured; do not add new entitlements without asking.
 
+## Pinned versions
+Two server deps are deliberately held below `latest`. Don't bump them casually.
+- `prisma` / `@prisma/client` pinned to `^7`. The `latest` npm tag currently
+  points at an `8.0.0-rc`, and installing it gives a v8-rc CLI against a v7
+  client, which is a broken pair. Bump both together once v8 is stable.
+- `typescript` pinned to `6.x` in server/. TS 7 builds fine, but no
+  typescript-eslint release supports it yet, so `pnpm -C server lint` hard-errors.
+  Revisit when typescript-eslint ships TS 7 support (their issue #10940).
+
+Note that Prisma 7 reads `DATABASE_URL` from `prisma7.config.ts`, not from
+`schema.prisma`. That config and `server/src/index.ts` both load the repo-root
+`.env` by explicit path, because `pnpm -C server dev` runs with cwd `server/`
+and bare `dotenv/config` would miss it.
+
 ## Commands
 - `pnpm -C server dev`         start the API locally
 - `pnpm -C server prisma migrate dev`   apply migrations

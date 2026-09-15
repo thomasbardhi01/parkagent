@@ -1,0 +1,15 @@
+{
+  "name": "executor",
+  "version": "1.0.0",
+  "description": "ParkAgent executor: Playwright scripts that drive ParkNYC",
+  "scripts": {
+    "lint": "echo \"executor: no lint yet (Phase 5)\"",
+    "test": "echo \"executor: no tests yet (Phase 5)\""
+  },
+  "license": "UNLICENSED",
+  "type": "module",
+  "dependencies": {
+    "playwright": "^1.63.0"
+  },
+  "private": true
+}

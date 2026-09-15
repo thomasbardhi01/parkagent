@@ -1,0 +1,30 @@
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: lts/*, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -C server lint
+      - run: pnpm -C server test
+      - run: pnpm -C server build
+
+  # TODO(1.5): add the `ios` job once ios/ParkAgent.xcodeproj exists.
+  # It cannot run before then — xcodebuild has no project to point at.
+  #
+  #   ios:
+  #     runs-on: macos-latest
+  #     steps:
+  #       - uses: actions/checkout@v4
+  #       - run: xcodebuild -project ios/ParkAgent.xcodeproj -scheme ParkAgent -destination 'generic/platform=iOS Simulator' build CODE_SIGNING_ALLOWED=NO
+  #
+  # When it lands, add both `server` and `ios` as required status checks in
+  # branch protection (currently only `server` can be required).

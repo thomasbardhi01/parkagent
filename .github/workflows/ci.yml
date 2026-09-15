@@ -29,3 +29,21 @@ jobs:
       - run: xcodegen generate
         working-directory: ios
       - run: xcodebuild -project ios/ParkAgent.xcodeproj -scheme ParkAgent -destination 'generic/platform=iOS Simulator' build CODE_SIGNING_ALLOWED=NO
+
+  deploy:
+    # Merging to main deploys; nobody needs the Fly token locally.
+    needs: [server, ios]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-parkagent-api
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      # NOTE: this step fails until fly.toml is committed at the repo root —
+      # it is being held back pending Dockerfile review. It also needs a
+      # FLY_API_TOKEN repo secret from `fly tokens create deploy`.
+      - run: flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

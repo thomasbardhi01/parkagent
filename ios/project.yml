@@ -1,0 +1,80 @@
+name: ParkAgent
+
+# Single source of truth for the Xcode project. Never hand-edit ParkAgent.xcodeproj;
+# edit this file and run `xcodegen generate` in ios/.
+# Info.plist and ParkAgent.entitlements are GENERATED from this file and are
+# gitignored — declare keys here, not in the plists.
+
+options:
+  bundleIdPrefix: com.thomasbardhi
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+
+configFiles:
+  Debug: Config.xcconfig
+  Release: Config.xcconfig
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    CODE_SIGN_STYLE: Automatic
+    # DEVELOPMENT_TEAM comes from Config.xcconfig (see Config.example.xcconfig).
+    DEVELOPMENT_TEAM: $(DEVELOPMENT_TEAM)
+
+targets:
+  ParkAgent:
+    type: application
+    platform: iOS
+    sources:
+      - path: ParkAgent
+        excludes:
+          - "Info.plist"
+          - "ParkAgent.entitlements"
+
+    info:
+      path: ParkAgent/Info.plist
+      properties:
+        # Surfaced from Config.xcconfig so the app can point at localhost, Fly,
+        # or a teammate's machine without a code change. Read via AppConfig.
+        API_BASE_URL: $(API_BASE_URL)
+
+        CFBundleDisplayName: ParkAgent
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "1"
+        LSRequiresIPhoneOS: true
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+
+        # Apple reviews these strings and users see them verbatim.
+        NSLocationAlwaysAndWhenInUseUsageDescription: >-
+          ParkAgent needs your location in the background to notice when you have
+          parked and to find the right meter zone, so it can pay before the meter
+          starts running.
+        NSLocationWhenInUseUsageDescription: >-
+          ParkAgent uses your location to find the meter zone you parked in and
+          quote the correct rate.
+        NSMotionUsageDescription: >-
+          ParkAgent uses motion activity to tell driving from walking, so it only
+          starts a parking session once you have actually parked and left the car.
+
+        UIBackgroundModes:
+          - location
+          - remote-notification
+          - processing
+
+    entitlements:
+      path: ParkAgent/ParkAgent.entitlements
+      properties:
+        aps-environment: development
+        com.apple.developer.usernotifications.time-sensitive: true
+
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.thomasbardhi.parkagent
+        PRODUCT_NAME: ParkAgent
+        TARGETED_DEVICE_FAMILY: "1"
+        ENABLE_USER_SCRIPT_SANDBOXING: YES
+        SWIFT_STRICT_CONCURRENCY: complete

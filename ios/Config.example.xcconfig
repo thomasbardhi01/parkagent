@@ -1,0 +1,12 @@
+// Copy to Config.xcconfig (gitignored) and fill in.
+//
+//   cp ios/Config.example.xcconfig ios/Config.xcconfig
+//
+// DEVELOPMENT_TEAM is your 10-character Apple Developer Team ID, found in the
+// vault or at developer.apple.com -> Membership. Leave it empty to build for
+// the simulator with CODE_SIGNING_ALLOWED=NO; it is required to run on a phone.
+DEVELOPMENT_TEAM =
+
+// Where the app looks for the API. Note that xcconfig treats // as a comment,
+// so the scheme's slashes are escaped as $() to keep the URL intact.
+API_BASE_URL = http:$()/$()/localhost:3000

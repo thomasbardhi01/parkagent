@@ -176,7 +176,13 @@ test("a missing ts prices at server time and the decision says so", async () => 
 
 test("session and location endpoints are stubbed at 501", async () => {
   const { app } = makeTestApp({});
-  for (const url of ["/session/start", "/session/stop", "/session/extend", "/location"]) {
+  for (const url of [
+    "/session/start",
+    "/session/stop",
+    "/session/extend",
+    "/location",
+    "/device",
+  ]) {
     const res = await app.inject({ method: "POST", url, headers: HEADERS, payload: {} });
     expect(res.statusCode).toBe(501);
     expect(res.json()).toEqual({ error: "not_implemented" });

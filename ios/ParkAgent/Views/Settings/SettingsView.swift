@@ -36,10 +36,7 @@ struct SettingsView: View {
                             .foregroundStyle(Color.warningGold)
                     }
                     LabeledContent("API base", value: AppConfig.apiBaseURL?.absoluteString ?? "not set")
-                    if model.activeSession != nil {
-                        Button("Make session expiring") { model.debugMakeSessionExpiring() }
-                        Button("Mark max stay reached") { model.debugMarkMaxStayReached() }
-                    }
+                    NavigationLink("Debug menu") { DebugMenuView() }
                 } header: {
                     Text("Developer")
                 } footer: {

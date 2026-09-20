@@ -12,11 +12,15 @@ struct ParkingDetectedSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.unit) {
-            if model.paymentError != nil {
-                PaymentFailedView(
-                    retry: { Task { await paySelected() } },
-                    dismiss: { model.dismissParkedSheet() }
-                )
+            if let error = model.paymentError {
+                if case .notImplemented = error {
+                    SessionsNotBuiltView(dismiss: { model.dismissParkedSheet() })
+                } else {
+                    PaymentFailedView(
+                        retry: { Task { await paySelected() } },
+                        dismiss: { model.dismissParkedSheet() }
+                    )
+                }
             } else {
                 content
             }
@@ -210,6 +214,32 @@ struct ParkingDetectedSheet: View {
         case "daily_cap_exceeded": "Would pass your daily cap"
         default: "Needs your confirmation"
         }
+    }
+}
+
+/// The live server 501s session/start until Phase 5 wires the executor;
+/// distinct from a payment failure — nothing was attempted, nothing charged.
+struct SessionsNotBuiltView: View {
+    let dismiss: () -> Void
+
+    var body: some View {
+        VStack(spacing: Spacing.unit) {
+            Spacer(minLength: Spacing.unit)
+            Image(systemName: "hammer.circle.fill")
+                .font(.system(size: 44))
+                .foregroundStyle(Color.slate)
+            Text("Paying is not wired up yet")
+                .font(.bodyTextSemibold)
+                .foregroundStyle(Color.textPrimary)
+            Text("The server quoted this zone, but session payment lands in a later phase. Nothing was charged — pay at the meter for now.")
+                .font(.secondaryText)
+                .foregroundStyle(Color.textSecondary)
+                .multilineTextAlignment(.center)
+            Spacer(minLength: 0)
+            Button("Dismiss", action: dismiss)
+                .buttonStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
     }
 }
 

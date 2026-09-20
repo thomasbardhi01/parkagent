@@ -137,3 +137,9 @@ struct LocationReport: Codable, Sendable {
     var accuracy: Double
     var ts: Date
 }
+
+struct DeviceRegistration: Codable, Sendable {
+    var token: String
+    var platform: String
+    var environment: String
+}

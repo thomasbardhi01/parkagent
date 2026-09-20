@@ -40,6 +40,11 @@ struct LiveAPI: APIClient {
         let _: Ignored = try await send("location", method: "POST", body: report)
     }
 
+    func registerDevice(_ registration: DeviceRegistration) async throws {
+        struct Ignored: Decodable {}
+        let _: Ignored = try await send("device", method: "POST", body: registration)
+    }
+
     // MARK: - Transport
 
     private func send<Response: Decodable>(

@@ -10,6 +10,7 @@ protocol APIClient: Sendable {
     func stopSession(sessionId: String) async throws -> SessionStopResponse
     func extendSession(sessionId: String, minutes: Int) async throws -> SessionExtendResponse
     func reportLocation(_ report: LocationReport) async throws
+    func registerDevice(_ registration: DeviceRegistration) async throws
 }
 
 enum APIError: Error, LocalizedError {

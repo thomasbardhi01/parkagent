@@ -10,7 +10,9 @@
     "lint": "eslint src",
     "load:zones": "tsx src/scripts/load-zones.ts",
     "create:user": "tsx src/scripts/create-user.ts",
-    "decisions:recent": "tsx src/scripts/recent-decisions.ts"
+    "decisions:recent": "tsx src/scripts/recent-decisions.ts",
+    "issuing:setup": "tsx src/scripts/issuing-setup.ts",
+    "stripe:trigger": "tsx src/scripts/stripe-trigger.ts"
   },
   "license": "UNLICENSED",
   "type": "module",
@@ -22,6 +24,7 @@
     "fastify": "^5.12.4",
     "pg": "^8.23.0",
     "prisma": "7.10.0",
+    "stripe": "^22.6.2",
     "zod": "^4.6.5"
   },
   "devDependencies": {

@@ -114,11 +114,49 @@ export interface AppDb {
         inputs: unknown;
         rule: string;
         outcome: unknown;
-        userId?: string;
+        // userId nullable: issuing decisions may have no user (unknown card).
+        userId?: string | null;
         parkedEventId?: string;
         sessionId?: string;
       };
     }): Promise<{ id: string }>;
+  };
+  issuingCard: {
+    findUnique(args: {
+      where: { stripeCardId: string };
+      include: { cardholder: true };
+    }): Promise<{ id: string; stripeCardId: string; cardholder: { userId: string } } | null>;
+  };
+  issuingAuthorization: {
+    findUnique(args: { where: { stripeAuthorizationId: string } }): Promise<{ id: string } | null>;
+    findMany(args: {
+      where: { userId: string; approved: boolean; createdAt: { gte: Date } };
+      select: { amountUsd: true };
+    }): Promise<{ amountUsd: unknown }[]>;
+    create(args: {
+      data: {
+        stripeAuthorizationId: string;
+        stripeCardId: string;
+        userId: string | null;
+        amountUsd: number;
+        merchantCategory: string | null;
+        merchantCategoryCode: string | null;
+        merchantName: string | null;
+        approved: boolean;
+        decision: string;
+        status: string;
+      };
+    }): Promise<{ id: string }>;
+    update(args: {
+      where: { stripeAuthorizationId: string };
+      data: {
+        approved?: boolean;
+        status?: string;
+        amountUsd?: number;
+        stripeTransactionId?: string;
+        capturedUsd?: number;
+      };
+    }): Promise<unknown>;
   };
   session: {
     create(args: { data: SessionWrite }): Promise<SessionRow>;

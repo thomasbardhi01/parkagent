@@ -239,6 +239,75 @@ model PolicySnapshot {
   @@map("policy_snapshots")
 }
 
+// ---- Phase 6: Stripe Issuing (test mode) ----
+// Card numbers never land here — Stripe IDs only (non-negotiable).
+// userId is a plain string, NOT a relation: keeps this branch's schema
+// additions self-contained while feat/sessions-extension edits User in
+// parallel. Revisit after the merge if a real FK is wanted.
+
+// One Stripe Issuing cardholder per user, created by `pnpm -C server issuing:setup`.
+model IssuingCardholder {
+  id                 String   @id @default(cuid())
+  userId             String   @unique @map("user_id")
+  stripeCardholderId String   @unique @map("stripe_cardholder_id")
+  name               String
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  cards IssuingCard[]
+
+  @@map("issuing_cardholders")
+}
+
+// One virtual card per cardholder. The spending controls live on the Stripe
+// card object; the caps are mirrored here so an audit doesn't need an API call.
+model IssuingCard {
+  id            String   @id @default(cuid())
+  cardholderId  String   @map("cardholder_id")
+  stripeCardId  String   @unique @map("stripe_card_id")
+  last4         String
+  // active | inactive | canceled (mirrors Stripe)
+  status        String
+  // Controls set at create/last setup run, from policy.json at that moment.
+  perAuthCapUsd Decimal  @map("per_auth_cap_usd") @db.Decimal(6, 2)
+  dailyCapUsd   Decimal  @map("daily_cap_usd") @db.Decimal(6, 2)
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  cardholder IssuingCardholder @relation(fields: [cardholderId], references: [id])
+
+  @@map("issuing_cards")
+}
+
+// Every issuing_authorization Stripe tells us about, with the decision our
+// webhook made on the .request event. The linked decisions row carries the
+// full inputs; this table is the card-spend ledger the daily budget sums.
+model IssuingAuthorization {
+  id                    String   @id @default(cuid())
+  stripeAuthorizationId String   @unique @map("stripe_authorization_id")
+  stripeCardId          String   @map("stripe_card_id")
+  // Resolved from the card at decision time; null when the card is unknown.
+  userId                String?  @map("user_id")
+  amountUsd             Decimal  @map("amount_usd") @db.Decimal(8, 2)
+  // Stripe MCC name and code, e.g. "parking_lots_garages" / "7523".
+  merchantCategory      String?  @map("merchant_category")
+  merchantCategoryCode  String?  @map("merchant_category_code")
+  merchantName          String?  @map("merchant_name")
+  approved              Boolean
+  // approved | declined_* (see services/issuing.ts) | external (first seen
+  // via a created/updated event, i.e. not decided by our webhook)
+  decision              String
+  // Stripe lifecycle: pending | closed | reversed
+  status                String
+  // Filled by issuing_transaction.created; the ledger's settled leg.
+  stripeTransactionId   String?  @unique @map("stripe_transaction_id")
+  capturedUsd           Decimal? @map("captured_usd") @db.Decimal(8, 2)
+  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([userId, createdAt])
+  @@map("issuing_authorizations")
+}
+
 // Audit row per loader run.
 model ZoneLoad {
   id             Int      @id @default(autoincrement())

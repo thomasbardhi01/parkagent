@@ -244,6 +244,66 @@ all inputs; rules are `extend`, `extend_failed`, `warn_max_stay`,
 
 ---
 
+## POST /webhooks/stripe
+
+Stripe Issuing events (Phase 6, test mode). **No `x-api-key`** — the
+request is authenticated by verifying the `stripe-signature` header against
+`STRIPE_WEBHOOK_SECRET` (required whenever `STRIPE_SECRET_KEY` is set; the
+server refuses to boot with one but not the other). Body must be the raw
+Stripe payload. `400` on a missing/invalid signature; `503` when Stripe
+isn't configured.
+
+Setup: `pnpm -C server issuing:setup -- --user <id>` creates the user's
+cardholder and one virtual card with spending controls from `policy.json`
+(`allowed_categories: parking_lots_garages` only, per-authorization limit =
+`session_cap_usd`, daily limit = `daily_cap_usd`). Stripe IDs only — the
+card number never touches the repo or the database.
+
+### issuing_authorization.request (real-time)
+
+Stripe holds the card swipe open (~2 s) while the server decides, answers
+via the approve/decline API call, then returns
+`200 {received, approved, reason}`. Checks, in order — first failure is the
+decline reason sent back to Stripe (kept in the authorization's metadata):
+
+| Reason | Condition |
+|---|---|
+| `declined_unknown_card` | card isn't in `issuing_cards` |
+| `declined_wrong_mcc` | merchant category isn't `parking_lots_garages` / MCC 7523 |
+| `declined_no_pending_session` | no pending/active session for the card's user started within the last 10 minutes (`services/pendingSession.ts`) |
+| `declined_over_daily_cap` | approved card spend today (NYC day) + amount > `daily_cap_usd` |
+| `declined_dry_run` | everything passed but a dry-run switch is on; the decision records `wouldApprove: true` |
+| `approved` | none of the above, both dry-run switches off |
+
+The card's own Stripe spending controls (MCC allowlist, per-authorization
+and daily limits) are the first line of defense; authorizations they block
+never reach the webhook. Every `.request` writes an `issuing_authorizations`
+row and a `decisions` row (`kind: "issuing_authorization"`, inputs include
+amount, MCC, spend-so-far, pending-session answer, dry run, policy hash).
+
+### Ledger events
+
+`issuing_authorization.created` / `.updated` upsert the
+`issuing_authorizations` row (lifecycle `status`, held amount); an
+authorization first seen this way is stored with `decision: "external"`.
+`issuing_transaction.created` attaches the settled capture
+(`stripe_transaction_id`, `captured_usd`) to its authorization row. Other
+event types are acknowledged and ignored.
+
+### Local dev
+
+    stripe listen --forward-to localhost:3000/webhooks/stripe   # terminal A
+    pnpm -C server dev                                          # terminal B
+    pnpm -C server stripe:trigger -- --user <id> [--amount 7.28] [--category parking_lots_garages]
+
+`stripe listen` prints a `whsec_…` — put it in `.env` as
+`STRIPE_WEBHOOK_SECRET`. `stripe:trigger` fires a test authorization at the
+user's real card via Stripe's test helpers, so the printed `approved` is
+the webhook's live answer; vary `--amount`/`--category` to exercise each
+decline.
+
+---
+
 ## GET /policy
 
 Returns the active policy plus bookkeeping:

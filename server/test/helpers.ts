@@ -152,6 +152,22 @@ export interface FakeFix {
   ts: Date;
 }
 
+export interface FakeIssuingAuthorizationRow {
+  stripeAuthorizationId: string;
+  stripeCardId: string;
+  userId: string | null;
+  amountUsd: number;
+  merchantCategory: string | null;
+  merchantCategoryCode: string | null;
+  merchantName: string | null;
+  approved: boolean;
+  decision: string;
+  status: string;
+  stripeTransactionId?: string;
+  capturedUsd?: number;
+  createdAt: Date;
+}
+
 export interface FakeDbState {
   parkedEvents: FakeParkedEvent[];
   decisions: {
@@ -159,7 +175,7 @@ export interface FakeDbState {
     inputs: Record<string, unknown>;
     rule: string;
     outcome: Record<string, unknown>;
-    userId?: string;
+    userId?: string | null;
     parkedEventId?: string;
     sessionId?: string;
   }[];
@@ -175,6 +191,9 @@ export interface FakeDbState {
     environment: string;
   }[];
   zones: ZoneTermsRow[];
+  /** Cards the fake issuingCard.findUnique can resolve, stripeCardId → userId. */
+  issuingCards: { stripeCardId: string; userId: string }[];
+  issuingAuthorizations: FakeIssuingAuthorizationRow[];
 }
 
 function emptySession(id: string): SessionRow {
@@ -242,6 +261,8 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
     locationFixes: [],
     deviceTokens: [],
     zones: [],
+    issuingCards: [],
+    issuingAuthorizations: [],
   };
   const db: AppDb = {
     user: {
@@ -317,6 +338,46 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
         const i = state.deviceTokens.findIndex((t) => t.id === where.id);
         if (i >= 0) state.deviceTokens.splice(i, 1);
         return {};
+      },
+    },
+    issuingCard: {
+      findUnique: async ({ where }) => {
+        const card = state.issuingCards.find((c) => c.stripeCardId === where.stripeCardId);
+        return card
+          ? {
+              id: `card-${card.stripeCardId}`,
+              stripeCardId: card.stripeCardId,
+              cardholder: { userId: card.userId },
+            }
+          : null;
+      },
+    },
+    issuingAuthorization: {
+      findUnique: async ({ where }) => {
+        const row = state.issuingAuthorizations.find(
+          (a) => a.stripeAuthorizationId === where.stripeAuthorizationId,
+        );
+        return row ? { id: row.stripeAuthorizationId } : null;
+      },
+      findMany: async ({ where }) =>
+        state.issuingAuthorizations
+          .filter(
+            (a) =>
+              a.userId === where.userId &&
+              a.approved === where.approved &&
+              a.createdAt >= where.createdAt.gte,
+          )
+          .map((a) => ({ amountUsd: a.amountUsd })),
+      create: async ({ data }) => {
+        state.issuingAuthorizations.push({ ...data, createdAt: new Date() });
+        return { id: data.stripeAuthorizationId };
+      },
+      update: async ({ where, data }) => {
+        const row = state.issuingAuthorizations.find(
+          (a) => a.stripeAuthorizationId === where.stripeAuthorizationId,
+        );
+        if (row) Object.assign(row, data);
+        return row ?? {};
       },
     },
     policySnapshot: {

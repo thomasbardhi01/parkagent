@@ -7,9 +7,12 @@ import { registerLocation } from "./routes/location.js";
 import { registerParked } from "./routes/parked.js";
 import { registerPolicy } from "./routes/policy.js";
 import { registerSession } from "./routes/session.js";
+import { registerStripeWebhook } from "./routes/webhooksStripe.js";
 import type { PushSender } from "./services/apns.js";
 import type { ExecutorProvider } from "./services/executor.js";
+import type { PendingSessionCheck } from "./services/pendingSession.js";
 import type { PolicyService } from "./services/policy.js";
+import type { StripeGateway } from "./services/stripeGateway.js";
 import type { CandidateFetcher } from "./services/zoneLookup.js";
 
 declare module "fastify" {
@@ -26,6 +29,10 @@ export interface AppDeps {
   /** Picks the dry-run or real executor per call (dry_run can flip at runtime). */
   executorFor: ExecutorProvider;
   sendPush: PushSender;
+  /** Absent when STRIPE_SECRET_KEY isn't set; /webhooks/stripe then 503s. */
+  stripe?: StripeGateway;
+  /** The issuing webhook's "is a session awaiting payment?" check. */
+  hasPendingSession?: PendingSessionCheck;
   /** Injectable clock for tests; routes fall back to `new Date()`. */
   now?: () => Date;
 }
@@ -64,6 +71,7 @@ export function buildApp(deps?: AppDeps): FastifyInstance {
     registerSession(app, deps);
     registerLocation(app, deps);
     registerDevice(app, deps);
+    registerStripeWebhook(app, deps);
   }
   return app;
 }

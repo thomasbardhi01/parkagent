@@ -43,6 +43,30 @@ Mirrors `data/out/zones.geojson` into the `zones` table (stale
 file first — see [data/README.md](../data/README.md) for the full
 fetch → build → load-dev → load-prod refresh runbook.
 
+### issuing:setup
+
+    pnpm -C server issuing:setup -- --user <users.id> [--email <email>]
+
+Creates the user's Stripe Issuing cardholder and one virtual card
+(test mode), spending controls from `policy.json`: MCC
+`parking_lots_garages` only, `session_cap_usd` per authorization,
+`daily_cap_usd` per day. Idempotent — re-run after editing policy.json to
+re-apply the controls. Needs `STRIPE_SECRET_KEY` in `.env`.
+
+### stripe:trigger
+
+    stripe listen --forward-to localhost:3000/webhooks/stripe   # terminal A
+    pnpm -C server dev                                          # terminal B
+    pnpm -C server stripe:trigger -- --user <users.id> [--amount 7.28] [--category parking_lots_garages]
+
+Fires a test-mode authorization at the user's card via Stripe's test
+helpers so the `/webhooks/stripe` real-time path runs end to end; the
+printed `approved` is the webhook's decision. `stripe listen` prints a
+`whsec_…` secret — set it as `STRIPE_WEBHOOK_SECRET` in `.env` first.
+Useful variations: `--category taxicabs_limousines` (wrong-MCC decline),
+`--amount 61` (over the daily cap — declined by the card's own controls
+before the webhook if above the per-auth cap too).
+
 ### decisions:recent
 
     pnpm -C server decisions:recent

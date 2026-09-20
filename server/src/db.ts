@@ -87,6 +87,44 @@ export interface ZoneTermsRow {
   hoursJson: unknown;
 }
 
+/** One linked provider account (see providers/registry.ts). */
+export interface ProviderAccountRow {
+  id: string;
+  userId: string;
+  provider: string;
+  status: string;
+  /** Sealed (AES-256-GCM) Playwright storage state; never returned to clients. */
+  stateEncrypted: string | null;
+  linkedAt: Date | null;
+  lastVerifiedAt: Date | null;
+  cardAdded: boolean;
+  walletBalanceCents: number | null;
+  createdAt: Date;
+}
+
+export interface ProviderAccountWrite {
+  status?: string;
+  stateEncrypted?: string | null;
+  linkedAt?: Date;
+  lastVerifiedAt?: Date;
+  cardAdded?: boolean;
+  walletBalanceCents?: number | null;
+}
+
+/** issuing_cards row as the card lifecycle code reads it. */
+export interface IssuingCardRow {
+  id: string;
+  cardholderId: string;
+  stripeCardId: string;
+  last4: string;
+  status: string;
+  perAuthCapUsd: unknown;
+  dailyCapUsd: unknown;
+  createdAt: Date;
+  /** Present when the query included the cardholder. */
+  cardholder?: { id: string; userId: string; stripeCardholderId: string; name: string };
+}
+
 /** Full ledger row, as GET /card/transactions reads it. */
 export interface IssuingAuthorizationRow {
   id: string;
@@ -141,6 +179,21 @@ export interface AppDb {
       };
     }): Promise<{ id: string }>;
   };
+  providerAccount: {
+    findUnique(args: {
+      where: { userId_provider: { userId: string; provider: string } };
+    }): Promise<ProviderAccountRow | null>;
+    findMany(args: { where: { userId: string } }): Promise<ProviderAccountRow[]>;
+    upsert(args: {
+      where: { userId_provider: { userId: string; provider: string } };
+      create: { userId: string; provider: string; status: string } & ProviderAccountWrite;
+      update: ProviderAccountWrite;
+    }): Promise<ProviderAccountRow>;
+    update(args: {
+      where: { userId_provider: { userId: string; provider: string } };
+      data: ProviderAccountWrite;
+    }): Promise<ProviderAccountRow>;
+  };
   issuingCardholder: {
     findUnique(args: { where: { userId: string }; include: { cards: true } }): Promise<{
       id: string;
@@ -155,16 +208,43 @@ export interface AppDb {
         dailyCapUsd: unknown;
       }[];
     } | null>;
+    create(args: {
+      data: { userId: string; stripeCardholderId: string; name: string };
+    }): Promise<{ id: string; stripeCardholderId: string; name: string }>;
+    delete(args: { where: { id: string } }): Promise<unknown>;
   };
   issuingCard: {
     findUnique(args: {
       where: { stripeCardId: string };
       include: { cardholder: true };
     }): Promise<{ id: string; stripeCardId: string; cardholder: { userId: string } } | null>;
+    // The janitor sweeps by status+age (with the cardholder for the user
+    // link); the cardholder cleanup asks for its remaining cards.
+    findMany(args: {
+      where: {
+        status?: string | { not: string };
+        createdAt?: { lt: Date };
+        cardholderId?: string;
+      };
+      include?: { cardholder: true };
+    }): Promise<IssuingCardRow[]>;
+    create(args: {
+      data: {
+        cardholderId: string;
+        stripeCardId: string;
+        last4: string;
+        status: string;
+        perAuthCapUsd: number;
+        dailyCapUsd: number;
+      };
+    }): Promise<IssuingCardRow>;
     update(args: { where: { stripeCardId: string }; data: { status: string } }): Promise<unknown>;
+    deleteMany(args: { where: { cardholderId: string } }): Promise<unknown>;
   };
   issuingAuthorization: {
     findUnique(args: { where: { stripeAuthorizationId: string } }): Promise<{ id: string } | null>;
+    /** "Has this card ever transacted?" — the janitor's cancel-vs-freeze test. */
+    findFirst(args: { where: { stripeCardId: string } }): Promise<{ id: string } | null>;
     // Two shapes share findMany (interface overloads): the daily/monthly spend
     // sum reads amounts only; the transactions list reads full rows, newest
     // first, with an optional created-before cursor.

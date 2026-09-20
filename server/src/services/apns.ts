@@ -13,9 +13,13 @@
 import { createPrivateKey, sign } from "node:crypto";
 import { connect, constants as h2 } from "node:http2";
 
-// The four push types the iOS app handles (see API.md).
+// The push types the iOS app handles (see API.md).
 export type PushType =
-  "session_started" | "session_extended" | "session_expiring" | "payment_failed";
+  | "session_started"
+  | "session_extended"
+  | "session_expiring"
+  | "payment_failed"
+  | "provider_relink";
 
 export interface Push {
   type: PushType;
@@ -101,6 +105,18 @@ export function paymentFailedPush(args: {
       // Tap-to-pay fallback: the app opens its pay screen with the zone
       // prefilled (and copies the zone number for the ParkNYC app).
       deepLink: `parkagent://pay?zone=${encodeURIComponent(args.zoneNumber)}`,
+    },
+  };
+}
+
+export function providerRelinkPush(args: { provider: string; displayName: string }): Push {
+  return {
+    type: "provider_relink",
+    title: `${args.displayName} needs a re-link`,
+    body: `Your ${args.displayName} session expired — sign in again so ParkAgent can keep paying meters.`,
+    extra: {
+      provider: args.provider,
+      deepLink: `parkagent://providers/link?provider=${encodeURIComponent(args.provider)}`,
     },
   };
 }

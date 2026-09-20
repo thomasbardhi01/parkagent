@@ -33,6 +33,16 @@ export const URLS = {
    * default and the flow reports ui_changed with a capture.
    */
   sessions: "https://my.nyc.flowbirdapp.com/#/Sessions",
+  /**
+   * Account/profile screen — verifyAccount loads it to prove the cookies
+   * are a signed-in session and to read the wallet balance. TODO: verify
+   * the hash route on the first `record` run.
+   */
+  account: "https://my.nyc.flowbirdapp.com/#/Account",
+  /** Payment methods management. TODO: verify hash route on `record`. */
+  paymentMethods: "https://my.nyc.flowbirdapp.com/#/PaymentMethods",
+  /** Wallet top-up. TODO: verify hash route on `record`. */
+  wallet: "https://my.nyc.flowbirdapp.com/#/Wallet",
 } as const;
 
 export const selectors = {
@@ -109,7 +119,90 @@ export const selectors = {
     stopConfirmButton: (page: Page): Locator =>
       page.getByRole("button", { name: /yes|confirm|end/i }),
   },
+
+  // -------------------------------------------------------- Account screen
+  account: {
+    /** Anything only a signed-in account page shows. */
+    signedInMarker: (page: Page): Locator =>
+      page.getByText(/my account|profile|sign out|log out/i).first(),
+    /** The wallet balance readout, e.g. "Wallet balance $12.50". */
+    walletBalance: (page: Page): Locator =>
+      page.getByText(/(wallet|balance)[^$]*\$\s*\d+\.\d{2}/i).first(),
+  },
+
+  // ------------------------------------------------ Payment methods screen
+  payment: {
+    addCardButton: (page: Page): Locator =>
+      page.getByRole("button", { name: /add (a )?(payment|card)|new card/i }),
+    cardNumberInput: (page: Page): Locator => page.getByRole("textbox", { name: /card number/i }),
+    expiryInput: (page: Page): Locator =>
+      page.getByRole("textbox", { name: /expir|mm\s*\/\s*yy/i }),
+    cvcInput: (page: Page): Locator =>
+      page.getByRole("textbox", { name: /cvc|cvv|security code/i }),
+    /**
+     * The card-brand fix: the form's card-type radio is driven by the
+     * Stripe Issuing brand — no guessing from the number. Unknown brand →
+     * the caller answers unsupported_card_brand without touching the form.
+     */
+    brandRadio: (page: Page, brandPattern: RegExp): Locator =>
+      page.getByRole("radio", { name: brandPattern }),
+    saveButton: (page: Page): Locator =>
+      page.getByRole("button", { name: /save|add card|confirm/i }),
+    /** Shown when a card replaces the existing default payment method. */
+    replaceConfirmButton: (page: Page): Locator =>
+      page.getByRole("button", { name: /replace|make default|yes/i }),
+    successMarker: (page: Page): Locator =>
+      page.getByText(/card (added|saved)|payment method (added|updated)/i),
+    /** The saved-card row, matched by its last4. */
+    cardRow: (page: Page, last4: string): Locator =>
+      page
+        .getByText(new RegExp(`(•+|\\*+|ending\\s*(in)?)\\s*${escapeForRegex(last4)}`, "i"))
+        .first(),
+    removeButton: (page: Page): Locator => page.getByRole("button", { name: /remove|delete/i }),
+    removeConfirmButton: (page: Page): Locator =>
+      page.getByRole("button", { name: /yes|confirm|remove/i }),
+    removedMarker: (page: Page): Locator =>
+      page.getByText(/card (removed|deleted)|payment method removed/i),
+  },
+
+  // ------------------------------------------------------- Wallet top-up
+  wallet: {
+    topupButton: (page: Page): Locator =>
+      page.getByRole("button", { name: /top ?up|add (funds|money)|reload/i }),
+    /** Preset amount chip, e.g. "$25". */
+    amountOption: (page: Page, dollars: number): Locator =>
+      page.getByRole("radio", { name: new RegExp(`\\$\\s*${dollars}(\\.00)?`) }),
+    /** Free-amount input, when the screen has one instead of chips. */
+    amountInput: (page: Page): Locator => page.getByRole("textbox", { name: /amount/i }),
+    payButton: (page: Page): Locator =>
+      page.getByRole("button", { name: /pay|confirm|top ?up|add/i }),
+    successMarker: (page: Page): Locator =>
+      page.getByText(/(top ?up|funds|wallet).*(added|complete|success)|balance updated/i),
+    balanceText: (page: Page): Locator =>
+      page.getByText(/(wallet|balance)[^$]*\$\s*\d+\.\d{2}/i).first(),
+  },
 } as const;
+
+/**
+ * Stripe Issuing brand → the payment form's card-type radio label. The
+ * form's vocabulary is TODO-verify on the first `record` run like every
+ * selector here; an unmatched brand is a typed unsupported_card_brand.
+ */
+export function brandRadioPattern(stripeBrand: string): RegExp | null {
+  switch (stripeBrand.trim().toLowerCase()) {
+    case "visa":
+      return /visa/i;
+    case "mastercard":
+      return /master\s?card/i;
+    case "american express":
+    case "amex":
+      return /american\s?express|amex/i;
+    case "discover":
+      return /discover/i;
+    default:
+      return null;
+  }
+}
 
 function escapeForRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

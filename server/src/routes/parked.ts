@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
 import type { AppDeps } from "../app.js";
+import { cityForZone, providerForCity } from "../providers/registry.js";
 import type { Quote } from "../services/quote.js";
 import { spentToday } from "../services/sessions.js";
 import { quoteZone } from "../services/quote.js";
@@ -131,12 +132,33 @@ export function registerParked(app: FastifyInstance, deps: AppDeps): void {
       },
     });
 
+    // Which provider runs this city's meters, and whether the caller has
+    // linked an account there — the app routes an unlinked user into the
+    // link flow before offering to pay.
+    const city = resolution.kind === "unknown" ? null : cityForZone(resolution.nearest.zoneId);
+    const providerInfo = providerForCity(city);
+    let provider = null;
+    if (providerInfo) {
+      const account = await deps.db.providerAccount.findUnique({
+        where: { userId_provider: { userId: user.id, provider: providerInfo.id } },
+      });
+      provider = {
+        id: providerInfo.id,
+        city: providerInfo.city,
+        displayName: providerInfo.displayName,
+        loginUrl: providerInfo.loginUrl,
+        status: account?.status ?? "unlinked",
+        linked: account?.status === "linked",
+      };
+    }
+
     return {
       action,
       candidates,
       quote,
       rule,
       dryRun,
+      provider,
       parkedEventId: parkedEvent.id,
       decisionId: decision.id,
     };

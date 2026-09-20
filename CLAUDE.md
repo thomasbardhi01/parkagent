@@ -87,15 +87,21 @@ Note that Prisma 7 reads `DATABASE_URL` from `prisma7.config.ts`, not from
 `.env` by explicit path, because `pnpm -C server dev` runs with cwd `server/`
 and bare `dotenv/config` would miss it.
 
-## Executor (Phase 5)
+## Executor (Phase 5 + provider accounts)
 The real ParkNYC executor is the Playwright package in `executor/`;
-`server/src/services/parknycExecutor.ts` is its only importer. It runs only
-when env `DRY_RUN=false` and `PARKNYC_STATE_PATH` points at a storage-state
-file (from `pnpm -C executor run login` — auth state is gitignored, never
-committed). Its tests are unit tests over recorded fixture HTML; they never
-launch a browser or touch ParkNYC, and nothing in `executor/` runs in CI
-(CI only compiles it — `pnpm -C server build` needs `executor/dist` types,
-so run `pnpm -C executor run build` first). It is a personal-use prototype
+`server/src/services/parknycExecutor.ts` is its only importer. Auth is per
+user: each user links their own ParkNYC account (cookies from the app's
+login web view via `POST /providers/:provider/link`), sealed with
+AES-256-GCM under the `PROVIDER_STATE_KEY` secret in `provider_accounts`.
+Real calls run only with env `DRY_RUN=false`, the state key set, and a
+linked account for the zone's provider; each call gets a fresh browser
+context on one warm shared Chromium process. The old single-secret
+`PARKNYC_STATE_PATH`/`PARKNYC_STATE_JSON` plumbing is gone
+(`pnpm -C executor run login` remains as a local way to capture cookies).
+Its tests are unit tests over recorded fixture HTML; they never launch a
+browser or touch ParkNYC, and nothing in `executor/` runs in CI (CI only
+compiles it — `pnpm -C server build` needs `executor/dist` types, so run
+`pnpm -C executor run build` first). It is a personal-use prototype
 against ParkNYC's own web app; issue #37 tracks moving it to a private repo
 before any customer use. Details: `executor/README.md`.
 

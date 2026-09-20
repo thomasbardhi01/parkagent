@@ -26,25 +26,29 @@ pnpm -C executor run login                    # see below
 `pnpm -C executor run login` opens a **headed** browser on the ParkNYC sign-in
 page. Sign in by hand — credentials never touch code, env, or disk — then
 press Enter in the terminal. The session's cookies/localStorage are saved as
-Playwright `storageState` to `PARKNYC_STATE_PATH` (default:
-`executor/storageState.json`, gitignored, chmod 600).
+Playwright `storageState` to `executor/storageState.json` (gitignored,
+chmod 600). The `record` script reads that file; the **server** no longer
+does — its executor auth is the per-user linked provider account
+(`POST /providers/:provider/link`, sealed under `PROVIDER_STATE_KEY` in
+`provider_accounts` — see server/API.md "Provider accounts").
 
-When ParkNYC expires the session, executor calls start returning
-`auth_expired`: just run login again and (for prod) re-set the Fly secret.
+When ParkNYC expires a linked session, executor calls start returning
+`auth_expired`: the account flips to `expired` and the user gets a
+`provider_relink` push to sign in again in the app.
 
 ### Wiring the server to it
 
 | Env var | Meaning |
 |---|---|
-| `PARKNYC_STATE_PATH` | Path to the storage-state file. Required for the real executor; without it every session uses the dry-run executor (with a warning when `DRY_RUN=false`). |
-| `PARKNYC_STATE_JSON` | Prod only: the file's *contents* as a Fly secret; the server writes them to `PARKNYC_STATE_PATH` at boot (Fly machines have no persistent disk). |
+| `PROVIDER_STATE_KEY` | 32 bytes base64 (`openssl rand -base64 32`); seals linked provider session state. Without it linking is off and real executor calls fail typed. |
 | `PARKNYC_PLATE` | Plate to park when a call doesn't name one; else ParkNYC's first saved vehicle. |
 | `EXECUTOR_CAPTURE_DIR` | Optional: unexpected-screen evidence also written here as files (it always rides along on the `decisions` row). |
 | `EXECUTOR_LLM_RECOVERY` | `true` enables the (currently stubbed) LLM recovery hook — see `src/parknyc/recovery.ts`. Default off. |
 
-`executorFor()` picks the real executor only when env `DRY_RUN=false` **and**
-`PARKNYC_STATE_PATH` is set; the per-call effective dry-run flag
-(env ‖ policy.json) still routes any dry-run call to the DryRunExecutor.
+`executorFor({userId, city, dryRun})` picks the real executor only when the
+per-call effective dry-run flag (env ‖ policy.json) is false AND the user
+has a `linked` account for the city's provider; each call decrypts that
+account's cookies into a fresh context on one warm shared Chromium process.
 
 ## Recording fixtures
 

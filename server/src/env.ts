@@ -21,12 +21,10 @@ const schema = z
     APNS_KEY_ID: z.string().min(1).optional(),
     APNS_TEAM_ID: z.string().min(1).optional(),
     APNS_BUNDLE_ID: z.string().min(1).optional(),
-    // Real ParkNYC executor (Phase 5). STATE_PATH points at the Playwright
-    // storageState file; without it every session runs on the dry-run
-    // executor. STATE_JSON (Fly: the secret carrying the file's contents)
-    // is written to STATE_PATH at boot — machines have no persistent disk.
-    PARKNYC_STATE_PATH: z.string().min(1).optional(),
-    PARKNYC_STATE_JSON: z.string().min(1).optional(),
+    // Seals linked provider session state (provider_accounts). 32 bytes of
+    // base64: `openssl rand -base64 32`. Without it provider linking is
+    // off (503) and real executor calls fail typed.
+    PROVIDER_STATE_KEY: z.string().min(1).optional(),
     // Plate of the vehicle to park when a session doesn't name one.
     PARKNYC_PLATE: z.string().min(1).optional(),
     PORT: z.coerce.number().int().positive().default(3000),
@@ -41,12 +39,12 @@ const schema = z
         message: "required when STRIPE_SECRET_KEY is set (webhook signature verification)",
       });
     }
-    // Storage-state contents with nowhere to write them is a misconfig.
-    if (env.PARKNYC_STATE_JSON && !env.PARKNYC_STATE_PATH) {
+    // A malformed key must refuse boot, not fail the first link.
+    if (env.PROVIDER_STATE_KEY && Buffer.from(env.PROVIDER_STATE_KEY, "base64").length !== 32) {
       ctx.addIssue({
         code: "custom",
-        path: ["PARKNYC_STATE_PATH"],
-        message: "required when PARKNYC_STATE_JSON is set (where to write the state file)",
+        path: ["PROVIDER_STATE_KEY"],
+        message: "must be 32 bytes of base64 (openssl rand -base64 32)",
       });
     }
   });

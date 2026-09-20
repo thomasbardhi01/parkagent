@@ -7,6 +7,7 @@
  */
 
 import type { AppDb, SessionRow } from "../db.js";
+import { cityForZone } from "../providers/registry.js";
 import type { PushSender } from "./apns.js";
 import { paymentFailedPush, sessionExtendedPush } from "./apns.js";
 import type { ExecutorDiagnostics, ExecutorErrorCode, ExecutorProvider } from "./executor.js";
@@ -120,7 +121,11 @@ export async function applyExtension(
 ): Promise<ExtensionOutcome> {
   const now = deps.now?.() ?? new Date();
   const dryRun = deps.policy.effectiveDryRun();
-  const executor = deps.executorFor(dryRun);
+  const executor = deps.executorFor({
+    userId: session.userId,
+    city: cityForZone(session.zoneId),
+    dryRun,
+  });
   const startedAtMs = Date.now();
   const result = await executor.extendSession({
     providerSessionId: session.parknycConfirmation ?? session.id,

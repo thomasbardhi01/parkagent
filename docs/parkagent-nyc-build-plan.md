@@ -24,6 +24,8 @@ Design principle for the prototype: **every automated action has a dry-run mode 
 
 ## Phase 1 — Repo layout and dev environment (half a day)
 
+> **Status: complete** (2026-09-20) — monorepo, CI, env validation, hooks: PRs #39, #40.
+
 Monorepo, one language per layer:
 
 ```
@@ -69,6 +71,8 @@ Use Claude Code for: scaffolding each package, writing the GeoJSON builder, the 
 
 ## Phase 2 — Zone data (one day)
 
+> **Status: complete** (2026-09-20) — 10,576 passenger zones fetched, built, and loaded into PostGIS (dev and prod): PR #42.
+
 NYC publishes exactly what you need.
 
 1. **Download two datasets** from NYC Open Data (data.cityofnewyork.us):
@@ -90,6 +94,8 @@ Refresh monthly; rates change.
 ---
 
 ## Phase 3 — Server (two days)
+
+> **Status: complete** (2026-09-20) — /parked quoting end to end with decisions audit, policy service, migrations on deploy, verified live on Fly: PRs #43, #46 (sessions/executor stubbed until Phase 5).
 
 Fastify + TypeScript + Prisma + Postgres on Fly.io.
 

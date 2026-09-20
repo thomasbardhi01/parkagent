@@ -1,0 +1,12 @@
+# Generated / vendored
+node_modules
+dist
+pnpm-lock.yaml
+server/prisma/migrations/
+
+# Not ours to reformat: Swift lives under Xcode conventions, data/ is
+# Python (ruff's problem later), docs and prose stay byte-stable.
+ios/
+data/
+docs/
+*.md

@@ -2,9 +2,9 @@
   "name": "parkagent",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
   "keywords": [],
   "author": "",
@@ -17,5 +17,9 @@
     }
   },
   "packageManager": "pnpm@12.4.1",
-  "type": "module"
+  "type": "module",
+  "devDependencies": {
+    "prettier": "^3.9.8"
+  },
+  "private": true
 }

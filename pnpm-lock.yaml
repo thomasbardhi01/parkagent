@@ -164,7 +164,11 @@ settings:
 
 importers:
 
-  .: {}
+  .:
+    devDependencies:
+      prettier:
+        specifier: ^3.9.8
+        version: 3.9.8
 
   executor:
     dependencies:
@@ -1550,6 +1554,11 @@ packages:
   prelude-ls@1.2.1:
     resolution: {integrity: sha512-vkcDPrRZo1QZLbn5RLGPpg/WmIQ65qoWWhcGKf/b5eplkkarX0m9z8ppCat4mlOqUsWpyNuYgO3VRyrYHSzX5g==}
     engines: {node: '>= 0.8.0'}
+
+  prettier@3.9.8:
+    resolution: {integrity: sha512-WRFq3Wn3WId7LLROfMLdH7xaFr2jR62wU8nLO6rQUOLOxNZUviyJQs1M0iIhLexSFy+L+w0ch66wtoO2jRjG0A==}
+    engines: {node: '>=14'}
+    hasBin: true
 
   prisma@7.10.0:
     resolution: {integrity: sha512-o0ornyJOWgygVAzGCpr8PdXV8EJLHyVGDDUr/voBQt8Azzw8cYTByzzPGcA/m4tCkPcnJA8raEOv2CslsKhPEw==}
@@ -3157,6 +3166,8 @@ snapshots:
   postgres@3.4.7: {}
 
   prelude-ls@1.2.1: {}
+
+  prettier@3.9.8: {}
 
   prisma@7.10.0(@types/react@19.3.0)(magicast@0.5.5)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@6.0.3):
     dependencies:

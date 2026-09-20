@@ -4,7 +4,8 @@
   "description": "",
   "scripts": {
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "prepare": "lefthook install"
   },
   "keywords": [],
   "author": "",
@@ -19,7 +20,13 @@
   "packageManager": "pnpm@12.4.1",
   "type": "module",
   "devDependencies": {
+    "lefthook": "^2.1.14",
+    "lint-staged": "^17.5.1",
     "prettier": "^3.9.8"
   },
-  "private": true
+  "private": true,
+  "lint-staged": {
+    "*.{ts,js,mjs,cjs,json,yml,yaml}": "prettier --write",
+    "server/**/*.ts": "pnpm -C server exec eslint --fix --no-warn-ignored"
+  }
 }

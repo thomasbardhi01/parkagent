@@ -1,0 +1,8 @@
+# Installed into .git/hooks by the root "prepare" script on pnpm install.
+# Bypass for a work-in-progress commit with: git commit --no-verify
+pre-commit:
+  commands:
+    lint-staged:
+      run: pnpm exec lint-staged
+    server-tests:
+      run: pnpm -C server test

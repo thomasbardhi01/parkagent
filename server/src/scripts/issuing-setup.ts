@@ -28,7 +28,7 @@ import { config } from "dotenv";
 import Stripe from "stripe";
 
 import { createPrisma } from "../db.js";
-import { usdToCents } from "../services/issuing.js";
+import { cardholderName, usdToCents } from "../services/issuing.js";
 import { PolicyService } from "../services/policy.js";
 
 // Secrets live in the repo-root .env (see .env.example), not in server/.
@@ -122,21 +122,24 @@ async function main(): Promise<number> {
       return 1;
     }
 
-    const individual = individualDetails(user.name);
+    // Stripe caps cardholder names at 24 chars; long users.name values (e.g.
+    // rotated ones like "thomas-rotated-2026-09-20") are truncated cleanly.
+    const stripeName = cardholderName(user.name);
+    const individual = individualDetails(stripeName);
     let cardholder = await prisma.issuingCardholder.findUnique({
       where: { userId: user.id },
     });
     if (!cardholder) {
       const created = await stripe.issuing.cardholders.create({
         type: "individual",
-        name: user.name,
+        name: stripeName,
         phone_number: PLACEHOLDER_PHONE,
         individual,
         ...(flags.email ? { email: flags.email } : {}),
         billing: { address: BILLING_ADDRESS },
       });
       cardholder = await prisma.issuingCardholder.create({
-        data: { userId: user.id, stripeCardholderId: created.id, name: user.name },
+        data: { userId: user.id, stripeCardholderId: created.id, name: stripeName },
       });
       console.log(`cardholder created: ${created.id}`);
     } else {

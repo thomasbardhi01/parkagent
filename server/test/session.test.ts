@@ -151,8 +151,9 @@ test("extend past the max stay is refused", async () => {
 test("executor failure fails the session and pushes payment_failed", async () => {
   const failure: ExecutorResult = {
     ok: false,
-    code: "unexpected_screen",
+    code: "ui_changed",
     message: "ParkNYC showed a captcha",
+    diagnostics: { pageText: "please verify you are human", screenshotBase64: "aGk=" },
   };
   const { app, state, pushes } = makeApp({
     executor: {
@@ -163,11 +164,27 @@ test("executor failure fails the session and pushes payment_failed", async () =>
   });
   const res = await post(app, "/session/start", START);
   expect(res.statusCode).toBe(502);
-  expect(res.json()).toMatchObject({ error: "executor_failed", code: "unexpected_screen" });
-  expect(state.sessions[0]!.status).toBe("failed");
+  expect(res.json()).toMatchObject({ error: "executor_failed", code: "ui_changed" });
+  expect(state.sessions[0]!.status).toBe("failed"); // stays unpaid
   expect(state.sessionEvents.at(-1)).toMatchObject({ kind: "failed" });
-  expect(state.decisions.at(-1)).toMatchObject({ rule: "executor_failed" });
-  expect(pushes.at(-1)!.push.type).toBe("payment_failed");
+  const details = state.sessionEvents.at(-1)!.details as Record<string, unknown>;
+  expect(typeof details["durationMs"]).toBe("number");
+  // The decision row carries the evidence and the executor timing.
+  const decision = state.decisions.at(-1)!;
+  expect(decision).toMatchObject({ rule: "executor_failed" });
+  expect(decision.outcome["diagnostics"]).toEqual({
+    pageText: "please verify you are human",
+    screenshotBase64: "aGk=",
+  });
+  expect(typeof decision.outcome["durationMs"]).toBe("number");
+  // The failure push is the tap-to-pay fallback, deep link included.
+  const push = pushes.at(-1)!.push;
+  expect(push.type).toBe("payment_failed");
+  expect(push.extra).toMatchObject({
+    code: "ui_changed",
+    zoneNumber: "417371",
+    deepLink: "parkagent://pay?zone=417371",
+  });
 });
 
 test("location without an active session: 409", async () => {

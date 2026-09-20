@@ -39,10 +39,15 @@ Request:
   "lat": 40.7784,            // WGS84
   "lng": -73.9818,
   "accuracy": 12.5,          // horizontal accuracy, meters
-  "ts": "2026-09-20T14:03:22-04:00",   // when the phone detected the park
+  "ts": "2026-09-20T14:03:22-04:00",   // optional: when the phone detected the park
   "signals": ["motion_stop", "bt_disconnect"]   // free-form detector evidence
 }
 ```
+
+Quotes are priced at `ts` when the phone sends one, else at server time;
+the decision's `inputs` record `pricedAt` and `pricedAtSource`
+(`"request_ts"` | `"server_time"`), and a ts-less park stores server time
+as the event's `ts`.
 
 Response `200`:
 
@@ -121,9 +126,9 @@ agree.
 | `daily_cap_exceeded` | today's session spend + `totalUsd` > `daily_cap_usd` | `confirm` | nearest only |
 | `auto_pay_ok` | none of the above | `pay` | nearest only |
 
-Every `/parked` call writes a `decisions` row: `inputs` (request body, radius,
-candidate zone ids, effective dry run, policy hash), `rule`, `outcome`
-(action + quote).
+Every `/parked` call writes a `decisions` row: `inputs` (request body,
+pricing time and its source, radius, candidate zone ids, effective dry run,
+policy hash), `rule`, `outcome` (action + quote).
 
 Errors: `400` invalid body (zod details in `error`), `401` bad key.
 

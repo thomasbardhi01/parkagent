@@ -12,7 +12,7 @@ const bodySchema = z.object({
   lat: z.number().gte(-90).lte(90),
   lng: z.number().gte(-180).lte(180),
   accuracy: z.number().nonnegative().lte(10_000),
-  ts: z.iso.datetime({ offset: true }),
+  ts: z.iso.datetime({ offset: true }).optional(),
   signals: z.array(z.string()).max(32).default([]),
 });
 
@@ -41,7 +41,10 @@ export function registerParked(app: FastifyInstance, deps: AppDeps): void {
     const body = parsed.data;
     const user = req.authedUser!;
     const policy = deps.policy.get();
-    const at = new Date(body.ts);
+    // Price at the phone's detection time when it sent one; a missing or
+    // delayed ts falls back to server time. The decision records which.
+    const at = body.ts ? new Date(body.ts) : (deps.now?.() ?? new Date());
+    const pricedAtSource = body.ts ? "request_ts" : "server_time";
     const radiusM = lookupRadiusM(body.accuracy);
 
     const found = await deps.findCandidates({
@@ -125,6 +128,8 @@ export function registerParked(app: FastifyInstance, deps: AppDeps): void {
         kind: "parked_quote",
         inputs: {
           body,
+          pricedAt: at.toISOString(),
+          pricedAtSource,
           radiusM,
           candidateZoneIds: found.map((c) => c.zoneId),
           dryRun,

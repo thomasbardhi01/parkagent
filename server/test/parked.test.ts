@@ -143,6 +143,37 @@ test("today's spend under the daily cap still pays", async () => {
   expect(res.json().rule).toBe("auto_pay_ok");
 });
 
+test("Tuesday afternoon at Mott & Canal prices nonzero from the request ts", async () => {
+  const { app, state } = makeTestApp({ candidates: [MOTT_A, MOTT_B] });
+  // Tuesday 2026-01-06 14:00 EST — enforcement (Mon-Sat 08:30-19:00) is on.
+  const res = await post(app, parkedBody({ ts: "2026-01-06T14:00:00-05:00" }));
+  const body = res.json();
+  expect(body.rule).toBe("candidates_disagree");
+  expect(body.quote.totalUsd).toBe(9.28); // $5 + 30 min at $8.25/h + $0.15 fee
+  expect(body.quote.chargedMinutes).toBe(90);
+  expect(state.decisions[0]!.inputs).toMatchObject({
+    pricedAt: new Date("2026-01-06T14:00:00-05:00").toISOString(),
+    pricedAtSource: "request_ts",
+  });
+});
+
+test("a missing ts prices at server time and the decision says so", async () => {
+  const serverNow = new Date("2026-01-06T15:00:00-05:00"); // Tuesday 3pm EST
+  const { app, state } = makeTestApp({
+    candidates: [STEINWAY_A],
+    now: () => serverNow,
+  });
+  const res = await post(app, parkedBody({ ts: undefined }));
+  const body = res.json();
+  expect(res.statusCode).toBe(200);
+  expect(body.rule).toBe("auto_pay_ok");
+  expect(body.quote.totalUsd).toBe(3.65);
+  expect(state.decisions[0]!.inputs).toMatchObject({
+    pricedAt: serverNow.toISOString(),
+    pricedAtSource: "server_time",
+  });
+});
+
 test("session and location endpoints are stubbed at 501", async () => {
   const { app } = makeTestApp({});
   for (const url of ["/session/start", "/session/stop", "/session/extend", "/location"]) {

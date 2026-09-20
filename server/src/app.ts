@@ -2,9 +2,13 @@ import Fastify from "fastify";
 import type { FastifyInstance, FastifyReply, FastifyRequest, preHandlerHookHandler } from "fastify";
 
 import type { AppDb } from "./db.js";
+import { registerDevice } from "./routes/device.js";
+import { registerLocation } from "./routes/location.js";
 import { registerParked } from "./routes/parked.js";
 import { registerPolicy } from "./routes/policy.js";
-import { registerStubs } from "./routes/stubs.js";
+import { registerSession } from "./routes/session.js";
+import type { PushSender } from "./services/apns.js";
+import type { ExecutorProvider } from "./services/executor.js";
 import type { PolicyService } from "./services/policy.js";
 import type { CandidateFetcher } from "./services/zoneLookup.js";
 
@@ -19,6 +23,9 @@ export interface AppDeps {
   policy: PolicyService;
   findCandidates: CandidateFetcher;
   authenticate: preHandlerHookHandler;
+  /** Picks the dry-run or real executor per call (dry_run can flip at runtime). */
+  executorFor: ExecutorProvider;
+  sendPush: PushSender;
   /** Injectable clock for tests; routes fall back to `new Date()`. */
   now?: () => Date;
 }
@@ -54,7 +61,9 @@ export function buildApp(deps?: AppDeps): FastifyInstance {
   if (deps) {
     registerParked(app, deps);
     registerPolicy(app, deps);
-    registerStubs(app, deps);
+    registerSession(app, deps);
+    registerLocation(app, deps);
+    registerDevice(app, deps);
   }
   return app;
 }

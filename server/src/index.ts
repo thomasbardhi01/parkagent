@@ -3,6 +3,10 @@ import { config } from "dotenv";
 import { loadEnv } from "./env.js";
 import { buildApp, makeAuthenticate } from "./app.js";
 import { asAppDb, createPrisma } from "./db.js";
+import { makeExtender } from "./jobs/extendTick.js";
+import { makeApnsSender } from "./services/apns.js";
+import { DryRunExecutor } from "./services/executor.js";
+import { ParkNycExecutorStub } from "./services/parknycExecutor.js";
 import { PolicyService, snapshotPolicy } from "./services/policy.js";
 import { makeCandidateFetcher } from "./services/zoneLookup.js";
 
@@ -23,10 +27,36 @@ const prisma = createPrisma(env.DATABASE_URL);
 const db = asAppDb(prisma);
 await snapshotPolicy(db, policy.get(), "boot");
 
+// APNs sends only with the full credential set; otherwise pushes log and drop.
+const apnsConfig =
+  env.APNS_KEY && env.APNS_KEY_ID && env.APNS_TEAM_ID && env.APNS_BUNDLE_ID
+    ? {
+        key: env.APNS_KEY,
+        keyId: env.APNS_KEY_ID,
+        teamId: env.APNS_TEAM_ID,
+        bundleId: env.APNS_BUNDLE_ID,
+      }
+    : null;
+
+const log = {
+  info: (msg: string) => app.log.info(msg),
+  warn: (msg: string) => app.log.warn(msg),
+};
+const sendPush = makeApnsSender(apnsConfig, db, log);
+const dryRunExecutor = new DryRunExecutor((msg) => app.log.info(msg));
+const realExecutor = new ParkNycExecutorStub();
+const executorFor = (dryRun: boolean) => (dryRun ? dryRunExecutor : realExecutor);
+
 const app = buildApp({
   db,
   policy,
   findCandidates: makeCandidateFetcher(prisma),
   authenticate: makeAuthenticate(db),
+  executorFor,
+  sendPush,
 });
+
+const extender = makeExtender({ db, policy, executorFor, sendPush, log });
+
 app.listen({ port: env.PORT, host: "0.0.0.0" });
+extender.start();

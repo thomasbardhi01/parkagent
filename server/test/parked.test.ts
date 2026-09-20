@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 
-import { API_KEY, makeTestApp, parkedBody } from "./helpers.js";
+import { API_KEY, makeTestApp, parkedBody, seedSession } from "./helpers.js";
 import {
   BROADWAY_A,
   BROADWAY_B,
@@ -130,7 +130,7 @@ test("quote above the session cap: confirm", async () => {
 
 test("today's spend plus the quote above the daily cap: confirm", async () => {
   const { app, state } = makeTestApp({ candidates: [STEINWAY_A] });
-  state.sessionRows.push({ amountUsd: "57.50", feeUsd: "0.45" });
+  seedSession(state, { status: "stopped", dryRun: false, amountUsd: 57.5, feeUsd: 0.45 });
   const res = await post(app, parkedBody());
   expect(res.json().rule).toBe("daily_cap_exceeded");
   expect(res.json().action).toBe("confirm");
@@ -138,7 +138,7 @@ test("today's spend plus the quote above the daily cap: confirm", async () => {
 
 test("today's spend under the daily cap still pays", async () => {
   const { app, state } = makeTestApp({ candidates: [STEINWAY_A] });
-  state.sessionRows.push({ amountUsd: "50.00", feeUsd: "0.30" });
+  seedSession(state, { status: "stopped", dryRun: false, amountUsd: 50.0, feeUsd: 0.3 });
   const res = await post(app, parkedBody());
   expect(res.json().rule).toBe("auto_pay_ok");
 });
@@ -174,7 +174,7 @@ test("a missing ts prices at server time and the decision says so", async () => 
   });
 });
 
-test("session and location endpoints are stubbed at 501", async () => {
+test("session and location endpoints reject an empty body with 400", async () => {
   const { app } = makeTestApp({});
   for (const url of [
     "/session/start",
@@ -184,7 +184,6 @@ test("session and location endpoints are stubbed at 501", async () => {
     "/device",
   ]) {
     const res = await app.inject({ method: "POST", url, headers: HEADERS, payload: {} });
-    expect(res.statusCode).toBe(501);
-    expect(res.json()).toEqual({ error: "not_implemented" });
+    expect(res.statusCode).toBe(400);
   }
 });

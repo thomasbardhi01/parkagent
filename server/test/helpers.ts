@@ -12,7 +12,10 @@ import type { FastifyInstance } from "fastify";
 
 import type { AppDeps } from "../src/app.js";
 import { buildApp, makeAuthenticate } from "../src/app.js";
-import type { AppDb } from "../src/db.js";
+import type { AppDb, SessionRow, SessionWhere, ZoneTermsRow } from "../src/db.js";
+import type { Push } from "../src/services/apns.js";
+import type { Executor } from "../src/services/executor.js";
+import { DryRunExecutor } from "../src/services/executor.js";
 import type { Policy } from "../src/services/policy.js";
 import { PolicyService } from "../src/services/policy.js";
 import type { Candidate } from "../src/services/zoneLookup.js";
@@ -115,19 +118,118 @@ export function makePolicyService(
   return new PolicyService(path, envDryRun);
 }
 
+export interface FakeParkedEvent {
+  id: string;
+  userId: string;
+  lat: number;
+  lng: number;
+  accuracyM: number;
+  ts: Date;
+  signals: string[];
+}
+
+export interface FakeSessionEvent {
+  id: string;
+  sessionId: string;
+  kind: string;
+  at: Date;
+  minutes?: number;
+  amountUsd?: number;
+  feeUsd?: number;
+  expiresAt?: Date;
+  providerSessionId?: string;
+  dryRun: boolean;
+  details?: unknown;
+}
+
+export interface FakeFix {
+  id: string;
+  sessionId: string;
+  userId: string;
+  lat: number;
+  lng: number;
+  accuracyM: number;
+  ts: Date;
+}
+
 export interface FakeDbState {
-  parkedEvents: unknown[];
+  parkedEvents: FakeParkedEvent[];
   decisions: {
     kind: string;
     inputs: Record<string, unknown>;
     rule: string;
     outcome: Record<string, unknown>;
-    userId: string;
-    parkedEventId: string;
+    userId?: string;
+    parkedEventId?: string;
+    sessionId?: string;
   }[];
   snapshots: { hash: string; policy: unknown; source: string }[];
-  /** Rows returned for today's-spend queries (Decimal-ish strings are fine). */
-  sessionRows: { amountUsd: unknown; feeUsd: unknown }[];
+  sessions: SessionRow[];
+  sessionEvents: FakeSessionEvent[];
+  locationFixes: FakeFix[];
+  deviceTokens: {
+    id: string;
+    userId: string;
+    token: string;
+    platform: string;
+    environment: string;
+  }[];
+  zones: ZoneTermsRow[];
+}
+
+function emptySession(id: string): SessionRow {
+  return {
+    id,
+    userId: "u1",
+    vehicleId: null,
+    zoneId: "",
+    parknycZoneNumber: "",
+    status: "pending",
+    dryRun: true,
+    startedAt: null,
+    expiresAt: null,
+    stoppedAt: null,
+    amountUsd: 0,
+    feeUsd: 0,
+    parknycConfirmation: null,
+    parkedEventId: null,
+    carLat: null,
+    carLng: null,
+    rateFirstHour: null,
+    rateAdditionalHour: null,
+    maxStayMinutes: null,
+    hoursJson: null,
+    purchasedMinutes: 0,
+    chargedMinutes: 0,
+    extendCount: 0,
+    lastExtenderRule: null,
+    lastExtenderRuleAt: null,
+    createdAt: new Date(MONDAY_2PM),
+  };
+}
+
+/** Insert a session row with overrides; returns it for further mutation. */
+export function seedSession(state: FakeDbState, overrides: Partial<SessionRow>): SessionRow {
+  const session = { ...emptySession(`seed${state.sessions.length + 1}`), ...overrides };
+  state.sessions.push(session);
+  return session;
+}
+
+function matchesSessionWhere(s: SessionRow, where: SessionWhere): boolean {
+  if (where.id?.not !== undefined && s.id === where.id.not) return false;
+  if (where.userId !== undefined && s.userId !== where.userId) return false;
+  if (where.zoneId !== undefined && s.zoneId !== where.zoneId) return false;
+  if (where.dryRun !== undefined && s.dryRun !== where.dryRun) return false;
+  if (typeof where.status === "string" && s.status !== where.status) return false;
+  if (
+    typeof where.status === "object" &&
+    where.status !== null &&
+    !where.status.in.includes(s.status)
+  ) {
+    return false;
+  }
+  if (where.createdAt?.gte !== undefined && s.createdAt < where.createdAt.gte) return false;
+  return true;
 }
 
 export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
@@ -135,18 +237,27 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
     parkedEvents: [],
     decisions: [],
     snapshots: [],
-    sessionRows: [],
+    sessions: [],
+    sessionEvents: [],
+    locationFixes: [],
+    deviceTokens: [],
+    zones: [],
   };
   const db: AppDb = {
     user: {
       findUnique: async ({ where }) =>
         where.apiKey === API_KEY ? { id: "u1", name: "Thomas" } : null,
     },
+    zone: {
+      findUnique: async ({ where }) => state.zones.find((z) => z.zoneId === where.zoneId) ?? null,
+    },
     parkedEvent: {
       create: async ({ data }) => {
-        state.parkedEvents.push(data);
-        return { id: `pe${state.parkedEvents.length}` };
+        const row = { id: `pe${state.parkedEvents.length + 1}`, ...data };
+        state.parkedEvents.push(row);
+        return { id: row.id };
       },
+      findUnique: async ({ where }) => state.parkedEvents.find((p) => p.id === where.id) ?? null,
     },
     decision: {
       create: async ({ data }) => {
@@ -155,7 +266,58 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
       },
     },
     session: {
-      findMany: async () => state.sessionRows,
+      create: async ({ data }) => {
+        const row = { ...emptySession(`s${state.sessions.length + 1}`), ...data } as SessionRow;
+        state.sessions.push(row);
+        return row;
+      },
+      update: async ({ where, data }) => {
+        const row = state.sessions.find((s) => s.id === where.id);
+        if (!row) throw new Error(`no session ${where.id}`);
+        Object.assign(row, data);
+        return row;
+      },
+      findUnique: async ({ where }) => state.sessions.find((s) => s.id === where.id) ?? null,
+      findFirst: async ({ where }) =>
+        state.sessions.find((s) => matchesSessionWhere(s, where)) ?? null,
+      findMany: async ({ where }) => state.sessions.filter((s) => matchesSessionWhere(s, where)),
+    },
+    sessionEvent: {
+      create: async ({ data }) => {
+        const row = { id: `se${state.sessionEvents.length + 1}`, ...data };
+        state.sessionEvents.push(row);
+        return { id: row.id };
+      },
+    },
+    locationFix: {
+      create: async ({ data }) => {
+        const row = { id: `f${state.locationFixes.length + 1}`, ...data };
+        state.locationFixes.push(row);
+        return { id: row.id };
+      },
+      findMany: async ({ where, take }) =>
+        state.locationFixes
+          .filter((f) => f.sessionId === where.sessionId)
+          .sort((a, b) => b.ts.getTime() - a.ts.getTime())
+          .slice(0, take),
+    },
+    deviceToken: {
+      upsert: async ({ where, create, update }) => {
+        const existing = state.deviceTokens.find((t) => t.token === where.token);
+        if (existing) {
+          Object.assign(existing, update);
+          return existing;
+        }
+        const row = { id: `dt${state.deviceTokens.length + 1}`, ...create };
+        state.deviceTokens.push(row);
+        return row;
+      },
+      findMany: async ({ where }) => state.deviceTokens.filter((t) => t.userId === where.userId),
+      delete: async ({ where }) => {
+        const i = state.deviceTokens.findIndex((t) => t.id === where.id);
+        if (i >= 0) state.deviceTokens.splice(i, 1);
+        return {};
+      },
     },
     policySnapshot: {
       findFirst: async () => {
@@ -175,6 +337,8 @@ export interface TestApp {
   app: FastifyInstance;
   state: FakeDbState;
   deps: AppDeps;
+  /** Every push the app tried to send, in order. */
+  pushes: { userId: string; push: Push }[];
 }
 
 export function makeTestApp(options: {
@@ -182,16 +346,26 @@ export function makeTestApp(options: {
   policy?: Partial<Policy>;
   envDryRun?: boolean;
   now?: () => Date;
+  zones?: ZoneTermsRow[];
+  /** Override the executor used for BOTH dry-run and real paths. */
+  executor?: Executor;
 }): TestApp {
   const { db, state } = makeFakeDb();
+  state.zones.push(...(options.zones ?? []));
+  const pushes: TestApp["pushes"] = [];
+  const dryRunExecutor = new DryRunExecutor(() => {}, options.now ?? (() => new Date()));
   const deps: AppDeps = {
     db,
     policy: makePolicyService(options.policy, options.envDryRun ?? true),
     findCandidates: async () => options.candidates ?? [],
     authenticate: makeAuthenticate(db),
+    executorFor: () => options.executor ?? dryRunExecutor,
+    sendPush: async (userId, push) => {
+      pushes.push({ userId, push });
+    },
     ...(options.now ? { now: options.now } : {}),
   };
-  return { app: buildApp(deps), state, deps };
+  return { app: buildApp(deps), state, deps, pushes };
 }
 
 export function parkedBody(overrides: Record<string, unknown> = {}) {

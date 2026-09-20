@@ -1,0 +1,232 @@
+/**
+ * APNs push sending, token-based auth (no external deps: ES256 JWT via
+ * node:crypto, HTTP/2 via node:http2).
+ *
+ * Config comes from APNS_KEY (the .p8 file contents), APNS_KEY_ID,
+ * APNS_TEAM_ID, APNS_BUNDLE_ID. With any of them missing the sender is a
+ * logging no-op, so dev servers work without Apple credentials. Tokens are
+ * read from device_tokens per user; each row's environment picks the
+ * sandbox or production host, and a 400 BadDeviceToken / 410 Unregistered
+ * response deletes the row.
+ */
+
+import { createPrivateKey, sign } from "node:crypto";
+import { connect, constants as h2 } from "node:http2";
+
+// The four push types the iOS app handles (see API.md).
+export type PushType =
+  "session_started" | "session_extended" | "session_expiring" | "payment_failed";
+
+export interface Push {
+  type: PushType;
+  title: string;
+  body: string;
+  /** Extra keys merged into the payload root next to `type`. */
+  extra?: Record<string, unknown>;
+}
+
+/** Injectable seam: routes and the worker only know this signature. */
+export type PushSender = (userId: string, push: Push) => Promise<void>;
+
+// ---------------------------------------------------------------------------
+// Templates. Dry-run pushes say what *would* have happened — the week-one
+// audit loop reads these instead of a bank statement.
+
+const money = (usd: number) => `$${usd.toFixed(2)}`;
+
+export function sessionStartedPush(args: {
+  zoneNumber: string;
+  minutes: number;
+  totalUsd: number;
+  expiresAt: Date;
+  dryRun: boolean;
+}): Push {
+  const paid = args.dryRun ? "Would have paid" : "Paid";
+  return {
+    type: "session_started",
+    title: args.dryRun ? "Dry run: meter session" : "Meter paid",
+    body: `${paid} ${money(args.totalUsd)} for ${args.minutes} min in zone ${args.zoneNumber}.`,
+    extra: { expiresAt: args.expiresAt.toISOString() },
+  };
+}
+
+export function sessionExtendedPush(args: {
+  zoneNumber: string;
+  minutes: number;
+  totalUsd: number;
+  expiresAt: Date;
+  dryRun: boolean;
+}): Push {
+  const paid = args.dryRun ? "would have added" : "added";
+  return {
+    type: "session_extended",
+    title: args.dryRun ? "Dry run: extended" : "Session extended",
+    body: `Auto-extend ${paid} ${args.minutes} min (${money(args.totalUsd)}) in zone ${args.zoneNumber}.`,
+    extra: { expiresAt: args.expiresAt.toISOString() },
+  };
+}
+
+export type ExpiringReason = "max_stay" | "budget" | "no_auto_extend";
+
+export function sessionExpiringPush(args: {
+  zoneNumber: string;
+  minutesLeft: number;
+  reason: ExpiringReason;
+}): Push {
+  const why = {
+    max_stay: "the zone's max stay is up — move the car",
+    budget: "extending would blow the budget",
+    no_auto_extend: "auto-extend is off or used up",
+  }[args.reason];
+  return {
+    type: "session_expiring",
+    title: "Meter expiring",
+    body: `Zone ${args.zoneNumber} expires in ${args.minutesLeft} min and ${why}.`,
+    extra: { reason: args.reason },
+  };
+}
+
+export function paymentFailedPush(args: {
+  zoneNumber: string;
+  what: "pay" | "extend";
+  code: string;
+}): Push {
+  return {
+    type: "payment_failed",
+    title: "Payment failed",
+    body: `Could not ${args.what} zone ${args.zoneNumber} (${args.code}). The meter is unpaid — pay manually.`,
+    extra: { code: args.code },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Transport.
+
+export interface ApnsConfig {
+  key: string; // .p8 contents; "\n" escapes accepted for env transport
+  keyId: string;
+  teamId: string;
+  bundleId: string;
+}
+
+interface TokenRow {
+  id: string;
+  token: string;
+  environment: string;
+}
+
+export interface ApnsDb {
+  deviceToken: {
+    findMany(args: { where: { userId: string } }): Promise<TokenRow[]>;
+    delete(args: { where: { id: string } }): Promise<unknown>;
+  };
+}
+
+/** Build the provider JWT. Apple wants it rotated between 20 and 60 min. */
+function makeJwt(config: ApnsConfig, nowMs: number): string {
+  const b64 = (obj: unknown) => Buffer.from(JSON.stringify(obj)).toString("base64url");
+  const unsigned =
+    b64({ alg: "ES256", kid: config.keyId }) +
+    "." +
+    b64({ iss: config.teamId, iat: Math.floor(nowMs / 1000) });
+  const key = createPrivateKey(config.key.replace(/\\n/g, "\n"));
+  const signature = sign("sha256", Buffer.from(unsigned), {
+    key,
+    dsaEncoding: "ieee-p1363",
+  });
+  return unsigned + "." + signature.toString("base64url");
+}
+
+function postNotification(
+  host: string,
+  jwt: string,
+  bundleId: string,
+  deviceToken: string,
+  payload: unknown,
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const client = connect(`https://${host}`);
+    client.on("error", reject);
+    const req = client.request({
+      [h2.HTTP2_HEADER_METHOD]: "POST",
+      [h2.HTTP2_HEADER_PATH]: `/3/device/${deviceToken}`,
+      authorization: `bearer ${jwt}`,
+      "apns-topic": bundleId,
+      "apns-push-type": "alert",
+      "content-type": "application/json",
+    });
+    let status = 0;
+    let body = "";
+    req.on("response", (headers) => {
+      status = Number(headers[h2.HTTP2_HEADER_STATUS] ?? 0);
+    });
+    req.setEncoding("utf8");
+    req.on("data", (chunk: string) => (body += chunk));
+    req.on("end", () => {
+      client.close();
+      resolve({ status, body });
+    });
+    req.on("error", (err) => {
+      client.close();
+      reject(err);
+    });
+    req.end(JSON.stringify(payload));
+  });
+}
+
+const JWT_TTL_MS = 50 * 60_000;
+
+/**
+ * Real sender. Fans a push out to every registered device of the user;
+ * failures are logged, never thrown — a push must not fail the money path.
+ */
+export function makeApnsSender(
+  config: ApnsConfig | null,
+  db: ApnsDb,
+  log: { info: (msg: string) => void; warn: (msg: string) => void },
+  now: () => Date = () => new Date(),
+): PushSender {
+  let cachedJwt: { value: string; at: number } | null = null;
+
+  return async (userId, push) => {
+    const tokens = await db.deviceToken.findMany({ where: { userId } });
+    if (!config) {
+      log.info(`apns not configured; skipping "${push.type}" to ${tokens.length} device(s)`);
+      return;
+    }
+    if (tokens.length === 0) {
+      log.info(`no device tokens for user ${userId}; dropping "${push.type}"`);
+      return;
+    }
+    const nowMs = now().getTime();
+    if (!cachedJwt || nowMs - cachedJwt.at > JWT_TTL_MS) {
+      cachedJwt = { value: makeJwt(config, nowMs), at: nowMs };
+    }
+    const payload = {
+      aps: { alert: { title: push.title, body: push.body }, sound: "default" },
+      type: push.type,
+      ...push.extra,
+    };
+    for (const row of tokens) {
+      const host =
+        row.environment === "development" ? "api.sandbox.push.apple.com" : "api.push.apple.com";
+      try {
+        const res = await postNotification(
+          host,
+          cachedJwt.value,
+          config.bundleId,
+          row.token,
+          payload,
+        );
+        if (res.status === 410 || (res.status === 400 && res.body.includes("BadDeviceToken"))) {
+          log.warn(`apns token ${row.token.slice(0, 8)}… rejected (${res.status}); deleting`);
+          await db.deviceToken.delete({ where: { id: row.id } });
+        } else if (res.status !== 200) {
+          log.warn(`apns ${res.status} for "${push.type}": ${res.body}`);
+        }
+      } catch (err) {
+        log.warn(`apns send failed: ${String(err)}`);
+      }
+    }
+  };
+}

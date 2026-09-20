@@ -2,8 +2,8 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
 import type { AppDeps } from "../app.js";
-import { nycStartOfDay } from "../services/hours.js";
 import type { Quote } from "../services/quote.js";
+import { spentToday } from "../services/sessions.js";
 import { quoteZone } from "../services/quote.js";
 import type { Candidate } from "../services/zoneLookup.js";
 import { lookupRadiusM, resolveCandidates } from "../services/zoneLookup.js";
@@ -89,19 +89,7 @@ export function registerParked(app: FastifyInstance, deps: AppDeps): void {
         action = "confirm";
         rule = "session_cap_exceeded";
       } else {
-        const todays = await deps.db.session.findMany({
-          where: {
-            userId: user.id,
-            dryRun: false,
-            status: { in: ["pending", "active", "stopped", "expired"] },
-            createdAt: { gte: nycStartOfDay(at) },
-          },
-          select: { amountUsd: true, feeUsd: true },
-        });
-        const spentTodayUsd = todays.reduce(
-          (sum, s) => sum + Number(s.amountUsd ?? 0) + Number(s.feeUsd ?? 0),
-          0,
-        );
+        const spentTodayUsd = await spentToday(deps.db, user.id, at);
         if (spentTodayUsd + quote.totalUsd > policy.daily_cap_usd) {
           action = "confirm";
           rule = "daily_cap_exceeded";

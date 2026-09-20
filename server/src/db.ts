@@ -3,13 +3,94 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "./generated/prisma/client.js";
 
 /**
- * The slice of the Prisma client the routes actually use. Routes and tests
- * are written against this, so tests fake five methods instead of dragging
- * a database into vitest.
+ * The slice of the Prisma client the routes and jobs actually use. Routes
+ * and tests are written against this, so tests fake a handful of methods
+ * instead of dragging a database into vitest.
+ *
+ * Decimal columns come back as Prisma Decimal objects; callers convert
+ * with Number(...) (they're all ≤ 4 digits of dollars).
  */
+
+export interface SessionRow {
+  id: string;
+  userId: string;
+  vehicleId: string | null;
+  zoneId: string;
+  parknycZoneNumber: string;
+  status: string;
+  dryRun: boolean;
+  startedAt: Date | null;
+  expiresAt: Date | null;
+  stoppedAt: Date | null;
+  amountUsd: unknown;
+  feeUsd: unknown;
+  parknycConfirmation: string | null;
+  parkedEventId: string | null;
+  carLat: number | null;
+  carLng: number | null;
+  rateFirstHour: unknown;
+  rateAdditionalHour: unknown;
+  maxStayMinutes: number | null;
+  hoursJson: unknown;
+  purchasedMinutes: number;
+  chargedMinutes: number;
+  extendCount: number;
+  lastExtenderRule: string | null;
+  lastExtenderRuleAt: Date | null;
+  createdAt: Date;
+}
+
+/** Fields sessions routes write; everything else is column defaults. */
+export interface SessionWrite {
+  userId?: string;
+  zoneId?: string;
+  parknycZoneNumber?: string;
+  status?: string;
+  dryRun?: boolean;
+  startedAt?: Date;
+  expiresAt?: Date;
+  stoppedAt?: Date;
+  amountUsd?: number;
+  feeUsd?: number;
+  parknycConfirmation?: string;
+  parkedEventId?: string;
+  carLat?: number;
+  carLng?: number;
+  rateFirstHour?: number;
+  rateAdditionalHour?: number;
+  maxStayMinutes?: number | null;
+  hoursJson?: unknown;
+  purchasedMinutes?: number;
+  chargedMinutes?: number;
+  extendCount?: number;
+  lastExtenderRule?: string;
+  lastExtenderRuleAt?: Date;
+}
+
+export interface SessionWhere {
+  id?: { not: string };
+  userId?: string;
+  zoneId?: string;
+  dryRun?: boolean;
+  status?: string | { in: string[] };
+  createdAt?: { gte: Date };
+}
+
+export interface ZoneTermsRow {
+  zoneId: string;
+  parknycZoneNumber: string;
+  rateFirstHour: unknown;
+  rateAdditionalHour: unknown;
+  maxStayMinutes: number | null;
+  hoursJson: unknown;
+}
+
 export interface AppDb {
   user: {
     findUnique(args: { where: { apiKey: string } }): Promise<{ id: string; name: string } | null>;
+  };
+  zone: {
+    findUnique(args: { where: { zoneId: string } }): Promise<ZoneTermsRow | null>;
   };
   parkedEvent: {
     create(args: {
@@ -22,6 +103,9 @@ export interface AppDb {
         signals: string[];
       };
     }): Promise<{ id: string }>;
+    findUnique(args: {
+      where: { id: string };
+    }): Promise<{ id: string; userId: string; lat: number; lng: number; ts: Date } | null>;
   };
   decision: {
     create(args: {
@@ -30,21 +114,62 @@ export interface AppDb {
         inputs: unknown;
         rule: string;
         outcome: unknown;
-        userId: string;
-        parkedEventId: string;
+        userId?: string;
+        parkedEventId?: string;
+        sessionId?: string;
       };
     }): Promise<{ id: string }>;
   };
   session: {
-    findMany(args: {
-      where: {
-        userId: string;
+    create(args: { data: SessionWrite }): Promise<SessionRow>;
+    update(args: { where: { id: string }; data: SessionWrite }): Promise<SessionRow>;
+    findUnique(args: { where: { id: string } }): Promise<SessionRow | null>;
+    findFirst(args: { where: SessionWhere }): Promise<SessionRow | null>;
+    findMany(args: { where: SessionWhere }): Promise<SessionRow[]>;
+  };
+  sessionEvent: {
+    create(args: {
+      data: {
+        sessionId: string;
+        kind: string;
+        at: Date;
+        minutes?: number;
+        amountUsd?: number;
+        feeUsd?: number;
+        expiresAt?: Date;
+        providerSessionId?: string;
         dryRun: boolean;
-        status: { in: string[] };
-        createdAt: { gte: Date };
+        details?: unknown;
       };
-      select: { amountUsd: true; feeUsd: true };
-    }): Promise<{ amountUsd: unknown; feeUsd: unknown }[]>;
+    }): Promise<{ id: string }>;
+  };
+  locationFix: {
+    create(args: {
+      data: {
+        sessionId: string;
+        userId: string;
+        lat: number;
+        lng: number;
+        accuracyM: number;
+        ts: Date;
+      };
+    }): Promise<{ id: string }>;
+    findMany(args: {
+      where: { sessionId: string };
+      orderBy: { ts: "desc" };
+      take: number;
+    }): Promise<{ lat: number; lng: number; accuracyM: number; ts: Date }[]>;
+  };
+  deviceToken: {
+    upsert(args: {
+      where: { token: string };
+      create: { userId: string; token: string; platform: string; environment: string };
+      update: { userId: string; platform: string; environment: string };
+    }): Promise<unknown>;
+    findMany(args: {
+      where: { userId: string };
+    }): Promise<{ id: string; token: string; environment: string }[]>;
+    delete(args: { where: { id: string } }): Promise<unknown>;
   };
   policySnapshot: {
     findFirst(args: {

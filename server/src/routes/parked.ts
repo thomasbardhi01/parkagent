@@ -21,6 +21,7 @@ type Action = "pay" | "confirm" | "ignore" | "unknown_zone";
 function candidatePayload(candidate: Candidate, quote: Quote) {
   return {
     zoneId: candidate.zoneId,
+    city: candidate.city,
     parknycZoneNumber: candidate.parknycZoneNumber,
     distanceM: Math.round(candidate.distanceM * 10) / 10,
     containsPoint: candidate.containsPoint,

@@ -18,6 +18,8 @@ import { enforcementProfile } from "./hours.js";
 
 export interface Candidate {
   zoneId: string;
+  /** "nyc" | "bos" — which city's meter system the zone belongs to. */
+  city: string;
   parknycZoneNumber: string;
   rateFirstHourUsd: number;
   rateAdditionalHourUsd: number;
@@ -91,6 +93,7 @@ interface RawQuerier {
 
 interface CandidateRow {
   zone_id: string;
+  city: string;
   parknyc_zone_number: string;
   rate_first_hour: number;
   rate_additional_hour: number;
@@ -112,6 +115,7 @@ export function makeCandidateFetcher(db: RawQuerier): CandidateFetcher {
     const rows = await db.$queryRaw<CandidateRow[]>`
       SELECT
         z.zone_id,
+        z.city,
         z.parknyc_zone_number,
         z.rate_first_hour::float8   AS rate_first_hour,
         z.rate_additional_hour::float8 AS rate_additional_hour,
@@ -127,6 +131,7 @@ export function makeCandidateFetcher(db: RawQuerier): CandidateFetcher {
       LIMIT 8`;
     return rows.map((row) => ({
       zoneId: row.zone_id,
+      city: row.city,
       parknycZoneNumber: row.parknyc_zone_number,
       rateFirstHourUsd: row.rate_first_hour,
       rateAdditionalHourUsd: row.rate_additional_hour,

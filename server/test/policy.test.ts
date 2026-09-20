@@ -43,6 +43,9 @@ test("policy hash covers nested keys and ignores key order", () => {
     JSON.stringify(DEFAULT_POLICY, Object.keys(DEFAULT_POLICY).sort().reverse()),
   );
   reordered.auto_extend = { ...DEFAULT_POLICY.auto_extend };
+  // The replacer key-array strips nested objects' keys (see policy.ts),
+  // so nested blocks are restored by hand.
+  reordered.city_overrides = { ...DEFAULT_POLICY.city_overrides };
   expect(policyHash(reordered)).toBe(base);
   expect(
     policyHash({

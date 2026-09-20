@@ -31,7 +31,12 @@ config({ path: resolve(repoRoot, ".env") });
 
 interface ZoneProperties {
   zone_id: string;
-  parknyc_zone_number: string;
+  /** "nyc" | "bos"; the NYC builder predates the field, so it may be absent. */
+  city?: string;
+  /** NYC files use parknyc_zone_number; the Boston builder emits the generic
+   * zone_number ("" when ParkBoston's number isn't in the source data). */
+  parknyc_zone_number?: string;
+  zone_number?: string;
   vehicle_type: string;
   passenger: boolean;
   rate_first_hour: number;
@@ -56,21 +61,21 @@ interface ZonesCollection {
   features: ZoneFeature[];
 }
 
-// 11 parameters per row; 400 rows = 4400 parameters, well under the
+// 12 parameters per row; 400 rows = 4800 parameters, well under the
 // Postgres protocol limit of 65535 and few enough round-trips over WAN.
 const CHUNK_SIZE = 400;
 
-const UPSERT_COLUMNS = `(zone_id, parknyc_zone_number, vehicle_type, passenger,
+const UPSERT_COLUMNS = `(zone_id, city, parknyc_zone_number, vehicle_type, passenger,
    rate_first_hour, rate_additional_hour, max_stay_minutes, hours_json,
    geom, centerline, data_version)`;
 
 function rowPlaceholders(rowIndex: number): string {
-  const p = (offset: number) => `$${rowIndex * 11 + offset}`;
+  const p = (offset: number) => `$${rowIndex * 12 + offset}`;
   // ST_Multi lifts the occasional plain Polygon/LineString into the column's
   // Multi* type; SRID is pinned rather than trusting GeoJSON defaults.
-  return `(${p(1)}, ${p(2)}, ${p(3)}, ${p(4)}, ${p(5)}, ${p(6)}, ${p(7)}, ${p(8)},
-    ST_SetSRID(ST_Multi(ST_GeomFromGeoJSON(${p(9)})), 4326),
-    ST_SetSRID(ST_Multi(ST_GeomFromGeoJSON(${p(10)})), 4326), ${p(11)})`;
+  return `(${p(1)}, ${p(2)}, ${p(3)}, ${p(4)}, ${p(5)}, ${p(6)}, ${p(7)}, ${p(8)}, ${p(9)},
+    ST_SetSRID(ST_Multi(ST_GeomFromGeoJSON(${p(10)})), 4326),
+    ST_SetSRID(ST_Multi(ST_GeomFromGeoJSON(${p(11)})), 4326), ${p(12)})`;
 }
 
 async function main(): Promise<number> {
@@ -101,6 +106,15 @@ async function main(): Promise<number> {
   const selected = flags.all
     ? collection.features
     : collection.features.filter((f) => f.properties.passenger);
+  // Loads are per-city: the stale-row mirror below must never let a Boston
+  // load wipe the NYC rows (or vice versa), so a file spanning cities is
+  // refused rather than half-mirrored.
+  const cities = [...new Set(selected.map((f) => f.properties.city ?? "nyc"))];
+  if (cities.length !== 1) {
+    console.error(`zones file spans cities (${cities.join(", ")}); load them separately.`);
+    return 1;
+  }
+  const city = cities[0]!;
   console.log(
     `${collection.features.length} features, loading ${selected.length}` +
       (flags.all ? " (all vehicle types)" : " (passenger only)"),
@@ -118,7 +132,8 @@ async function main(): Promise<number> {
         const p = feature.properties;
         params.push(
           p.zone_id,
-          p.parknyc_zone_number,
+          city,
+          p.parknyc_zone_number ?? p.zone_number ?? "",
           p.vehicle_type,
           p.passenger,
           p.rate_first_hour,
@@ -134,6 +149,7 @@ async function main(): Promise<number> {
         `INSERT INTO zones ${UPSERT_COLUMNS}
          VALUES ${chunk.map((_, i) => rowPlaceholders(i)).join(", ")}
          ON CONFLICT (zone_id) DO UPDATE SET
+           city = EXCLUDED.city,
            parknyc_zone_number = EXCLUDED.parknyc_zone_number,
            vehicle_type = EXCLUDED.vehicle_type,
            passenger = EXCLUDED.passenger,
@@ -150,19 +166,23 @@ async function main(): Promise<number> {
       console.log(`  upserted ${Math.min(start + CHUNK_SIZE, selected.length)}/${selected.length}`);
     }
 
-    const stale = await client.query("DELETE FROM zones WHERE data_version <> $1", [dataVersion]);
+    // Mirror within this city only; the other city's rows are untouched.
+    const stale = await client.query("DELETE FROM zones WHERE city = $1 AND data_version <> $2", [
+      city,
+      dataVersion,
+    ]);
     if ((stale.rowCount ?? 0) > 0) {
-      console.log(`  deleted ${stale.rowCount} stale rows (other data_version)`);
+      console.log(`  deleted ${stale.rowCount} stale ${city} rows (other data_version)`);
     }
 
     await client.query(
-      `INSERT INTO zone_loads (data_version, source_datasets, zone_count, passenger_only)
-       VALUES ($1, $2, $3, $4)`,
-      [dataVersion, JSON.stringify(collection.metadata.sources), selected.length, !flags.all],
+      `INSERT INTO zone_loads (city, data_version, source_datasets, zone_count, passenger_only)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [city, dataVersion, JSON.stringify(collection.metadata.sources), selected.length, !flags.all],
     );
 
     await client.query("COMMIT");
-    console.log(`Loaded ${selected.length} zones (data_version ${dataVersion}).`);
+    console.log(`Loaded ${selected.length} ${city} zones (data_version ${dataVersion}).`);
     return 0;
   } catch (error) {
     await client.query("ROLLBACK");

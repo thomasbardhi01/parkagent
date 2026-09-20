@@ -311,10 +311,24 @@ export function makeExtender(deps: ExtenderDeps): Extender {
       const minutes = Math.floor(desiredMinutes);
       const result = await applyExtension(deps, session, minutes, price, "auto");
       if (result.ok) {
-        outcome = { action: "extend", minutes, price, expiresAt: result.expiresAt.toISOString() };
+        outcome = {
+          action: "extend",
+          minutes,
+          price,
+          expiresAt: result.expiresAt.toISOString(),
+          durationMs: result.durationMs,
+        };
       } else {
         rule = "extend_failed";
-        outcome = { action: "extend", minutes, ok: false, code: result.code };
+        outcome = {
+          action: "extend",
+          minutes,
+          ok: false,
+          code: result.code,
+          message: result.message,
+          durationMs: result.durationMs,
+          ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}),
+        };
       }
     } else if (expiringReason !== null && changed) {
       // Warn once per rule transition, not every tick.

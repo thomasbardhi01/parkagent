@@ -15,6 +15,10 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm -C server lint
       - run: pnpm -C server test
+      # Compile-only: the server's tsc needs executor/dist type declarations.
+      # Nothing in executor/ RUNS in CI — no browser install, no tests here;
+      # its unit tests (fixture-driven, never touching ParkNYC) run locally.
+      - run: pnpm -C executor build
       # `build` runs `prisma generate` first (src/generated is gitignored).
       # generate never connects, but prisma7.config.ts wants a URL present.
       - run: pnpm -C server build

@@ -94,8 +94,14 @@ export function paymentFailedPush(args: {
   return {
     type: "payment_failed",
     title: "Payment failed",
-    body: `Could not ${args.what} zone ${args.zoneNumber} (${args.code}). The meter is unpaid — pay manually.`,
-    extra: { code: args.code },
+    body: `Could not ${args.what} zone ${args.zoneNumber} (${args.code}). The meter is unpaid — tap to pay.`,
+    extra: {
+      code: args.code,
+      zoneNumber: args.zoneNumber,
+      // Tap-to-pay fallback: the app opens its pay screen with the zone
+      // prefilled (and copies the zone number for the ParkNYC app).
+      deepLink: `parkagent://pay?zone=${encodeURIComponent(args.zoneNumber)}`,
+    },
   };
 }
 

@@ -18,11 +18,13 @@ WORKDIR /app
 # ---------------------------------------------------------------- build stage
 FROM base AS build
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-# Both workspace members' manifests, so pnpm can resolve the workspace even
-# though --filter installs only server.
 COPY server/package.json server/package.json
 COPY executor/package.json executor/package.json
-RUN pnpm install --frozen-lockfile --filter server
+# `server...` = server plus its workspace dependencies (executor, since
+# Phase 5 — the server build needs executor's .d.ts output).
+RUN pnpm install --frozen-lockfile --filter "server..."
+COPY executor executor
+RUN pnpm -C executor build
 COPY server server
 # `build` runs `prisma generate` first; generate never connects, but
 # prisma7.config.ts wants a DATABASE_URL present (same dummy trick as CI).
@@ -41,8 +43,16 @@ RUN apt-get update -y && apt-get install -y --no-install-recommends openssl \
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY server/package.json server/package.json
 COPY executor/package.json executor/package.json
-RUN pnpm install --frozen-lockfile --prod --filter server
+RUN pnpm install --frozen-lockfile --prod --filter "server..."
 COPY --from=build /app/server/dist server/dist
+COPY --from=build /app/executor/dist executor/dist
+
+# Chromium for the ParkNYC executor (Playwright's own build + system deps).
+# Installed to a fixed path readable by the unprivileged `node` user; the
+# same env var must be present at runtime so Playwright finds it.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN pnpm -C executor exec playwright install --with-deps chromium \
+  && rm -rf /var/lib/apt/lists/*
 
 # Migrations run at release time (fly.toml [deploy].release_command), so the
 # runtime image carries the prisma CLI (a production dependency now), the

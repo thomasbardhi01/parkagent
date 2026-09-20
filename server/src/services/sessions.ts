@@ -9,7 +9,7 @@
 import type { AppDb, SessionRow } from "../db.js";
 import type { PushSender } from "./apns.js";
 import { paymentFailedPush, sessionExtendedPush } from "./apns.js";
-import type { ExecutorErrorCode, ExecutorProvider } from "./executor.js";
+import type { ExecutorDiagnostics, ExecutorErrorCode, ExecutorProvider } from "./executor.js";
 import type { HoursInterval } from "./hours.js";
 import { nycStartOfDay } from "./hours.js";
 import type { Policy } from "./policy.js";
@@ -96,8 +96,15 @@ export function priceExtension(session: SessionRow, policy: Policy, minutes: num
 }
 
 export type ExtensionOutcome =
-  | { ok: true; session: SessionRow; price: StayPrice; expiresAt: Date }
-  | { ok: false; code: ExecutorErrorCode; message: string; price: StayPrice };
+  | { ok: true; session: SessionRow; price: StayPrice; expiresAt: Date; durationMs: number }
+  | {
+      ok: false;
+      code: ExecutorErrorCode;
+      message: string;
+      price: StayPrice;
+      durationMs: number;
+      diagnostics?: ExecutorDiagnostics;
+    };
 
 /**
  * Run an already-policy-checked extension through the executor and record
@@ -114,6 +121,7 @@ export async function applyExtension(
   const now = deps.now?.() ?? new Date();
   const dryRun = deps.policy.effectiveDryRun();
   const executor = deps.executorFor(dryRun);
+  const startedAtMs = Date.now();
   const result = await executor.extendSession({
     providerSessionId: session.parknycConfirmation ?? session.id,
     minutes,
@@ -121,6 +129,7 @@ export async function applyExtension(
     amountUsd: price.meterUsd,
     feeUsd: price.feeUsd,
   });
+  const durationMs = Date.now() - startedAtMs;
 
   if (!result.ok) {
     await deps.db.sessionEvent.create({
@@ -130,7 +139,7 @@ export async function applyExtension(
         at: now,
         minutes,
         dryRun,
-        details: { source, op: "extend", code: result.code, message: result.message },
+        details: { source, op: "extend", code: result.code, message: result.message, durationMs },
       },
     });
     await deps.sendPush(
@@ -141,7 +150,14 @@ export async function applyExtension(
         code: result.code,
       }),
     );
-    return { ok: false, code: result.code, message: result.message, price };
+    return {
+      ok: false,
+      code: result.code,
+      message: result.message,
+      price,
+      durationMs,
+      ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}),
+    };
   }
 
   const updated = await deps.db.session.update({
@@ -166,7 +182,7 @@ export async function applyExtension(
       expiresAt: result.expiresAt,
       providerSessionId: result.providerSessionId,
       dryRun,
-      details: { source },
+      details: { source, durationMs },
     },
   });
   await deps.sendPush(
@@ -179,5 +195,5 @@ export async function applyExtension(
       dryRun,
     }),
   );
-  return { ok: true, session: updated, price, expiresAt: result.expiresAt };
+  return { ok: true, session: updated, price, expiresAt: result.expiresAt, durationMs };
 }

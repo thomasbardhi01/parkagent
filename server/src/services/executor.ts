@@ -5,10 +5,10 @@
  * different expiry or amount than we asked for, and callers must store the
  * executor's numbers, not their own).
  *
- * Two implementations live here: DryRunExecutor (logs, moves no money,
- * returns fake ids) and the ParkNYC stub in parknycExecutor.ts (interface
- * only; Phase 5 replaces it with a bridge to the Playwright package in
- * executor/ — nothing else may import that package).
+ * Two implementations exist: DryRunExecutor here (logs, moves no money,
+ * returns fake ids) and the real ParkNYC bridge in parknycExecutor.ts,
+ * which loads the Playwright package in executor/ — per the repo rule,
+ * that bridge is the package's only importer.
  */
 
 export interface StartSessionArgs {
@@ -35,12 +35,23 @@ export interface StopSessionArgs {
 }
 
 export type ExecutorErrorCode =
-  | "not_implemented"
-  | "login_failed"
-  | "zone_not_found"
-  | "payment_declined"
-  | "unexpected_screen"
-  | "timeout";
+  | "auth_expired" // ParkNYC storage state no longer signs us in
+  | "zone_not_found" // ParkNYC rejected the zone number
+  | "payment_declined" // ParkNYC's payment step refused
+  | "ui_changed" // an expected screen/element never appeared
+  | "network" // couldn't reach ParkNYC at all
+  | "unknown"; // none of the above matched
+
+/** Evidence from an unexpected screen; the caller attaches it to decisions. */
+export interface ExecutorDiagnostics {
+  /** JPEG screenshot of the page when the flow derailed. */
+  screenshotBase64?: string;
+  /** The page's visible text (truncated). */
+  pageText?: string;
+  /** Local file copies, when a capture directory is configured. */
+  screenshotPath?: string;
+  textPath?: string;
+}
 
 export interface ExecutorOk {
   ok: true;
@@ -55,6 +66,7 @@ export interface ExecutorError {
   ok: false;
   code: ExecutorErrorCode;
   message: string;
+  diagnostics?: ExecutorDiagnostics;
 }
 
 export type ExecutorResult = ExecutorOk | ExecutorError;

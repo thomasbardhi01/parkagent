@@ -16,6 +16,14 @@ const schema = z
     APNS_KEY_ID: z.string().min(1).optional(),
     APNS_TEAM_ID: z.string().min(1).optional(),
     APNS_BUNDLE_ID: z.string().min(1).optional(),
+    // Real ParkNYC executor (Phase 5). STATE_PATH points at the Playwright
+    // storageState file; without it every session runs on the dry-run
+    // executor. STATE_JSON (Fly: the secret carrying the file's contents)
+    // is written to STATE_PATH at boot — machines have no persistent disk.
+    PARKNYC_STATE_PATH: z.string().min(1).optional(),
+    PARKNYC_STATE_JSON: z.string().min(1).optional(),
+    // Plate of the vehicle to park when a session doesn't name one.
+    PARKNYC_PLATE: z.string().min(1).optional(),
     PORT: z.coerce.number().int().positive().default(3000),
   })
   .superRefine((env, ctx) => {
@@ -26,6 +34,14 @@ const schema = z
         code: "custom",
         path: ["STRIPE_WEBHOOK_SECRET"],
         message: "required when STRIPE_SECRET_KEY is set (webhook signature verification)",
+      });
+    }
+    // Storage-state contents with nowhere to write them is a misconfig.
+    if (env.PARKNYC_STATE_JSON && !env.PARKNYC_STATE_PATH) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["PARKNYC_STATE_PATH"],
+        message: "required when PARKNYC_STATE_JSON is set (where to write the state file)",
       });
     }
   });

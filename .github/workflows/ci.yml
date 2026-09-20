@@ -22,6 +22,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       # The .xcodeproj is gitignored and generated from ios/project.yml.
+      # Caching Homebrew's download cache spares the bottle fetch on a warm
+      # run; the pour itself is quick. (Nothing in CI downloads Chromium:
+      # playwright's postinstall is blocked by allowBuilds and no job runs
+      # `playwright install` — revisit when Phase 5 adds executor tests.)
+      - uses: actions/cache@v6
+        with:
+          path: ~/Library/Caches/Homebrew/downloads
+          key: brew-downloads-${{ runner.os }}-xcodegen
       - run: brew install xcodegen
       # Config.xcconfig is gitignored; the example supplies an empty
       # DEVELOPMENT_TEAM, which is all an unsigned simulator build needs.

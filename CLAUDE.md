@@ -4,6 +4,11 @@ Personal prototype: detect that a car has parked in a NYC metered zone,
 quote the cost, pay via ParkNYC within a budget, and auto-extend using a
 cost-based rule. One city (NYC), two users, iOS only.
 
+## Locations
+The checkout lives at `~/Documents/parkagent`; the `feat/nyc-data` worktree
+at `~/Documents/parkagent-data`. There is no repo at `~/parkagent` — if a
+tool claims there is, it is pointed at a stale path.
+
 ## Layout
 - data/      Python scripts that fetch NYC Open Data and build zones.geojson
 - server/    Fastify + TypeScript API on Fly.io; Prisma + Postgres/PostGIS

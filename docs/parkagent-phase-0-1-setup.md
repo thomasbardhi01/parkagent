@@ -86,9 +86,15 @@ uv --version
 
 ```bash
 gh auth login                          # choose GitHub.com, SSH, browser
+cd ~/Documents                         # the repo lives at ~/Documents/parkagent
 gh repo create parkagent --private --clone
-cd parkagent
+cd ~/Documents/parkagent
 ```
+
+The checkout lives at `~/Documents/parkagent` on both machines, and the
+`feat/nyc-data` worktree at `~/Documents/parkagent-data`. Don't clone into
+the home directory root: a stray `~/parkagent` is exactly how tooling ends
+up pointed at the wrong copy.
 
 Then in the repo settings on github.com:
 
@@ -98,7 +104,7 @@ Then in the repo settings on github.com:
 - Issues → Labels: create `ios`, `server`, `data`, `executor`, `infra`, `bug`.
 - Projects → create a board with columns Todo / In progress / Review / Done. Link it to the repo.
 
-Your friend then clones with `gh repo clone <you>/parkagent`.
+Your friend then clones with `cd ~/Documents && gh repo clone <you>/parkagent`.
 
 ### 0.6 Stripe (10 min)
 

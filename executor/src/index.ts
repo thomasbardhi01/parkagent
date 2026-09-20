@@ -15,14 +15,18 @@
 
 import { ParkNycClient } from "./parknyc/client.js";
 import type {
+  AccountOps,
   Executor,
   ExecutorResult,
   ExtendSessionArgs,
   StartSessionArgs,
   StopSessionArgs,
+  StorageStateValue,
 } from "./types.js";
 
 export type {
+  AccountOps,
+  CardFormDetails,
   Executor,
   ExecutorDiagnostics,
   ExecutorError,
@@ -30,15 +34,25 @@ export type {
   ExecutorOk,
   ExecutorResult,
   ExtendSessionArgs,
+  ProviderOpError,
+  ProviderOpErrorCode,
+  ProviderOpResult,
   StartSessionArgs,
   StopSessionArgs,
+  StorageStateValue,
+  TopupWalletResult,
+  VerifyAccountResult,
 } from "./types.js";
+export { closeWarmBrowser, warmBrowser } from "./browser.js";
 export { ParkNycClient } from "./parknyc/client.js";
 export type { ParkNycClientOptions } from "./parknyc/client.js";
 
 export interface ParkNycExecutorOptions {
-  /** Playwright storageState JSON (from `pnpm -C executor run login`). */
-  statePath: string;
+  /** Playwright storageState file (from `pnpm -C executor run login`). */
+  statePath?: string;
+  /** Storage state as a value — the per-user linked cookies, decrypted by
+   * the server per call. Exactly one of statePath/storageState. */
+  storageState?: StorageStateValue;
   /** Vehicle used when a call doesn't name a plate (PARKNYC_PLATE). */
   defaultPlate?: string;
   /** Unexpected-screen evidence is also written here as files. */
@@ -46,13 +60,21 @@ export interface ParkNycExecutorOptions {
   headless?: boolean;
 }
 
+/** One client per call: fresh context on the warm shared browser, so one
+ * user's cookies never leak into the next call's context. */
+function makeClient(options: ParkNycExecutorOptions): ParkNycClient {
+  return new ParkNycClient({
+    ...(options.statePath ? { statePath: options.statePath } : {}),
+    ...(options.storageState ? { storageState: options.storageState } : {}),
+    sharedBrowser: true,
+    headless: options.headless ?? true,
+    ...(options.captureDir ? { captureDir: options.captureDir } : {}),
+  });
+}
+
 export function createParkNycExecutor(options: ParkNycExecutorOptions): Executor {
   async function withClient(fn: (client: ParkNycClient) => Promise<ExecutorResult>) {
-    const client = new ParkNycClient({
-      statePath: options.statePath,
-      headless: options.headless ?? true,
-      ...(options.captureDir ? { captureDir: options.captureDir } : {}),
-    });
+    const client = makeClient(options);
     try {
       return await fn(client);
     } finally {
@@ -69,5 +91,25 @@ export function createParkNycExecutor(options: ParkNycExecutorOptions): Executor
       withClient((c) => c.extendSession(args.providerSessionId, args.minutes)),
     stopSession: (args: StopSessionArgs) =>
       withClient((c) => c.stopSession(args.providerSessionId)),
+  };
+}
+
+/** Account operations against a linked ParkNYC account (verify cookies,
+ * card setup/removal, wallet top-up). Same isolation as the executor. */
+export function createParkNycAccountOps(options: ParkNycExecutorOptions): AccountOps {
+  async function withClient<T>(fn: (client: ParkNycClient) => Promise<T>): Promise<T> {
+    const client = makeClient(options);
+    try {
+      return await fn(client);
+    } finally {
+      await client.close();
+    }
+  }
+
+  return {
+    verifyAccount: () => withClient((c) => c.verifyAccount()),
+    setupCard: (card) => withClient((c) => c.setupCard(card)),
+    removeCard: (last4) => withClient((c) => c.removeCard(last4)),
+    topupWallet: (amountUsd) => withClient((c) => c.topupWallet(amountUsd)),
   };
 }

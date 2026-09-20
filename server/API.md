@@ -58,10 +58,23 @@ Response `200`:
   "quote": Quote | null,     // null only for unknown_zone
   "rule": "auto_pay_ok",     // which rule produced the action (see below)
   "dryRun": true,
+  "provider": {              // who runs this city's meters (null when the
+    "id": "parknyc",         // zone is unknown or the city has no provider)
+    "city": "nyc",
+    "displayName": "ParkNYC",
+    "loginUrl": "https://…", // where the app's link web view starts
+    "status": "linked",      // linked | expired | unlinked
+    "linked": true           // false → route the user into the link flow
+  },
   "parkedEventId": "…",
   "decisionId": "…"
 }
 ```
+
+The city comes from the zone id prefix (`nyc-…`); the provider registry
+lives in `src/providers/registry.ts`. An unlinked (or expired) provider
+means `POST /session/start` will refuse — the app should run the link flow
+before offering to pay.
 
 ### Candidate
 
@@ -140,9 +153,12 @@ The money-moving path. Executes through the executor protocol
 (`services/executor.ts`); with effective dry run on, that is the
 DryRunExecutor, which logs and returns fake `dry-…` provider ids. Outside
 dry run, the real ParkNYC executor (the Playwright package in `executor/`,
-reached only through `services/parknycExecutor.ts`) runs when env
-`DRY_RUN=false` **and** `PARKNYC_STATE_PATH` is set; otherwise the server
-falls back to the DryRunExecutor and logs a warning. Executor error codes:
+reached only through `services/parknycExecutor.ts`) runs **on the caller's
+own linked provider account**: the account's sealed cookie state is
+decrypted per call (`PROVIDER_STATE_KEY`) into a fresh browser context on
+one warm shared Chromium process. No linked account, no state key, or an
+unparseable state → the call fails typed (`auth_expired`/`unknown`), it
+never falls back to someone else's session. Executor error codes:
 `auth_expired`, `zone_not_found`, `payment_declined`, `ui_changed`,
 `network`, `unknown`. Every executor call records its `durationMs` on the
 `session_events` details and the `decisions` outcome; a `ui_changed`
@@ -170,9 +186,15 @@ guarantees and cannot be confirmed through — raise them via `PUT /policy`):
 | `daily_cap_exceeded` | real (non-dry-run) spend today + total > `daily_cap_usd` |
 
 Other errors: `404` unknown/foreign `parkedEventId` or `zoneId`, `409
-{"error": "session_already_active"}` (one active session per user), `502
+{"error": "session_already_active"}` (one active session per user), `409
+{"error": "provider_not_linked", "provider": "parknyc", "displayName":
+"ParkNYC"}` when the zone's city has a provider and the caller has no
+account with status `linked` there (dry run included — the executor pays
+through the user's own account now, see "Provider accounts"), `502
 {"error": "executor_failed", "code": …}` — the session row is marked
-`failed` and a `payment_failed` push is sent.
+`failed` and a `payment_failed` push is sent. An `auth_expired` executor
+failure also flips the provider account to `expired` and sends a
+`provider_relink` push.
 
 Every call writes a `decisions` row (kind `session_start`; rule
 `start_ok`, a cap rule, or `executor_failed`) and every executor call
@@ -220,7 +242,9 @@ Pushes carry a standard `aps` payload plus `{"type": ...}`, one of:
   `reason`: `"max_stay"` (move the car), `"budget"` (a cap would be hit),
   or `"no_auto_extend"` (disabled or max_count used up)
 - `payment_failed` — a pay or extend attempt failed; the meter is unpaid;
-  carries `code` (executor error code), `zoneNumber`, and `deepLink`
+  carries `code` (executor error code)
+- `provider_relink` — the linked provider session died (`auth_expired`);
+  carries `provider` and a deep link into the app's link flow, `zoneNumber`, and `deepLink`
   (`parkagent://pay?zone=<zone>` — tap-to-pay fallback with the zone
   prefilled)
 
@@ -302,8 +326,11 @@ amount, MCC, spend-so-far, pending-session answer, dry run, policy hash).
 `issuing_authorizations` row (lifecycle `status`, held amount); an
 authorization first seen this way is stored with `decision: "external"`.
 `issuing_transaction.created` attaches the settled capture
-(`stripe_transaction_id`, `captured_usd`) to its authorization row. Other
-event types are acknowledged and ignored.
+(`stripe_transaction_id`, `captured_usd`) to its authorization row.
+`payment_intent.succeeded` for an intent tagged `parkagent=card_topup`
+moves the settled amount onto the financial account (see
+`POST /card/funding/topup-intent`). Other event types are acknowledged and
+ignored.
 
 ### Local dev
 
@@ -327,9 +354,38 @@ require `x-api-key`; everything that talks to Stripe answers
 The full card number **never** transits this server: the app reveals it
 client-side with an ephemeral key (see `GET /card/reveal`).
 
+### Card lifecycle
+
+The card is created **lazily** — not at signup, but when the user reaches
+the app's "Link provider" step (`POST /card/prepare`). Our DB status then
+reads `pending_onboarding` (the Stripe card itself is active; the overlay
+is ours and `GET /card` never re-mirrors it away) until
+`POST /providers/:provider/setup-card` puts the card on the provider
+account, which graduates it to `active`.
+
+Abandoned onboarding is reaped by a daily in-process janitor
+(`jobs/cardJanitor.ts`): a `pending_onboarding` card older than 7 days
+whose user has **never** linked a provider is canceled on Stripe, and its
+cardholder — if left with no live cards — is deactivated and dropped, so a
+returning user just gets a fresh card from the next `/card/prepare`. A
+card that has ever transacted is **never canceled** (its authorizations
+must keep resolving) — it is frozen instead. Every sweep action writes a
+`decisions` row (kind `card_janitor`).
+
+### POST /card/prepare
+
+Idempotent lazy creation: an existing non-canceled card is returned as-is
+(`created: false`); otherwise the cardholder (if needed) and one virtual
+card are created with spending controls from the current policy, and a
+`decisions` row (kind `card_prepare`) is written.
+
+```json
+{ "created": true, "card": { "stripeCardId": "ic_…", "last4": "7777", "status": "pending_onboarding" } }
+```
+
 ### GET /card
 
-The user's virtual card summary. With no card yet (issuing:setup hasn't
+The user's virtual card summary. With no card yet (`/card/prepare` hasn't
 run), `200` with `card: null` — the app shows its "set up" state.
 
 ```json
@@ -415,6 +471,37 @@ Success: `200 {"ok": true, "balanceUsd": …, "pendingUsd": …, "decisionId": �
 (the balance re-read after the move; a test-mode ACH credit may land in
 `pendingUsd` first).
 
+### POST /card/funding/topup-intent
+
+Apple Pay top-up, step 1: `{amountUsd}` → a Stripe PaymentIntent the app
+confirms client-side with the Apple Pay sheet.
+
+- Policy gate: a single top-up may not exceed `daily_cap_usd`
+  (`409 amount_over_daily_cap`).
+- **Dry run**: `200` with a fake secret
+  (`{"clientSecret": "pi_dryrun_…", "paymentIntentId": null, "dryRun": true}`)
+  — no PaymentIntent exists and nothing can ever charge; the decisions row
+  (kind `card_topup_intent`, rule `dry_run`) records the refusal.
+- Real: `200 {"clientSecret": "pi_…_secret_…", "paymentIntentId": "pi_…", "dryRun": false}`,
+  intent metadata `parkagent=card_topup` + `userId`.
+
+Step 2 is the webhook: on `payment_intent.succeeded` for a tagged intent,
+the server moves the settled amount onto the financial account backing the
+cards (test mode: the sandbox ACH-credit helper) and writes a `decisions`
+row (kind `card_topup_funded`). Stripe may redeliver events; a redelivered
+intent would move test funds twice — visible in the decisions trail,
+accepted for the prototype.
+
+**Apple Pay setup (one-time, Stripe dashboard + Apple):** native in-app
+Apple Pay needs (1) an Apple **merchant ID** (e.g.
+`merchant.com.thomasbardhi.parkagent`) in the Apple Developer portal and
+the Apple Pay capability on the app ID; (2) in the Stripe Dashboard →
+Settings → Payments → **Apple Pay** → iOS certificates: download the CSR,
+create the payment-processing certificate against it in the Apple portal,
+and upload the certificate back to Stripe; (3) only if a web flow is ever
+added: register the domain on the same dashboard page. The iOS app then
+uses the merchant ID with PassKit/Stripe when confirming the intent.
+
 ### GET /card/reveal
 
 Short-lived Stripe ephemeral key for client-side PAN reveal — the app
@@ -441,6 +528,115 @@ No body. Sets the Stripe card `status` to `inactive` / `active`, mirrors it
 onto `issuing_cards`, writes a `decisions` row (kind `card_status`), and
 returns `{"status": "inactive" | "active"}`. A frozen card declines inside
 Stripe before the webhook ever sees the authorization.
+
+---
+
+## Provider accounts
+
+Per-user linked accounts at the parking operators, replacing the old
+single-secret executor auth and laying the multi-city foundation. The
+registry (`src/providers/registry.ts`) maps city → provider — `nyc` →
+`parknyc` (Flowbird), `bos` → `passport` (placeholder, no executor yet),
+anything else → none — with each provider's display name, login URL for
+the app's web view, and the cookie domains that constitute a session.
+
+Session state (the cookies the app captures after the user signs in inside
+the web view) is sealed with AES-256-GCM under the `PROVIDER_STATE_KEY`
+secret and stored in `provider_accounts`; it is never logged and never
+returned by any endpoint. Generate a key with `openssl rand -base64 32`;
+set it with
+`fly secrets set -a parkagent-api PROVIDER_STATE_KEY="$(openssl rand -base64 32)"`.
+Rotating the key invalidates stored states — accounts fail `auth_expired`
+and users re-link. Without the key (or on a server without the executor),
+linking answers `503 {"error": "provider_linking_not_configured"}`.
+
+### POST /providers/:provider/link
+
+```json
+{
+  "cookies": [ { "name": "…", "value": "…", "domain": ".nyc.flowbirdapp.com", "path": "/", "expires": 1790000000, "httpOnly": true, "secure": true, "sameSite": "Lax" } ],
+  "set_up_card": true,                      // default true: chain setup-card
+  "consent_replace_payment_method": true    // REQUIRED true when set_up_card
+}
+```
+
+Cookies are filtered against the provider's registered domains — anything
+else is dropped at the door; none left → `400 no_session_cookies` (with
+`expectedDomains`). With `set_up_card` and no explicit consent →
+`400 consent_required`, before anything runs. The surviving cookies are
+verified headlessly (the executor loads the provider's account page); a
+sign-in screen → `409 {"error": "verification_failed", "code": "auth_expired"}`.
+On success the sealed state is upserted (`status: "linked"`) and:
+
+```json
+{ "status": "linked", "walletBalanceCents": 1250, "jobId": "…" }
+```
+
+`jobId` is non-null when `set_up_card`: verification passed, so the card
+setup runs immediately as a background job (the executor takes seconds).
+Every link attempt writes a `decisions` row (kind `provider_link`) whose
+inputs carry only cookie counts and domains — never values.
+
+### GET /providers/:provider/link-status?jobId=…
+
+The chained job's phase: `linking → adding_card → done | failed` (jobs
+currently start at `adding_card` — verification happens inside the link
+request itself). On failure it carries a typed `reason`
+(executor code, `unsupported_card_brand`, or `no_card`) and `retrySafe`:
+whether re-running `POST /providers/:provider/setup-card` as-is is worth
+it (transient failure) or something needs fixing first (re-link, different
+card). `dryRun: true` marks a job that "completed" by dry-run skip. The
+store is in-memory — a lost job id just means checking
+`GET /providers/status` instead. `404 unknown_job` for ids that aren't
+yours.
+
+### GET /providers/status
+
+Every registry provider merged with the caller's account:
+
+```json
+{ "providers": [ { "id": "parknyc", "city": "nyc", "displayName": "ParkNYC", "loginUrl": "https://…", "status": "linked", "linkedAt": "…", "lastVerifiedAt": "…", "cardAdded": true, "walletBalanceCents": 1250 } ] }
+```
+
+### POST /providers/:provider/setup-card
+
+Puts the user's Issuing card on the provider account as its payment
+method. The executor fills the payment form with number/expiry/CVC
+retrieved server-side from Stripe (expand `number`,`cvc`) and selects the
+card-type radio from the Stripe **brand** (the card-brand fix; an
+unmapped brand → typed `unsupported_card_brand`). The values never appear
+in logs or decisions and are blanked after submit. On success the card
+graduates `pending_onboarding → active` and the account records
+`cardAdded`.
+
+- Dry run: the provider is never touched; `200 {"ok": true, "dryRun": true}`
+  and the decisions row (kind `provider_setup_card`, rule `dry_run`)
+  records `wouldAdd: true`.
+- `409 provider_not_linked` / `409 no_card` (run `/card/prepare` first) /
+  `502 {"error": "setup_card_failed", "code": …, "retrySafe": …}`.
+
+### POST /providers/:provider/unlink
+
+Unlinks and clears the sealed state. Best effort first: while the cookies
+still work, the executor removes our card from the provider account
+(failure never blocks the unlink; the outcome lands in the decisions row).
+If the user has **no other linked provider**, the Issuing card is frozen —
+never canceled: a card that has transacted keeps its ledger, and a
+re-link simply unfreezes-by-setup later.
+
+`200 {"ok": true, "cardRemoval": "removed" | "failed:…" | "skipped", "cardFrozen": true}`;
+`404 not_linked` when there is nothing to unlink.
+
+### POST /providers/:provider/topup
+
+`{amountUsd}` → top up the provider wallet from the card on file, through
+the executor. Policy-gated and audited like every money move (kind
+`provider_topup`): single move ≤ `daily_cap_usd`
+(`409 amount_over_daily_cap`), dry run refuses (`409 dry_run`,
+`wouldAllow: true`), executor failures come back typed
+(`502 {"error": "<code>", …}`; `auth_expired` also expires the account and
+pushes `provider_relink`). Success returns and stores the fresh
+`walletBalanceCents`.
 
 ---
 

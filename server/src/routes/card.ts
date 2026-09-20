@@ -94,13 +94,18 @@ export function registerCard(app: FastifyInstance, deps: AppDeps): void {
     if (!stripe) return;
 
     const details = await stripe.retrieveCard(cardRow.stripeCardId);
-    if (details.status !== cardRow.status) {
+    // pending_onboarding is OUR lifecycle overlay (the Stripe card is
+    // "active" from creation) — never let a re-mirror erase it; setup-card
+    // graduates it to active.
+    if (cardRow.status !== "pending_onboarding" && details.status !== cardRow.status) {
       // A status changed in the Stripe dashboard; keep the mirror honest.
       await deps.db.issuingCard.update({
         where: { stripeCardId: cardRow.stripeCardId },
         data: { status: details.status },
       });
     }
+    const effectiveStatus =
+      cardRow.status === "pending_onboarding" ? cardRow.status : details.status;
 
     const [spentTodayUsd, spentThisMonthUsd] = await Promise.all([
       approvedSpendSince(user.id, nycStartOfDay(at)),
@@ -123,7 +128,7 @@ export function registerCard(app: FastifyInstance, deps: AppDeps): void {
         stripeCardId: cardRow.stripeCardId,
         last4: cardRow.last4,
         brand: details.brand,
-        status: details.status,
+        status: effectiveStatus,
         expMonth: details.expMonth,
         expYear: details.expYear,
         cardholderName: details.cardholderName || holder.name,
@@ -138,6 +143,144 @@ export function registerCard(app: FastifyInstance, deps: AppDeps): void {
       },
       funding,
       dryRun,
+    };
+  });
+
+  /**
+   * Lazy card creation: called when the user reaches the "Link provider"
+   * step, not at signup. Idempotent — an existing non-canceled card is
+   * simply returned. The DB status starts at pending_onboarding (the Stripe
+   * card itself is active); setup-card graduates it, and the janitor
+   * cancels it after 7 abandoned days.
+   */
+  app.post("/card/prepare", { preHandler: deps.authenticate }, async (req, reply) => {
+    const user = req.authedUser!;
+    const stripe = requireStripe(reply);
+    if (!stripe) return;
+    const policy = deps.policy.get();
+
+    let holder = await deps.db.issuingCardholder.findUnique({
+      where: { userId: user.id },
+      include: { cards: true },
+    });
+    const existing = holder?.cards.find((c) => c.status !== "canceled");
+    if (holder && existing) {
+      return {
+        created: false,
+        card: {
+          stripeCardId: existing.stripeCardId,
+          last4: existing.last4,
+          status: existing.status,
+        },
+      };
+    }
+
+    if (!holder) {
+      const created = await stripe.createCardholder(user.name);
+      const row = await deps.db.issuingCardholder.create({
+        data: { userId: user.id, stripeCardholderId: created.stripeCardholderId, name: user.name },
+      });
+      holder = { ...row, cards: [] };
+    }
+    const card = await stripe.createCard(holder.stripeCardholderId, {
+      perAuthUsd: policy.session_cap_usd,
+      dailyUsd: policy.daily_cap_usd,
+    });
+    await deps.db.issuingCard.create({
+      data: {
+        cardholderId: holder.id,
+        stripeCardId: card.stripeCardId,
+        last4: card.last4,
+        status: "pending_onboarding",
+        perAuthCapUsd: policy.session_cap_usd,
+        dailyCapUsd: policy.daily_cap_usd,
+      },
+    });
+    await deps.db.decision.create({
+      data: {
+        kind: "card_prepare",
+        inputs: { policyHash: deps.policy.hash() },
+        rule: "prepared",
+        outcome: { ok: true, stripeCardId: card.stripeCardId, last4: card.last4 },
+        userId: user.id,
+      },
+    });
+    return {
+      created: true,
+      card: { stripeCardId: card.stripeCardId, last4: card.last4, status: "pending_onboarding" },
+    };
+  });
+
+  /**
+   * Apple Pay top-up, step 1: a PaymentIntent the app confirms client-side
+   * (Apple Pay sheet). Step 2 is the payment_intent.succeeded webhook,
+   * which moves the settled money onto the financial account. Under dry
+   * run this returns a fake client secret and Stripe is never called.
+   */
+  app.post("/card/funding/topup-intent", { preHandler: deps.authenticate }, async (req, reply) => {
+    const parsed = fundingSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: z.treeifyError(parsed.error) });
+    }
+    const amountUsd = Math.round(parsed.data.amountUsd * 100) / 100;
+    const user = req.authedUser!;
+    const policy = deps.policy.get();
+    const dryRun = deps.policy.effectiveDryRun();
+
+    const found = await requireCard(user.id, reply);
+    if (!found) return;
+
+    const decisionInputs = { amountUsd, dryRun, policyHash: deps.policy.hash() };
+    if (amountUsd > policy.daily_cap_usd) {
+      const decision = await deps.db.decision.create({
+        data: {
+          kind: "card_topup_intent",
+          inputs: decisionInputs,
+          rule: "amount_over_daily_cap",
+          outcome: { allowed: false },
+          userId: user.id,
+        },
+      });
+      return reply.code(409).send({ error: "amount_over_daily_cap", decisionId: decision.id });
+    }
+    if (dryRun) {
+      // No PaymentIntent exists and nothing can ever charge: the fake
+      // secret lets the app walk its Apple Pay flow up to the sheet.
+      const decision = await deps.db.decision.create({
+        data: {
+          kind: "card_topup_intent",
+          inputs: decisionInputs,
+          rule: "dry_run",
+          outcome: { allowed: false, wouldCreate: true },
+          userId: user.id,
+        },
+      });
+      return {
+        clientSecret: `pi_dryrun_${decision.id}_secret_dryrun`,
+        paymentIntentId: null,
+        dryRun: true,
+      };
+    }
+
+    const stripe = requireStripe(reply);
+    if (!stripe) return;
+    const intent = await stripe.createPaymentIntent(amountUsd, {
+      parkagent: "card_topup",
+      userId: user.id,
+    });
+    await deps.db.decision.create({
+      data: {
+        kind: "card_topup_intent",
+        inputs: decisionInputs,
+        rule: "intent_created",
+        outcome: { allowed: true, paymentIntentId: intent.paymentIntentId },
+        userId: user.id,
+      },
+    });
+    return {
+      clientSecret: intent.clientSecret,
+      paymentIntentId: intent.paymentIntentId,
+      dryRun: false,
     };
   });
 

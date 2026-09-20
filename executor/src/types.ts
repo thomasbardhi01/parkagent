@@ -79,3 +79,73 @@ export interface Executor {
   extendSession(args: ExtendSessionArgs): Promise<ExecutorResult>;
   stopSession(args: StopSessionArgs): Promise<ExecutorResult>;
 }
+
+// ---------------------------------------------------------------------------
+// Provider account operations (linking, card setup, wallet) — the flows a
+// linked account needs beyond parking sessions.
+
+/** Account ops can additionally fail on a card brand the form can't take. */
+export type ProviderOpErrorCode = ExecutorErrorCode | "unsupported_card_brand";
+
+export interface ProviderOpError {
+  ok: false;
+  code: ProviderOpErrorCode;
+  message: string;
+  diagnostics?: ExecutorDiagnostics;
+}
+
+export type ProviderOpResult = { ok: true } | ProviderOpError;
+
+export type VerifyAccountResult =
+  | {
+      ok: true;
+      /** Provider wallet balance when visible; null when not shown. */
+      walletBalanceCents: number | null;
+    }
+  | ProviderOpError;
+
+export type TopupWalletResult = { ok: true; walletBalanceCents: number | null } | ProviderOpError;
+
+/**
+ * The sensitive card fields the payment form needs, fetched by the SERVER
+ * from Stripe just before the call and passed straight through. Never log
+ * them; setupCard blanks the object after the form is submitted.
+ */
+export interface CardFormDetails {
+  number: string;
+  expMonth: number;
+  expYear: number;
+  cvc: string;
+  /** Stripe Issuing brand, e.g. "Visa" — drives the form's card-type radio. */
+  brand: string;
+}
+
+export interface AccountOps {
+  /** Is this storage state a signed-in session? Reads, never writes. */
+  verifyAccount(): Promise<VerifyAccountResult>;
+  /** Make our Issuing card the account's payment method (replacing any). */
+  setupCard(card: CardFormDetails): Promise<ProviderOpResult>;
+  /** Best-effort removal of our card (matched by last4) from the account. */
+  removeCard(last4: string): Promise<ProviderOpResult>;
+  /** Top up the provider wallet from the card on file. */
+  topupWallet(amountUsd: number): Promise<TopupWalletResult>;
+}
+
+/**
+ * A Playwright storage state passed as a value (the server decrypts it per
+ * call) instead of a file path. Structurally what context.storageState()
+ * returns; only cookies matter for ParkNYC.
+ */
+export interface StorageStateValue {
+  cookies: {
+    name: string;
+    value: string;
+    domain: string;
+    path: string;
+    expires: number;
+    httpOnly: boolean;
+    secure: boolean;
+    sameSite: "Strict" | "Lax" | "None";
+  }[];
+  origins: never[] | { origin: string; localStorage: { name: string; value: string }[] }[];
+}

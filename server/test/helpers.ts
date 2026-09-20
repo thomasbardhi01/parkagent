@@ -12,7 +12,15 @@ import type { FastifyInstance } from "fastify";
 
 import type { AppDeps } from "../src/app.js";
 import { buildApp, makeAuthenticate } from "../src/app.js";
-import type { AppDb, SessionRow, SessionWhere, ZoneTermsRow } from "../src/db.js";
+import type {
+  AppDb,
+  ProviderAccountRow,
+  SessionRow,
+  SessionWhere,
+  ZoneTermsRow,
+} from "../src/db.js";
+import { makeStateCrypto } from "../src/services/crypto.js";
+import type { ProviderAccountOps, ProviderOpsFactory } from "../src/services/providerOps.js";
 import type { Push } from "../src/services/apns.js";
 import type { Executor } from "../src/services/executor.js";
 import { DryRunExecutor } from "../src/services/executor.js";
@@ -193,7 +201,8 @@ export interface FakeDbState {
   }[];
   zones: ZoneTermsRow[];
   /** Cards the fake issuingCard/issuingCardholder queries resolve. The card
-   * routes read the extra fields; the webhook only needs the id → user link. */
+   * routes read the extra fields; the webhook only needs the id → user link.
+   * Cardholders are derived: id `ch-<userId>`, stripe id `ich-<userId>`. */
   issuingCards: {
     stripeCardId: string;
     userId: string;
@@ -202,8 +211,13 @@ export interface FakeDbState {
     perAuthCapUsd?: number;
     dailyCapUsd?: number;
     holderName?: string;
+    createdAt?: Date;
   }[];
+  /** Cardholders created explicitly (POST /card/prepare) — lets a holder
+   * exist with zero cards; derived holders come from issuingCards. */
+  issuingCardholders: { userId: string; name: string }[];
   issuingAuthorizations: FakeIssuingAuthorizationRow[];
+  providerAccounts: ProviderAccountRow[];
 }
 
 function emptySession(id: string): SessionRow {
@@ -272,8 +286,33 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
     deviceTokens: [],
     zones: [],
     issuingCards: [],
+    issuingCardholders: [],
     issuingAuthorizations: [],
+    providerAccounts: [],
   };
+  const cardholderFor = (userId: string) => {
+    const explicit = state.issuingCardholders.find((c) => c.userId === userId);
+    const cards = state.issuingCards.filter((c) => c.userId === userId);
+    if (!explicit && cards.length === 0) return null;
+    return {
+      id: `ch-${userId}`,
+      userId,
+      stripeCardholderId: `ich-${userId}`,
+      name: explicit?.name ?? cards[0]?.holderName ?? "Thomas",
+    };
+  };
+  const toCardRow = (c: FakeDbState["issuingCards"][number]) => ({
+    id: `card-${c.stripeCardId}`,
+    cardholderId: `ch-${c.userId}`,
+    stripeCardId: c.stripeCardId,
+    last4: c.last4 ?? "4242",
+    status: c.status ?? "active",
+    perAuthCapUsd: c.perAuthCapUsd ?? 45,
+    dailyCapUsd: c.dailyCapUsd ?? 60,
+    createdAt: c.createdAt ?? new Date(MONDAY_2PM),
+  });
+  const accountKey = (userId: string, provider: string) =>
+    state.providerAccounts.find((a) => a.userId === userId && a.provider === provider);
   const db: AppDb = {
     user: {
       findUnique: async ({ where }) =>
@@ -350,24 +389,61 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
         return {};
       },
     },
+    providerAccount: {
+      findUnique: async ({ where }) =>
+        accountKey(where.userId_provider.userId, where.userId_provider.provider) ?? null,
+      findMany: async ({ where }) =>
+        state.providerAccounts.filter((a) => a.userId === where.userId),
+      upsert: async ({ where, create, update }) => {
+        const existing = accountKey(where.userId_provider.userId, where.userId_provider.provider);
+        if (existing) {
+          Object.assign(existing, update);
+          return existing;
+        }
+        const row: ProviderAccountRow = {
+          id: `pa${state.providerAccounts.length + 1}`,
+          stateEncrypted: null,
+          linkedAt: null,
+          lastVerifiedAt: null,
+          cardAdded: false,
+          walletBalanceCents: null,
+          createdAt: new Date(MONDAY_2PM),
+          ...create,
+        } as ProviderAccountRow;
+        state.providerAccounts.push(row);
+        return row;
+      },
+      update: async ({ where, data }) => {
+        const row = accountKey(where.userId_provider.userId, where.userId_provider.provider);
+        if (!row) throw new Error("no provider account");
+        Object.assign(row, data);
+        return row;
+      },
+    },
     issuingCardholder: {
       findUnique: async ({ where }) => {
-        const cards = state.issuingCards.filter((c) => c.userId === where.userId);
-        const first = cards[0];
-        if (!first) return null;
+        const holder = cardholderFor(where.userId);
+        if (!holder) return null;
         return {
-          id: `ch-${where.userId}`,
-          stripeCardholderId: `ich-${where.userId}`,
-          name: first.holderName ?? "Thomas",
-          cards: cards.map((c) => ({
-            id: `card-${c.stripeCardId}`,
-            stripeCardId: c.stripeCardId,
-            last4: c.last4 ?? "4242",
-            status: c.status ?? "active",
-            perAuthCapUsd: c.perAuthCapUsd ?? 45,
-            dailyCapUsd: c.dailyCapUsd ?? 60,
-          })),
+          id: holder.id,
+          stripeCardholderId: holder.stripeCardholderId,
+          name: holder.name,
+          cards: state.issuingCards.filter((c) => c.userId === where.userId).map(toCardRow),
         };
+      },
+      create: async ({ data }) => {
+        state.issuingCardholders.push({ userId: data.userId, name: data.name });
+        return {
+          id: `ch-${data.userId}`,
+          stripeCardholderId: data.stripeCardholderId,
+          name: data.name,
+        };
+      },
+      delete: async ({ where }) => {
+        const userId = where.id.replace(/^ch-/, "");
+        const i = state.issuingCardholders.findIndex((c) => c.userId === userId);
+        if (i >= 0) state.issuingCardholders.splice(i, 1);
+        return {};
       },
     },
     issuingCard: {
@@ -381,10 +457,60 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
             }
           : null;
       },
+      findMany: async ({ where, include }) =>
+        state.issuingCards
+          .filter((c) => {
+            if (typeof where.status === "string" && (c.status ?? "active") !== where.status) {
+              return false;
+            }
+            if (
+              typeof where.status === "object" &&
+              where.status !== null &&
+              (c.status ?? "active") === where.status.not
+            ) {
+              return false;
+            }
+            if (
+              where.createdAt?.lt !== undefined &&
+              (c.createdAt ?? new Date(MONDAY_2PM)) >= where.createdAt.lt
+            ) {
+              return false;
+            }
+            if (where.cardholderId !== undefined && `ch-${c.userId}` !== where.cardholderId) {
+              return false;
+            }
+            return true;
+          })
+          .map((c) => ({
+            ...toCardRow(c),
+            ...(include?.cardholder ? { cardholder: cardholderFor(c.userId)! } : {}),
+          })),
+      create: async ({ data }) => {
+        const userId = data.cardholderId.replace(/^ch-/, "");
+        const row = {
+          stripeCardId: data.stripeCardId,
+          userId,
+          last4: data.last4,
+          status: data.status,
+          perAuthCapUsd: data.perAuthCapUsd,
+          dailyCapUsd: data.dailyCapUsd,
+          createdAt: new Date(MONDAY_2PM),
+        };
+        state.issuingCards.push(row);
+        return toCardRow(row);
+      },
       update: async ({ where, data }) => {
         const card = state.issuingCards.find((c) => c.stripeCardId === where.stripeCardId);
         if (card) Object.assign(card, data);
         return card ?? {};
+      },
+      deleteMany: async ({ where }) => {
+        for (let i = state.issuingCards.length - 1; i >= 0; i -= 1) {
+          if (`ch-${state.issuingCards[i]!.userId}` === where.cardholderId) {
+            state.issuingCards.splice(i, 1);
+          }
+        }
+        return {};
       },
     },
     issuingAuthorization: {
@@ -392,6 +518,10 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
         const row = state.issuingAuthorizations.find(
           (a) => a.stripeAuthorizationId === where.stripeAuthorizationId,
         );
+        return row ? { id: row.stripeAuthorizationId } : null;
+      },
+      findFirst: async ({ where }) => {
+        const row = state.issuingAuthorizations.find((a) => a.stripeCardId === where.stripeCardId);
         return row ? { id: row.stripeAuthorizationId } : null;
       },
       // Serves both AppDb shapes: the spend sum (select amountUsd) and the
@@ -481,8 +611,64 @@ export function makeFakeGateway(overrides: Partial<StripeGateway> = {}): StripeG
     fundingBalance: async () => ({ balanceUsd: 50, pendingUsd: 0 }),
     fundingTopup: async () => {},
     fundingWithdraw: async () => {},
+    retrieveCardSecret: async () => ({
+      number: "4242424242424242",
+      cvc: "123",
+      expMonth: 8,
+      expYear: 2030,
+      brand: "Visa",
+      last4: "4242",
+    }),
+    createCardholder: async () => ({ stripeCardholderId: "ich-u1" }),
+    createCard: async () => ({ stripeCardId: "ic_test_new", last4: "9999", status: "active" }),
+    deactivateCardholder: async () => {},
+    createPaymentIntent: async () => ({
+      paymentIntentId: "pi_test_1",
+      clientSecret: "pi_test_1_secret_abc",
+    }),
+    moveToFinancialAccount: async () => {},
     ...overrides,
   };
+}
+
+/** 32 bytes of a fixed value — a real key, deterministic for tests. */
+export const TEST_STATE_KEY = Buffer.alloc(32, 7).toString("base64");
+
+export const testStateCrypto = () => makeStateCrypto(TEST_STATE_KEY);
+
+/** Benign provider ops: cookies verify, card setup and wallet moves work. */
+export function makeFakeProviderOps(
+  overrides: Partial<ProviderAccountOps> = {},
+): ProviderAccountOps {
+  return {
+    verifyAccount: async () => ({ ok: true, walletBalanceCents: 1250 }),
+    setupCard: async () => ({ ok: true }),
+    removeCard: async () => ({ ok: true }),
+    topupWallet: async () => ({ ok: true, walletBalanceCents: 3250 }),
+    ...overrides,
+  };
+}
+
+/** Seed a linked provider account; state defaults to a sealed empty state. */
+export function seedProviderAccount(
+  state: FakeDbState,
+  overrides: Partial<ProviderAccountRow> = {},
+): ProviderAccountRow {
+  const row: ProviderAccountRow = {
+    id: `pa${state.providerAccounts.length + 1}`,
+    userId: "u1",
+    provider: "parknyc",
+    status: "linked",
+    stateEncrypted: testStateCrypto().seal(JSON.stringify({ cookies: [], origins: [] })),
+    linkedAt: new Date(MONDAY_2PM),
+    lastVerifiedAt: new Date(MONDAY_2PM),
+    cardAdded: false,
+    walletBalanceCents: null,
+    createdAt: new Date(MONDAY_2PM),
+    ...overrides,
+  };
+  state.providerAccounts.push(row);
+  return row;
 }
 
 export function makeTestApp(options: {
@@ -495,9 +681,17 @@ export function makeTestApp(options: {
   executor?: Executor;
   /** Wire a (fake) Stripe gateway; without it /card & co. answer 503. */
   stripe?: StripeGateway;
+  /** Fake provider ops; without it provider linking answers 503. */
+  providerOps?: ProviderOpsFactory;
+  /** Session start requires a linked provider account; u1 gets one unless
+   * a test opts out to exercise provider_not_linked. */
+  seedLinkedProvider?: boolean;
 }): TestApp {
   const { db, state } = makeFakeDb();
   state.zones.push(...(options.zones ?? []));
+  if (options.seedLinkedProvider !== false) {
+    seedProviderAccount(state);
+  }
   const pushes: TestApp["pushes"] = [];
   const dryRunExecutor = new DryRunExecutor(() => {}, options.now ?? (() => new Date()));
   const deps: AppDeps = {
@@ -509,6 +703,8 @@ export function makeTestApp(options: {
     sendPush: async (userId, push) => {
       pushes.push({ userId, push });
     },
+    stateCrypto: testStateCrypto(),
+    ...(options.providerOps ? { providerOps: options.providerOps } : {}),
     ...(options.stripe ? { stripe: options.stripe } : {}),
     ...(options.now ? { now: options.now } : {}),
   };

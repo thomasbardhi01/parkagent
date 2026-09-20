@@ -56,6 +56,9 @@ export function registerStripeWebhook(app: FastifyInstance, deps: AppDeps): void
         case "issuing_transaction.created":
           await recordTransaction(deps, event.data.object);
           return { received: true };
+        case "payment_intent.succeeded":
+          await handleTopupSucceeded(deps, event.data.object);
+          return { received: true };
         default:
           return { received: true };
       }
@@ -192,6 +195,37 @@ async function upsertAuthorization(deps: AppDeps, auth: Stripe.Issuing.Authoriza
       approved: auth.approved,
       decision: "external",
       status: auth.status,
+    },
+  });
+}
+
+/**
+ * payment_intent.succeeded for an Apple Pay top-up (POST
+ * /card/funding/topup-intent): the user's money settled into our Stripe
+ * balance — move it onto the financial account backing the cards and audit
+ * it. Intents not tagged parkagent=card_topup are someone else's business.
+ * Stripe may redeliver events; a redelivered intent moves test funds twice,
+ * which the decisions trail makes visible (prototype trade-off, see API.md).
+ */
+async function handleTopupSucceeded(deps: AppDeps, intent: Stripe.PaymentIntent): Promise<void> {
+  if (intent.metadata?.["parkagent"] !== "card_topup") return;
+  const userId = intent.metadata["userId"] ?? null;
+  const amountUsd = centsToUsd(intent.amount_received ?? intent.amount);
+  let moved = false;
+  let error: string | null = null;
+  try {
+    await deps.stripe!.moveToFinancialAccount(amountUsd);
+    moved = true;
+  } catch (err) {
+    error = String(err);
+  }
+  await deps.db.decision.create({
+    data: {
+      kind: "card_topup_funded",
+      inputs: { paymentIntentId: intent.id, amountUsd },
+      rule: moved ? "funded" : "funding_move_failed",
+      outcome: moved ? { ok: true } : { ok: false, error },
+      userId,
     },
   });
 }

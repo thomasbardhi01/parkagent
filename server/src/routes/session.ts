@@ -14,6 +14,7 @@ import { z } from "zod";
 
 import type { AppDeps } from "../app.js";
 import type { SessionRow } from "../db.js";
+import { cityForZone, providerForCity } from "../providers/registry.js";
 import { paymentFailedPush, sessionStartedPush } from "../services/apns.js";
 import type { HoursInterval } from "../services/hours.js";
 import { priceStay } from "../services/quote.js";
@@ -85,6 +86,41 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
       return reply.code(404).send({ error: "zone_not_found" });
     }
 
+    // The zone's city names its provider; without the user's own linked
+    // account there the executor has nothing to pay with — refuse, naming
+    // the provider so the app can send them to the link flow.
+    const city = cityForZone(zone.zoneId);
+    const provider = providerForCity(city);
+    if (provider) {
+      const account = await deps.db.providerAccount.findUnique({
+        where: { userId_provider: { userId: user.id, provider: provider.id } },
+      });
+      if (!account || account.status !== "linked") {
+        const decision = await deps.db.decision.create({
+          data: {
+            kind: "session_start",
+            inputs: {
+              body,
+              provider: provider.id,
+              accountStatus: account?.status ?? "none",
+              dryRun: deps.policy.effectiveDryRun(),
+              policyHash: deps.policy.hash(),
+            },
+            rule: "provider_not_linked",
+            outcome: { allowed: false },
+            userId: user.id,
+            parkedEventId: parkedEvent.id,
+          },
+        });
+        return reply.code(409).send({
+          error: "provider_not_linked",
+          provider: provider.id,
+          displayName: provider.displayName,
+          decisionId: decision.id,
+        });
+      }
+    }
+
     const terms = {
       rateFirstHourUsd: Number(zone.rateFirstHour),
       rateAdditionalHourUsd: Number(zone.rateAdditionalHour),
@@ -148,7 +184,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
     });
 
     const startedAtMs = Date.now();
-    const result = await deps.executorFor(dryRun).startSession({
+    const result = await deps.executorFor({ userId: user.id, city, dryRun }).startSession({
       zoneNumber: zone.parknycZoneNumber,
       minutes,
       amountUsd: price.meterUsd,
@@ -341,9 +377,11 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
 
     const dryRun = deps.policy.effectiveDryRun();
     const startedAtMs = Date.now();
-    const result = await deps.executorFor(dryRun).stopSession({
-      providerSessionId: session.parknycConfirmation ?? session.id,
-    });
+    const result = await deps
+      .executorFor({ userId: user.id, city: cityForZone(session.zoneId), dryRun })
+      .stopSession({
+        providerSessionId: session.parknycConfirmation ?? session.id,
+      });
     const durationMs = Date.now() - startedAtMs;
     const decisionInputs = {
       body: parsed.data,

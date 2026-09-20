@@ -77,8 +77,18 @@ export interface Executor {
   stopSession(args: StopSessionArgs): Promise<ExecutorResult>;
 }
 
+/** Who is parking and where — the executor now runs on that user's linked
+ * provider account (services/parknycExecutor.ts). */
+export interface ExecutorContext {
+  userId: string;
+  /** City key from the zone id ("nyc-…" → "nyc"); null when unparseable. */
+  city: string | null;
+  /** Effective dry run for this call (env || policy, re-read every call). */
+  dryRun: boolean;
+}
+
 /** Picks the executor per call so a PUT /policy flip of dry_run takes effect. */
-export type ExecutorProvider = (dryRun: boolean) => Executor;
+export type ExecutorProvider = (ctx: ExecutorContext) => Executor;
 
 /**
  * Moves no money: logs what would have been bought and answers with fake

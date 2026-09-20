@@ -308,6 +308,35 @@ model IssuingAuthorization {
   @@map("issuing_authorizations")
 }
 
+// ---- Provider accounts ----
+// One row per (user, parking provider): the user's own linked account at
+// ParkNYC etc., replacing the single-secret executor auth. The session
+// state (cookies from the app's login web view) is sealed with AES-256-GCM
+// under PROVIDER_STATE_KEY — never logged, never returned by any endpoint.
+// userId is a plain string like the Issuing tables (no FK churn).
+model ProviderAccount {
+  id                 String    @id @default(cuid())
+  userId             String    @map("user_id")
+  // Registry id, e.g. "parknyc" (see src/providers/registry.ts).
+  provider           String
+  // linked | expired (re-link needed) | unlinked
+  status             String
+  // AES-256-GCM sealed Playwright storage state (base64 iv|tag|ciphertext).
+  stateEncrypted     String?   @map("state_encrypted")
+  linkedAt           DateTime? @map("linked_at") @db.Timestamptz(6)
+  lastVerifiedAt     DateTime? @map("last_verified_at") @db.Timestamptz(6)
+  // Our Issuing card is the provider account's payment method.
+  cardAdded          Boolean   @default(false) @map("card_added")
+  // Provider wallet balance as last seen (null: provider has no wallet or
+  // we could not read it).
+  walletBalanceCents Int?      @map("wallet_balance_cents")
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([userId, provider])
+  @@map("provider_accounts")
+}
+
 // Audit row per loader run.
 model ZoneLoad {
   id             Int      @id @default(autoincrement())

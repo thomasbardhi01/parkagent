@@ -21,19 +21,38 @@ import { existsSync } from "node:fs";
 import type { Browser, BrowserContext, Page } from "playwright";
 import { chromium } from "playwright";
 
-import type { ExecutorError, ExecutorResult } from "../types.js";
+import { warmBrowser } from "../browser.js";
+import type {
+  CardFormDetails,
+  ExecutorError,
+  ExecutorResult,
+  ProviderOpResult,
+  StorageStateValue,
+  TopupWalletResult,
+  VerifyAccountResult,
+} from "../types.js";
 import { captureUnexpectedScreen } from "./capture.js";
 import { classifyFailure } from "./classify.js";
 import { parseAmountUsd, parseConfirmation, parseExpiresAt } from "./parse.js";
 import { llmRecoveryEnabled, suggestRecovery } from "./recovery.js";
-import { selectors, URLS } from "./selectors.js";
+import { brandRadioPattern, selectors, URLS } from "./selectors.js";
 
 /** TODO: verify against a recording — assumed stepper increment and floor. */
 const DURATION_STEP_MINUTES = 15;
 
 export interface ParkNycClientOptions {
-  /** Playwright storageState JSON (from `pnpm -C executor run login`). */
-  statePath: string;
+  /** Playwright storageState file (from `pnpm -C executor run login`). */
+  statePath?: string;
+  /**
+   * Storage state as a value — the server decrypts the user's linked
+   * cookies per call. Exactly one of statePath/storageState must be set.
+   */
+  storageState?: StorageStateValue;
+  /**
+   * Reuse the warm shared browser (fresh context per client, relaunched if
+   * the process died). Off for login/record, which want their own.
+   */
+  sharedBrowser?: boolean;
   /** Headed only for local debugging; prod is headless. */
   headless?: boolean;
   /** Where unexpected-screen evidence is also written as files. */
@@ -62,16 +81,22 @@ export class ParkNycClient {
   /** Launch + restore auth. Fails typed, not thrown, when state is missing. */
   private async open(): Promise<{ page: Page } | ExecutorError> {
     if (this.page) return { page: this.page };
-    if (!existsSync(this.options.statePath)) {
+    const state = this.options.storageState ?? this.options.statePath;
+    if (state === undefined) {
+      return { ok: false, code: "auth_expired", message: "no ParkNYC storage state given" };
+    }
+    if (typeof state === "string" && !existsSync(state)) {
       return {
         ok: false,
         code: "auth_expired",
-        message: `no ParkNYC storage state at ${this.options.statePath}; run \`pnpm -C executor run login\``,
+        message: `no ParkNYC storage state at ${state}; run \`pnpm -C executor run login\``,
       };
     }
-    this.browser = await chromium.launch({ headless: this.options.headless ?? true });
+    this.browser = this.options.sharedBrowser
+      ? await warmBrowser(this.options.headless ?? true)
+      : await chromium.launch({ headless: this.options.headless ?? true });
     this.context = await this.browser.newContext({
-      storageState: this.options.statePath,
+      storageState: state,
       ...(this.options.recordHarPath ? { recordHar: { path: this.options.recordHarPath } } : {}),
     });
     if (this.options.tracePath) {
@@ -87,7 +112,11 @@ export class ParkNycClient {
       await this.context.tracing.stop({ path: this.options.tracePath }).catch(() => {});
     }
     await this.context?.close().catch(() => {}); // flushes the HAR, if any
-    await this.browser?.close().catch(() => {});
+    // The shared browser stays warm for the next call; only close a
+    // dedicated one.
+    if (!this.options.sharedBrowser) {
+      await this.browser?.close().catch(() => {});
+    }
     this.page = null;
     this.context = null;
     this.browser = null;
@@ -317,5 +346,198 @@ export class ParkNycClient {
       await row.waitFor({ state: "hidden" });
       return { ok: true, providerSessionId, expiresAt: new Date(), amountUsd: 0 };
     });
+  }
+
+  // -------------------------------------------------------------------------
+  // Account operations (provider linking, card setup, wallet). Flows drafted
+  // blind like the session flows above — verify against a `record` run.
+
+  /** "$12.50" somewhere in the balance element → 1250; null when absent. */
+  private async readWalletBalanceCents(page: Page): Promise<number | null> {
+    const text = await selectors.account
+      .walletBalance(page)
+      .innerText({ timeout: 3_000 })
+      .catch(() => null);
+    const match = text?.match(/\$\s*(\d+)\.(\d{2})/);
+    return match ? Number(match[1]) * 100 + Number(match[2]) : null;
+  }
+
+  /** Do the cookies constitute a signed-in session? Reads, never writes. */
+  async verifyAccount(): Promise<VerifyAccountResult> {
+    const opened = await this.open();
+    if ("ok" in opened) return opened;
+    const { page } = opened;
+
+    const flow = await this.run("verify account", page, async () => {
+      await page.goto(URLS.account);
+      await this.step("account", page);
+      if (await this.atSignInScreen(page)) {
+        return this.fail(
+          page,
+          "auth_expired",
+          "ParkNYC asked to sign in; cookies are not a session",
+        );
+      }
+      await selectors.account.signedInMarker(page).waitFor();
+      // Encode success through the session-result shape; the wrapper below
+      // rebuilds the verify result. amountUsd carries the balance in cents.
+      const balance = await this.readWalletBalanceCents(page);
+      return {
+        ok: true,
+        providerSessionId: "verify",
+        expiresAt: new Date(),
+        amountUsd: balance ?? -1,
+      };
+    });
+    if (!flow.ok) return flow;
+    return { ok: true, walletBalanceCents: flow.amountUsd >= 0 ? flow.amountUsd : null };
+  }
+
+  /**
+   * Make the given card the account's payment method. The card-type radio
+   * is driven by the Stripe brand (the card-brand fix) — an unmapped brand
+   * fails typed before the form is touched. Field values are blanked after
+   * submit; nothing here may log them.
+   */
+  async setupCard(card: CardFormDetails): Promise<ProviderOpResult> {
+    const brandPattern = brandRadioPattern(card.brand);
+    if (brandPattern === null) {
+      return {
+        ok: false,
+        code: "unsupported_card_brand",
+        message: `no card-type radio mapping for brand "${card.brand}"`,
+      };
+    }
+    const opened = await this.open();
+    if ("ok" in opened) return opened;
+    const { page } = opened;
+
+    // Goal text carries no card data — it lands in logs and decisions rows.
+    const flow = await this.run("set up issuing card as payment method", page, async () => {
+      await page.goto(URLS.paymentMethods);
+      await this.step("payment-methods", page);
+      if (await this.atSignInScreen(page)) {
+        return this.fail(
+          page,
+          "auth_expired",
+          "ParkNYC asked to sign in; cookies are not a session",
+        );
+      }
+
+      await selectors.payment.addCardButton(page).click();
+      await this.step("add-card-opened", page);
+
+      await selectors.payment.cardNumberInput(page).fill(card.number);
+      await selectors.payment
+        .expiryInput(page)
+        .fill(
+          `${String(card.expMonth).padStart(2, "0")}/${String(card.expYear % 100).padStart(2, "0")}`,
+        );
+      await selectors.payment.cvcInput(page).fill(card.cvc);
+      await selectors.payment.brandRadio(page, brandPattern).check();
+      await selectors.payment.saveButton(page).click();
+      await this.step("card-submitted", page);
+
+      // Replacing an existing default may ask for confirmation.
+      const replace = selectors.payment.replaceConfirmButton(page);
+      if (await replace.isVisible({ timeout: 3_000 }).catch(() => false)) {
+        await replace.click();
+      }
+      await selectors.payment.successMarker(page).waitFor();
+      await this.step("card-saved", page);
+      return { ok: true, providerSessionId: "setup-card", expiresAt: new Date(), amountUsd: 0 };
+    });
+
+    // Best-effort scrub: drop our references to the sensitive values the
+    // moment the form is done with them (GC does the rest).
+    card.number = "";
+    card.cvc = "";
+
+    return flow.ok ? { ok: true } : flow;
+  }
+
+  /** Best-effort: remove our card (by last4) from the account. */
+  async removeCard(last4: string): Promise<ProviderOpResult> {
+    const opened = await this.open();
+    if ("ok" in opened) return opened;
+    const { page } = opened;
+
+    const flow = await this.run(`remove card …${last4}`, page, async () => {
+      await page.goto(URLS.paymentMethods);
+      await this.step("payment-methods", page);
+      if (await this.atSignInScreen(page)) {
+        return this.fail(
+          page,
+          "auth_expired",
+          "ParkNYC asked to sign in; cookies are not a session",
+        );
+      }
+      const row = selectors.payment.cardRow(page, last4);
+      if (!(await row.isVisible({ timeout: 5_000 }).catch(() => false))) {
+        // Nothing to remove is a success for an unlink.
+        return { ok: true, providerSessionId: "remove-card", expiresAt: new Date(), amountUsd: 0 };
+      }
+      await row.click();
+      await selectors.payment.removeButton(page).click();
+      await selectors.payment.removeConfirmButton(page).click();
+      // Success is either the removed banner or the row disappearing.
+      await selectors.payment
+        .removedMarker(page)
+        .waitFor({ timeout: 5_000 })
+        .catch(() => row.waitFor({ state: "hidden" }));
+      await this.step("card-removed", page);
+      return { ok: true, providerSessionId: "remove-card", expiresAt: new Date(), amountUsd: 0 };
+    });
+    return flow.ok ? { ok: true } : flow;
+  }
+
+  /** Top up the wallet from the card on file. Money moves — the server
+   * gates this behind policy and dry run before the call ever gets here. */
+  async topupWallet(amountUsd: number): Promise<TopupWalletResult> {
+    const opened = await this.open();
+    if ("ok" in opened) return opened;
+    const { page } = opened;
+
+    const flow = await this.run(`top up wallet $${amountUsd.toFixed(2)}`, page, async () => {
+      await page.goto(URLS.wallet);
+      await this.step("wallet", page);
+      if (await this.atSignInScreen(page)) {
+        return this.fail(
+          page,
+          "auth_expired",
+          "ParkNYC asked to sign in; cookies are not a session",
+        );
+      }
+      await selectors.wallet.topupButton(page).click();
+      await this.step("topup-opened", page);
+
+      // Preset chip when the amount matches one; free input otherwise.
+      const preset = selectors.wallet.amountOption(page, Math.round(amountUsd));
+      if (await preset.isVisible({ timeout: 2_000 }).catch(() => false)) {
+        await preset.check();
+      } else {
+        await selectors.wallet.amountInput(page).fill(amountUsd.toFixed(2));
+      }
+      await selectors.wallet.payButton(page).click();
+      await this.step("topup-submitted", page);
+
+      await selectors.wallet
+        .successMarker(page)
+        .or(selectors.confirm.declinedMessage(page))
+        .first()
+        .waitFor();
+      if (await selectors.confirm.declinedMessage(page).isVisible()) {
+        return this.fail(page, "payment_declined", "ParkNYC refused the wallet top-up");
+      }
+      const balance = await this.readWalletBalanceCents(page);
+      return {
+        ok: true,
+        providerSessionId: "topup",
+        expiresAt: new Date(),
+        amountUsd: balance ?? -1,
+      };
+    });
+    if (!flow.ok) return flow;
+    return { ok: true, walletBalanceCents: flow.amountUsd >= 0 ? flow.amountUsd : null };
   }
 }

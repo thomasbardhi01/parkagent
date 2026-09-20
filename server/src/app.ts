@@ -7,12 +7,15 @@ import { registerDevice } from "./routes/device.js";
 import { registerLocation } from "./routes/location.js";
 import { registerParked } from "./routes/parked.js";
 import { registerPolicy } from "./routes/policy.js";
+import { registerProviders } from "./routes/providers.js";
 import { registerSession } from "./routes/session.js";
 import { registerStripeWebhook } from "./routes/webhooksStripe.js";
 import type { PushSender } from "./services/apns.js";
+import type { StateCrypto } from "./services/crypto.js";
 import type { ExecutorProvider } from "./services/executor.js";
 import type { PendingSessionCheck } from "./services/pendingSession.js";
 import type { PolicyService } from "./services/policy.js";
+import type { ProviderOpsFactory } from "./services/providerOps.js";
 import type { StripeGateway } from "./services/stripeGateway.js";
 import type { CandidateFetcher } from "./services/zoneLookup.js";
 
@@ -34,6 +37,12 @@ export interface AppDeps {
   stripe?: StripeGateway;
   /** The issuing webhook's "is a session awaiting payment?" check. */
   hasPendingSession?: PendingSessionCheck;
+  /** Seals provider session state; absent when PROVIDER_STATE_KEY isn't
+   * set, and provider linking then answers 503. */
+  stateCrypto?: StateCrypto;
+  /** Real Playwright-backed account ops (parknycExecutor.ts) or test fakes;
+   * absent → provider linking answers 503. */
+  providerOps?: ProviderOpsFactory;
   /** Injectable clock for tests; routes fall back to `new Date()`. */
   now?: () => Date;
 }
@@ -73,6 +82,7 @@ export function buildApp(deps?: AppDeps): FastifyInstance {
     registerLocation(app, deps);
     registerDevice(app, deps);
     registerCard(app, deps);
+    registerProviders(app, deps);
     registerStripeWebhook(app, deps);
   }
   return app;

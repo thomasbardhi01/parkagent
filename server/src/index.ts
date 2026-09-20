@@ -1,14 +1,14 @@
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { config } from "dotenv";
 import { loadEnv } from "./env.js";
 import { buildApp, makeAuthenticate } from "./app.js";
 import { asAppDb, createPrisma } from "./db.js";
+import { makeCardJanitor } from "./jobs/cardJanitor.js";
 import { makeExtender } from "./jobs/extendTick.js";
 import { makeApnsSender } from "./services/apns.js";
+import { makeStateCrypto } from "./services/crypto.js";
 import { DryRunExecutor } from "./services/executor.js";
-import { makeExecutorProvider } from "./services/parknycExecutor.js";
+import { makeProviderOpsFactory, makeUserExecutorProvider } from "./services/parknycExecutor.js";
 import { makePendingSessionCheck } from "./services/pendingSession.js";
 import { PolicyService, snapshotPolicy } from "./services/policy.js";
 import { makeStripeGateway } from "./services/stripeGateway.js";
@@ -48,25 +48,26 @@ const log = {
 };
 const sendPush = makeApnsSender(apnsConfig, db, log);
 
-// Fly machines have no persistent disk: the storage state arrives as a
-// secret (PARKNYC_STATE_JSON) and is written to PARKNYC_STATE_PATH at boot.
-// Local dev skips this — `pnpm -C executor run login` writes the file directly.
-if (env.PARKNYC_STATE_JSON && env.PARKNYC_STATE_PATH) {
-  mkdirSync(dirname(env.PARKNYC_STATE_PATH), { recursive: true });
-  writeFileSync(env.PARKNYC_STATE_PATH, env.PARKNYC_STATE_JSON, { mode: 0o600 });
-}
-
-const dryRunExecutor = new DryRunExecutor((msg) => app.log.info(msg));
-const executorFor = makeExecutorProvider({
-  envDryRun: env.DRY_RUN === "true",
-  ...(env.PARKNYC_STATE_PATH ? { statePath: env.PARKNYC_STATE_PATH } : {}),
+// Executor auth is per user now: linked provider accounts, sealed under
+// PROVIDER_STATE_KEY (env.ts validated its shape). No key → linking is off
+// and real executor calls fail typed; dry run is unaffected.
+const stateCrypto = env.PROVIDER_STATE_KEY ? makeStateCrypto(env.PROVIDER_STATE_KEY) : undefined;
+const executorOptions = {
   ...(env.PARKNYC_PLATE ? { defaultPlate: env.PARKNYC_PLATE } : {}),
   ...(process.env["EXECUTOR_CAPTURE_DIR"]
     ? { captureDir: process.env["EXECUTOR_CAPTURE_DIR"] }
     : {}),
+};
+const dryRunExecutor = new DryRunExecutor((msg) => app.log.info(msg));
+const executorFor = makeUserExecutorProvider({
+  db,
+  ...(stateCrypto ? { stateCrypto } : {}),
   dryRunExecutor,
+  sendPush,
+  ...executorOptions,
   warn: (msg) => app.log.warn(msg),
 });
+const providerOps = makeProviderOpsFactory(executorOptions);
 
 // env.ts guarantees the webhook secret is present whenever the key is.
 const stripe =
@@ -86,9 +87,13 @@ const app = buildApp({
   sendPush,
   ...(stripe ? { stripe } : {}),
   hasPendingSession: makePendingSessionCheck(db),
+  ...(stateCrypto ? { stateCrypto } : {}),
+  providerOps,
 });
 
 const extender = makeExtender({ db, policy, executorFor, sendPush, log });
+const cardJanitor = makeCardJanitor({ db, stripe, log });
 
 app.listen({ port: env.PORT, host: "0.0.0.0" });
 extender.start();
+cardJanitor.start();

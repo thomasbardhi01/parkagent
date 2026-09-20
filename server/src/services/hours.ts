@@ -77,3 +77,18 @@ export function nycStartOfDay(at: Date): Date {
   const seconds = at.getUTCSeconds() + at.getUTCMilliseconds() / 1000;
   return new Date(at.getTime() - minute * 60_000 - seconds * 1000);
 }
+
+const nycDayOfMonth = new Intl.DateTimeFormat("en-US", {
+  timeZone: NYC_TZ,
+  day: "numeric",
+});
+
+/**
+ * Start of the NYC calendar month containing `at`, as a UTC instant — the
+ * window for month-to-date card spend. Same DST caveat as nycStartOfDay:
+ * a month spanning a transition is off by an hour, fine for a display sum.
+ */
+export function nycStartOfMonth(at: Date): Date {
+  const dayOfMonth = Number(nycDayOfMonth.format(at));
+  return new Date(nycStartOfDay(at).getTime() - (dayOfMonth - 1) * 24 * 60 * 60_000);
+}

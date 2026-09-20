@@ -32,14 +32,25 @@ struct StatusPill: View {
     let status: Status
 
     var body: some View {
-        Text(status.label)
+        TagPill(label: status.label, color: status.color)
+    }
+}
+
+/// The same capsule with a free label — card transactions and the frozen
+/// badge use vocabularies StatusPill's session enum doesn't cover.
+struct TagPill: View {
+    let label: String
+    let color: Color
+
+    var body: some View {
+        Text(label)
             .font(.captionTextSemibold)
-            .foregroundStyle(status.color)
+            .foregroundStyle(color)
             .padding(.horizontal, 10)
             .padding(.vertical, Spacing.quarter)
             // 0.10, not 0.14: in dark mode the tint brightens the pill enough
             // to cost the text its 4.5:1.
-            .background(status.color.opacity(0.10))
+            .background(color.opacity(0.10))
             .clipShape(Capsule())
     }
 }

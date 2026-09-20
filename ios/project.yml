@@ -60,6 +60,9 @@ targets:
         NSMotionUsageDescription: >-
           ParkAgent uses motion activity to tell driving from walking, so it only
           starts a parking session once you have actually parked and left the car.
+        NSFaceIDUsageDescription: >-
+          ParkAgent asks for Face ID before revealing your full card number, so
+          only you can see it.
 
         UIBackgroundModes:
           - location

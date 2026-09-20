@@ -131,6 +131,92 @@ struct SessionExtendResponse: Codable, Sendable {
     var amountUsd: Double
 }
 
+// MARK: - Card (server/API.md "Card endpoints")
+
+struct CardResponse: Codable, Sendable {
+    var card: CardSummary?
+    var funding: CardFunding
+    var dryRun: Bool
+}
+
+struct CardSummary: Codable, Sendable, Equatable {
+    var stripeCardId: String
+    var last4: String
+    var brand: String
+    /// "active" | "inactive" (frozen) | "canceled" — kept a string so an
+    /// unknown future status decodes instead of failing the whole screen.
+    var status: String
+    var expMonth: Int
+    var expYear: Int
+    var cardholderName: String
+    var spendingControls: CardSpendingControls
+    var spentTodayUsd: Double
+    var spentThisMonthUsd: Double
+
+    var isFrozen: Bool { status == "inactive" }
+}
+
+struct CardSpendingControls: Codable, Sendable, Equatable {
+    var perAuthorizationUsd: Double
+    var dailyUsd: Double
+}
+
+struct CardFunding: Codable, Sendable, Equatable {
+    var available: Bool
+    var balanceUsd: Double?
+    var pendingUsd: Double?
+}
+
+struct CardTransactionsResponse: Codable, Sendable {
+    var items: [CardTransaction]
+    var nextCursor: String?
+}
+
+struct CardTransaction: Codable, Sendable, Identifiable, Hashable {
+    var id: String
+    var stripeAuthorizationId: String
+    var merchantName: String?
+    var merchantCategory: String?
+    /// The authorization hold; `capturedUsd` is the settled amount once closed.
+    var amountUsd: Double
+    var capturedUsd: Double?
+    var approved: Bool
+    /// "approved" | "declined_…" (see API.md) | "external"
+    var decision: String
+    /// Stripe lifecycle: "pending" | "closed" | "reversed"
+    var status: String
+    var createdAt: Date
+    /// The parking session this charge paid for, when the server could link one.
+    var sessionId: String?
+}
+
+struct CardFundingResponse: Codable, Sendable {
+    var ok: Bool
+    var balanceUsd: Double
+    var pendingUsd: Double
+    var decisionId: String
+}
+
+struct CardRevealResponse: Codable, Sendable {
+    var stripeCardId: String
+    var ephemeralKeySecret: String
+    var apiVersion: String
+    var expiresAt: Date
+}
+
+struct CardStatusResponse: Codable, Sendable {
+    var status: String
+}
+
+/// The sensitive details, fetched by the client straight from Stripe with
+/// the ephemeral key — they never transit our server and are never stored.
+struct RevealedCardDetails: Sendable, Equatable {
+    var number: String
+    var cvc: String
+    var expMonth: Int
+    var expYear: Int
+}
+
 struct LocationReport: Codable, Sendable {
     var lat: Double
     var lng: Double

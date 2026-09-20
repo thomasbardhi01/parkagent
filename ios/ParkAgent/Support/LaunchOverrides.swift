@@ -7,6 +7,7 @@ import Foundation
 ///   -appearance dark       preset the appearance setting (system|light|dark)
 ///   -resetState YES        wipe UserDefaults before anything reads it
 ///   -mockScenario <name>   preset the mock /parked scenario
+///   -cardScenario <name>   preset the mock Card tab state (see CardMockScenario)
 ///   -fixedNow <epoch>      freeze AppClock (see AppClock.swift)
 ///   -uiTesting YES         suppress detector/push side effects and expose
 ///                          the color-scheme probe label
@@ -31,6 +32,8 @@ enum LaunchOverrides {
             ? defaults.string(forKey: AppearanceSetting.defaultsKey) : nil
         let scenario = argued[MockScenario.defaultsKey] != nil
             ? defaults.string(forKey: MockScenario.defaultsKey) : nil
+        let cardScenario = argued[CardMockScenario.defaultsKey] != nil
+            ? defaults.string(forKey: CardMockScenario.defaultsKey) : nil
 
         defaults.setVolatileDomain([:], forName: UserDefaults.argumentDomain)
 
@@ -41,6 +44,7 @@ enum LaunchOverrides {
         if let mock { defaults.set(mock, forKey: "useMockAPI") }
         if let appearance { defaults.set(appearance, forKey: AppearanceSetting.defaultsKey) }
         if let scenario { defaults.set(scenario, forKey: MockScenario.defaultsKey) }
+        if let cardScenario { defaults.set(cardScenario, forKey: CardMockScenario.defaultsKey) }
     }
 
     private static func flagValue(_ flag: String) -> String? {

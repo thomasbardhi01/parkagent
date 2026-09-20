@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import type { FastifyInstance, FastifyReply, FastifyRequest, preHandlerHookHandler } from "fastify";
 
 import type { AppDb } from "./db.js";
+import { registerCard } from "./routes/card.js";
 import { registerDevice } from "./routes/device.js";
 import { registerLocation } from "./routes/location.js";
 import { registerParked } from "./routes/parked.js";
@@ -71,6 +72,7 @@ export function buildApp(deps?: AppDeps): FastifyInstance {
     registerSession(app, deps);
     registerLocation(app, deps);
     registerDevice(app, deps);
+    registerCard(app, deps);
     registerStripeWebhook(app, deps);
   }
   return app;

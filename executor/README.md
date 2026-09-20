@@ -18,12 +18,12 @@ repo allowed to touch ParkNYC. The server reaches it exclusively through
 ```sh
 pnpm install                              # workspace deps
 pnpm -C executor exec playwright install chromium   # the browser itself
-pnpm -C executor login                    # see below
+pnpm -C executor run login                    # see below
 ```
 
 ## Login (auth without credentials in the repo)
 
-`pnpm -C executor login` opens a **headed** browser on the ParkNYC sign-in
+`pnpm -C executor run login` opens a **headed** browser on the ParkNYC sign-in
 page. Sign in by hand — credentials never touch code, env, or disk — then
 press Enter in the terminal. The session's cookies/localStorage are saved as
 Playwright `storageState` to `PARKNYC_STATE_PATH` (default:
@@ -49,9 +49,9 @@ When ParkNYC expires the session, executor calls start returning
 ## Recording fixtures
 
 ```sh
-pnpm -C executor record -- --flow start --zone 110436 --minutes 15
-pnpm -C executor record -- --flow extend --session <providerSessionId>
-pnpm -C executor record -- --flow stop --session <providerSessionId>
+pnpm -C executor run record -- --flow start --zone 110436 --minutes 15
+pnpm -C executor run record -- --flow extend --session <providerSessionId>
+pnpm -C executor run record -- --flow stop --session <providerSessionId>
 ```
 
 Drives one flow against the **real** site, headed, with tracing on, and

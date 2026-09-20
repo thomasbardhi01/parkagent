@@ -1,6 +1,6 @@
 /**
  * Fixture-driven tests over REAL recorded ParkNYC pages. Files come from
- * `pnpm -C executor record` runs, sanitized by hand and dropped into
+ * `pnpm -C executor run record` runs, sanitized by hand and dropped into
  * test/fixtures/pages/ with a name that states the expectation:
  *
  *   <expected>--anything.html

@@ -6,7 +6,7 @@
  * experiment. Issue #37 tracks moving this package to a private repo; it
  * must move before any customer uses it.
  *
- * `pnpm -C executor record -- --flow start --zone 110436 --minutes 15`
+ * `pnpm -C executor run record -- --flow start --zone 110436 --minutes 15`
  *
  * Recording harness: drives one flow against the REAL ParkNYC site with
  * tracing on, saving to executor/fixtures/<flow>-<stamp>/ (gitignored):
@@ -43,9 +43,9 @@ function usage(): never {
   console.error(
     [
       "Usage:",
-      "  pnpm -C executor record -- --flow start --zone <zoneNumber> [--plate <plate>] [--minutes 15]",
-      "  pnpm -C executor record -- --flow extend --session <providerSessionId> [--minutes 15]",
-      "  pnpm -C executor record -- --flow stop --session <providerSessionId>",
+      "  pnpm -C executor run record -- --flow start --zone <zoneNumber> [--plate <plate>] [--minutes 15]",
+      "  pnpm -C executor run record -- --flow extend --session <providerSessionId> [--minutes 15]",
+      "  pnpm -C executor run record -- --flow stop --session <providerSessionId>",
     ].join("\n"),
   );
   process.exit(1);

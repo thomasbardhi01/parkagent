@@ -11,9 +11,12 @@
 import type { HoursInterval } from "./hours.js";
 import { enforcementProfile } from "./hours.js";
 import type { Policy } from "./policy.js";
+import { cityPolicy } from "./policy.js";
 
 export interface ZoneTerms {
   zoneId: string;
+  /** "nyc" | "bos"; absent means pre-city data and prices as NYC. */
+  city?: string;
   parknycZoneNumber: string;
   rateFirstHourUsd: number;
   rateAdditionalHourUsd: number;
@@ -44,6 +47,8 @@ export interface StayPrice {
 }
 
 export interface RatedTerms {
+  /** Picks the per-city fee (policy.city_overrides); absent prices as NYC. */
+  city?: string;
   rateFirstHourUsd: number;
   rateAdditionalHourUsd: number;
   hours: HoursInterval[];
@@ -53,8 +58,8 @@ export interface RatedTerms {
  * Price `minutes` of stay starting at `from`. `priorChargedMinutes` is how
  * many charged minutes the session has already bought — an extension
  * continues the ladder from there instead of restarting the first hour.
- * The ParkNYC fee is per transaction, charged whenever the meter portion
- * is nonzero.
+ * The pay-by-app fee is per transaction and per city (ParkNYC vs
+ * ParkBoston), charged whenever the meter portion is nonzero.
  */
 export function priceStay(
   zone: RatedTerms,
@@ -73,7 +78,7 @@ export function priceStay(
     (firstHourMinutes / 60) * zone.rateFirstHourUsd +
       (additionalMinutes / 60) * zone.rateAdditionalHourUsd,
   );
-  const feeUsd = meterUsd > 0 ? roundCents(policy.parknyc_fee_usd) : 0;
+  const feeUsd = meterUsd > 0 ? roundCents(cityPolicy(policy, zone.city).parkingFeeUsd) : 0;
 
   return {
     stayMinutes: minutes,

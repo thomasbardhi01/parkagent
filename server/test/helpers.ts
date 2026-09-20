@@ -43,6 +43,10 @@ export const DEFAULT_POLICY: Policy = {
   },
   respect_enforcement_hours: true,
   ticket_cost_usd: 65,
+  city_overrides: {
+    nyc: { ticket_cost_usd: 65 },
+    bos: { parking_fee_usd: 0.35, ticket_cost_usd: 40 },
+  },
 };
 
 export const HOURS_MON_SAT = [
@@ -56,6 +60,7 @@ export const HOURS_MON_SAT = [
 // Broadway & W 72nd: both sides $5.00/$8.25, 120 min — the agreeing pair.
 export const BROADWAY_A: Candidate = {
   zoneId: "nyc-110436",
+  city: "nyc",
   parknycZoneNumber: "110436",
   rateFirstHourUsd: 5.0,
   rateAdditionalHourUsd: 8.25,
@@ -74,6 +79,7 @@ export const BROADWAY_B: Candidate = {
 // Mott & Canal: same ladder but 120 vs 300 min max stay — the disagreeing pair.
 export const MOTT_A: Candidate = {
   zoneId: "nyc-107114",
+  city: "nyc",
   parknycZoneNumber: "107114",
   rateFirstHourUsd: 5.0,
   rateAdditionalHourUsd: 8.25,
@@ -94,6 +100,7 @@ export const MOTT_B: Candidate = {
 // 30th Ave & Steinway: $2.00/$3.00, 120 min — cheap enough to auto-pay.
 export const STEINWAY_A: Candidate = {
   zoneId: "nyc-417371",
+  city: "nyc",
   parknycZoneNumber: "417371",
   rateFirstHourUsd: 2.0,
   rateAdditionalHourUsd: 3.0,
@@ -107,6 +114,21 @@ export const STEINWAY_B: Candidate = {
   zoneId: "nyc-425957",
   parknycZoneNumber: "425957",
   distanceM: 9.8,
+};
+
+// Boylston St E-D block, Back Bay: Boston's flat $3.75/hr, Mon-Sat 8-8,
+// 120 min — real values from the Phase "boston-data" load. ParkBoston zone
+// numbers are unknown for every Boston zone (see data/build_boston_zones.py).
+export const BOYLSTON_BOS: Candidate = {
+  zoneId: "bos-boylston-st-e-d-819305",
+  city: "bos",
+  parknycZoneNumber: "",
+  rateFirstHourUsd: 3.75,
+  rateAdditionalHourUsd: 3.75,
+  maxStayMinutes: 120,
+  hours: [{ days: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"], start: "08:00", end: "20:00" }],
+  distanceM: 6.1,
+  containsPoint: true,
 };
 
 export function makePolicyService(

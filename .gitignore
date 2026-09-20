@@ -8,6 +8,10 @@ dist/
 data/raw/
 data/out/
 executor/storageState.json
+# Recording-harness output (HARs, traces, raw page snapshots) and runtime
+# unexpected-screen captures — real account data, never committed.
+executor/fixtures/
+executor/captures/
 *.log
 .DS_Store
 .claude/settings.local.json

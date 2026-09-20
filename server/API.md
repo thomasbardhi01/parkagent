@@ -139,8 +139,16 @@ Errors: `400` invalid body (zod details in `error`), `401` bad key.
 The money-moving path. Executes through the executor protocol
 (`services/executor.ts`); with effective dry run on, that is the
 DryRunExecutor, which logs and returns fake `dry-…` provider ids. Outside
-dry run the real ParkNYC executor is a Phase 5 stub that fails with
-`not_implemented` — nothing can move money yet.
+dry run, the real ParkNYC executor (the Playwright package in `executor/`,
+reached only through `services/parknycExecutor.ts`) runs when env
+`DRY_RUN=false` **and** `PARKNYC_STATE_PATH` is set; otherwise the server
+falls back to the DryRunExecutor and logs a warning. Executor error codes:
+`auth_expired`, `zone_not_found`, `payment_declined`, `ui_changed`,
+`network`, `unknown`. Every executor call records its `durationMs` on the
+`session_events` details and the `decisions` outcome; a `ui_changed`
+failure also attaches `diagnostics` (page screenshot + visible text) to the
+decision row. On any executor error the session stays unpaid (`failed`)
+and the `payment_failed` push carries a tap-to-pay deep link.
 
 Request: `{parkedEventId, zoneId, minutes?}`. `minutes` defaults to
 `min(policy.default_stay_minutes, zone max stay)`. The zone's terms (rate
@@ -212,7 +220,9 @@ Pushes carry a standard `aps` payload plus `{"type": ...}`, one of:
   `reason`: `"max_stay"` (move the car), `"budget"` (a cap would be hit),
   or `"no_auto_extend"` (disabled or max_count used up)
 - `payment_failed` — a pay or extend attempt failed; the meter is unpaid;
-  carries `code` (executor error code)
+  carries `code` (executor error code), `zoneNumber`, and `deepLink`
+  (`parkagent://pay?zone=<zone>` — tap-to-pay fallback with the zone
+  prefilled)
 
 Sending requires the `APNS_KEY` (contents of the `.p8` auth key),
 `APNS_KEY_ID`, `APNS_TEAM_ID`, and `APNS_BUNDLE_ID` env vars; with any of

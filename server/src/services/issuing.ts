@@ -68,6 +68,30 @@ export function decideAuthorization(facts: AuthorizationFacts, policy: Policy): 
   return { approve: true, reason: "approved", wouldApprove: true };
 }
 
+/** Stripe rejects Issuing cardholder names longer than this. */
+export const STRIPE_CARDHOLDER_NAME_MAX = 24;
+
+/** Stands in when a user's name is empty or truncates away to nothing. */
+export const FALLBACK_CARDHOLDER_NAME = "ParkAgent Cardholder";
+
+/**
+ * A users.name made safe for the Stripe Issuing cardholder `name` field:
+ * whitespace collapsed, truncated to STRIPE_CARDHOLDER_NAME_MAX. Truncation
+ * prefers the last word boundary inside the limit and never leaves a
+ * dangling separator; a name that reduces to nothing gets the fallback.
+ */
+export function cardholderName(name: string): string {
+  const collapsed = name.trim().replace(/\s+/g, " ");
+  let out = collapsed;
+  if (out.length > STRIPE_CARDHOLDER_NAME_MAX) {
+    out = out.slice(0, STRIPE_CARDHOLDER_NAME_MAX);
+    const lastSpace = out.lastIndexOf(" ");
+    if (lastSpace > 0) out = out.slice(0, lastSpace);
+    out = out.replace(/[\s\-_.,]+$/, "");
+  }
+  return out.length > 0 ? out : FALLBACK_CARDHOLDER_NAME;
+}
+
 /** Stripe amounts are integer cents; the rest of the repo is USD decimals. */
 export function centsToUsd(cents: number): number {
   return Math.round(cents) / 100;

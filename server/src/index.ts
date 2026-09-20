@@ -1,3 +1,5 @@
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { config } from "dotenv";
 import { loadEnv } from "./env.js";
@@ -6,7 +8,7 @@ import { asAppDb, createPrisma } from "./db.js";
 import { makeExtender } from "./jobs/extendTick.js";
 import { makeApnsSender } from "./services/apns.js";
 import { DryRunExecutor } from "./services/executor.js";
-import { ParkNycExecutorStub } from "./services/parknycExecutor.js";
+import { makeExecutorProvider } from "./services/parknycExecutor.js";
 import { makePendingSessionCheck } from "./services/pendingSession.js";
 import { PolicyService, snapshotPolicy } from "./services/policy.js";
 import { makeStripeGateway } from "./services/stripeGateway.js";
@@ -45,9 +47,26 @@ const log = {
   warn: (msg: string) => app.log.warn(msg),
 };
 const sendPush = makeApnsSender(apnsConfig, db, log);
+
+// Fly machines have no persistent disk: the storage state arrives as a
+// secret (PARKNYC_STATE_JSON) and is written to PARKNYC_STATE_PATH at boot.
+// Local dev skips this — `pnpm -C executor login` writes the file directly.
+if (env.PARKNYC_STATE_JSON && env.PARKNYC_STATE_PATH) {
+  mkdirSync(dirname(env.PARKNYC_STATE_PATH), { recursive: true });
+  writeFileSync(env.PARKNYC_STATE_PATH, env.PARKNYC_STATE_JSON, { mode: 0o600 });
+}
+
 const dryRunExecutor = new DryRunExecutor((msg) => app.log.info(msg));
-const realExecutor = new ParkNycExecutorStub();
-const executorFor = (dryRun: boolean) => (dryRun ? dryRunExecutor : realExecutor);
+const executorFor = makeExecutorProvider({
+  envDryRun: env.DRY_RUN === "true",
+  ...(env.PARKNYC_STATE_PATH ? { statePath: env.PARKNYC_STATE_PATH } : {}),
+  ...(env.PARKNYC_PLATE ? { defaultPlate: env.PARKNYC_PLATE } : {}),
+  ...(process.env["EXECUTOR_CAPTURE_DIR"]
+    ? { captureDir: process.env["EXECUTOR_CAPTURE_DIR"] }
+    : {}),
+  dryRunExecutor,
+  warn: (msg) => app.log.warn(msg),
+});
 
 // env.ts guarantees the webhook secret is present whenever the key is.
 const stripe =

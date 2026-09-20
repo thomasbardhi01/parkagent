@@ -147,14 +147,18 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
       },
     });
 
+    const startedAtMs = Date.now();
     const result = await deps.executorFor(dryRun).startSession({
       zoneNumber: zone.parknycZoneNumber,
       minutes,
       amountUsd: price.meterUsd,
       feeUsd: price.feeUsd,
     });
+    const durationMs = Date.now() - startedAtMs;
 
     if (!result.ok) {
+      // The session stays unpaid (status "failed"); the push below carries
+      // the tap-to-pay deep link with the zone number.
       await deps.db.session.update({ where: { id: session.id }, data: { status: "failed" } });
       await deps.db.sessionEvent.create({
         data: {
@@ -163,7 +167,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
           at,
           minutes,
           dryRun,
-          details: { op: "start", code: result.code, message: result.message },
+          details: { op: "start", code: result.code, message: result.message, durationMs },
         },
       });
       const decision = await deps.db.decision.create({
@@ -171,7 +175,16 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
           kind: "session_start",
           inputs: decisionInputs,
           rule: "executor_failed",
-          outcome: { allowed: true, ok: false, code: result.code },
+          outcome: {
+            allowed: true,
+            ok: false,
+            code: result.code,
+            message: result.message,
+            durationMs,
+            // ui_changed evidence: screenshot + visible text, straight onto
+            // the decision row (non-negotiable: decisions carry the inputs).
+            ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}),
+          },
           userId: user.id,
           parkedEventId: parkedEvent.id,
           sessionId: session.id,
@@ -210,6 +223,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
         expiresAt: result.expiresAt,
         providerSessionId: result.providerSessionId,
         dryRun,
+        details: { durationMs },
       },
     });
     await deps.db.decision.create({
@@ -217,7 +231,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
         kind: "session_start",
         inputs: decisionInputs,
         rule: "start_ok",
-        outcome: { allowed: true, ok: true, sessionId: session.id, price },
+        outcome: { allowed: true, ok: true, sessionId: session.id, price, durationMs },
         userId: user.id,
         parkedEventId: parkedEvent.id,
         sessionId: session.id,
@@ -289,8 +303,21 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
         inputs: decisionInputs,
         rule: outcome.ok ? "extend_ok" : "executor_failed",
         outcome: outcome.ok
-          ? { allowed: true, ok: true, expiresAt: outcome.expiresAt.toISOString(), price }
-          : { allowed: true, ok: false, code: outcome.code },
+          ? {
+              allowed: true,
+              ok: true,
+              expiresAt: outcome.expiresAt.toISOString(),
+              price,
+              durationMs: outcome.durationMs,
+            }
+          : {
+              allowed: true,
+              ok: false,
+              code: outcome.code,
+              message: outcome.message,
+              durationMs: outcome.durationMs,
+              ...(outcome.diagnostics ? { diagnostics: outcome.diagnostics } : {}),
+            },
         userId: user.id,
         sessionId: session.id,
       },
@@ -313,9 +340,11 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
     if (!session) return;
 
     const dryRun = deps.policy.effectiveDryRun();
+    const startedAtMs = Date.now();
     const result = await deps.executorFor(dryRun).stopSession({
       providerSessionId: session.parknycConfirmation ?? session.id,
     });
+    const durationMs = Date.now() - startedAtMs;
     const decisionInputs = {
       body: parsed.data,
       dryRun,
@@ -329,7 +358,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
           kind: "failed",
           at,
           dryRun,
-          details: { op: "stop", code: result.code, message: result.message },
+          details: { op: "stop", code: result.code, message: result.message, durationMs },
         },
       });
       const decision = await deps.db.decision.create({
@@ -337,7 +366,13 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
           kind: "session_stop",
           inputs: decisionInputs,
           rule: "executor_failed",
-          outcome: { ok: false, code: result.code },
+          outcome: {
+            ok: false,
+            code: result.code,
+            message: result.message,
+            durationMs,
+            ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}),
+          },
           userId: user.id,
           sessionId: session.id,
         },
@@ -352,14 +387,14 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
       data: { status: "stopped", stoppedAt: at },
     });
     await deps.db.sessionEvent.create({
-      data: { sessionId: session.id, kind: "stopped", at, dryRun },
+      data: { sessionId: session.id, kind: "stopped", at, dryRun, details: { durationMs } },
     });
     await deps.db.decision.create({
       data: {
         kind: "session_stop",
         inputs: decisionInputs,
         rule: "stop_ok",
-        outcome: { ok: true, stoppedAt: at.toISOString() },
+        outcome: { ok: true, stoppedAt: at.toISOString(), durationMs },
         userId: user.id,
         sessionId: session.id,
       },

@@ -16,6 +16,10 @@ extension Color {
     static let actionCoral = Color("ActionCoral")
     static let actionCoralPressed = Color("ActionCoralPressed")
     static let actionCoralTint = Color("ActionCoralTint")
+    /// Coral for text links and selection accents. Lighter than ActionCoral in
+    /// dark mode so it keeps 4.5:1 on Surface; ActionCoral itself is tuned for
+    /// white text on top of it, which pins it too dark to double as dark-mode text.
+    static let actionCoralLink = Color("ActionCoralLink")
     static let success = Color("Success")
     static let warningGold = Color("WarningGold")
     static let danger = Color("Danger")

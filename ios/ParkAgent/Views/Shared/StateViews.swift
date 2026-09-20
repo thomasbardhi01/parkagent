@@ -47,7 +47,7 @@ struct PermissionBanner: View {
                 }
             }
             .font(.captionTextSemibold)
-            .foregroundStyle(Color.actionCoral)
+            .foregroundStyle(Color.actionCoralLink)
         }
         .padding(Spacing.unit)
         .background(Color.surface)

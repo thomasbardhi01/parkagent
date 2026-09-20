@@ -67,7 +67,7 @@ struct MockAPI: APIClient {
     func stopSession(sessionId: String) async throws -> SessionStopResponse {
         try await pause()
         await store.clear()
-        return SessionStopResponse(sessionId: sessionId, stoppedAt: .now)
+        return SessionStopResponse(sessionId: sessionId, stoppedAt: AppClock.now)
     }
 
     func extendSession(sessionId: String, minutes: Int) async throws -> SessionExtendResponse {
@@ -100,13 +100,13 @@ private actor MockSessionStore {
     private var expiresAt: Date?
 
     func start(minutes: Int) -> Date {
-        let date = Date.now.addingTimeInterval(TimeInterval(minutes) * 60)
+        let date = AppClock.now.addingTimeInterval(TimeInterval(minutes) * 60)
         expiresAt = date
         return date
     }
 
     func extend(minutes: Int) -> Date {
-        let date = (expiresAt ?? .now).addingTimeInterval(TimeInterval(minutes) * 60)
+        let date = (expiresAt ?? AppClock.now).addingTimeInterval(TimeInterval(minutes) * 60)
         expiresAt = date
         return date
     }

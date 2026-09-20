@@ -19,7 +19,7 @@ struct ZoneCard: View {
                 Spacer()
                 if isSelected {
                     Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(Color.actionCoral)
+                        .foregroundStyle(Color.actionCoralLink)
                 }
             }
             Text(street)
@@ -38,7 +38,7 @@ struct ZoneCard: View {
         .cardStyle()
         .overlay(
             RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
-                .strokeBorder(isSelected ? Color.actionCoral : Color.clear, lineWidth: 2)
+                .strokeBorder(isSelected ? Color.actionCoralLink : Color.clear, lineWidth: 2)
         )
     }
 

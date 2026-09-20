@@ -41,4 +41,7 @@ struct SessionRecord: Identifiable, Hashable {
     var endedAt: Date?
     var amountUsd: Double
     var status: StatusPill.Status
+    /// Where the car sat, for the little map on the detail screen.
+    var lat: Double?
+    var lng: Double?
 }

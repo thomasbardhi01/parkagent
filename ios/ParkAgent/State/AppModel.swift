@@ -96,6 +96,9 @@ final class AppModel {
     /// Called once the user is past onboarding. Wires the detector to the
     /// /parked report and starts push registration.
     func startBackgroundWork() {
+        // UI tests drive parks through the Debug menu; real motion, location,
+        // and the notification permission prompt would only add flakiness.
+        guard !LaunchOverrides.uiTesting else { return }
         detector.onPark = { [weak self] coordinate, accuracy, signals in
             Task { await self?.handleDetectedPark(coordinate: coordinate, accuracy: accuracy, signals: signals) }
         }
@@ -129,7 +132,7 @@ final class AppModel {
             lat: coordinate.latitude,
             lng: coordinate.longitude,
             accuracy: accuracy,
-            ts: .now,
+            ts: AppClock.now,
             signals: signals
         )
         do {
@@ -173,7 +176,7 @@ final class AppModel {
                 sessionId: response.sessionId,
                 zoneNumber: candidate.parknycZoneNumber,
                 zoneLabel: "Zone \(candidate.parknycZoneNumber)",
-                startedAt: .now,
+                startedAt: AppClock.now,
                 expiresAt: response.expiresAt,
                 amountUsd: response.amountUsd,
                 extendCount: 0,
@@ -224,7 +227,9 @@ final class AppModel {
                 startedAt: session.startedAt,
                 endedAt: response.stoppedAt,
                 amountUsd: session.amountUsd,
-                status: .paid
+                status: .paid,
+                lat: carCoordinate?.latitude,
+                lng: carCoordinate?.longitude
             ), at: 0)
             activeSession = nil
             carCoordinate = nil
@@ -239,8 +244,9 @@ final class AppModel {
 
     private func seedMockHistory() {
         let calendar = Calendar.current
-        let yesterday = calendar.date(byAdding: .day, value: -1, to: .now) ?? .now
-        let lastWeek = calendar.date(byAdding: .day, value: -3, to: .now) ?? .now
+        let now = AppClock.now
+        let yesterday = calendar.date(byAdding: .day, value: -1, to: now) ?? now
+        let lastWeek = calendar.date(byAdding: .day, value: -3, to: now) ?? now
         history = [
             SessionRecord(
                 id: "mock-history-1",
@@ -249,7 +255,9 @@ final class AppModel {
                 startedAt: yesterday,
                 endedAt: yesterday.addingTimeInterval(90 * 60),
                 amountUsd: 9.28,
-                status: .paid
+                status: .paid,
+                lat: 40.7813,
+                lng: -73.9787
             ),
             SessionRecord(
                 id: "mock-history-2",
@@ -258,7 +266,9 @@ final class AppModel {
                 startedAt: lastWeek,
                 endedAt: lastWeek.addingTimeInterval(45 * 60),
                 amountUsd: 0,
-                status: .failed
+                status: .failed,
+                lat: 40.7942,
+                lng: -73.9722
             ),
         ]
     }
@@ -267,7 +277,7 @@ final class AppModel {
 
     #if DEBUG
     func debugMakeSessionExpiring() {
-        activeSession?.expiresAt = .now.addingTimeInterval(8 * 60)
+        activeSession?.expiresAt = AppClock.now.addingTimeInterval(8 * 60)
     }
 
     func debugMarkMaxStayReached() {

@@ -8,9 +8,9 @@ jobs:
   server:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
         with: { node-version: lts/*, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm -C server lint
@@ -20,7 +20,7 @@ jobs:
   ios:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # The .xcodeproj is gitignored and generated from ios/project.yml.
       - run: brew install xcodegen
       # Config.xcconfig is gitignored; the example supplies an empty
@@ -53,7 +53,7 @@ jobs:
             echo "present=false" >> "$GITHUB_OUTPUT"
             echo "::notice::FLY_API_TOKEN is not set; skipping deploy. Create it with 'fly tokens create deploy'."
           fi
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: steps.token.outputs.present == 'true'
       - uses: superfly/flyctl-actions/setup-flyctl@master
         if: steps.token.outputs.present == 'true'

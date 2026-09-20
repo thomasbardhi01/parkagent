@@ -34,6 +34,10 @@ RUN DATABASE_URL="postgresql://build:build@localhost:5432/build" pnpm -C server 
 # copying it across stages is fragile.
 FROM base AS runtime
 ENV NODE_ENV=production
+# node:24-slim ships no openssl binary/headers; without it the prisma CLI
+# (release_command) warns and guesses "openssl-1.1.x" for libssl detection.
+RUN apt-get update -y && apt-get install -y --no-install-recommends openssl \
+  && rm -rf /var/lib/apt/lists/*
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY server/package.json server/package.json
 COPY executor/package.json executor/package.json

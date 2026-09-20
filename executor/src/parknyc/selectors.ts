@@ -18,13 +18,21 @@
 
 import type { Locator, Page } from "playwright";
 
+// ParkNYC's web app is Flowbird's SPA at my.nyc.flowbirdapp.com (hash
+// routing); parknyc.org / parknycapp.com is only the WordPress marketing
+// site, and its /login is a literal 404 page. The sign-in link on the
+// marketing homepage points at the ?panel=login route below.
 export const URLS = {
-  /** Landing page; also where the signed-in "Park" flow starts. */
-  home: "https://parknyc.org/",
-  /** Sign-in screen (login.ts opens this for the manual session). */
-  signIn: "https://parknyc.org/login",
-  /** Active/past sessions, for extend and stop. */
-  sessions: "https://parknyc.org/parking-sessions",
+  /** The signed-in app; also where the "Park" flow starts. */
+  home: "https://my.nyc.flowbirdapp.com/#/Parking",
+  /** Sign-in panel (login.ts opens this for the manual session). */
+  signIn: "https://my.nyc.flowbirdapp.com/#/Parking?panel=login",
+  /**
+   * Active/past sessions, for extend and stop. TODO: verify this hash
+   * route on the first `record` run — an unknown route lands on the SPA
+   * default and the flow reports ui_changed with a capture.
+   */
+  sessions: "https://my.nyc.flowbirdapp.com/#/Sessions",
 } as const;
 
 export const selectors = {

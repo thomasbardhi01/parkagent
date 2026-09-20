@@ -55,7 +55,11 @@ generated from `project.yml`, so add plist keys and entitlements there too.
 
 First checkout also needs `cp ios/Config.example.xcconfig ios/Config.xcconfig`
 and your `DEVELOPMENT_TEAM` filled in; the file is gitignored and holds
-`API_BASE_URL`, which reaches the app through Info.plist via `AppConfig`.
+`API_BASE_URL` and `API_KEY`, which reach the app through Info.plist via
+`AppConfig`.
+
+Maps use MapKit for now; Mapbox is a possible later swap and nothing outside
+the map views should depend on MapKit types.
 
 ## Pinned versions
 Two server deps are deliberately held below `latest`. Don't bump them casually.

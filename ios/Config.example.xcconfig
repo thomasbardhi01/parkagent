@@ -10,3 +10,7 @@ DEVELOPMENT_TEAM =
 // Where the app looks for the API. Note that xcconfig treats // as a comment,
 // so the scheme's slashes are escaped as $() to keep the URL intact.
 API_BASE_URL = http:$()/$()/localhost:3000
+
+// Per-user API key (users.api_key on the server; see server/API.md). Empty is
+// fine for the simulator — the app falls back to the mock API without it.
+API_KEY =

@@ -91,7 +91,15 @@ const app = buildApp({
   providerOps,
 });
 
-const extender = makeExtender({ db, policy, executorFor, sendPush, log });
+const extender = makeExtender({
+  db,
+  policy,
+  executorFor,
+  sendPush,
+  log,
+  // Shadow mode's test authorizations for auto-extends fire through this.
+  ...(stripe ? { stripe } : {}),
+});
 const cardJanitor = makeCardJanitor({ db, stripe, log });
 
 app.listen({ port: env.PORT, host: "0.0.0.0" });

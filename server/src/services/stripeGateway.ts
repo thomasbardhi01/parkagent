@@ -103,6 +103,17 @@ export interface StripeGateway {
     stripeCardId: string,
     options?: { nonce?: string; apiVersion?: string },
   ): Promise<IssuingEphemeralKey>;
+  /**
+   * Shadow mode: fire a TEST-MODE Issuing authorization at the user's card
+   * (Stripe's test helper, same as scripts/stripe-trigger.ts) so the
+   * webhook, budget checks, and ledger run in parallel with a real provider
+   * spend. Never moves real money; test keys only.
+   */
+  createTestAuthorization(
+    stripeCardId: string,
+    amountUsd: number,
+    merchant: { name: string; city: string; state: string },
+  ): Promise<{ authorizationId: string; approved: boolean }>;
   /** Available + pending USD on the financial account backing the cards. */
   fundingBalance(): Promise<FundingBalance>;
   /** Test-mode credit into the financial account (simulated ACH). */
@@ -289,6 +300,22 @@ export function makeStripeGateway(
     },
 
     moveToFinancialAccount: (amountUsd) => creditFinancialAccount(amountUsd),
+
+    createTestAuthorization: async (stripeCardId, amountUsd, merchant) => {
+      const auth = await stripe.testHelpers.issuing.authorizations.create({
+        card: stripeCardId,
+        amount: usdToCents(amountUsd),
+        currency: "usd",
+        merchant_data: {
+          category: "parking_lots_garages",
+          name: merchant.name,
+          city: merchant.city,
+          state: merchant.state,
+          country: "US",
+        },
+      });
+      return { authorizationId: auth.id, approved: auth.approved };
+    },
 
     createEphemeralKey: async (stripeCardId, options = {}) => {
       const apiVersion = options.apiVersion ?? (stripe.getApiField("version") as string);

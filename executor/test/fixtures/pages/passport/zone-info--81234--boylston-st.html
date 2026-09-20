@@ -1,0 +1,27 @@
+<!-- HAND-BUILT fixture, NOT a recording: mirrors the ParkBoston (Passport)
+     zone info page structure as shipped in the app's own view template
+     (js/application/views/zone-info.js — ids zi_zoneName / zi_zoneno /
+     zi_address / zi_selectZone, read from the live bostonma.ppprk.com
+     source on 2026-09-20). Values are plausible placeholders; replace this
+     file with a sanitized real recording on the first signed-in
+     `pnpm -C executor run record -- --provider passport --flow resolve` run. -->
+<div data-role="page" id="zoneInfoPage">
+  <div data-role="header" id="zoneInfoHeader">
+    <a href="#" class="ui-btn-left" data-rel="back">Back</a>
+    <h1 id="zoneInfoTitleText">Zone Info</h1>
+  </div>
+  <div data-role="main" class="ui-content" id="zoneInfoMainContainer">
+    <div id="zoneInfo">
+      <h2 id="zi_zoneName">Boylston St (Copley Square)</h2>
+      <p id="zi_zoneno">Zone Number: 81234</p>
+      <p id="zi_address">Boston, MA</p>
+      <p id="zi_operator">Operated by: City of Boston</p>
+      <p id="zi_phno">Parker help: (617) 555-0100</p>
+      <div id="additionalZoneInfo">Mon-Sat 8:00 AM - 8:00 PM, $3.75/hr, 2 hr max</div>
+    </div>
+    <div id="zoneInfoButtonContainer">
+      <a href="#" id="zi_selectZone" class="ui-btn">Select Zone</a>
+      <a href="#" id="directionsButton" class="ui-btn">Directions</a>
+    </div>
+  </div>
+</div>

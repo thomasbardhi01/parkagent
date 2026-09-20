@@ -16,12 +16,18 @@ import { nycStartOfDay } from "./hours.js";
 import type { Policy } from "./policy.js";
 import type { RatedTerms, StayPrice } from "./quote.js";
 import { priceStay } from "./quote.js";
+import type { ShadowResult } from "./shadow.js";
+import { fireShadowAuthorization } from "./shadow.js";
+import type { StripeGateway } from "./stripeGateway.js";
 
 export interface SessionDeps {
   db: AppDb;
   policy: { get(): Policy; hash(): string; effectiveDryRun(): boolean };
   executorFor: ExecutorProvider;
   sendPush: PushSender;
+  /** Shadow mode fires its test authorizations through this; absent →
+   * shadow results record stripe_not_configured. */
+  stripe?: StripeGateway;
   now?: () => Date;
 }
 
@@ -42,9 +48,11 @@ export async function spentToday(db: AppDb, userId: string, at: Date): Promise<n
   return rows.reduce((sum, s) => sum + Number(s.amountUsd ?? 0) + Number(s.feeUsd ?? 0), 0);
 }
 
-/** The rate terms the session was sold under (snapshotted at start). */
+/** The rate terms the session was sold under (snapshotted at start). The
+ * city rides along so extensions pick the right per-city fee. */
 export function sessionTerms(session: SessionRow): RatedTerms {
   return {
+    city: session.city,
     rateFirstHourUsd: Number(session.rateFirstHour ?? 0),
     rateAdditionalHourUsd: Number(session.rateAdditionalHour ?? 0),
     hours: (session.hoursJson ?? []) as HoursInterval[],
@@ -97,7 +105,15 @@ export function priceExtension(session: SessionRow, policy: Policy, minutes: num
 }
 
 export type ExtensionOutcome =
-  | { ok: true; session: SessionRow; price: StayPrice; expiresAt: Date; durationMs: number }
+  | {
+      ok: true;
+      session: SessionRow;
+      price: StayPrice;
+      expiresAt: Date;
+      durationMs: number;
+      /** Present when shadow mode fired (or tried to fire) a test auth. */
+      shadow?: ShadowResult;
+    }
   | {
       ok: false;
       code: ExecutorErrorCode;
@@ -200,5 +216,21 @@ export async function applyExtension(
       dryRun,
     }),
   );
-  return { ok: true, session: updated, price, expiresAt: result.expiresAt, durationMs };
+
+  // Shadow mode: rehearse the Stripe pipeline (webhook → budget checks →
+  // ledger) with a test-mode authorization for the same amount. Recorded on
+  // the caller's decisions row; never fails the extension.
+  const shadow =
+    deps.policy.get().shadow_mode === true
+      ? await fireShadowAuthorization(deps, session.userId, price.totalUsd, session.city)
+      : undefined;
+
+  return {
+    ok: true,
+    session: updated,
+    price,
+    expiresAt: result.expiresAt,
+    durationMs,
+    ...(shadow ? { shadow } : {}),
+  };
 }

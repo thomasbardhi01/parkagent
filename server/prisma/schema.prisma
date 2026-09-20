@@ -20,6 +20,11 @@ model Zone {
   // The pay-by-app zone number a driver would enter (ParkNYC for nyc rows,
   // ParkBoston for bos rows; "" when the source data doesn't carry one).
   parknycZoneNumber  String   @map("parknyc_zone_number")
+  // The street the zone is on, as the source data names it (Boston:
+  // Analyze Boston's STREET; null for NYC rows until the builder carries
+  // one). The Passport executor refuses with zone_mismatch when the
+  // provider map's street disagrees with this.
+  street             String?
   // "all" | "commercial" | "charter_bus" | "dual" (see data/build_zones.py)
   vehicleType        String   @map("vehicle_type")
   // True when a private car may park here; the loader filters on this by default.
@@ -103,6 +108,10 @@ model Session {
   userId               String    @map("user_id")
   vehicleId            String?   @map("vehicle_id")
   zoneId               String    @map("zone_id")
+  // Which city's meter system the session runs under, from the zone at
+  // start ("nyc" | "bos"): the extension worker prices ticket risk and
+  // fees per city from this, not from re-reading the zones table.
+  city                 String    @default("nyc")
   parknycZoneNumber    String    @map("parknyc_zone_number")
   // pending | active | stopped | expired | failed
   status               String

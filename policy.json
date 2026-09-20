@@ -1,5 +1,6 @@
 {
   "dry_run": true,
+  "shadow_mode": false,
   "session_cap_usd": 45,
   "daily_cap_usd": 60,
   "auto_pay_max_rate_per_hour": 8.0,

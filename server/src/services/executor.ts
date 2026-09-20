@@ -12,13 +12,22 @@
  */
 
 export interface StartSessionArgs {
-  /** ParkNYC zone number as entered on the meter/app, e.g. "110436". */
+  /** Zone number as entered on the meter/app, e.g. "110436". "" for Boston
+   * zones — the Passport executor resolves the zone from the provider's own
+   * map instead (Analyze Boston publishes no ParkBoston numbers). */
   zoneNumber: string;
   minutes: number;
   /** What the server priced the buy at; the executor verifies/echoes it. */
   amountUsd: number;
   feeUsd: number;
   plate?: string;
+  /** The car's fix: enables map-based zone resolution (Passport) and the
+   * non-fatal map cross-check (ParkNYC). */
+  carLat?: number;
+  carLng?: number;
+  /** Street our zone data carries; a Passport map resolution whose panel
+   * street disagrees refuses with zone_mismatch. */
+  expectedStreet?: string;
 }
 
 export interface ExtendSessionArgs {
@@ -35,11 +44,12 @@ export interface StopSessionArgs {
 }
 
 export type ExecutorErrorCode =
-  | "auth_expired" // ParkNYC storage state no longer signs us in
-  | "zone_not_found" // ParkNYC rejected the zone number
-  | "payment_declined" // ParkNYC's payment step refused
+  | "auth_expired" // provider storage state no longer signs us in
+  | "zone_not_found" // the provider rejected the zone number
+  | "zone_mismatch" // the provider map's zone disagrees with our zone data
+  | "payment_declined" // the provider's payment step refused
   | "ui_changed" // an expected screen/element never appeared
-  | "network" // couldn't reach ParkNYC at all
+  | "network" // couldn't reach the provider at all
   | "unknown"; // none of the above matched
 
 /** Evidence from an unexpected screen; the caller attaches it to decisions. */
@@ -53,6 +63,20 @@ export interface ExecutorDiagnostics {
   textPath?: string;
 }
 
+/**
+ * What the provider's own map said about where the car is. For Boston this
+ * is the authoritative zone (our data has no ParkBoston numbers); for NYC a
+ * cross-check against the stored number. Both sides land on the decision.
+ */
+export interface ZoneResolution {
+  mapZoneNumber: string;
+  mapStreet: string;
+  storedZoneNumber: string;
+  expectedStreet: string | null;
+  /** Number match (NYC) / street match (Boston); null when uncheckable. */
+  matched: boolean | null;
+}
+
 export interface ExecutorOk {
   ok: true;
   providerSessionId: string;
@@ -60,6 +84,8 @@ export interface ExecutorOk {
   expiresAt: Date;
   /** Dollars this call actually moved (meter + fee). */
   amountUsd: number;
+  /** Present when the flow resolved the zone from the provider's map. */
+  zoneResolution?: ZoneResolution;
 }
 
 export interface ExecutorError {

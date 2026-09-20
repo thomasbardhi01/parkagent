@@ -14,6 +14,7 @@
  */
 
 import { ParkNycClient } from "./parknyc/client.js";
+import { PassportClient } from "./passport/client.js";
 import type {
   AccountOps,
   Executor,
@@ -46,6 +47,11 @@ export type {
 export { closeWarmBrowser, warmBrowser } from "./browser.js";
 export { ParkNycClient } from "./parknyc/client.js";
 export type { ParkNycClientOptions } from "./parknyc/client.js";
+export { PassportClient } from "./passport/client.js";
+export type { PassportClientOptions, ZoneResolveArgs } from "./passport/client.js";
+export { normalizeStreet, parseZoneInfoHtml, streetsMatch } from "./passport/parse.js";
+export type { ZonePanel } from "./passport/parse.js";
+export type { ZoneResolution } from "./types.js";
 
 export interface ParkNycExecutorOptions {
   /** Playwright storageState file (from `pnpm -C executor run login`). */
@@ -85,12 +91,100 @@ export function createParkNycExecutor(options: ParkNycExecutorOptions): Executor
   return {
     startSession: (args: StartSessionArgs) =>
       withClient((c) =>
-        c.startSession(args.zoneNumber, args.plate ?? options.defaultPlate, args.minutes),
+        c.startSession(
+          args.zoneNumber,
+          args.plate ?? options.defaultPlate,
+          args.minutes,
+          // Car coordinates enable the non-fatal map cross-check.
+          args.carLat !== undefined && args.carLng !== undefined
+            ? { carLat: args.carLat, carLng: args.carLng }
+            : undefined,
+        ),
       ),
     extendSession: (args: ExtendSessionArgs) =>
       withClient((c) => c.extendSession(args.providerSessionId, args.minutes)),
     stopSession: (args: StopSessionArgs) =>
       withClient((c) => c.stopSession(args.providerSessionId)),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Passport (ParkBoston) — same protocol, second provider. Passport runs the
+// same white-label web app for many cities; baseUrl swaps the city.
+
+export interface PassportExecutorOptions {
+  /** Playwright storageState file (from `pnpm -C executor run login -- --provider passport`). */
+  statePath?: string;
+  /** Storage state as a value — the per-user linked cookies. */
+  storageState?: StorageStateValue;
+  /** Passport city base URL; defaults to ParkBoston (see passport/selectors.ts). */
+  baseUrl?: string;
+  captureDir?: string;
+  headless?: boolean;
+}
+
+function makePassportClient(options: PassportExecutorOptions): PassportClient {
+  return new PassportClient({
+    ...(options.statePath ? { statePath: options.statePath } : {}),
+    ...(options.storageState ? { storageState: options.storageState } : {}),
+    ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}),
+    sharedBrowser: true,
+    headless: options.headless ?? true,
+    ...(options.captureDir ? { captureDir: options.captureDir } : {}),
+  });
+}
+
+export function createPassportExecutor(options: PassportExecutorOptions): Executor {
+  async function withClient(fn: (client: PassportClient) => Promise<ExecutorResult>) {
+    const client = makePassportClient(options);
+    try {
+      return await fn(client);
+    } finally {
+      await client.close();
+    }
+  }
+
+  return {
+    startSession: (args: StartSessionArgs) =>
+      withClient((c) =>
+        c.startSession(
+          args.zoneNumber,
+          args.plate,
+          args.minutes,
+          // Boston zones have no stored number: the map resolution is the
+          // whole zone story, with the street as the mismatch guard.
+          args.carLat !== undefined && args.carLng !== undefined
+            ? {
+                carLat: args.carLat,
+                carLng: args.carLng,
+                expectedStreet: args.expectedStreet ?? null,
+              }
+            : undefined,
+        ),
+      ),
+    extendSession: (args: ExtendSessionArgs) =>
+      withClient((c) => c.extendSession(args.providerSessionId, args.minutes)),
+    stopSession: (args: StopSessionArgs) =>
+      withClient((c) => c.stopSession(args.providerSessionId)),
+  };
+}
+
+/** Account operations against a linked Passport account. */
+export function createPassportAccountOps(options: PassportExecutorOptions): AccountOps {
+  async function withClient<T>(fn: (client: PassportClient) => Promise<T>): Promise<T> {
+    const client = makePassportClient(options);
+    try {
+      return await fn(client);
+    } finally {
+      await client.close();
+    }
+  }
+
+  return {
+    verifyAccount: () => withClient((c) => c.verifyAccount()),
+    setupCard: (card) => withClient((c) => c.setupCard(card)),
+    removeCard: (last4) => withClient((c) => c.removeCard(last4)),
+    topupWallet: (amountUsd) => withClient((c) => c.topupWallet(amountUsd)),
   };
 }
 

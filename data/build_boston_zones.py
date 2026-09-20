@@ -343,6 +343,10 @@ def main() -> int:
                     "city": "bos",
                     "zone_number": "",  # unknown for every zone today (docstring)
                     "zone_number_known": False,
+                    # The block's street as the source names it ("BOYLSTON ST").
+                    # The Passport executor's zone_mismatch guard compares the
+                    # provider map's street against this before paying.
+                    "street": street,
                     "vehicle_type": "all",
                     "passenger": True,
                     "rate_first_hour": rate,  # flat hourly rate: no 2nd-hour ladder

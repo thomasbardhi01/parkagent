@@ -25,6 +25,20 @@ interface DecisionOutcome {
     stayMinutes?: number;
     totalUsd?: number;
   } | null;
+  /** Shadow mode's parallel test authorization (see services/shadow.ts). */
+  shadow?: {
+    fired?: boolean;
+    authorizationId?: string;
+    approved?: boolean;
+    reason?: string;
+  };
+}
+
+/** "shadow:approved iauth_…" / "shadow:declined …" / "shadow:missed(no_card)". */
+function shadowSummary(shadow: NonNullable<DecisionOutcome["shadow"]>): string {
+  if (!shadow.fired) return `shadow:missed(${shadow.reason ?? "?"})`;
+  const verdict = shadow.approved ? "approved" : "declined";
+  return `shadow:${verdict} ${shadow.authorizationId ?? ""}`.trim();
 }
 
 async function main(): Promise<number> {
@@ -58,6 +72,7 @@ async function main(): Promise<number> {
           action.padEnd(12),
           zone.padEnd(12),
           `${total} ${stay}`.trim(),
+          ...(outcome.shadow ? [shadowSummary(outcome.shadow)] : []),
         ].join("  "),
       );
     }

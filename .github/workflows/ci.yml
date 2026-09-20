@@ -29,3 +29,33 @@ jobs:
       - run: xcodegen generate
         working-directory: ios
       - run: xcodebuild -project ios/ParkAgent.xcodeproj -scheme ParkAgent -destination 'generic/platform=iOS Simulator' build CODE_SIGNING_ALLOWED=NO
+
+  deploy:
+    # Merging to main deploys; nobody needs the Fly token locally.
+    needs: [server, ios]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-parkagent-api
+      cancel-in-progress: false
+    # The secrets context is not available in a job-level `if`, so the token is
+    # read into the job env and checked in a step instead. Until FLY_API_TOKEN
+    # exists as a repo secret, this job no-ops and stays green rather than
+    # turning main red.
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+    steps:
+      - id: token
+        run: |
+          if [ -n "$FLY_API_TOKEN" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::FLY_API_TOKEN is not set; skipping deploy. Create it with 'fly tokens create deploy'."
+          fi
+      - uses: actions/checkout@v4
+        if: steps.token.outputs.present == 'true'
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+        if: steps.token.outputs.present == 'true'
+      - run: flyctl deploy --remote-only
+        if: steps.token.outputs.present == 'true'

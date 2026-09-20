@@ -57,5 +57,8 @@ jobs:
         if: steps.token.outputs.present == 'true'
       - uses: superfly/flyctl-actions/setup-flyctl@master
         if: steps.token.outputs.present == 'true'
-      - run: flyctl deploy --remote-only
+      - run: >
+          flyctl deploy --remote-only
+          --build-arg GIT_SHA=${GITHUB_SHA}
+          --build-arg BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
         if: steps.token.outputs.present == 'true'

@@ -134,41 +134,113 @@ Errors: `400` invalid body (zod details in `error`), `401` bad key.
 
 ---
 
-## POST /session/start · /session/stop · /session/extend
+## POST /session/start
 
-**Not implemented yet — return `501 {"error": "not_implemented"}`.**
-(Phase 5 wires these to the executor; they are the money-moving paths and
-will check `DRY_RUN` + policy before anything else.)
+The money-moving path. Executes through the executor protocol
+(`services/executor.ts`); with effective dry run on, that is the
+DryRunExecutor, which logs and returns fake `dry-…` provider ids. Outside
+dry run the real ParkNYC executor is a Phase 5 stub that fails with
+`not_implemented` — nothing can move money yet.
 
-Planned shapes, so the app can stub against them:
+Request: `{parkedEventId, zoneId, minutes?}`. `minutes` defaults to
+`min(policy.default_stay_minutes, zone max stay)`. The zone's terms (rate
+ladder, max stay, hours) are snapshotted onto the session, and the parked
+event's fix becomes the session's car coordinate.
 
-- `POST /session/start` `{parkedEventId, zoneId, minutes}` → `{sessionId, expiresAt, amountUsd}`
-- `POST /session/stop` `{sessionId}` → `{sessionId, stoppedAt}`
-- `POST /session/extend` `{sessionId, minutes}` → `{sessionId, expiresAt, amountUsd}`
+Response `200`: `{sessionId, expiresAt, amountUsd}` — `amountUsd` is the
+meter + ParkNYC fee for this purchase, priced like `/parked` quotes
+(enforced minutes only, ladder in order).
+
+Policy is enforced **hard** here, before the executor runs (`/parked`'s
+"confirm" covers zone ambiguity and the rate ceiling; the caps are budget
+guarantees and cannot be confirmed through — raise them via `PUT /policy`):
+
+| `409 {"error": "policy_violation", "rule": …}` | Condition |
+|---|---|
+| `max_stay_exceeded` | `minutes` > zone max stay |
+| `session_cap_exceeded` | purchase total > `session_cap_usd` |
+| `daily_cap_exceeded` | real (non-dry-run) spend today + total > `daily_cap_usd` |
+
+Other errors: `404` unknown/foreign `parkedEventId` or `zoneId`, `409
+{"error": "session_already_active"}` (one active session per user), `502
+{"error": "executor_failed", "code": …}` — the session row is marked
+`failed` and a `payment_failed` push is sent.
+
+Every call writes a `decisions` row (kind `session_start`; rule
+`start_ok`, a cap rule, or `executor_failed`) and every executor call
+writes a `session_events` row (`started` / `failed`).
+
+## POST /session/extend
+
+`{sessionId, minutes}` → `{sessionId, expiresAt, amountUsd}`. `amountUsd`
+is the price of this extension: minutes are priced from the current expiry
+and continue the rate ladder from the charged minutes already bought (an
+extension past the first hour is all second-hour rate). Same hard cap
+rules as start, where `max_stay_exceeded` compares total purchased minutes
+against the zone's max stay. Decisions kind `session_extend`; session
+event `extended` (details.source `"manual"` — the worker's are `"auto"`).
+
+## POST /session/stop
+
+`{sessionId}` → `{sessionId, stoppedAt}`. Marks the session `stopped` and
+records the dwell (`stoppedAt` feeds the dwell model). Decisions kind
+`session_stop`. `404` unknown session, `409` not active, `502` executor
+failure.
 
 ## POST /location
 
-**Not implemented yet — returns `501`.** (Phase 7's extender consumes it;
-there is no table for fixes yet.) Planned: `{lat, lng, accuracy, ts}` while
-a session is active, every 60 s.
+`{lat, lng, accuracy, ts}` while a session is active, sent by the app
+every 60 s. Stored in `location_fixes` keyed to the user's active session
+→ `{ok: true, sessionId}`. `409 {"error": "no_active_session"}` when there
+is nothing to attach the fix to (the app treats that as "stop reporting").
 
 ## POST /device
 
-**Not implemented yet — returns `501`.** (A later phase stores tokens and
-sends pushes; there is no devices table yet.) Registers the phone's APNs
-token for the authenticated user; the app re-sends on every launch, so the
-endpoint must be idempotent. Planned:
 `{token, platform: "ios", environment: "development" | "production"}` →
-`{ok: true}`.
+`{ok: true}`. Upserts the APNs token by its value, so the app re-sending
+on every launch is idempotent; `environment` picks the sandbox or
+production APNs host per device. A token Apple reports dead (410) is
+deleted.
 
 ### Push notification types
 
 Pushes carry a standard `aps` payload plus `{"type": ...}`, one of:
 
-- `session_started` — the server auto-paid a meter
-- `session_extended` — auto-extend bought more time
-- `session_expiring` — expiring soon and auto-extend will not fire
-- `payment_failed` — a pay or extend attempt failed; the meter is unpaid
+- `session_started` — the server paid a meter (dry run says "would have paid")
+- `session_extended` — auto-extend (or a manual extend) bought more time
+- `session_expiring` — expiring soon and auto-extend will not fire; carries
+  `reason`: `"max_stay"` (move the car), `"budget"` (a cap would be hit),
+  or `"no_auto_extend"` (disabled or max_count used up)
+- `payment_failed` — a pay or extend attempt failed; the meter is unpaid;
+  carries `code` (executor error code)
+
+Sending requires the `APNS_KEY` (contents of the `.p8` auth key),
+`APNS_KEY_ID`, `APNS_TEAM_ID`, and `APNS_BUNDLE_ID` env vars; with any of
+them missing the server logs and drops pushes instead of sending.
+
+---
+
+## Extension worker
+
+Not an endpoint, but half the Phase 7 surface: an in-process job ticks
+every 60 s over active sessions. Per session it computes time remaining,
+straight-line×1.3 distance and walking ETA from the latest fix to the car,
+heading (toward/away/still from the last 3 fixes), P(return in time), and
+expected ticket cost `ticket_cost_usd × (1 − P)` vs the cost of extending
+to the P80 of predicted remaining dwell (dwell model v1: median of the
+user's past sessions at this zone, else `default_stay_minutes`).
+
+Within 12 minutes of expiry it extends when ticket risk clearly exceeds
+extension cost (×1.2 margin) and policy allows, clamped by
+`auto_extend.max_count`, `max_minutes_each`,
+`no_extend_within_minutes_of_max_stay`, and the session/daily caps; it
+pushes `session_expiring` when it cannot extend. A settled rule is held
+for 5 minutes (hysteresis) and warning pushes fire only when the rule
+changes. **Every tick writes a `decisions` row** (kind `extend_tick`) with
+all inputs; rules are `extend`, `extend_failed`, `warn_max_stay`,
+`hold_return_likely`, `hold_not_near_expiry`, `hold_session_cap`,
+`hold_daily_cap`, `hold_max_extensions`, `hold_auto_extend_disabled`,
+`hysteresis_hold`, and `expired` (bookkeeping when the meter ran out).
 
 ---
 

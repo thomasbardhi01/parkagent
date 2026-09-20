@@ -89,10 +89,11 @@ model ParkedEvent {
   @@map("parked_events")
 }
 
-// One ParkNYC paid session (Phase 5 fills these in; the schema exists now so
-// /parked can already sum today's spend against daily_cap_usd).
-// zoneId is a plain string, NOT a relation: the zones table mirrors each
-// loader run and stale rows are deleted, so an FK would break reloads.
+// One ParkNYC paid session. zoneId is a plain string, NOT a relation: the
+// zones table mirrors each loader run and stale rows are deleted, so an FK
+// would break reloads. For the same reason the zone's terms are snapshotted
+// here at start — extensions must price against what the session was sold
+// under, not whatever a later data load says.
 model Session {
   id                   String    @id @default(cuid())
   userId               String    @map("user_id")
@@ -104,18 +105,100 @@ model Session {
   dryRun               Boolean   @map("dry_run")
   startedAt            DateTime? @map("started_at") @db.Timestamptz(6)
   expiresAt            DateTime? @map("expires_at") @db.Timestamptz(6)
+  stoppedAt            DateTime? @map("stopped_at") @db.Timestamptz(6)
+  // Cumulative meter + fee dollars across the start and every extension.
   amountUsd            Decimal?  @map("amount_usd") @db.Decimal(6, 2)
   feeUsd               Decimal?  @map("fee_usd") @db.Decimal(6, 2)
   parknycConfirmation  String?   @map("parknyc_confirmation")
+  // The parked_events row this session came from (plain string, no FK churn).
+  parkedEventId        String?   @map("parked_event_id")
+  // Where the car is: the parked event's fix, the anchor for distance-to-car.
+  carLat               Float?    @map("car_lat")
+  carLng               Float?    @map("car_lng")
+  // Zone terms snapshot at start.
+  rateFirstHour        Decimal?  @map("rate_first_hour") @db.Decimal(6, 2)
+  rateAdditionalHour   Decimal?  @map("rate_additional_hour") @db.Decimal(6, 2)
+  maxStayMinutes       Int?      @map("max_stay_minutes")
+  hoursJson            Json?     @map("hours_json")
+  // Wall-clock minutes bought and the subset that was inside enforcement
+  // hours (the ladder consumes charged minutes; extensions continue it).
+  purchasedMinutes     Int       @default(0) @map("purchased_minutes")
+  chargedMinutes       Int       @default(0) @map("charged_minutes")
+  extendCount          Int       @default(0) @map("extend_count")
+  // Extender hysteresis: the last rule the tick worker settled on and when
+  // it changed; a different rule within 5 minutes is held, not acted on.
+  lastExtenderRule     String?   @map("last_extender_rule")
+  lastExtenderRuleAt   DateTime? @map("last_extender_rule_at") @db.Timestamptz(6)
   createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt            DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  user      User       @relation(fields: [userId], references: [id])
-  vehicle   Vehicle?   @relation(fields: [vehicleId], references: [id])
-  decisions Decision[]
+  user         User          @relation(fields: [userId], references: [id])
+  vehicle      Vehicle?      @relation(fields: [vehicleId], references: [id])
+  decisions    Decision[]
+  events       SessionEvent[]
+  locationFixes LocationFix[]
 
   @@index([userId, createdAt])
+  @@index([status])
   @@map("sessions")
+}
+
+// Append-only ledger of what actually happened to a session: every executor
+// call and lifecycle transition, with the money it moved.
+model SessionEvent {
+  id                String   @id @default(cuid())
+  sessionId         String   @map("session_id")
+  // started | extended | stopped | expired | failed
+  kind              String
+  at                DateTime @db.Timestamptz(6)
+  minutes           Int?
+  amountUsd         Decimal? @map("amount_usd") @db.Decimal(6, 2)
+  feeUsd            Decimal? @map("fee_usd") @db.Decimal(6, 2)
+  expiresAt         DateTime? @map("expires_at") @db.Timestamptz(6)
+  providerSessionId String?  @map("provider_session_id")
+  dryRun            Boolean  @map("dry_run")
+  // Free-form context: executor error codes, auto vs manual, etc.
+  details           Json?
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  session Session @relation(fields: [sessionId], references: [id])
+
+  @@index([sessionId, at])
+  @@map("session_events")
+}
+
+// Phone fixes reported while a session is active — the extension worker's
+// view of where the driver is relative to the car.
+model LocationFix {
+  id        String   @id @default(cuid())
+  sessionId String   @map("session_id")
+  userId    String   @map("user_id")
+  lat       Float
+  lng       Float
+  accuracyM Float    @map("accuracy_m")
+  ts        DateTime @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  session Session @relation(fields: [sessionId], references: [id])
+
+  @@index([sessionId, ts])
+  @@map("location_fixes")
+}
+
+// APNs device tokens registered via POST /device. The app re-sends on every
+// launch, so rows are upserted by token; a 410 from Apple deletes the row.
+model DeviceToken {
+  id          String   @id @default(cuid())
+  userId      String   @map("user_id")
+  token       String   @unique
+  platform    String
+  // "development" (sandbox APNs host) | "production"
+  environment String
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([userId])
+  @@map("device_tokens")
 }
 
 // Non-negotiable: every automated decision writes a row here with its inputs.

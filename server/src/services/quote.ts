@@ -35,17 +35,39 @@ function roundCents(usd: number): number {
   return Math.round((usd + Number.EPSILON) * 100) / 100;
 }
 
-export function quoteZone(zone: ZoneTerms, policy: Policy, at: Date): Quote {
-  const stayMinutes = Math.min(
-    policy.default_stay_minutes,
-    zone.maxStayMinutes ?? policy.default_stay_minutes,
-  );
+export interface StayPrice {
+  stayMinutes: number;
+  chargedMinutes: number;
+  meterUsd: number;
+  feeUsd: number;
+  totalUsd: number;
+}
 
+export interface RatedTerms {
+  rateFirstHourUsd: number;
+  rateAdditionalHourUsd: number;
+  hours: HoursInterval[];
+}
+
+/**
+ * Price `minutes` of stay starting at `from`. `priorChargedMinutes` is how
+ * many charged minutes the session has already bought — an extension
+ * continues the ladder from there instead of restarting the first hour.
+ * The ParkNYC fee is per transaction, charged whenever the meter portion
+ * is nonzero.
+ */
+export function priceStay(
+  zone: RatedTerms,
+  policy: Policy,
+  from: Date,
+  minutes: number,
+  priorChargedMinutes = 0,
+): StayPrice {
   const chargedMinutes = policy.respect_enforcement_hours
-    ? enforcementProfile(zone.hours, at, stayMinutes).filter(Boolean).length
-    : stayMinutes;
+    ? enforcementProfile(zone.hours, from, minutes).filter(Boolean).length
+    : minutes;
 
-  const firstHourMinutes = Math.min(chargedMinutes, 60);
+  const firstHourMinutes = Math.min(Math.max(60 - priorChargedMinutes, 0), chargedMinutes);
   const additionalMinutes = chargedMinutes - firstHourMinutes;
   const meterUsd = roundCents(
     (firstHourMinutes / 60) * zone.rateFirstHourUsd +
@@ -54,12 +76,23 @@ export function quoteZone(zone: ZoneTerms, policy: Policy, at: Date): Quote {
   const feeUsd = meterUsd > 0 ? roundCents(policy.parknyc_fee_usd) : 0;
 
   return {
-    zoneId: zone.zoneId,
-    parknycZoneNumber: zone.parknycZoneNumber,
-    stayMinutes,
+    stayMinutes: minutes,
     chargedMinutes,
     meterUsd,
     feeUsd,
     totalUsd: roundCents(meterUsd + feeUsd),
+  };
+}
+
+export function quoteZone(zone: ZoneTerms, policy: Policy, at: Date): Quote {
+  const stayMinutes = Math.min(
+    policy.default_stay_minutes,
+    zone.maxStayMinutes ?? policy.default_stay_minutes,
+  );
+  const price = priceStay(zone, policy, at, stayMinutes);
+  return {
+    zoneId: zone.zoneId,
+    parknycZoneNumber: zone.parknycZoneNumber,
+    ...price,
   };
 }

@@ -1,8 +1,6 @@
 // This is your Prisma schema file,
 // learn more about it in the docs: https://pris.ly/d/prisma-schema
 
-// Get a free hosted Postgres database in seconds: `npx create-db`
-
 generator client {
   provider = "prisma-client"
   output   = "../src/generated/prisma"
@@ -10,4 +8,45 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+}
+
+// One ParkNYC block face, geometry buffered one-sided toward its parking lane.
+// Loaded from data/out/zones.geojson by `pnpm -C server load:zones`; the table
+// always mirrors the most recent load (stale rows are deleted by data_version).
+model Zone {
+  zoneId             String   @id @map("zone_id")
+  parknycZoneNumber  String   @map("parknyc_zone_number")
+  // "all" | "commercial" | "charter_bus" | "dual" (see data/build_zones.py)
+  vehicleType        String   @map("vehicle_type")
+  // True when a private car may park here; the loader filters on this by default.
+  passenger          Boolean
+  rateFirstHour      Decimal  @map("rate_first_hour") @db.Decimal(6, 2)
+  rateAdditionalHour Decimal  @map("rate_additional_hour") @db.Decimal(6, 2)
+  maxStayMinutes     Int?     @map("max_stay_minutes")
+  // [{"days": ["Mon", ...], "start": "HH:MM", "end": "HH:MM"}]; [] = none posted
+  hoursJson          Json     @map("hours_json")
+  // Buffered lane polygon: point-in-polygon candidate lookup.
+  geom               Unsupported("geometry(MultiPolygon, 4326)")
+  // Original face line: rank overlapping candidates by distance to it.
+  centerline         Unsupported("geometry(MultiLineString, 4326)")
+  // built_at of the zones.geojson this row came from.
+  dataVersion        String   @map("data_version")
+  loadedAt           DateTime @default(now()) @map("loaded_at") @db.Timestamptz(6)
+
+  @@index([geom], type: Gist)
+  @@index([centerline], type: Gist)
+  @@map("zones")
+}
+
+// Audit row per loader run.
+model ZoneLoad {
+  id             Int      @id @default(autoincrement())
+  loadedAt       DateTime @default(now()) @map("loaded_at") @db.Timestamptz(6)
+  dataVersion    String   @map("data_version")
+  // Socrata dataset ids the build consumed, e.g. {"block_faces": "e7yp-wx55"}.
+  sourceDatasets Json     @map("source_datasets")
+  zoneCount      Int      @map("zone_count")
+  passengerOnly  Boolean  @map("passenger_only")
+
+  @@map("zone_loads")
 }

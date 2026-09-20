@@ -1,0 +1,91 @@
+import XCTest
+
+/// Base for all ParkAgent UI tests. Every test launches the app fresh with
+/// the mock API, a wiped UserDefaults, and a frozen clock, so nothing depends
+/// on the network, real sensors, or wall-clock time.
+class ParkAgentUITestCase: XCTestCase {
+    /// 2026-09-15 10:30 ET, a Tuesday inside enforcement hours.
+    static let fixedNow = "1789482600"
+
+    override func setUpWithError() throws {
+        continueAfterFailure = false
+    }
+
+    func launchApp(
+        scenario: String = "singleQuote",
+        skipOnboarding: Bool = true,
+        appearance: String? = nil
+    ) -> XCUIApplication {
+        let app = XCUIApplication()
+        var args = [
+            "-resetState", "YES",
+            "-useMockAPI", "YES",
+            "-uiTesting", "YES",
+            "-mockScenario", scenario,
+            "-fixedNow", Self.fixedNow,
+        ]
+        if skipOnboarding { args += ["-skipOnboarding", "YES"] }
+        if let appearance { args += ["-appearance", appearance] }
+        app.launchArguments = args
+        app.launch()
+        return app
+    }
+
+    /// Identifier lookup across element types — SwiftUI containers surface as
+    /// otherElements, rows as buttons or cells, so pinning a type is fragile.
+    func element(_ app: XCUIApplication, _ identifier: String) -> XCUIElement {
+        app.descendants(matching: .any).matching(identifier: identifier).firstMatch
+    }
+
+    func attachScreenshot(of app: XCUIApplication, named name: String) {
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    /// Settings > Debug menu > Simulate park here, then wait for the sheet.
+    func simulateParkViaDebugMenu(_ app: XCUIApplication) {
+        app.tabBars.buttons["Settings"].tap()
+        // Form is a lazy List: the Developer section below the fold doesn't
+        // exist in the hierarchy until scrolled into view.
+        let link = element(app, "settings.debugMenuLink")
+        var swipes = 0
+        while !link.exists && swipes < 6 {
+            app.swipeUp()
+            swipes += 1
+        }
+        XCTAssertTrue(link.waitForExistence(timeout: 5), "Debug menu link missing")
+        link.tap()
+        let simulate = element(app, "debug.simulateParkButton")
+        XCTAssertTrue(simulate.waitForExistence(timeout: 5), "Simulate park button missing")
+        simulate.tap()
+        XCTAssertTrue(
+            element(app, "parkedSheet.view").waitForExistence(timeout: 5),
+            "Parking Detected sheet did not appear"
+        )
+    }
+
+    /// Home sheet's Simulate park (mock + no active session only).
+    func simulateParkFromHome(_ app: XCUIApplication) {
+        app.tabBars.buttons["Home"].tap()
+        let simulate = element(app, "home.simulateParkButton")
+        XCTAssertTrue(simulate.waitForExistence(timeout: 5), "Simulate park button missing")
+        simulate.tap()
+        XCTAssertTrue(
+            element(app, "parkedSheet.view").waitForExistence(timeout: 5),
+            "Parking Detected sheet did not appear"
+        )
+    }
+
+    /// Waits until the element's label equals `expected`; XCUIElement has no
+    /// built-in "label became X" wait.
+    func waitForLabel(of element: XCUIElement, toBe expected: String, timeout: TimeInterval = 5) {
+        let predicate = NSPredicate(format: "label == %@", expected)
+        let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
+        XCTAssertEqual(
+            XCTWaiter().wait(for: [expectation], timeout: timeout), .completed,
+            "Expected label \"\(expected)\", got \"\(element.label)\""
+        )
+    }
+}

@@ -23,9 +23,13 @@ struct CardView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color.appBackground)
             .navigationTitle("Card")
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("card.view")
         }
     }
 
+    // Text opacities stay ≥0.85: the slate end of the gradient is light
+    // enough that dimmer white drops under 4.5:1.
     private var cardArt: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
@@ -34,21 +38,21 @@ struct CardView: View {
                     .foregroundStyle(Color.white.opacity(0.9))
                 Spacer()
                 Image(systemName: "wave.3.right")
-                    .foregroundStyle(Color.white.opacity(0.6))
+                    .foregroundStyle(Color.white.opacity(0.75))
             }
             Spacer()
             Text("••••  ••••  ••••  ••••")
                 .font(.bodyTextSemibold)
-                .foregroundStyle(Color.white.opacity(0.55))
+                .foregroundStyle(Color.white.opacity(0.85))
             Spacer()
             HStack {
                 Text("Virtual card")
                     .font(.captionText)
-                    .foregroundStyle(Color.white.opacity(0.7))
+                    .foregroundStyle(Color.white.opacity(0.85))
                 Spacer()
                 Text("Coming soon")
                     .font(.captionTextSemibold)
-                    .foregroundStyle(Color.white.opacity(0.7))
+                    .foregroundStyle(Color.white.opacity(0.85))
             }
         }
         .padding(Spacing.unitAndHalf)

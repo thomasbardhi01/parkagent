@@ -79,3 +79,37 @@ targets:
         TARGETED_DEVICE_FAMILY: "1"
         ENABLE_USER_SCRIPT_SANDBOXING: YES
         SWIFT_STRICT_CONCURRENCY: complete
+
+  ParkAgentUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: ParkAgentUITests
+    dependencies:
+      - target: ParkAgent
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.thomasbardhi.parkagent.uitests
+        TEST_TARGET_NAME: ParkAgent
+        GENERATE_INFOPLIST_FILE: YES
+
+# Explicit scheme so `xcodebuild test` works headlessly (CI has no Xcode UI to
+# auto-create one).
+schemes:
+  ParkAgent:
+    build:
+      targets:
+        ParkAgent: all
+        ParkAgentUITests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - ParkAgentUITests
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release

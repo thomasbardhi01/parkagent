@@ -1,3 +1,4 @@
+import MapKit
 import SwiftUI
 
 struct SessionsView: View {
@@ -47,9 +48,12 @@ struct SessionsView: View {
                         )
                     }
                     .buttonStyle(.plain)
+                    .accessibilityIdentifier("sessions.row.\(record.zoneNumber)")
                 }
             }
             .padding(Spacing.unit)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("sessions.view")
         }
     }
 }
@@ -60,6 +64,23 @@ struct SessionDetailView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Spacing.unit) {
+                if let lat = record.lat, let lng = record.lng {
+                    let coordinate = CLLocationCoordinate2D(latitude: lat, longitude: lng)
+                    Map(initialPosition: .region(MKCoordinateRegion(
+                        center: coordinate,
+                        span: MKCoordinateSpan(latitudeDelta: 0.004, longitudeDelta: 0.004)
+                    ))) {
+                        Annotation("Parked here", coordinate: coordinate) {
+                            MapPin(kind: .car)
+                        }
+                    }
+                    .mapStyle(.standard(pointsOfInterest: .excludingAll))
+                    .frame(height: 180)
+                    .clipShape(RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+                    .allowsHitTesting(false)
+                    .accessibilityIdentifier("sessionDetail.map")
+                }
+
                 VStack(alignment: .leading, spacing: Spacing.half) {
                     HStack {
                         Text(record.zoneLabel)
@@ -89,8 +110,12 @@ struct SessionDetailView: View {
                 }
                 .background(Color.surface)
                 .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("sessionDetail.receipt")
             }
             .padding(Spacing.unit)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("sessionDetail.view")
         }
         .background(Color.appBackground)
         .navigationTitle("Session")

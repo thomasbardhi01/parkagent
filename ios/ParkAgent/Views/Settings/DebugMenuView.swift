@@ -58,6 +58,7 @@ struct DebugMenuView: View {
                     }
                 }
                 .disabled(simulating)
+                .accessibilityIdentifier("debug.simulateParkButton")
             } header: {
                 Text("Simulate a park")
             } footer: {

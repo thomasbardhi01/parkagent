@@ -4,10 +4,18 @@ import UIKit
 @main
 struct ParkAgentApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @AppStorage(AppearanceSetting.defaultsKey) private var appearanceRaw = AppearanceSetting.system.rawValue
+
+    init() {
+        LaunchOverrides.applyToDefaults()
+    }
 
     var body: some Scene {
         WindowGroup {
             RootView()
+                .preferredColorScheme(
+                    (AppearanceSetting(rawValue: appearanceRaw) ?? .system).colorScheme
+                )
         }
     }
 }

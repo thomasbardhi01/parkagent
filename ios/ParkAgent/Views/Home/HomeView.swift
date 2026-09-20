@@ -38,17 +38,14 @@ struct HomeView: View {
                 ActiveSessionView()
             }
         }
-        .sheet(item: $model.pendingParked) { parked in
-            ParkingDetectedSheet(parked: parked)
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.hidden)
-        }
     }
 
     private var statusChip: some View {
         HStack(spacing: Spacing.half) {
             Circle()
-                .fill(model.activeSession == nil ? Color.steel : Color.success)
+                // textSecondary, not steel: steel is under 3:1 against the
+                // light chip surface.
+                .fill(model.activeSession == nil ? Color.textSecondary : Color.success)
                 .frame(width: 8, height: 8)
             Text(chipText)
                 .font(.captionTextSemibold)
@@ -59,6 +56,8 @@ struct HomeView: View {
         .background(Color.surface)
         .clipShape(Capsule())
         .shadow(color: .black.opacity(0.1), radius: 4, y: 1)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("home.statusChip")
     }
 
     private var chipText: String {
@@ -84,6 +83,7 @@ struct HomeView: View {
                     )
                 }
                 .buttonStyle(.plain)
+                .accessibilityIdentifier("home.activeSessionRow")
             }
 
             #if DEBUG
@@ -92,9 +92,12 @@ struct HomeView: View {
                     Task { await model.simulatePark() }
                 }
                 .buttonStyle(.secondary)
+                .accessibilityIdentifier("home.simulateParkButton")
             }
             #endif
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("home.view")
     }
 
     private var spendRow: some View {

@@ -24,8 +24,11 @@ struct OnboardingView: View {
             }
             .buttonStyle(.primary)
             .padding(Spacing.unit)
+            .accessibilityIdentifier("onboarding.continueButton")
         }
         .background(Color.appBackground)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("onboarding.view")
     }
 
     private var welcome: some View {
@@ -45,6 +48,8 @@ struct OnboardingView: View {
             Spacer()
         }
         .padding(.horizontal, Spacing.unitAndHalf)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("onboarding.welcome")
     }
 
     private var howItWorks: some View {
@@ -72,13 +77,15 @@ struct OnboardingView: View {
             Spacer()
         }
         .padding(.horizontal, Spacing.unitAndHalf)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("onboarding.howItWorks")
     }
 
     private func explainerRow(icon: String, title: String, detail: String) -> some View {
         HStack(alignment: .top, spacing: Spacing.unit) {
             Image(systemName: icon)
                 .font(.system(size: 22))
-                .foregroundStyle(Color.slate)
+                .foregroundStyle(Color.textSecondary)
                 .frame(width: 32)
             VStack(alignment: .leading, spacing: Spacing.quarter) {
                 Text(title)
@@ -128,6 +135,8 @@ private struct OnboardingPermissionsStep: View {
             Spacer()
         }
         .padding(.horizontal, Spacing.unitAndHalf)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("onboarding.permissions")
     }
 
     private func permissionRow(
@@ -140,7 +149,7 @@ private struct OnboardingPermissionsStep: View {
     ) -> some View {
         HStack(spacing: Spacing.unit) {
             Image(systemName: icon)
-                .foregroundStyle(Color.slate)
+                .foregroundStyle(Color.textSecondary)
                 .frame(width: 28)
             Text(title)
                 .font(.bodyText)
@@ -157,7 +166,7 @@ private struct OnboardingPermissionsStep: View {
             } else {
                 Button("Allow", action: action)
                     .font(.captionTextSemibold)
-                    .foregroundStyle(Color.actionCoral)
+                    .foregroundStyle(Color.actionCoralLink)
             }
         }
         .padding(Spacing.unit)

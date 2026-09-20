@@ -42,6 +42,45 @@ jobs:
         working-directory: ios
       - run: xcodebuild -project ios/ParkAgent.xcodeproj -scheme ParkAgent -destination 'generic/platform=iOS Simulator' build CODE_SIGNING_ALLOWED=NO
 
+  ui-tests:
+    runs-on: macos-latest
+    # Simulator boot on hosted runners is historically flaky (and the device
+    # roster shifts with the Xcode image), so a red run here doesn't block the
+    # PR yet. Revisit once a few weeks of runs look stable.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/cache@v6
+        with:
+          path: ~/Library/Caches/Homebrew/downloads
+          key: brew-downloads-${{ runner.os }}-xcodegen
+      - run: brew install xcodegen
+      - run: cp ios/Config.example.xcconfig ios/Config.xcconfig
+      - run: xcodegen generate
+        working-directory: ios
+      # Fall back to any iPhone the image ships if the preferred device is
+      # missing, rather than hard-failing on the name.
+      - id: sim
+        run: |
+          DEVICE="iPhone 17 Pro Max"
+          if ! xcrun simctl list devices available | grep -q "$DEVICE"; then
+            DEVICE=$(xcrun simctl list devices available | grep -oE 'iPhone [^(]+' | head -1 | sed 's/ *$//')
+          fi
+          echo "device=$DEVICE" >> "$GITHUB_OUTPUT"
+          echo "Using simulator: $DEVICE"
+      - run: >
+          xcodebuild -project ios/ParkAgent.xcodeproj -scheme ParkAgent
+          -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.device }}"
+          -resultBundlePath TestResults.xcresult
+          test CODE_SIGNING_ALLOWED=NO
+      # The xcresult bundle carries the XCTAttachment screenshots from the
+      # snapshot tests.
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: ui-test-results
+          path: TestResults.xcresult
+
   deploy:
     # Merging to main deploys; nobody needs the Fly token locally.
     needs: [server, ios]

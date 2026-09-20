@@ -43,8 +43,10 @@ struct ActiveSessionView: View {
         @Bindable var model = model
         return ScrollView {
             VStack(spacing: Spacing.unit) {
-                TimelineView(.periodic(from: .now, by: 1)) { context in
-                    countdown(session, at: context.date)
+                // AppClock.now, not context.date: with the test clock frozen,
+                // the countdown must agree with the mock's expiry.
+                TimelineView(.periodic(from: .now, by: 1)) { _ in
+                    countdown(session, at: AppClock.now)
                 }
 
                 if session.maxStayReached {
@@ -68,7 +70,7 @@ struct ActiveSessionView: View {
                 if let distance = model.distanceFromCarMeters {
                     HStack(spacing: Spacing.half) {
                         Image(systemName: "figure.walk")
-                            .foregroundStyle(Color.slate)
+                            .foregroundStyle(Color.textSecondary)
                         Text("About \(Format.distanceMeters(distance)) from your car")
                             .font(.secondaryText)
                             .foregroundStyle(Color.textSecondary)
@@ -87,17 +89,22 @@ struct ActiveSessionView: View {
                         set: { model.activeSession?.autoExtend = $0 }
                     )
                 )
+                .accessibilityIdentifier("session.autoExtendToggle")
 
                 Button(extendTitle) {
                     Task { await model.extendSession() }
                 }
                 .buttonStyle(.primary)
                 .disabled(!session.canExtend)
+                .accessibilityIdentifier("session.extendButton")
 
                 Button("Stop session") { confirmingStop = true }
                     .buttonStyle(.destructive)
+                    .accessibilityIdentifier("session.stopButton")
             }
             .padding(Spacing.unit)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("session.view")
         }
         .confirmationDialog("Stop this session?", isPresented: $confirmingStop, titleVisibility: .visible) {
             Button("Stop session", role: .destructive) {
@@ -118,6 +125,7 @@ struct ActiveSessionView: View {
             Text(expired ? "Expired" : Format.countdown(remaining))
                 .font(.numeralLarge)
                 .foregroundStyle(expired ? Color.danger : expiring ? Color.warningGold : Color.textPrimary)
+                .accessibilityIdentifier("session.countdown")
             Text("until \(Format.clockTime(session.expiresAt))")
                 .font(.secondaryText)
                 .foregroundStyle(Color.textSecondary)

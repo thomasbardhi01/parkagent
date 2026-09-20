@@ -4,11 +4,22 @@ struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @Environment(PermissionsManager.self) private var permissions
     @AppStorage(MockScenario.defaultsKey) private var mockScenario = MockScenario.singleQuote.rawValue
+    @AppStorage(AppearanceSetting.defaultsKey) private var appearanceRaw = AppearanceSetting.system.rawValue
 
     var body: some View {
         @Bindable var model = model
         NavigationStack {
             Form {
+                Section("Appearance") {
+                    Picker("Appearance", selection: $appearanceRaw) {
+                        ForEach(AppearanceSetting.allCases) { setting in
+                            Text(setting.label).tag(setting.rawValue)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier("settings.appearancePicker")
+                }
+
                 policySection
 
                 Section("Permissions") {
@@ -16,19 +27,21 @@ struct SettingsView: View {
                     LabeledContent("Motion", value: motionStatusText)
                     if permissions.locationDenied || permissions.motionStatus == .denied {
                         Button("Open Settings") { openSystemSettings() }
-                            .foregroundStyle(Color.actionCoral)
+                            .foregroundStyle(Color.actionCoralLink)
                     }
                 }
 
                 #if DEBUG
                 Section {
                     Toggle("Use mock API", isOn: $model.useMockAPI)
+                        .accessibilityIdentifier("settings.mockToggle")
                     if model.useMockAPI {
                         Picker("Mock scenario", selection: $mockScenario) {
                             ForEach(MockScenario.allCases) { scenario in
                                 Text(scenario.label).tag(scenario.rawValue)
                             }
                         }
+                        .accessibilityIdentifier("settings.scenarioPicker")
                     }
                     if model.liveAPIUnavailable {
                         Text("Live API is not configured — add API_BASE_URL and API_KEY to Config.xcconfig. Using the mock instead.")
@@ -37,6 +50,7 @@ struct SettingsView: View {
                     }
                     LabeledContent("API base", value: AppConfig.apiBaseURL?.absoluteString ?? "not set")
                     NavigationLink("Debug menu") { DebugMenuView() }
+                        .accessibilityIdentifier("settings.debugMenuLink")
                 } header: {
                     Text("Developer")
                 } footer: {
@@ -54,6 +68,8 @@ struct SettingsView: View {
             .navigationTitle("Settings")
             .tint(.actionCoral)
             .refreshable { await model.loadPolicy() }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("settings.view")
         }
     }
 
@@ -80,7 +96,7 @@ struct SettingsView: View {
                     Button("Try again") {
                         Task { await model.loadPolicy() }
                     }
-                    .foregroundStyle(Color.actionCoral)
+                    .foregroundStyle(Color.actionCoralLink)
                 }
             } else {
                 HStack {

@@ -20,7 +20,9 @@ struct StatusPill: View {
         var color: Color {
             switch self {
             case .paid: .success
-            case .active: .slate
+            // textSecondary, not slate: slate is fixed and unreadable on its
+            // own tint over the dark surface.
+            case .active: .textSecondary
             case .expiring: .warningGold
             case .failed: .danger
             }
@@ -35,7 +37,9 @@ struct StatusPill: View {
             .foregroundStyle(status.color)
             .padding(.horizontal, 10)
             .padding(.vertical, Spacing.quarter)
-            .background(status.color.opacity(0.14))
+            // 0.10, not 0.14: in dark mode the tint brightens the pill enough
+            // to cost the text its 4.5:1.
+            .background(status.color.opacity(0.10))
             .clipShape(Capsule())
     }
 }

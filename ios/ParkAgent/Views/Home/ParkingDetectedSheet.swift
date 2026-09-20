@@ -29,6 +29,8 @@ struct ParkingDetectedSheet: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(Color.appBackground)
         .interactiveDismissDisabled(model.isPaying)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("parkedSheet.view")
     }
 
     @ViewBuilder
@@ -91,14 +93,23 @@ struct ParkingDetectedSheet: View {
                     rateFirstHourUsd: candidate.rateFirstHourUsd,
                     rateAdditionalHourUsd: candidate.rateAdditionalHourUsd,
                     maxStayMinutes: candidate.maxStayMinutes,
-                    isSelected: candidate.zoneId == effectiveSelectionId
+                    isSelected: candidate.zoneId == selectedZoneId
                 )
             }
             .buttonStyle(.plain)
+            .accessibilityIdentifier("parkedSheet.candidate.\(candidate.parknycZoneNumber)")
         }
         Spacer(minLength: 0)
         if let selected = selectedCandidate {
             payButtons(for: selected)
+        } else {
+            // The whole point of this state is that the sides disagree, so
+            // paying stays disabled until the user picks one.
+            Button("Pay") {}
+                .buttonStyle(.primary)
+                .disabled(true)
+                .accessibilityIdentifier("parkedSheet.payButton")
+            dismissButton
         }
     }
 
@@ -138,14 +149,15 @@ struct ParkingDetectedSheet: View {
             .padding(Spacing.unit)
             .background(Color.surface)
             .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
+            .accessibilityIdentifier("parkedSheet.zoneField")
         Spacer(minLength: 0)
         Button("Get quote") {
             model.quoteForManualZone(zoneNumber: manualZoneNumber)
         }
         .buttonStyle(.primary)
         .disabled(manualZoneNumber.isEmpty)
-        Button("Not parked here") { model.dismissParkedSheet() }
-            .buttonStyle(.secondary)
+        .accessibilityIdentifier("parkedSheet.getQuoteButton")
+        dismissButton
     }
 
     // MARK: - Pieces
@@ -162,13 +174,16 @@ struct ParkingDetectedSheet: View {
             Text(Format.money(quote.totalUsd))
                 .font(.numeral)
                 .foregroundStyle(Color.textPrimary)
+                .accessibilityIdentifier("parkedSheet.total")
             Text("\(Format.minutes(quote.stayMinutes)) · \(Format.money(quote.meterUsd)) meter + \(Format.money(quote.feeUsd)) fee")
                 .font(.captionText)
                 .foregroundStyle(Color.textSecondary)
             if parked.dryRun {
                 Text("Dry run — no money moves")
                     .font(.captionTextSemibold)
-                    .foregroundStyle(Color.slate)
+                    // textSecondary, not slate: slate is fixed and drops to
+                    // 2.7:1 on the dark sheet background.
+                    .foregroundStyle(Color.textSecondary)
             }
         }
     }
@@ -180,9 +195,15 @@ struct ParkingDetectedSheet: View {
         }
         .buttonStyle(.primary)
         .disabled(model.isPaying)
+        .accessibilityIdentifier("parkedSheet.payButton")
+        dismissButton
+    }
+
+    private var dismissButton: some View {
         Button("Not parked here") { model.dismissParkedSheet() }
             .buttonStyle(.secondary)
             .disabled(model.isPaying)
+            .accessibilityIdentifier("parkedSheet.dismissButton")
     }
 
     private func paySelected() async {
@@ -190,12 +211,8 @@ struct ParkingDetectedSheet: View {
         await model.pay(candidate: candidate)
     }
 
-    private var effectiveSelectionId: String? {
-        selectedZoneId ?? parked.candidates.first?.zoneId
-    }
-
     private var selectedCandidate: Candidate? {
-        parked.candidates.first { $0.zoneId == effectiveSelectionId }
+        parked.candidates.first { $0.zoneId == selectedZoneId }
     }
 
     /// The API carries no street names, so the subtitle is distance + hours.
@@ -227,7 +244,7 @@ struct SessionsNotBuiltView: View {
             Spacer(minLength: Spacing.unit)
             Image(systemName: "hammer.circle.fill")
                 .font(.system(size: 44))
-                .foregroundStyle(Color.slate)
+                .foregroundStyle(Color.textSecondary)
             Text("Paying is not wired up yet")
                 .font(.bodyTextSemibold)
                 .foregroundStyle(Color.textPrimary)

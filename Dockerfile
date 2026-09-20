@@ -24,7 +24,9 @@ COPY server/package.json server/package.json
 COPY executor/package.json executor/package.json
 RUN pnpm install --frozen-lockfile --filter server
 COPY server server
-RUN pnpm -C server build
+# `build` runs `prisma generate` first; generate never connects, but
+# prisma7.config.ts wants a DATABASE_URL present (same dummy trick as CI).
+RUN DATABASE_URL="postgresql://build:build@localhost:5432/build" pnpm -C server build
 
 # -------------------------------------------------------------- runtime stage
 # Production dependencies are installed fresh rather than copied from the build
@@ -38,9 +40,17 @@ COPY executor/package.json executor/package.json
 RUN pnpm install --frozen-lockfile --prod --filter server
 COPY --from=build /app/server/dist server/dist
 
-# TODO(Phase 2): once prisma/schema.prisma has models and the server imports
-# @prisma/client, this needs a `pnpm -C server exec prisma generate` step — and
-# prisma/ must be COPYed in for it.
+# Migrations run at release time (fly.toml [deploy].release_command), so the
+# runtime image carries the prisma CLI (a production dependency now), the
+# schema + migrations, and the config that reads DATABASE_URL from the env.
+# (The generated client itself is compiled into dist/ by the build stage.)
+COPY server/prisma7.config.ts server/prisma7.config.ts
+COPY server/prisma server/prisma
+
+# Read at boot from /app/policy.json (see server/src/index.ts). chown so PUT
+# /policy can rewrite it; on Fly that edit lasts until the next deploy, and
+# every accepted policy is recorded in policy_snapshots regardless.
+COPY --chown=node:node policy.json policy.json
 
 # Build metadata surfaced by /health. The CI deploy step passes these;
 # local `fly deploy` / `docker build` without args falls back to "dev".

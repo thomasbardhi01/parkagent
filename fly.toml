@@ -12,6 +12,12 @@ primary_region = 'ewr'
   # DRY_RUN, DATABASE_URL, STRIPE_* and SOCRATA_APP_TOKEN come from
   # `fly secrets set`, never from this file.
 
+[deploy]
+  # Apply pending Prisma migrations before the new version takes traffic.
+  # Runs in a one-off machine from the image (WORKDIR /app/server); the bin
+  # path avoids depending on corepack fetching pnpm at release time.
+  release_command = './node_modules/.bin/prisma migrate deploy'
+
 [http_service]
   internal_port = 3000
   force_https = true

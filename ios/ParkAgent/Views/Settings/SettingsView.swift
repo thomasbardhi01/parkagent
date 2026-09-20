@@ -4,6 +4,7 @@ struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @Environment(PermissionsManager.self) private var permissions
     @AppStorage(MockScenario.defaultsKey) private var mockScenario = MockScenario.singleQuote.rawValue
+    @AppStorage(CardMockScenario.defaultsKey) private var cardScenario = CardMockScenario.ready.rawValue
     @AppStorage(AppearanceSetting.defaultsKey) private var appearanceRaw = AppearanceSetting.system.rawValue
 
     var body: some View {
@@ -42,6 +43,12 @@ struct SettingsView: View {
                             }
                         }
                         .accessibilityIdentifier("settings.scenarioPicker")
+                        Picker("Card scenario", selection: $cardScenario) {
+                            ForEach(CardMockScenario.allCases) { scenario in
+                                Text(scenario.label).tag(scenario.rawValue)
+                            }
+                        }
+                        .accessibilityIdentifier("settings.cardScenarioPicker")
                     }
                     if model.liveAPIUnavailable {
                         Text("Live API is not configured — add API_BASE_URL and API_KEY to Config.xcconfig. Using the mock instead.")

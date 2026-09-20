@@ -61,6 +61,13 @@ and your `DEVELOPMENT_TEAM` filled in; the file is gitignored and holds
 Maps use MapKit for now; Mapbox is a possible later swap and nothing outside
 the map views should depend on MapKit types.
 
+The Card tab's "Add to Apple Pay" is behind `FeatureFlags.applePayProvisioning`
+(default off, showing "coming soon"). Turning it on for real requires the
+`com.apple.developer.payment-pass-provisioning` entitlement, which Apple
+grants only after an application through Stripe (support-issuing@stripe.com)
+— add it to `project.yml` when approved, plus the Stripe iOS SDK for
+`STPPushProvisioningContext` (see AddToWalletButton.swift).
+
 ## Pinned versions
 Two server deps are deliberately held below `latest`. Don't bump them casually.
 - `prisma` / `@prisma/client` pinned to `^7`. The `latest` npm tag currently

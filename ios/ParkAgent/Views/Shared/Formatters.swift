@@ -32,6 +32,13 @@ enum Format {
         return date.formatted(.dateTime.month(.abbreviated).day().hour().minute())
     }
 
+    /// Section headers for day-grouped lists.
+    static func dayHeader(_ date: Date) -> String {
+        if Calendar.current.isDateInToday(date) { return "Today" }
+        if Calendar.current.isDateInYesterday(date) { return "Yesterday" }
+        return date.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day())
+    }
+
     static func distanceMeters(_ meters: Double) -> String {
         meters < 1000 ? "\(Int(meters.rounded())) m" : String(format: "%.1f km", meters / 1000)
     }

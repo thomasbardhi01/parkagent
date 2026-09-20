@@ -45,7 +45,88 @@ struct LiveAPI: APIClient {
         let _: Ignored = try await send("device", method: "POST", body: registration)
     }
 
+    // MARK: - Card
+
+    func card() async throws -> CardResponse {
+        try await send("card")
+    }
+
+    func cardTransactions(cursor: String?) async throws -> CardTransactionsResponse {
+        var path = "card/transactions"
+        if let cursor, let escaped = cursor.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
+            path += "?cursor=\(escaped)"
+        }
+        return try await send(path)
+    }
+
+    func cardTopup(amountUsd: Double) async throws -> CardFundingResponse {
+        try await send("card/funding/topup", method: "POST", body: ["amountUsd": amountUsd])
+    }
+
+    func cardWithdraw(amountUsd: Double) async throws -> CardFundingResponse {
+        try await send("card/funding/withdraw", method: "POST", body: ["amountUsd": amountUsd])
+    }
+
+    func freezeCard() async throws -> CardStatusResponse {
+        struct Empty: Encodable {}
+        return try await send("card/freeze", method: "POST", body: Empty())
+    }
+
+    func unfreezeCard() async throws -> CardStatusResponse {
+        struct Empty: Encodable {}
+        return try await send("card/unfreeze", method: "POST", body: Empty())
+    }
+
+    /// Client-side PAN reveal: our server hands out a short-lived ephemeral
+    /// key (GET /card/reveal) and the details come straight from Stripe —
+    /// the number and CVC never transit the ParkAgent server.
+    func revealCardDetails() async throws -> RevealedCardDetails {
+        let reveal: CardRevealResponse = try await send("card/reveal")
+
+        var request = URLRequest(url: URL(string: "https://api.stripe.com/v1/issuing/cards/\(reveal.stripeCardId)?expand[]=number&expand[]=cvc")!)
+        request.setValue("Bearer \(reveal.ephemeralKeySecret)", forHTTPHeaderField: "Authorization")
+        request.setValue(reveal.apiVersion, forHTTPHeaderField: "Stripe-Version")
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            throw APIError.transport(error)
+        }
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+            throw APIError.server(status: (response as? HTTPURLResponse)?.statusCode ?? 0)
+        }
+
+        struct StripeCard: Decodable {
+            let number: String?
+            let cvc: String?
+            let expMonth: Int
+            let expYear: Int
+            enum CodingKeys: String, CodingKey {
+                case number, cvc
+                case expMonth = "exp_month"
+                case expYear = "exp_year"
+            }
+        }
+        do {
+            let card = try JSONDecoder().decode(StripeCard.self, from: data)
+            guard let number = card.number, let cvc = card.cvc else {
+                // Stripe withheld the sensitive fields (key too old, or the
+                // account requires the Elements nonce flow).
+                throw APIError.refused(code: "reveal_unavailable")
+            }
+            return RevealedCardDetails(number: number, cvc: cvc, expMonth: card.expMonth, expYear: card.expYear)
+        } catch let error as APIError {
+            throw error
+        } catch {
+            throw APIError.transport(error)
+        }
+    }
+
     // MARK: - Transport
+
+    private struct Refusal: Decodable { let error: String }
 
     private func send<Response: Decodable>(
         _ path: String,
@@ -80,6 +161,13 @@ struct LiveAPI: APIClient {
             throw APIError.invalidRequest(String(data: data, encoding: .utf8) ?? "bad request")
         case 401:
             throw APIError.unauthorized
+        case 409, 503:
+            // Named refusals carry {"error": "<code>"} (dry_run,
+            // funding_unavailable, session_already_active, …).
+            if let refusal = try? Self.decoder.decode(Refusal.self, from: data) {
+                throw APIError.refused(code: refusal.error)
+            }
+            throw APIError.server(status: status)
         case 501:
             throw APIError.notImplemented
         default:

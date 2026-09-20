@@ -14,20 +14,25 @@ import { DryRunExecutor } from "../src/services/executor.js";
 import { makePendingSessionCheck } from "../src/services/pendingSession.js";
 import type { StripeGateway } from "../src/services/stripeGateway.js";
 import type { Policy } from "../src/services/policy.js";
-import { makeFakeDb, makePolicyService, MONDAY_2PM, seedSession } from "./helpers.js";
+import {
+  makeFakeDb,
+  makeFakeGateway,
+  makePolicyService,
+  MONDAY_2PM,
+  seedSession,
+} from "./helpers.js";
 
 const VALID_SIG = "test-signature";
 const CARD_ID = "ic_test_1";
 const USER_ID = "u1";
 
 function makeFakeStripe() {
-  const gateway: StripeGateway = {
+  const gateway: StripeGateway = makeFakeGateway({
     verifyEvent: (payload, signature) => {
       if (signature !== VALID_SIG) throw new Error("signature mismatch");
       return JSON.parse(payload.toString()) as Stripe.Event;
     },
-    apiVersion: "2026-08-26.dahlia",
-  };
+  });
   return { gateway };
 }
 

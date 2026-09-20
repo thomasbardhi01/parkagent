@@ -71,7 +71,10 @@ const executorFor = makeExecutorProvider({
 // env.ts guarantees the webhook secret is present whenever the key is.
 const stripe =
   env.STRIPE_SECRET_KEY && env.STRIPE_WEBHOOK_SECRET
-    ? makeStripeGateway(env.STRIPE_SECRET_KEY, env.STRIPE_WEBHOOK_SECRET)
+    ? makeStripeGateway(env.STRIPE_SECRET_KEY, env.STRIPE_WEBHOOK_SECRET, {
+        financialAccount: env.STRIPE_FINANCIAL_ACCOUNT,
+        payoutRecipient: env.STRIPE_PAYOUT_RECIPIENT,
+      })
     : undefined;
 
 const app = buildApp({

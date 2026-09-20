@@ -319,6 +319,131 @@ decline.
 
 ---
 
+## Card endpoints
+
+The Card tab's server surface over the Phase 6 Issuing tables. All of these
+require `x-api-key`; everything that talks to Stripe answers
+`503 {"error": "stripe_not_configured"}` when `STRIPE_SECRET_KEY` isn't set.
+The full card number **never** transits this server: the app reveals it
+client-side with an ephemeral key (see `GET /card/reveal`).
+
+### GET /card
+
+The user's virtual card summary. With no card yet (issuing:setup hasn't
+run), `200` with `card: null` — the app shows its "set up" state.
+
+```json
+{
+  "card": {
+    "stripeCardId": "ic_…",
+    "last4": "4242",
+    "brand": "Visa",
+    "status": "active",          // active | inactive (frozen) | canceled
+    "expMonth": 8,
+    "expYear": 2030,
+    "cardholderName": "Thomas",
+    "spendingControls": {         // the controls actually on the Stripe card,
+      "perAuthorizationUsd": 45,  // mirrored from policy.json at the last
+      "dailyUsd": 60              // issuing:setup run
+    },
+    "spentTodayUsd": 7.28,        // approved authorizations, NYC day
+    "spentThisMonthUsd": 12.28    // approved authorizations, NYC month
+  },
+  "funding": {                    // financial-account balance, best-effort:
+    "available": true,            // false (fields absent) when the account
+    "balanceUsd": 50.0,           // isn't ready or Stripe hiccups — the card
+    "pendingUsd": 0               // still renders
+  },
+  "dryRun": true
+}
+```
+
+Brand, expiry, and cardholder name are read live from Stripe; a status
+changed in the Stripe dashboard is re-mirrored onto `issuing_cards`.
+
+### GET /card/transactions
+
+`?limit=20&cursor=…` → the user's `issuing_authorizations` ledger, newest
+first. `cursor` is opaque (echo back `nextCursor`); `nextCursor: null`
+means the last page.
+
+```json
+{
+  "items": [{
+    "id": "…",                       // issuing_authorizations.id
+    "stripeAuthorizationId": "iauth_…",
+    "merchantName": "PARKNYC TEST METER",
+    "merchantCategory": "parking_lots_garages",
+    "amountUsd": 7.28,               // the hold
+    "capturedUsd": 7.28,             // settled amount; null until captured
+    "approved": true,
+    "decision": "approved",          // approved | declined_* | external
+    "status": "closed",              // Stripe lifecycle: pending | closed | reversed
+    "createdAt": "2026-01-05T18:00:00.000Z",
+    "sessionId": "…"                 // linked parking session, or null
+  }],
+  "nextCursor": "2026-01-05T18:00:00.000Z"
+}
+```
+
+`sessionId` is a read-time join: the newest session of the user that
+started within the 10 minutes before the charge — the same window the
+webhook approves against (`services/pendingSession.ts`). The ledger row
+itself stores no session id.
+
+### POST /card/funding/topup · POST /card/funding/withdraw
+
+`{amountUsd}` → move money onto / off the Stripe financial account backing
+the card. **Test mode only for now**: top-up simulates an ACH credit at the
+account's financial address via Stripe's sandbox test helper; withdraw
+creates a v2 outbound payment to the Global Payouts recipient in
+`STRIPE_PAYOUT_RECIPIENT` (unset → `funding_unavailable`).
+
+Both are policy-gated and audited — every call writes a `decisions` row
+(kind `card_topup` / `card_withdraw`), and checks run in webhook order
+(caps first, dry run last, so the audit shows what would have happened):
+
+| Refusal | Status | Condition |
+|---|---|---|
+| `amount_over_daily_cap` | 409 | a single move may not exceed `daily_cap_usd` |
+| `insufficient_funds` | 409 | withdraw only; carries `balanceUsd` |
+| `dry_run` | 409 | either dry-run switch on; outcome records `wouldAllow: true` |
+| `funding_unavailable` | 503 | financial account/address/recipient not ready; carries `reason` — this is the "not available yet" answer, never a 500 |
+| `stripe_failed` | 502 | any other Stripe error |
+
+Success: `200 {"ok": true, "balanceUsd": …, "pendingUsd": …, "decisionId": …}`
+(the balance re-read after the move; a test-mode ACH credit may land in
+`pendingUsd` first).
+
+### GET /card/reveal
+
+Short-lived Stripe ephemeral key for client-side PAN reveal — the app
+calls Stripe's API directly with it; the number and CVC never touch this
+server. Optional query params for Stripe client SDKs: `api_version` (the
+version the SDK speaks; defaults to the server SDK's pinned version) and
+`nonce` (Issuing Elements flow). Every reveal writes a `decisions` row
+(kind `card_reveal`).
+
+```json
+{
+  "stripeCardId": "ic_…",
+  "ephemeralKeySecret": "ek_test_…",
+  "apiVersion": "2026-08-26.dahlia",
+  "expiresAt": "2026-01-05T19:15:00.000Z"   // Stripe keys live ~15 minutes
+}
+```
+
+`404 {"error": "no_card"}` when issuing:setup hasn't run.
+
+### POST /card/freeze · POST /card/unfreeze
+
+No body. Sets the Stripe card `status` to `inactive` / `active`, mirrors it
+onto `issuing_cards`, writes a `decisions` row (kind `card_status`), and
+returns `{"status": "inactive" | "active"}`. A frozen card declines inside
+Stripe before the webhook ever sees the authorization.
+
+---
+
 ## GET /policy
 
 Returns the active policy plus bookkeeping:

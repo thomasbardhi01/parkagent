@@ -11,6 +11,11 @@ const schema = z
     SOCRATA_APP_TOKEN: z.string().min(1),
     STRIPE_SECRET_KEY: z.string().min(1).optional(),
     STRIPE_WEBHOOK_SECRET: z.string().min(1).optional(),
+    // fa_… the cards draw from; discovered from an existing card when unset.
+    STRIPE_FINANCIAL_ACCOUNT: z.string().min(1).optional(),
+    // Global Payouts recipient for /card/funding/withdraw; without it
+    // withdrawals answer funding_unavailable.
+    STRIPE_PAYOUT_RECIPIENT: z.string().min(1).optional(),
     // Contents of the .p8 AuthKey file (literal newlines or "\n" escapes).
     APNS_KEY: z.string().min(1).optional(),
     APNS_KEY_ID: z.string().min(1).optional(),

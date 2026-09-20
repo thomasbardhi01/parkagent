@@ -85,6 +85,24 @@ export interface ZoneTermsRow {
   hoursJson: unknown;
 }
 
+/** Full ledger row, as GET /card/transactions reads it. */
+export interface IssuingAuthorizationRow {
+  id: string;
+  stripeAuthorizationId: string;
+  stripeCardId: string;
+  userId: string | null;
+  amountUsd: unknown;
+  merchantCategory: string | null;
+  merchantCategoryCode: string | null;
+  merchantName: string | null;
+  approved: boolean;
+  decision: string;
+  status: string;
+  stripeTransactionId: string | null;
+  capturedUsd: unknown;
+  createdAt: Date;
+}
+
 export interface AppDb {
   user: {
     findUnique(args: { where: { apiKey: string } }): Promise<{ id: string; name: string } | null>;
@@ -121,18 +139,42 @@ export interface AppDb {
       };
     }): Promise<{ id: string }>;
   };
+  issuingCardholder: {
+    findUnique(args: { where: { userId: string }; include: { cards: true } }): Promise<{
+      id: string;
+      stripeCardholderId: string;
+      name: string;
+      cards: {
+        id: string;
+        stripeCardId: string;
+        last4: string;
+        status: string;
+        perAuthCapUsd: unknown;
+        dailyCapUsd: unknown;
+      }[];
+    } | null>;
+  };
   issuingCard: {
     findUnique(args: {
       where: { stripeCardId: string };
       include: { cardholder: true };
     }): Promise<{ id: string; stripeCardId: string; cardholder: { userId: string } } | null>;
+    update(args: { where: { stripeCardId: string }; data: { status: string } }): Promise<unknown>;
   };
   issuingAuthorization: {
     findUnique(args: { where: { stripeAuthorizationId: string } }): Promise<{ id: string } | null>;
+    // Two shapes share findMany (interface overloads): the daily/monthly spend
+    // sum reads amounts only; the transactions list reads full rows, newest
+    // first, with an optional created-before cursor.
     findMany(args: {
       where: { userId: string; approved: boolean; createdAt: { gte: Date } };
       select: { amountUsd: true };
     }): Promise<{ amountUsd: unknown }[]>;
+    findMany(args: {
+      where: { userId: string; createdAt?: { lt: Date } };
+      orderBy: { createdAt: "desc" };
+      take: number;
+    }): Promise<IssuingAuthorizationRow[]>;
     create(args: {
       data: {
         stripeAuthorizationId: string;

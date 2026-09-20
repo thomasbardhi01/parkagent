@@ -18,6 +18,7 @@ import type { Executor } from "../src/services/executor.js";
 import { DryRunExecutor } from "../src/services/executor.js";
 import type { Policy } from "../src/services/policy.js";
 import { PolicyService } from "../src/services/policy.js";
+import type { StripeGateway } from "../src/services/stripeGateway.js";
 import type { Candidate } from "../src/services/zoneLookup.js";
 
 export const API_KEY = "test-key";
@@ -191,8 +192,17 @@ export interface FakeDbState {
     environment: string;
   }[];
   zones: ZoneTermsRow[];
-  /** Cards the fake issuingCard.findUnique can resolve, stripeCardId → userId. */
-  issuingCards: { stripeCardId: string; userId: string }[];
+  /** Cards the fake issuingCard/issuingCardholder queries resolve. The card
+   * routes read the extra fields; the webhook only needs the id → user link. */
+  issuingCards: {
+    stripeCardId: string;
+    userId: string;
+    last4?: string;
+    status?: string;
+    perAuthCapUsd?: number;
+    dailyCapUsd?: number;
+    holderName?: string;
+  }[];
   issuingAuthorizations: FakeIssuingAuthorizationRow[];
 }
 
@@ -340,6 +350,26 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
         return {};
       },
     },
+    issuingCardholder: {
+      findUnique: async ({ where }) => {
+        const cards = state.issuingCards.filter((c) => c.userId === where.userId);
+        const first = cards[0];
+        if (!first) return null;
+        return {
+          id: `ch-${where.userId}`,
+          stripeCardholderId: `ich-${where.userId}`,
+          name: first.holderName ?? "Thomas",
+          cards: cards.map((c) => ({
+            id: `card-${c.stripeCardId}`,
+            stripeCardId: c.stripeCardId,
+            last4: c.last4 ?? "4242",
+            status: c.status ?? "active",
+            perAuthCapUsd: c.perAuthCapUsd ?? 45,
+            dailyCapUsd: c.dailyCapUsd ?? 60,
+          })),
+        };
+      },
+    },
     issuingCard: {
       findUnique: async ({ where }) => {
         const card = state.issuingCards.find((c) => c.stripeCardId === where.stripeCardId);
@@ -351,6 +381,11 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
             }
           : null;
       },
+      update: async ({ where, data }) => {
+        const card = state.issuingCards.find((c) => c.stripeCardId === where.stripeCardId);
+        if (card) Object.assign(card, data);
+        return card ?? {};
+      },
     },
     issuingAuthorization: {
       findUnique: async ({ where }) => {
@@ -359,15 +394,32 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
         );
         return row ? { id: row.stripeAuthorizationId } : null;
       },
-      findMany: async ({ where }) =>
-        state.issuingAuthorizations
+      // Serves both AppDb shapes: the spend sum (select amountUsd) and the
+      // transactions page (orderBy/take, optional created-before cursor).
+      findMany: (async (args: {
+        where: { userId: string; approved?: boolean; createdAt?: { gte?: Date; lt?: Date } };
+        select?: { amountUsd: true };
+        take?: number;
+      }) => {
+        const rows = state.issuingAuthorizations
           .filter(
             (a) =>
-              a.userId === where.userId &&
-              a.approved === where.approved &&
-              a.createdAt >= where.createdAt.gte,
+              a.userId === args.where.userId &&
+              (args.where.approved === undefined || a.approved === args.where.approved) &&
+              (args.where.createdAt?.gte === undefined ||
+                a.createdAt >= args.where.createdAt.gte) &&
+              (args.where.createdAt?.lt === undefined || a.createdAt < args.where.createdAt.lt),
           )
-          .map((a) => ({ amountUsd: a.amountUsd })),
+          .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+          .slice(0, args.take ?? Infinity);
+        if (args.select) return rows.map((a) => ({ amountUsd: a.amountUsd }));
+        return rows.map((a) => ({
+          id: a.stripeAuthorizationId,
+          stripeTransactionId: a.stripeTransactionId ?? null,
+          capturedUsd: a.capturedUsd ?? null,
+          ...a,
+        }));
+      }) as AppDb["issuingAuthorization"]["findMany"],
       create: async ({ data }) => {
         state.issuingAuthorizations.push({ ...data, createdAt: new Date() });
         return { id: data.stripeAuthorizationId };
@@ -402,6 +454,37 @@ export interface TestApp {
   pushes: { userId: string; push: Push }[];
 }
 
+/**
+ * A StripeGateway of benign fakes for the card routes: an active Visa, a
+ * funded balance, no-op moves. Override the pieces a test exercises;
+ * verifyEvent stays unusable (webhook tests build their own).
+ */
+export function makeFakeGateway(overrides: Partial<StripeGateway> = {}): StripeGateway {
+  return {
+    verifyEvent: () => {
+      throw new Error("verifyEvent not faked");
+    },
+    apiVersion: "2026-08-26.dahlia",
+    retrieveCard: async () => ({
+      brand: "Visa",
+      expMonth: 8,
+      expYear: 2030,
+      cardholderName: "Thomas",
+      status: "active",
+    }),
+    setCardStatus: async (_id, status) => status,
+    createEphemeralKey: async (_id, options = {}) => ({
+      secret: "ek_test_fake",
+      apiVersion: options.apiVersion ?? "2026-08-26.dahlia",
+      expiresAt: new Date(new Date(MONDAY_2PM).getTime() + 15 * 60_000),
+    }),
+    fundingBalance: async () => ({ balanceUsd: 50, pendingUsd: 0 }),
+    fundingTopup: async () => {},
+    fundingWithdraw: async () => {},
+    ...overrides,
+  };
+}
+
 export function makeTestApp(options: {
   candidates?: Candidate[];
   policy?: Partial<Policy>;
@@ -410,6 +493,8 @@ export function makeTestApp(options: {
   zones?: ZoneTermsRow[];
   /** Override the executor used for BOTH dry-run and real paths. */
   executor?: Executor;
+  /** Wire a (fake) Stripe gateway; without it /card & co. answer 503. */
+  stripe?: StripeGateway;
 }): TestApp {
   const { db, state } = makeFakeDb();
   state.zones.push(...(options.zones ?? []));
@@ -424,6 +509,7 @@ export function makeTestApp(options: {
     sendPush: async (userId, push) => {
       pushes.push({ userId, push });
     },
+    ...(options.stripe ? { stripe: options.stripe } : {}),
     ...(options.now ? { now: options.now } : {}),
   };
   return { app: buildApp(deps), state, deps, pushes };

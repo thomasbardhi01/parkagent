@@ -9,6 +9,37 @@ Python scripts that fetch NYC Open Data and build `zones.geojson`.
 Both output directories are gitignored; the pipeline is reproducible from the
 two scripts.
 
+## Refreshing zone data
+
+Rates change; the build plan says refresh monthly. No cron — run it by hand,
+each step from the repo root:
+
+    # 1. Fetch fresh NYC Open Data (--force refetches even if raw files exist)
+    uv run data/fetch_nyc.py --force
+
+    # 2. Rebuild zones.geojson from the raw data
+    uv run data/build_zones.py
+
+    # 3. Load dev (Neon) — DATABASE_URL comes from the repo-root .env
+    pnpm -C server load:zones
+
+    # 4. Load prod (Fly Postgres) — proxy the cluster to localhost first.
+    #    Terminal A (leave it running):
+    fly proxy 15432:5432 -a parkagent-db
+
+    #    Terminal B: read the app's DATABASE_URL, then run the loader against
+    #    the proxy — same URL with the host swapped for localhost:15432.
+    fly ssh console -a parkagent-api -C "printenv DATABASE_URL"
+    DATABASE_URL="postgres://<user>:<password>@localhost:15432/<db>?sslmode=disable" \
+      pnpm -C server load:zones
+
+An exported `DATABASE_URL` wins over the `.env` one (dotenv never overrides
+existing variables), which is what makes step 4 safe to run from the same
+checkout. The loader mirrors the file into the `zones` table (stale
+`data_version` rows deleted) and audits every run in `zone_loads`; prod must
+already have its migrations, which `fly deploy` applies via the release
+command. Add `-- --all` to a load to include commercial/charter faces.
+
 ## Sources
 
 | Dataset | Socrata ID | Used for |

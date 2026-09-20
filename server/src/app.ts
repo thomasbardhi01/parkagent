@@ -19,6 +19,8 @@ export interface AppDeps {
   policy: PolicyService;
   findCandidates: CandidateFetcher;
   authenticate: preHandlerHookHandler;
+  /** Injectable clock for tests; routes fall back to `new Date()`. */
+  now?: () => Date;
 }
 
 /** x-api-key → users.api_key. Everything but /health sits behind this. */

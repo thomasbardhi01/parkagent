@@ -181,6 +181,7 @@ export function makeTestApp(options: {
   candidates?: Candidate[];
   policy?: Partial<Policy>;
   envDryRun?: boolean;
+  now?: () => Date;
 }): TestApp {
   const { db, state } = makeFakeDb();
   const deps: AppDeps = {
@@ -188,6 +189,7 @@ export function makeTestApp(options: {
     policy: makePolicyService(options.policy, options.envDryRun ?? true),
     findCandidates: async () => options.candidates ?? [],
     authenticate: makeAuthenticate(db),
+    ...(options.now ? { now: options.now } : {}),
   };
   return { app: buildApp(deps), state, deps };
 }

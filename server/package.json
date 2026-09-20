@@ -9,7 +9,8 @@
     "test": "vitest run",
     "lint": "eslint src",
     "load:zones": "tsx src/scripts/load-zones.ts",
-    "create:user": "tsx src/scripts/create-user.ts"
+    "create:user": "tsx src/scripts/create-user.ts",
+    "decisions:recent": "tsx src/scripts/recent-decisions.ts"
   },
   "license": "UNLICENSED",
   "type": "module",

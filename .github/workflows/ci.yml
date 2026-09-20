@@ -8,9 +8,9 @@ jobs:
   server:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
         with: { node-version: lts/*, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm -C server lint
@@ -20,8 +20,16 @@ jobs:
   ios:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # The .xcodeproj is gitignored and generated from ios/project.yml.
+      # Caching Homebrew's download cache spares the bottle fetch on a warm
+      # run; the pour itself is quick. (Nothing in CI downloads Chromium:
+      # playwright's postinstall is blocked by allowBuilds and no job runs
+      # `playwright install` — revisit when Phase 5 adds executor tests.)
+      - uses: actions/cache@v6
+        with:
+          path: ~/Library/Caches/Homebrew/downloads
+          key: brew-downloads-${{ runner.os }}-xcodegen
       - run: brew install xcodegen
       # Config.xcconfig is gitignored; the example supplies an empty
       # DEVELOPMENT_TEAM, which is all an unsigned simulator build needs.
@@ -53,9 +61,12 @@ jobs:
             echo "present=false" >> "$GITHUB_OUTPUT"
             echo "::notice::FLY_API_TOKEN is not set; skipping deploy. Create it with 'fly tokens create deploy'."
           fi
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: steps.token.outputs.present == 'true'
       - uses: superfly/flyctl-actions/setup-flyctl@master
         if: steps.token.outputs.present == 'true'
-      - run: flyctl deploy --remote-only
+      - run: >
+          flyctl deploy --remote-only
+          --build-arg GIT_SHA=${GITHUB_SHA}
+          --build-arg BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
         if: steps.token.outputs.present == 'true'

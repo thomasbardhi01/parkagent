@@ -2,9 +2,10 @@
   "name": "parkagent",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "prepare": "lefthook install"
   },
   "keywords": [],
   "author": "",
@@ -17,5 +18,15 @@
     }
   },
   "packageManager": "pnpm@12.4.1",
-  "type": "module"
+  "type": "module",
+  "devDependencies": {
+    "lefthook": "^2.1.14",
+    "lint-staged": "^17.5.1",
+    "prettier": "^3.9.8"
+  },
+  "private": true,
+  "lint-staged": {
+    "*.{ts,js,mjs,cjs,json,yml,yaml}": "prettier --write",
+    "server/**/*.ts": "pnpm -C server exec eslint --fix --no-warn-ignored"
+  }
 }

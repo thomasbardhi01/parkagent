@@ -34,6 +34,10 @@ Mac App Store.
 ## Working style
 - Small PRs on feat/* branches, squash-merged into main.
 - Run `pnpm -r lint && pnpm -r test` before proposing a change.
+- `pnpm install` registers a lefthook pre-commit hook (see lefthook.yml):
+  lint-staged runs prettier and eslint --fix on staged files, then the server
+  tests run. `git commit --no-verify` bypasses it in a pinch; `pnpm format`
+  reformats the whole repo.
 - Ask before adding a dependency over ~50 KB or any native module.
 - When touching Swift, note that background location and motion permissions
   are already configured; do not add new entitlements without asking.

@@ -1,7 +1,8 @@
 /**
  * POST /webhooks/stripe with the Stripe SDK mocked out: the fake gateway
- * "verifies" by checking for a fixed signature header and parses the body,
- * and records approve/decline calls instead of hitting Stripe.
+ * "verifies" by checking for a fixed signature header and parses the body.
+ * Real-time decisions come back in the HTTP response ({approved, metadata}),
+ * so the assertions read the response, not recorded API calls.
  */
 
 import type Stripe from "stripe";
@@ -20,21 +21,20 @@ const CARD_ID = "ic_test_1";
 const USER_ID = "u1";
 
 function makeFakeStripe() {
-  const approved: string[] = [];
-  const declined: { id: string; reason: string }[] = [];
   const gateway: StripeGateway = {
     verifyEvent: (payload, signature) => {
       if (signature !== VALID_SIG) throw new Error("signature mismatch");
       return JSON.parse(payload.toString()) as Stripe.Event;
     },
-    approve: async (id) => {
-      approved.push(id);
-    },
-    decline: async (id, reason) => {
-      declined.push({ id, reason });
-    },
+    apiVersion: "2026-08-26.dahlia",
   };
-  return { gateway, approved, declined };
+  return { gateway };
+}
+
+/** The decline reason a request response carries, for terse assertions. */
+function reasonOf(res: { json(): { approved: boolean; metadata?: { reason?: string } } }) {
+  const body = res.json();
+  return { approved: body.approved, reason: body.metadata?.reason };
 }
 
 function makeWebhookApp(options: {
@@ -72,6 +72,7 @@ function authRequestEvent(
   return {
     id: "evt_1",
     type: "issuing_authorization.request",
+    api_version: "2026-08-26.dahlia",
     data: {
       object: {
         id: "iauth_1",
@@ -110,9 +111,8 @@ describe("POST /webhooks/stripe: issuing_authorization.request", () => {
     const t = makeWebhookApp({ ...LIVE, hasPendingSession: true });
     const res = await post(t.app, authRequestEvent());
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ approved: true, reason: "approved" });
-    expect(t.approved).toEqual(["iauth_1"]);
-    expect(t.declined).toEqual([]);
+    expect(res.headers["stripe-version"]).toBe("2026-08-26.dahlia");
+    expect(reasonOf(res)).toEqual({ approved: true, reason: "approved" });
     // The ledger row and the audit decision both landed.
     expect(t.state.issuingAuthorizations).toMatchObject([
       { stripeAuthorizationId: "iauth_1", userId: USER_ID, amountUsd: 7.28, approved: true },
@@ -145,8 +145,7 @@ describe("POST /webhooks/stripe: issuing_authorization.request", () => {
       createdAt: new Date(MONDAY_2PM),
     });
     const res = await post(t.app, authRequestEvent());
-    expect(res.json()).toMatchObject({ approved: false, reason: "declined_over_daily_cap" });
-    expect(t.declined).toEqual([{ id: "iauth_1", reason: "declined_over_daily_cap" }]);
+    expect(reasonOf(res)).toEqual({ approved: false, reason: "declined_over_daily_cap" });
     expect(t.state.decisions[0]!.inputs).toMatchObject({ spentTodayUsd: 55 });
   });
 
@@ -158,15 +157,13 @@ describe("POST /webhooks/stripe: issuing_authorization.request", () => {
         merchant_data: { category: "taxicabs_limousines", category_code: "4121", name: "TAXI" },
       } as never),
     );
-    expect(res.json()).toMatchObject({ approved: false, reason: "declined_wrong_mcc" });
-    expect(t.declined).toEqual([{ id: "iauth_1", reason: "declined_wrong_mcc" }]);
+    expect(reasonOf(res)).toEqual({ approved: false, reason: "declined_wrong_mcc" });
   });
 
   it("declines when no session is pending", async () => {
     const t = makeWebhookApp({ ...LIVE, hasPendingSession: false });
     const res = await post(t.app, authRequestEvent());
-    expect(res.json()).toMatchObject({ approved: false, reason: "declined_no_pending_session" });
-    expect(t.declined).toEqual([{ id: "iauth_1", reason: "declined_no_pending_session" }]);
+    expect(reasonOf(res)).toEqual({ approved: false, reason: "declined_no_pending_session" });
   });
 
   it("approves via the real sessions-table check when a session is fresh, declines when stale", async () => {
@@ -176,7 +173,10 @@ describe("POST /webhooks/stripe: issuing_authorization.request", () => {
       status: "pending",
       createdAt: new Date(new Date(MONDAY_2PM).getTime() - 5 * 60_000),
     });
-    expect((await post(fresh.app, authRequestEvent())).json()).toMatchObject({ approved: true });
+    expect(reasonOf(await post(fresh.app, authRequestEvent()))).toEqual({
+      approved: true,
+      reason: "approved",
+    });
 
     const stale = makeWebhookApp({ ...LIVE, realPendingCheck: true });
     seedSession(stale.state, {
@@ -185,7 +185,7 @@ describe("POST /webhooks/stripe: issuing_authorization.request", () => {
       startedAt: new Date(new Date(MONDAY_2PM).getTime() - 25 * 60_000),
       createdAt: new Date(new Date(MONDAY_2PM).getTime() - 25 * 60_000),
     });
-    expect((await post(stale.app, authRequestEvent())).json()).toMatchObject({
+    expect(reasonOf(await post(stale.app, authRequestEvent()))).toEqual({
       approved: false,
       reason: "declined_no_pending_session",
     });
@@ -194,7 +194,7 @@ describe("POST /webhooks/stripe: issuing_authorization.request", () => {
   it("declines an unknown card", async () => {
     const t = makeWebhookApp({ ...LIVE, hasPendingSession: true, knownCard: false });
     const res = await post(t.app, authRequestEvent());
-    expect(res.json()).toMatchObject({ approved: false, reason: "declined_unknown_card" });
+    expect(reasonOf(res)).toEqual({ approved: false, reason: "declined_unknown_card" });
     expect(t.state.issuingAuthorizations[0]).toMatchObject({ userId: null });
     expect(t.state.decisions[0]).toMatchObject({ userId: null });
   });
@@ -202,8 +202,7 @@ describe("POST /webhooks/stripe: issuing_authorization.request", () => {
   it("declines instead of approving while dry run is on, and records wouldApprove", async () => {
     const t = makeWebhookApp({ hasPendingSession: true }); // default: dry_run true
     const res = await post(t.app, authRequestEvent());
-    expect(res.json()).toMatchObject({ approved: false, reason: "declined_dry_run" });
-    expect(t.approved).toEqual([]);
+    expect(reasonOf(res)).toEqual({ approved: false, reason: "declined_dry_run" });
     expect(t.state.decisions[0]!.outcome).toMatchObject({ wouldApprove: true });
   });
 });

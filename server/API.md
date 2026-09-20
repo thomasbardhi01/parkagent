@@ -257,14 +257,19 @@ Setup: `pnpm -C server issuing:setup -- --user <id>` creates the user's
 cardholder and one virtual card with spending controls from `policy.json`
 (`allowed_categories: parking_lots_garages` only, per-authorization limit =
 `session_cap_usd`, daily limit = `daily_cap_usd`). Stripe IDs only — the
-card number never touches the repo or the database.
+card number never touches the repo or the database. On money-management
+Issuing accounts the card needs a financial account id, which the script
+discovers from an existing card or takes via `--financial-account` /
+`STRIPE_FINANCIAL_ACCOUNT`.
 
 ### issuing_authorization.request (real-time)
 
-Stripe holds the card swipe open (~2 s) while the server decides, answers
-via the approve/decline API call, then returns
-`200 {received, approved, reason}`. Checks, in order — first failure is the
-decline reason sent back to Stripe (kept in the authorization's metadata):
+Stripe holds the card swipe open (~2 s) while the server decides, then
+answers **in the HTTP response**: `200`, a `Stripe-Version` header, and
+`{approved, metadata: {reason}}` (the older approve/decline API calls are
+deprecated). The authorization and its `decisions` row are written before
+the reply, so the audit persists even if the response is slow. Checks, in
+order — the first failure is the `reason`:
 
 | Reason | Condition |
 |---|---|

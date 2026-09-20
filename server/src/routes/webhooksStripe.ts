@@ -3,10 +3,12 @@
  * STRIPE_WEBHOOK_SECRET. No x-api-key: the signature is the auth.
  *
  * issuing_authorization.request is the real-time path: Stripe holds the
- * card swipe open (~2s budget) while we decide, answer via the
- * approve/decline API call, and record the authorization plus a decisions
- * row. issuing_authorization.created/updated and issuing_transaction.created
- * keep the issuing_authorizations ledger in sync afterwards.
+ * card swipe open (~2s budget) while we decide, then we answer *in the HTTP
+ * response* — 200 with a `Stripe-Version` header and `{approved, metadata}`
+ * (the older approve/decline API calls are deprecated). The authorization
+ * and a decisions row are written before we reply, so the audit persists
+ * even if the response is slow. issuing_authorization.created/updated and
+ * issuing_transaction.created keep the issuing_authorizations ledger in sync.
  */
 
 import type { FastifyInstance, FastifyReply } from "fastify";
@@ -46,7 +48,7 @@ export function registerStripeWebhook(app: FastifyInstance, deps: AppDeps): void
 
       switch (event.type) {
         case "issuing_authorization.request":
-          return handleAuthorizationRequest(deps, event.data.object, reply);
+          return handleAuthorizationRequest(deps, event, reply);
         case "issuing_authorization.created":
         case "issuing_authorization.updated":
           await upsertAuthorization(deps, event.data.object);
@@ -63,9 +65,10 @@ export function registerStripeWebhook(app: FastifyInstance, deps: AppDeps): void
 
 async function handleAuthorizationRequest(
   deps: AppDeps,
-  auth: Stripe.Issuing.Authorization,
+  event: Stripe.IssuingAuthorizationRequestEvent,
   reply: FastifyReply,
 ) {
+  const auth = event.data.object;
   const at = deps.now?.() ?? new Date();
   const policy = deps.policy.get();
   const stripeCardId = cardId(auth);
@@ -106,15 +109,9 @@ async function handleAuthorizationRequest(
     policy,
   );
 
-  // Answer Stripe first — the 2s real-time budget is the tight constraint.
-  // If this call throws, Fastify 500s and Stripe applies its default (decline);
-  // the .created event will still land the row below as "external".
-  if (decision.approve) {
-    await deps.stripe!.approve(auth.id);
-  } else {
-    await deps.stripe!.decline(auth.id, decision.reason);
-  }
-
+  // Persist the audit BEFORE answering, so the decision survives even a slow
+  // or dropped response (Stripe's Autopilot may then approve/decline on our
+  // behalf, but request_history.reason records that — see the docs).
   await deps.db.issuingAuthorization.create({
     data: {
       stripeAuthorizationId: auth.id,
@@ -151,7 +148,14 @@ async function handleAuthorizationRequest(
     },
   });
 
-  return reply.send({ received: true, approved: decision.approve, reason: decision.reason });
+  // Answer the real-time request directly (200 + Stripe-Version header +
+  // {approved, metadata}); the version must be one Stripe supports, so we
+  // echo the event's own api_version.
+  return reply
+    .code(200)
+    .header("Stripe-Version", event.api_version ?? deps.stripe!.apiVersion)
+    .header("Content-Type", "application/json")
+    .send({ approved: decision.approve, metadata: { reason: decision.reason } });
 }
 
 /** .created/.updated: sync lifecycle onto the ledger row; create it if the

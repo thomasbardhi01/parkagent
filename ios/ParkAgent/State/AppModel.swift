@@ -12,6 +12,9 @@ final class AppModel {
     /// rather than chosen.
     private(set) var liveAPIUnavailable = false
 
+    let detector = ParkDetector()
+    let reporter = LocationReporter()
+
     var useMockAPI: Bool {
         didSet {
             UserDefaults.standard.set(useMockAPI, forKey: "useMockAPI")
@@ -26,13 +29,26 @@ final class AppModel {
     var pendingParked: ParkedResponse?
     var isPaying = false
     var paymentError: APIError?
+    /// Extend/stop failures on the Active Session screen.
+    var sessionActionError: APIError?
 
     var activeSession: ActiveSession?
     var history: [SessionRecord] = []
     var todaySpendUsd: Double = 0
 
-    var carCoordinate: CLLocationCoordinate2D?
-    /// Mock-supplied for now; PR C computes it from live location.
+    /// Persisted so the pin survives a relaunch while the car is parked.
+    var carCoordinate: CLLocationCoordinate2D? {
+        didSet {
+            let defaults = UserDefaults.standard
+            if let carCoordinate {
+                defaults.set(carCoordinate.latitude, forKey: "carLat")
+                defaults.set(carCoordinate.longitude, forKey: "carLng")
+            } else {
+                defaults.removeObject(forKey: "carLat")
+                defaults.removeObject(forKey: "carLng")
+            }
+        }
+    }
     var distanceFromCarMeters: Double?
 
     /// Columbus Ave near W 81st St — the worked example in server/API.md.
@@ -54,6 +70,12 @@ final class AppModel {
             liveAPIUnavailable = true
         }
         if mock { seedMockHistory() }
+
+        let defaults = UserDefaults.standard
+        if let lat = defaults.object(forKey: "carLat") as? Double,
+           let lng = defaults.object(forKey: "carLng") as? Double {
+            carCoordinate = CLLocationCoordinate2D(latitude: lat, longitude: lng)
+        }
     }
 
     private func rebuildAPI() {
@@ -65,6 +87,25 @@ final class AppModel {
         } else {
             api = MockAPI()
             liveAPIUnavailable = true
+        }
+        PushManager.shared.activate(api: api)
+    }
+
+    // MARK: - Background plumbing
+
+    /// Called once the user is past onboarding. Wires the detector to the
+    /// /parked report and starts push registration.
+    func startBackgroundWork() {
+        detector.onPark = { [weak self] coordinate, accuracy, signals in
+            Task { await self?.handleDetectedPark(coordinate: coordinate, accuracy: accuracy, signals: signals) }
+        }
+        reporter.onDistance = { [weak self] meters in
+            self?.distanceFromCarMeters = meters
+        }
+        detector.start()
+        PushManager.shared.activate(api: api)
+        if activeSession != nil {
+            reporter.start(api: api, carCoordinate: carCoordinate)
         }
     }
 
@@ -81,24 +122,33 @@ final class AppModel {
 
     // MARK: - Park flow
 
-    /// Sends a fixture /parked report. PR C replaces the call site with the
-    /// real detector; this drives the sheet until then.
-    func simulatePark() async {
+    /// The real path: the detector saw a park (or the Debug menu simulated
+    /// one), so report it and let the response drive the sheet.
+    func handleDetectedPark(coordinate: CLLocationCoordinate2D, accuracy: Double, signals: [String]) async {
         let request = ParkedRequest(
-            lat: Self.fixtureCoordinate.latitude,
-            lng: Self.fixtureCoordinate.longitude,
-            accuracy: 12.5,
+            lat: coordinate.latitude,
+            lng: coordinate.longitude,
+            accuracy: accuracy,
             ts: .now,
-            signals: ["simulated"]
+            signals: signals
         )
         do {
             let response = try await api.parked(request)
-            carCoordinate = Self.fixtureCoordinate
+            carCoordinate = coordinate
             paymentError = nil
             pendingParked = response
         } catch {
             paymentError = error as? APIError ?? .transport(error)
         }
+    }
+
+    /// Home-sheet convenience (DEBUG + mock): a park at the API.md fixture.
+    func simulatePark() async {
+        await handleDetectedPark(
+            coordinate: Self.fixtureCoordinate,
+            accuracy: 12.5,
+            signals: ["simulated"]
+        )
     }
 
     /// Manual zone-number entry from the unknown-zone state. The server has
@@ -122,7 +172,7 @@ final class AppModel {
             activeSession = ActiveSession(
                 sessionId: response.sessionId,
                 zoneNumber: candidate.parknycZoneNumber,
-                zoneLabel: zoneLabel(for: candidate),
+                zoneLabel: "Zone \(candidate.parknycZoneNumber)",
                 startedAt: .now,
                 expiresAt: response.expiresAt,
                 amountUsd: response.amountUsd,
@@ -134,6 +184,7 @@ final class AppModel {
             todaySpendUsd += response.amountUsd
             distanceFromCarMeters = useMockAPI ? 120 : nil
             pendingParked = nil
+            reporter.start(api: api, carCoordinate: carCoordinate)
         } catch {
             paymentError = error as? APIError ?? .transport(error)
         }
@@ -158,7 +209,7 @@ final class AppModel {
             todaySpendUsd += response.amountUsd
             activeSession = session
         } catch {
-            paymentError = error as? APIError ?? .transport(error)
+            sessionActionError = error as? APIError ?? .transport(error)
         }
     }
 
@@ -178,18 +229,13 @@ final class AppModel {
             activeSession = nil
             carCoordinate = nil
             distanceFromCarMeters = nil
+            reporter.stop()
         } catch {
-            paymentError = error as? APIError ?? .transport(error)
+            sessionActionError = error as? APIError ?? .transport(error)
         }
     }
 
-    // MARK: - Helpers
-
-    /// The API carries no street names, so zones are labeled by number with
-    /// distance for context. Revisit if the server adds street labels.
-    private func zoneLabel(for candidate: Candidate) -> String {
-        "Zone \(candidate.parknycZoneNumber)"
-    }
+    // MARK: - Fixtures
 
     private func seedMockHistory() {
         let calendar = Calendar.current

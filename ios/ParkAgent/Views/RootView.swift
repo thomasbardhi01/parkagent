@@ -16,6 +16,9 @@ struct RootView: View {
         .environment(model)
         .environment(permissions)
         .task { await model.loadPolicy() }
+        .onChange(of: hasOnboarded, initial: true) { _, onboarded in
+            if onboarded { model.startBackgroundWork() }
+        }
     }
 }
 

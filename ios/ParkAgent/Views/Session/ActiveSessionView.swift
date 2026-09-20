@@ -26,6 +26,17 @@ struct ActiveSessionView: View {
         .onChange(of: model.activeSession == nil) { _, ended in
             if ended { dismiss() }
         }
+        .alert(
+            "Could not update the session",
+            isPresented: Binding(
+                get: { model.sessionActionError != nil },
+                set: { if !$0 { model.sessionActionError = nil } }
+            )
+        ) {
+            Button("OK") { model.sessionActionError = nil }
+        } message: {
+            Text(sessionErrorMessage)
+        }
     }
 
     private func content(_ session: ActiveSession) -> some View {
@@ -119,6 +130,13 @@ struct ActiveSessionView: View {
         .padding(Spacing.unitAndHalf)
         .frame(maxWidth: .infinity)
         .cardStyle()
+    }
+
+    private var sessionErrorMessage: String {
+        if case .notImplemented = model.sessionActionError {
+            return "The server cannot extend or stop sessions yet — that lands in a later phase. The meter keeps its current time."
+        }
+        return model.sessionActionError?.errorDescription ?? ""
     }
 
     private var autoExtendSubtitle: String {

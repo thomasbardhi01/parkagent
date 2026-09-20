@@ -84,6 +84,10 @@ struct MockAPI: APIClient {
         try await pause()
     }
 
+    func registerDevice(_ registration: DeviceRegistration) async throws {
+        try await pause()
+    }
+
     /// A touch of latency so loading states are visible.
     private func pause() async throws {
         try await Task.sleep(for: .milliseconds(400))

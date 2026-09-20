@@ -152,6 +152,24 @@ Planned shapes, so the app can stub against them:
 there is no table for fixes yet.) Planned: `{lat, lng, accuracy, ts}` while
 a session is active, every 60 s.
 
+## POST /device
+
+**Not implemented yet — returns `501`.** (A later phase stores tokens and
+sends pushes; there is no devices table yet.) Registers the phone's APNs
+token for the authenticated user; the app re-sends on every launch, so the
+endpoint must be idempotent. Planned:
+`{token, platform: "ios", environment: "development" | "production"}` →
+`{ok: true}`.
+
+### Push notification types
+
+Pushes carry a standard `aps` payload plus `{"type": ...}`, one of:
+
+- `session_started` — the server auto-paid a meter
+- `session_extended` — auto-extend bought more time
+- `session_expiring` — expiring soon and auto-extend will not fire
+- `payment_failed` — a pay or extend attempt failed; the meter is unpaid
+
 ---
 
 ## GET /policy

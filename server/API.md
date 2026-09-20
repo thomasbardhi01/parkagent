@@ -84,6 +84,7 @@ centerline:
 ```json
 {
   "zoneId": "nyc-110436",
+  "city": "nyc",               // "nyc" | "bos" — which city's meter system
   "parknycZoneNumber": "110436",
   "distanceM": 9.3,            // meters, point → centerline
   "containsPoint": true,       // fix landed inside the buffered lane polygon
@@ -94,6 +95,11 @@ centerline:
   "quote": Quote               // what this candidate would cost
 }
 ```
+
+Boston (`city: "bos"`) candidates price with a flat hourly rate (both rate
+fields equal) and `parknycZoneNumber` is `""` — Analyze Boston publishes no
+ParkBoston zone numbers, so they are flagged unknown rather than guessed
+(see data/README.md).
 
 ### Quote
 
@@ -117,7 +123,9 @@ Pricing: charged minutes consume the ladder in order — the first 60 at
 nothing. A zone with `hours: []` (nothing posted) is treated as always
 enforced. `respect_enforcement_hours: false` in policy also treats every
 zone as always enforced. Rounding: half-up to the cent, once, on each of
-`meterUsd`/`feeUsd`/`totalUsd`.
+`meterUsd`/`feeUsd`/`totalUsd`. `feeUsd` is per city: the zone's `city`
+picks `policy.city_overrides` (ParkBoston charges $0.35 where ParkNYC
+charges $0.15), falling back to `parknyc_fee_usd`.
 
 ### How the action is chosen
 
@@ -681,9 +689,19 @@ give the audit trail either way.
     "no_extend_within_minutes_of_max_stay": 15
   },
   "respect_enforcement_hours": true,
-  "ticket_cost_usd": 65
+  "ticket_cost_usd": 65,
+  "city_overrides": {
+    "nyc": { "ticket_cost_usd": 65 },
+    "bos": { "parking_fee_usd": 0.35, "ticket_cost_usd": 40 }
+  }
 }
 ```
+
+`city_overrides` is optional, keyed by `"nyc"`/`"bos"`, and each field is
+optional — anything absent falls back to the top-level `parknyc_fee_usd` /
+`ticket_cost_usd`. Quotes apply the per-city fee today; the extension
+worker still uses the top-level `ticket_cost_usd` (sessions don't carry a
+city yet — that lands with the provider-accounts work).
 
 The server validates and snapshots (`source: "boot"`) at boot, and refuses
 to start on an invalid file.

@@ -1,8 +1,10 @@
 # ParkAgent
 
-Personal prototype: detect that a car has parked in a NYC metered zone,
-quote the cost, pay via ParkNYC within a budget, and auto-extend using a
-cost-based rule. One city (NYC), two users, iOS only.
+Personal prototype: detect that a car has parked in a metered zone, quote
+the cost, pay via the city's app (ParkNYC) within a budget, and auto-extend
+using a cost-based rule. Two cities' zone data (NYC and Boston — zones rows
+carry a `city`; paying is NYC-only until Boston zone numbers and a
+ParkBoston executor exist), two users, iOS only.
 
 ## Locations
 The checkout lives at `~/Documents/parkagent`; the `feat/nyc-data` worktree
@@ -10,7 +12,7 @@ at `~/Documents/parkagent-data`. There is no repo at `~/parkagent` — if a
 tool claims there is, it is pointed at a stale path.
 
 ## Layout
-- data/      Python scripts that fetch NYC Open Data and build zones.geojson
+- data/      Python scripts that fetch NYC/Boston open data and build zone GeoJSON
 - server/    Fastify + TypeScript API on Fly.io; Prisma + Postgres/PostGIS
 - executor/  Playwright scripts that drive ParkNYC web (isolated, replaceable)
 - ios/       SwiftUI app: park detection, location reporting, session UI;
@@ -111,3 +113,6 @@ before any customer use. Details: `executor/README.md`.
 - `pnpm -C executor run build`     compile (server build needs its d.ts first)
 - `uv run data/fetch_nyc.py`   refresh raw NYC data
 - `uv run data/build_zones.py` rebuild zones.geojson
+- `uv run data/fetch_boston.py`         refresh raw Boston meter data
+- `uv run data/build_boston_zones.py`   rebuild boston_zones.geojson
+  (load either file with `pnpm -C server load:zones [--file …]`, once per city)

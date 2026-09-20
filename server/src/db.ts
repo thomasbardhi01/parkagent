@@ -78,6 +78,8 @@ export interface SessionWhere {
 
 export interface ZoneTermsRow {
   zoneId: string;
+  /** "nyc" | "bos"; optional so pre-city fakes/fixtures stay valid. */
+  city?: string;
   parknycZoneNumber: string;
   rateFirstHour: unknown;
   rateAdditionalHour: unknown;

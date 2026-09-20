@@ -29,9 +29,39 @@ export const policySchema = z.strictObject({
   }),
   respect_enforcement_hours: z.boolean(),
   ticket_cost_usd: z.number().nonnegative(),
+  // Per-city overrides; anything absent falls back to the top-level values
+  // (parknyc_fee_usd / ticket_cost_usd), so old policy documents stay valid.
+  city_overrides: z
+    .partialRecord(
+      z.enum(["nyc", "bos"]),
+      z.strictObject({
+        parking_fee_usd: z.number().nonnegative().optional(),
+        ticket_cost_usd: z.number().nonnegative().optional(),
+      }),
+    )
+    .optional(),
 });
 
 export type Policy = z.infer<typeof policySchema>;
+
+export interface CityPolicy {
+  /** Pay-by-app transaction fee for this city's provider. */
+  parkingFeeUsd: number;
+  ticketCostUsd: number;
+}
+
+/**
+ * Resolve the per-city numbers, falling back to the top-level fields. An
+ * unknown or missing city gets the defaults, which are NYC's — every zone
+ * row carries a city, so that only happens for pre-city data.
+ */
+export function cityPolicy(policy: Policy, city: string | undefined): CityPolicy {
+  const overrides = city === "nyc" || city === "bos" ? policy.city_overrides?.[city] : undefined;
+  return {
+    parkingFeeUsd: overrides?.parking_fee_usd ?? policy.parknyc_fee_usd,
+    ticketCostUsd: overrides?.ticket_cost_usd ?? policy.ticket_cost_usd,
+  };
+}
 
 // Sorted keys at every level. (JSON.stringify's replacer-array form filters
 // nested objects by the same key list, so it can't be used for this.)

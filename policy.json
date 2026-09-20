@@ -12,5 +12,9 @@
     "no_extend_within_minutes_of_max_stay": 15
   },
   "respect_enforcement_hours": true,
-  "ticket_cost_usd": 65
+  "ticket_cost_usd": 65,
+  "city_overrides": {
+    "nyc": { "ticket_cost_usd": 65 },
+    "bos": { "parking_fee_usd": 0.35, "ticket_cost_usd": 40 }
+  }
 }

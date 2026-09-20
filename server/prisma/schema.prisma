@@ -15,6 +15,10 @@ datasource db {
 // always mirrors the most recent load (stale rows are deleted by data_version).
 model Zone {
   zoneId             String   @id @map("zone_id")
+  // Which city's meter system the zone belongs to: "nyc" | "bos".
+  city               String   @default("nyc")
+  // The pay-by-app zone number a driver would enter (ParkNYC for nyc rows,
+  // ParkBoston for bos rows; "" when the source data doesn't carry one).
   parknycZoneNumber  String   @map("parknyc_zone_number")
   // "all" | "commercial" | "charter_bus" | "dual" (see data/build_zones.py)
   vehicleType        String   @map("vehicle_type")
@@ -341,6 +345,8 @@ model ProviderAccount {
 model ZoneLoad {
   id             Int      @id @default(autoincrement())
   loadedAt       DateTime @default(now()) @map("loaded_at") @db.Timestamptz(6)
+  // Which city this load mirrored ("nyc" | "bos"); loads are per-city.
+  city           String   @default("nyc")
   dataVersion    String   @map("data_version")
   // Socrata dataset ids the build consumed, e.g. {"block_faces": "e7yp-wx55"}.
   sourceDatasets Json     @map("source_datasets")

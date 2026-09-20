@@ -33,6 +33,9 @@ Mac App Store.
 
 ## Working style
 - Small PRs on feat/* branches, squash-merged into main.
+- All changes land through a PR — no direct pushes to main, no exceptions.
+  Before any commit, check `git branch --show-current`; if it says main,
+  branch first (the checkout can land on main after a PR merge).
 - Run `pnpm -r lint && pnpm -r test` before proposing a change.
 - `pnpm install` registers a lefthook pre-commit hook (see lefthook.yml):
   lint-staged runs prettier and eslint --fix on staged files, then the server

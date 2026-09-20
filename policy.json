@@ -1,0 +1,16 @@
+{
+  "dry_run": true,
+  "session_cap_usd": 45,
+  "daily_cap_usd": 60,
+  "auto_pay_max_rate_per_hour": 8.0,
+  "default_stay_minutes": 90,
+  "parknyc_fee_usd": 0.15,
+  "auto_extend": {
+    "enabled": true,
+    "max_count": 2,
+    "max_minutes_each": 60,
+    "no_extend_within_minutes_of_max_stay": 15
+  },
+  "respect_enforcement_hours": true,
+  "ticket_cost_usd": 65
+}

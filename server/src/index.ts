@@ -7,7 +7,9 @@ import { makeExtender } from "./jobs/extendTick.js";
 import { makeApnsSender } from "./services/apns.js";
 import { DryRunExecutor } from "./services/executor.js";
 import { ParkNycExecutorStub } from "./services/parknycExecutor.js";
+import { makePendingSessionCheck } from "./services/pendingSession.js";
 import { PolicyService, snapshotPolicy } from "./services/policy.js";
+import { makeStripeGateway } from "./services/stripeGateway.js";
 import { makeCandidateFetcher } from "./services/zoneLookup.js";
 
 // Secrets live in the repo-root .env (see .env.example), not in server/.
@@ -47,6 +49,12 @@ const dryRunExecutor = new DryRunExecutor((msg) => app.log.info(msg));
 const realExecutor = new ParkNycExecutorStub();
 const executorFor = (dryRun: boolean) => (dryRun ? dryRunExecutor : realExecutor);
 
+// env.ts guarantees the webhook secret is present whenever the key is.
+const stripe =
+  env.STRIPE_SECRET_KEY && env.STRIPE_WEBHOOK_SECRET
+    ? makeStripeGateway(env.STRIPE_SECRET_KEY, env.STRIPE_WEBHOOK_SECRET)
+    : undefined;
+
 const app = buildApp({
   db,
   policy,
@@ -54,6 +62,8 @@ const app = buildApp({
   authenticate: makeAuthenticate(db),
   executorFor,
   sendPush,
+  ...(stripe ? { stripe } : {}),
+  hasPendingSession: makePendingSessionCheck(db),
 });
 
 const extender = makeExtender({ db, policy, executorFor, sendPush, log });

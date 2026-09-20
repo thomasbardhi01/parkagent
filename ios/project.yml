@@ -39,6 +39,7 @@ targets:
         # Surfaced from Config.xcconfig so the app can point at localhost, Fly,
         # or a teammate's machine without a code change. Read via AppConfig.
         API_BASE_URL: $(API_BASE_URL)
+        API_KEY: $(API_KEY)
 
         CFBundleDisplayName: ParkAgent
         CFBundleShortVersionString: "1.0"

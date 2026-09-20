@@ -1,10 +1,12 @@
 # ParkAgent
 
 Personal prototype: detect that a car has parked in a metered zone, quote
-the cost, pay via the city's app (ParkNYC) within a budget, and auto-extend
-using a cost-based rule. Two cities' zone data (NYC and Boston — zones rows
-carry a `city`; paying is NYC-only until Boston zone numbers and a
-ParkBoston executor exist), two users, iOS only.
+the cost, pay via the city's app (ParkNYC / ParkBoston) within a budget,
+and auto-extend using a cost-based rule. Two cities (NYC and Boston —
+zones and sessions rows carry a `city`); Boston zone numbers aren't in the
+open data, so the Passport executor resolves them from ParkBoston's own
+map at pay time (its screens are drafted TODO-verify until the first
+recorded run). Two users, iOS only.
 
 ## Locations
 The checkout lives at `~/Documents/parkagent`; the `feat/nyc-data` worktree
@@ -88,7 +90,8 @@ Note that Prisma 7 reads `DATABASE_URL` from `prisma7.config.ts`, not from
 and bare `dotenv/config` would miss it.
 
 ## Executor (Phase 5 + provider accounts)
-The real ParkNYC executor is the Playwright package in `executor/`;
+The real executors (ParkNYC/Flowbird and ParkBoston/Passport) are the
+Playwright package in `executor/`;
 `server/src/services/parknycExecutor.ts` is its only importer. Auth is per
 user: each user links their own ParkNYC account (cookies from the app's
 login web view via `POST /providers/:provider/link`), sealed with

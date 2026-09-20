@@ -1,7 +1,8 @@
 /**
- * Bridge to the real ParkNYC executor — the Playwright package in
- * executor/. Per the repo rule, this file is that package's ONLY importer;
- * nothing else in the server may touch it.
+ * Bridge to the real executors — the Playwright package in executor/
+ * (ParkNYC/Flowbird and ParkBoston/Passport clients). Per the repo rule,
+ * this file is that package's ONLY importer; nothing else in the server may
+ * touch it.
  *
  * The package is loaded lazily, on the first real (non-dry-run) call:
  * server boot, tests, and vitest runs never need executor/dist to exist or
@@ -35,34 +36,22 @@ export interface ParkNycOptions {
   captureDir?: string;
 }
 
-/** Session executor over a decrypted per-user storage state. */
-export function makeParkNycExecutor(
-  state: ProviderStorageState,
-  options: ParkNycOptions,
-): Executor {
+/** Lazily-loaded executor over a decrypted per-user storage state. */
+function makeLazyExecutor(provider: ProviderId, load: () => Promise<Executor>): Executor {
   let real: Promise<Executor> | null = null;
-  const load = (): Promise<Executor> => {
-    real ??= import("executor").then((mod) =>
-      mod.createParkNycExecutor({
-        storageState: state,
-        ...(options.defaultPlate ? { defaultPlate: options.defaultPlate } : {}),
-        ...(options.captureDir ? { captureDir: options.captureDir } : {}),
-      }),
-    );
-    return real;
-  };
   const call = async (
     fn: (executor: Executor) => Promise<ExecutorResult>,
   ): Promise<ExecutorResult> => {
     try {
-      return await fn(await load());
+      real ??= load();
+      return await fn(await real);
     } catch (err) {
       // A missing build or browser must fail the session loudly and typed,
       // not crash the request handler.
       return {
         ok: false,
         code: "unknown",
-        message: `parknyc executor failed to load or crashed: ${String(err)}`,
+        message: `${provider} executor failed to load or crashed: ${String(err)}`,
       };
     }
   };
@@ -73,24 +62,69 @@ export function makeParkNycExecutor(
   };
 }
 
+/** ParkNYC session executor over a decrypted per-user storage state. */
+export function makeParkNycExecutor(
+  state: ProviderStorageState,
+  options: ParkNycOptions,
+): Executor {
+  return makeLazyExecutor("parknyc", () =>
+    import("executor").then((mod) =>
+      mod.createParkNycExecutor({
+        storageState: state,
+        ...(options.defaultPlate ? { defaultPlate: options.defaultPlate } : {}),
+        ...(options.captureDir ? { captureDir: options.captureDir } : {}),
+      }),
+    ),
+  );
+}
+
+/** ParkBoston (Passport) session executor — same shape, second provider. */
+export function makePassportExecutor(
+  state: ProviderStorageState,
+  options: ParkNycOptions,
+): Executor {
+  return makeLazyExecutor("passport", () =>
+    import("executor").then((mod) =>
+      mod.createPassportExecutor({
+        storageState: state,
+        ...(options.captureDir ? { captureDir: options.captureDir } : {}),
+      }),
+    ),
+  );
+}
+
+/** The real per-provider executor factory; injectable so unit tests can
+ * stop at this seam instead of importing the Playwright package. */
+export type RealExecutorFactory = (
+  provider: ProviderId,
+  state: ProviderStorageState,
+  options: ParkNycOptions,
+) => Executor;
+
+export const defaultRealExecutorFactory: RealExecutorFactory = (provider, state, options) =>
+  provider === "passport"
+    ? makePassportExecutor(state, options)
+    : makeParkNycExecutor(state, options);
+
 /**
- * Account-ops factory for the link/setup-card/wallet endpoints. Throws for
- * providers without an executor (the Boston placeholder) — the routes turn
- * that into provider_not_supported.
+ * Account-ops factory for the link/setup-card/wallet endpoints. Both
+ * registry providers have executors now (ParkNYC and Passport); the routes
+ * still turn a thrown factory into provider_not_supported for any future
+ * placeholder.
  */
 export function makeProviderOpsFactory(options: ParkNycOptions): ProviderOpsFactory {
   return (provider: ProviderId, state: ProviderStorageState): ProviderAccountOps => {
-    if (provider !== "parknyc") {
-      throw new Error(`no executor for provider "${provider}"`);
-    }
     let real: Promise<ProviderAccountOps> | null = null;
     const load = (): Promise<ProviderAccountOps> => {
-      real ??= import("executor").then((mod) =>
-        mod.createParkNycAccountOps({
+      real ??= import("executor").then((mod) => {
+        const opts = {
           storageState: state,
           ...(options.captureDir ? { captureDir: options.captureDir } : {}),
-        }),
-      );
+        };
+        return provider === "passport"
+          ? mod.createPassportAccountOps(opts)
+          : mod.createParkNycAccountOps(opts);
+      });
       return real;
     };
     const guard = async <T>(fn: (ops: ProviderAccountOps) => Promise<T>): Promise<T> => {
@@ -122,6 +156,8 @@ export interface UserExecutorProviderConfig {
   defaultPlate?: string;
   captureDir?: string;
   warn: (msg: string) => void;
+  /** Injectable for tests; defaults to the real Playwright-backed factory. */
+  makeRealExecutor?: RealExecutorFactory;
 }
 
 /** An executor whose every call fails the same typed way. */
@@ -145,9 +181,6 @@ export function makeUserExecutorProvider(config: UserExecutorProviderConfig): Ex
     const provider = providerForCity(ctx.city);
     if (!provider) {
       return failingExecutor("unknown", `no parking provider for city "${ctx.city ?? "?"}"`);
-    }
-    if (provider.id !== "parknyc") {
-      return failingExecutor("unknown", `no executor for provider "${provider.id}"`);
     }
     if (!config.stateCrypto) {
       return failingExecutor(
@@ -179,10 +212,14 @@ export function makeUserExecutorProvider(config: UserExecutorProviderConfig): Ex
             message: "stored provider state could not be decrypted (key rotated?)",
           };
         }
-        const executor = makeParkNycExecutor(state, {
-          ...(config.defaultPlate ? { defaultPlate: config.defaultPlate } : {}),
-          ...(config.captureDir ? { captureDir: config.captureDir } : {}),
-        });
+        const executor = (config.makeRealExecutor ?? defaultRealExecutorFactory)(
+          provider.id,
+          state,
+          {
+            ...(config.defaultPlate ? { defaultPlate: config.defaultPlate } : {}),
+            ...(config.captureDir ? { captureDir: config.captureDir } : {}),
+          },
+        );
         const result = await fn(executor);
         if (!result.ok && result.code === "auth_expired") {
           // The cookies died. Mark the account and ask the user to re-link;

@@ -12,13 +12,14 @@
  * package's public surface through its parknycExecutor.ts bridge.
  */
 
-/** How a ParkNYC call failed. The server stores this on decisions rows. */
+/** How a provider call failed. The server stores this on decisions rows. */
 export type ExecutorErrorCode =
   | "auth_expired" // storage state no longer signs us in
-  | "zone_not_found" // ParkNYC rejected the zone number
-  | "payment_declined" // ParkNYC's payment step refused
+  | "zone_not_found" // the provider rejected the zone number
+  | "zone_mismatch" // the provider map's zone disagrees with our zone data
+  | "payment_declined" // the provider's payment step refused
   | "ui_changed" // an expected screen/element never appeared
-  | "network" // couldn't reach ParkNYC at all
+  | "network" // couldn't reach the provider at all
   | "unknown"; // none of the above matched
 
 /** Evidence captured from an unexpected screen; attached to decisions. */
@@ -32,13 +33,36 @@ export interface ExecutorDiagnostics {
   textPath?: string;
 }
 
+/**
+ * What the provider's own map said about where the car is: the zone whose
+ * pin sits nearest the car coordinates, as shown in the zone panel. For
+ * Boston this is the authoritative zone number (our data has none); for NYC
+ * it is a cross-check against the stored number. Both sides are recorded on
+ * the decisions row.
+ */
+export interface ZoneResolution {
+  /** Zone number read off the provider's map panel. */
+  mapZoneNumber: string;
+  /** Street/zone name shown on the map panel. */
+  mapStreet: string;
+  /** The zone number the server asked us to pay ("" for Boston zones). */
+  storedZoneNumber: string;
+  /** Street our zone data carries; null when unknown. */
+  expectedStreet: string | null;
+  /** Did the two agree (number for NYC, street for Boston)? Null when the
+   * comparison had nothing to compare against. */
+  matched: boolean | null;
+}
+
 export interface ExecutorOk {
   ok: true;
   providerSessionId: string;
   /** When the paid session now ends (for stop: when it was cut off). */
   expiresAt: Date;
-  /** Dollars this call actually moved (meter + fee), as ParkNYC showed. */
+  /** Dollars this call actually moved (meter + fee), as the provider showed. */
   amountUsd: number;
+  /** Present when the flow resolved the zone from the provider's map. */
+  zoneResolution?: ZoneResolution;
 }
 
 export interface ExecutorError {
@@ -53,13 +77,22 @@ export type ExecutorResult = ExecutorOk | ExecutorError;
 // Argument shapes, mirroring the server protocol.
 
 export interface StartSessionArgs {
-  /** ParkNYC zone number as entered on the meter/app, e.g. "110436". */
+  /** Zone number as entered on the meter/app, e.g. "110436". "" for Boston
+   * zones — Analyze Boston publishes no ParkBoston numbers, so the Passport
+   * client resolves the zone from the provider's own map instead. */
   zoneNumber: string;
   minutes: number;
-  /** What the server priced the buy at; ParkNYC's own total is returned. */
+  /** What the server priced the buy at; the provider's own total is returned. */
   amountUsd: number;
   feeUsd: number;
   plate?: string;
+  /** Where the car is (the parked event's fix): enables map-based zone
+   * resolution (Passport) and the map cross-check (ParkNYC). */
+  carLat?: number;
+  carLng?: number;
+  /** The street our zone data says the car is on; a Passport map resolution
+   * whose panel street disagrees refuses with zone_mismatch. */
+  expectedStreet?: string;
 }
 
 export interface ExtendSessionArgs {

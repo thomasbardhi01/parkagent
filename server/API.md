@@ -99,7 +99,8 @@ centerline:
 Boston (`city: "bos"`) candidates price with a flat hourly rate (both rate
 fields equal) and `parknycZoneNumber` is `""` — Analyze Boston publishes no
 ParkBoston zone numbers, so they are flagged unknown rather than guessed
-(see data/README.md).
+(see data/README.md). At pay time the Passport executor resolves the zone
+number from ParkBoston's own map instead (see `POST /session/start`).
 
 ### Quote
 
@@ -160,15 +161,34 @@ Errors: `400` invalid body (zod details in `error`), `401` bad key.
 The money-moving path. Executes through the executor protocol
 (`services/executor.ts`); with effective dry run on, that is the
 DryRunExecutor, which logs and returns fake `dry-…` provider ids. Outside
-dry run, the real ParkNYC executor (the Playwright package in `executor/`,
-reached only through `services/parknycExecutor.ts`) runs **on the caller's
-own linked provider account**: the account's sealed cookie state is
-decrypted per call (`PROVIDER_STATE_KEY`) into a fresh browser context on
-one warm shared Chromium process. No linked account, no state key, or an
-unparseable state → the call fails typed (`auth_expired`/`unknown`), it
-never falls back to someone else's session. Executor error codes:
-`auth_expired`, `zone_not_found`, `payment_declined`, `ui_changed`,
-`network`, `unknown`. Every executor call records its `durationMs` on the
+dry run, the real executor — ParkNYC (Flowbird) or ParkBoston (Passport),
+picked by the zone's city; both live in the Playwright package in
+`executor/`, reached only through `services/parknycExecutor.ts` — runs
+**on the caller's own linked provider account**: the account's sealed
+cookie state is decrypted per call (`PROVIDER_STATE_KEY`) into a fresh
+browser context on one warm shared Chromium process. No linked account, no
+state key, or an unparseable state → the call fails typed
+(`auth_expired`/`unknown`), it never falls back to someone else's session.
+Executor error codes: `auth_expired`, `zone_not_found`, `zone_mismatch`,
+`payment_declined`, `ui_changed`, `network`, `unknown`.
+
+**Map-based zone resolution.** The start call carries the parked event's
+fix. Boston zones store no zone number, so the Passport executor resolves
+it from ParkBoston's own map (nearest pin to the car; the panel's zone
+number and street), refusing with `zone_mismatch` when the panel's street
+disagrees with the zone row's `street`. The ParkNYC executor runs the same
+resolution as a **non-fatal cross-check** against the stored zone number.
+Either way, both sides are recorded on the `start_ok` decision outcome as
+`zoneResolution` (`{mapZoneNumber, mapStreet, storedZoneNumber,
+expectedStreet, matched}`), and a Boston session's resolved number is
+backfilled onto `sessions.parknyc_zone_number` so pushes and deep links
+carry it.
+
+The session row stores the zone's `city` at start; extension pricing (the
+per-city fee) and the extension worker's ticket-risk math read it from the
+session, not from re-reading the zones table.
+
+Every executor call records its `durationMs` on the
 `session_events` details and the `decisions` outcome; a `ui_changed`
 failure also attaches `diagnostics` (page screenshot + visible text) to the
 decision row. On any executor error the session stays unpaid (`failed`)
@@ -544,9 +564,12 @@ Stripe before the webhook ever sees the authorization.
 Per-user linked accounts at the parking operators, replacing the old
 single-secret executor auth and laying the multi-city foundation. The
 registry (`src/providers/registry.ts`) maps city → provider — `nyc` →
-`parknyc` (Flowbird), `bos` → `passport` (placeholder, no executor yet),
-anything else → none — with each provider's display name, login URL for
-the app's web view, and the cookie domains that constitute a session.
+`parknyc` (Flowbird), `bos` → `passport` (ParkBoston, Passport's
+white-label web app at `bostonma.ppprk.com/park/` — sign-in is
+passwordless: T&C accept, e-mail/phone code, 4-digit PIN), anything else →
+none — with each provider's display name, login URL for the app's web
+view, and the cookie domains that constitute a session (`ppprk.com` and
+`paywithpassport.com` for ParkBoston).
 
 Session state (the cookies the app captures after the user signs in inside
 the web view) is sealed with AES-256-GCM under the `PROVIDER_STATE_KEY`
@@ -571,7 +594,11 @@ linking answers `503 {"error": "provider_linking_not_configured"}`.
 Cookies are filtered against the provider's registered domains — anything
 else is dropped at the door; none left → `400 no_session_cookies` (with
 `expectedDomains`). With `set_up_card` and no explicit consent →
-`400 consent_required`, before anything runs. The surviving cookies are
+`400 consent_required`, before anything runs. **Shadow mode**
+(`policy.shadow_mode`) skips the chained setup-card entirely — sessions pay
+with whatever payment method the account already has — so the consent
+requirement doesn't apply and `jobId` is always `null`; the link decision
+records `setUpCard: false, shadowMode: true`. The surviving cookies are
 verified headlessly (the executor loads the provider's account page); a
 sign-in screen → `409 {"error": "verification_failed", "code": "auth_expired"}`.
 On success the sealed state is upserted (`status: "linked"`) and:
@@ -677,6 +704,7 @@ give the audit trail either way.
 ```json
 {
   "dry_run": true,
+  "shadow_mode": false,
   "session_cap_usd": 45,
   "daily_cap_usd": 60,
   "auto_pay_max_rate_per_hour": 8.0,
@@ -699,9 +727,23 @@ give the audit trail either way.
 
 `city_overrides` is optional, keyed by `"nyc"`/`"bos"`, and each field is
 optional — anything absent falls back to the top-level `parknyc_fee_usd` /
-`ticket_cost_usd`. Quotes apply the per-city fee today; the extension
-worker still uses the top-level `ticket_cost_usd` (sessions don't carry a
-city yet — that lands with the provider-accounts work).
+`ticket_cost_usd`. Quotes, session starts/extensions, and the extension
+worker all price per city now: sessions store their zone's `city` at start,
+so the worker's ticket-risk math uses that city's `ticket_cost_usd` (a $40
+Boston ticket argues for extension less strongly than a $65 NYC one).
+
+`shadow_mode` (optional, default false) is the rehearsal switch for a new
+city: the real executor pays with whatever payment method the user's
+provider account already has (linking skips setup-card and its consent
+gate), and every session start and extension **also** fires a Stripe
+test-mode Issuing authorization for the same amount at the user's virtual
+card, so the webhook, budget checks, and ledger run in parallel with the
+real spend. The shadow result lands on the decision outcome (`shadow:
+{fired, authorizationId, approved, amountUsd}` — or `{fired: false,
+reason}`) and `pnpm -C server decisions:recent` prints it. Shadow mode
+never bypasses the dry-run switches: the executor leg still moves money
+only when both are false; the shadow authorization itself is always
+test-mode money (`services/shadow.ts`).
 
 The server validates and snapshots (`source: "boot"`) at boot, and refuses
 to start on an invalid file.

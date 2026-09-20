@@ -37,6 +37,8 @@ interface ZoneProperties {
    * zone_number ("" when ParkBoston's number isn't in the source data). */
   parknyc_zone_number?: string;
   zone_number?: string;
+  /** Boston builder emits the block's street; NYC files predate the field. */
+  street?: string;
   vehicle_type: string;
   passenger: boolean;
   rate_first_hour: number;
@@ -61,21 +63,21 @@ interface ZonesCollection {
   features: ZoneFeature[];
 }
 
-// 12 parameters per row; 400 rows = 4800 parameters, well under the
+// 13 parameters per row; 400 rows = 5200 parameters, well under the
 // Postgres protocol limit of 65535 and few enough round-trips over WAN.
 const CHUNK_SIZE = 400;
 
-const UPSERT_COLUMNS = `(zone_id, city, parknyc_zone_number, vehicle_type, passenger,
+const UPSERT_COLUMNS = `(zone_id, city, street, parknyc_zone_number, vehicle_type, passenger,
    rate_first_hour, rate_additional_hour, max_stay_minutes, hours_json,
    geom, centerline, data_version)`;
 
 function rowPlaceholders(rowIndex: number): string {
-  const p = (offset: number) => `$${rowIndex * 12 + offset}`;
+  const p = (offset: number) => `$${rowIndex * 13 + offset}`;
   // ST_Multi lifts the occasional plain Polygon/LineString into the column's
   // Multi* type; SRID is pinned rather than trusting GeoJSON defaults.
-  return `(${p(1)}, ${p(2)}, ${p(3)}, ${p(4)}, ${p(5)}, ${p(6)}, ${p(7)}, ${p(8)}, ${p(9)},
-    ST_SetSRID(ST_Multi(ST_GeomFromGeoJSON(${p(10)})), 4326),
-    ST_SetSRID(ST_Multi(ST_GeomFromGeoJSON(${p(11)})), 4326), ${p(12)})`;
+  return `(${p(1)}, ${p(2)}, ${p(3)}, ${p(4)}, ${p(5)}, ${p(6)}, ${p(7)}, ${p(8)}, ${p(9)}, ${p(10)},
+    ST_SetSRID(ST_Multi(ST_GeomFromGeoJSON(${p(11)})), 4326),
+    ST_SetSRID(ST_Multi(ST_GeomFromGeoJSON(${p(12)})), 4326), ${p(13)})`;
 }
 
 async function main(): Promise<number> {
@@ -133,6 +135,7 @@ async function main(): Promise<number> {
         params.push(
           p.zone_id,
           city,
+          p.street ?? null,
           p.parknyc_zone_number ?? p.zone_number ?? "",
           p.vehicle_type,
           p.passenger,
@@ -150,6 +153,7 @@ async function main(): Promise<number> {
          VALUES ${chunk.map((_, i) => rowPlaceholders(i)).join(", ")}
          ON CONFLICT (zone_id) DO UPDATE SET
            city = EXCLUDED.city,
+           street = EXCLUDED.street,
            parknyc_zone_number = EXCLUDED.parknyc_zone_number,
            vehicle_type = EXCLUDED.vehicle_type,
            passenger = EXCLUDED.passenger,

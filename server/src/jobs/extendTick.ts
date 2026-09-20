@@ -15,6 +15,7 @@
 import type { SessionRow } from "../db.js";
 import type { ExpiringReason } from "../services/apns.js";
 import { sessionExpiringPush } from "../services/apns.js";
+import { cityPolicy } from "../services/policy.js";
 import type { SessionDeps } from "../services/sessions.js";
 import {
   applyExtension,
@@ -214,7 +215,9 @@ export function makeExtender(deps: ExtenderDeps): Extender {
     );
     const price = priceExtension(session, policy, Math.max(1, Math.floor(desiredMinutes)));
     const costExtendUsd = price.totalUsd;
-    const costTicketUsd = policy.ticket_cost_usd * (1 - pReturn);
+    // Ticket risk is priced with the session's city's ticket (a Boston
+    // "Meter Fee Unpaid" is $40 where NYC's is $65 — policy city_overrides).
+    const costTicketUsd = cityPolicy(policy, session.city).ticketCostUsd * (1 - pReturn);
     const spentTodayUsd = await spentToday(deps.db, session.userId, at);
 
     // The decision ladder. Max-stay gate: the stay allowance left to buy is
@@ -317,6 +320,7 @@ export function makeExtender(deps: ExtenderDeps): Extender {
           price,
           expiresAt: result.expiresAt.toISOString(),
           durationMs: result.durationMs,
+          ...(result.shadow ? { shadow: result.shadow } : {}),
         };
       } else {
         rule = "extend_failed";

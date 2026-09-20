@@ -7,9 +7,9 @@
  *
  * The multi-city foundation: zone ids are "<city>-<zone number>"
  * (data/build_zones.py), so the city — and from it the provider — falls out
- * of any zoneId. Today only NYC is real; Boston is a placeholder proving
- * the shape, and an unknown city simply has no provider (no linking, no
- * executor, sessions refuse).
+ * of any zoneId. NYC (ParkNYC/Flowbird) and Boston (ParkBoston/Passport)
+ * both have executors now; an unknown city simply has no provider (no
+ * linking, no executor, sessions refuse).
  */
 
 export type ProviderId = "parknyc" | "passport";
@@ -39,13 +39,20 @@ const PROVIDERS: ProviderInfo[] = [
     cookieDomains: ["nyc.flowbirdapp.com", "flowbirdapp.com"],
   },
   {
-    // Placeholder: proves the registry shape for city #2. No executor
-    // exists for it yet — linking verifies nothing and sessions refuse.
     id: "passport",
     city: "bos",
-    displayName: "Passport Parking (Boston)",
-    loginUrl: "https://ppprk.com/park/",
-    cookieDomains: ["ppprk.com"],
+    displayName: "ParkBoston",
+    // Passport's white-label web app, ParkBoston instance (verified
+    // headlessly 2026-09-20: renders Sign In / Register / Continue as
+    // Guest; sign-in is passwordless — T&C accept, then an e-mail/phone
+    // code, then a 4-digit PIN). park.boston.gov is only the marketing
+    // page, and the bare ppprk.com is the unbranded multi-city entry.
+    loginUrl: "https://bostonma.ppprk.com/park/",
+    // The signed-in session lives on bostonma.ppprk.com (ppprk.com suffix
+    // covers it); "Continue as Guest" hops to parkboston.paywithpassport.com,
+    // whose cookies are accepted too in case the app's web view captures
+    // them alongside.
+    cookieDomains: ["ppprk.com", "paywithpassport.com"],
   },
 ];
 

@@ -96,9 +96,15 @@ export function registerProviders(app: FastifyInstance, deps: AppDeps): void {
     const user = req.authedUser!;
     const at = now();
 
+    // Shadow mode: sessions pay with whatever payment method the account
+    // already has, so linking neither replaces the payment method nor needs
+    // consent for it — the chained setup-card is skipped outright.
+    const shadowMode = deps.policy.get().shadow_mode === true;
+    const setUpCard = body.set_up_card && !shadowMode;
+
     // Replacing the account's payment method is consequential enough to
     // demand explicit consent up front, before anything runs.
-    if (body.set_up_card && body.consent_replace_payment_method !== true) {
+    if (setUpCard && body.consent_replace_payment_method !== true) {
       return reply.code(400).send({ error: "consent_required" });
     }
     if (!deps.stateCrypto || !deps.providerOps) {
@@ -114,7 +120,8 @@ export function registerProviders(app: FastifyInstance, deps: AppDeps): void {
       cookieCount: filtered.length,
       droppedCount: body.cookies.length - filtered.length,
       domains: [...new Set(filtered.map((c) => c.domain))],
-      setUpCard: body.set_up_card,
+      setUpCard,
+      shadowMode,
     };
     const decide = (rule: string, outcome: Record<string, unknown>) =>
       deps.db.decision.create({
@@ -181,7 +188,7 @@ export function registerProviders(app: FastifyInstance, deps: AppDeps): void {
     // Chained setup: verification passed, so the card goes on now — as a
     // job the app polls, since the executor takes seconds.
     let jobId: string | null = null;
-    if (body.set_up_card) {
+    if (setUpCard) {
       jobId = randomUUID();
       jobs.create({ id: jobId, userId: user.id, provider: provider.id, phase: "adding_card" });
       const id = jobId;

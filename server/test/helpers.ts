@@ -248,6 +248,7 @@ function emptySession(id: string): SessionRow {
     userId: "u1",
     vehicleId: null,
     zoneId: "",
+    city: "nyc",
     parknycZoneNumber: "",
     status: "pending",
     dryRun: true,
@@ -649,6 +650,7 @@ export function makeFakeGateway(overrides: Partial<StripeGateway> = {}): StripeG
       clientSecret: "pi_test_1_secret_abc",
     }),
     moveToFinancialAccount: async () => {},
+    createTestAuthorization: async () => ({ authorizationId: "iauth_test_1", approved: true }),
     ...overrides,
   };
 }

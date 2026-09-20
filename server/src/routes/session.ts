@@ -24,6 +24,7 @@ import {
   priceExtension,
   spentToday,
 } from "../services/sessions.js";
+import { fireShadowAuthorization } from "../services/shadow.js";
 
 const startSchema = z.object({
   parkedEventId: z.string().min(1),
@@ -122,6 +123,9 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
     }
 
     const terms = {
+      // The zone's city picks the per-city fee (ParkBoston $0.35 vs
+      // ParkNYC $0.15) and rides onto the session row below.
+      city: zone.city ?? "nyc",
       rateFirstHourUsd: Number(zone.rateFirstHour),
       rateAdditionalHourUsd: Number(zone.rateAdditionalHour),
       hours: zone.hoursJson as HoursInterval[],
@@ -168,6 +172,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
       data: {
         userId: user.id,
         zoneId: zone.zoneId,
+        city: terms.city,
         parknycZoneNumber: zone.parknycZoneNumber,
         status: "pending",
         dryRun,
@@ -189,6 +194,12 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
       minutes,
       amountUsd: price.meterUsd,
       feeUsd: price.feeUsd,
+      // The car's fix drives the executor's map-based zone resolution:
+      // authoritative for Boston (no stored zone numbers), a logged
+      // cross-check for NYC.
+      carLat: parkedEvent.lat,
+      carLng: parkedEvent.lng,
+      ...(zone.street ? { expectedStreet: zone.street } : {}),
     });
     const durationMs = Date.now() - startedAtMs;
 
@@ -246,6 +257,11 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
         purchasedMinutes: minutes,
         chargedMinutes: price.chargedMinutes,
         parknycConfirmation: result.providerSessionId,
+        // Boston zones store no zone number; backfill the one the executor
+        // resolved from the provider's map so pushes and deep links work.
+        ...(zone.parknycZoneNumber === "" && result.zoneResolution
+          ? { parknycZoneNumber: result.zoneResolution.mapZoneNumber }
+          : {}),
       },
     });
     await deps.db.sessionEvent.create({
@@ -262,12 +278,30 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
         details: { durationMs },
       },
     });
+    // Shadow mode: rehearse the Stripe pipeline (webhook → budget checks →
+    // ledger) with a test-mode authorization for the same amount. Recorded
+    // on the decision below; a shadow failure never fails the session.
+    const shadow =
+      deps.policy.get().shadow_mode === true
+        ? await fireShadowAuthorization(deps, user.id, price.totalUsd, terms.city)
+        : undefined;
+
     await deps.db.decision.create({
       data: {
         kind: "session_start",
         inputs: decisionInputs,
         rule: "start_ok",
-        outcome: { allowed: true, ok: true, sessionId: session.id, price, durationMs },
+        outcome: {
+          allowed: true,
+          ok: true,
+          sessionId: session.id,
+          price,
+          durationMs,
+          // Both sides of the map-based zone resolution, when the executor
+          // ran one (authoritative for Boston, cross-check for NYC).
+          ...(result.zoneResolution ? { zoneResolution: result.zoneResolution } : {}),
+          ...(shadow ? { shadow } : {}),
+        },
         userId: user.id,
         parkedEventId: parkedEvent.id,
         sessionId: session.id,
@@ -345,6 +379,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
               expiresAt: outcome.expiresAt.toISOString(),
               price,
               durationMs: outcome.durationMs,
+              ...(outcome.shadow ? { shadow: outcome.shadow } : {}),
             }
           : {
               allowed: true,

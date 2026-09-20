@@ -77,8 +77,10 @@ Analyze Boston publishes **no ParkBoston zone layer** (a CKAN search finds
 only this dataset and a 2015 transactions CSV), and the one zone-ish field,
 `G_PASSPORT_ZONES`, is a per-meter id (588 distinct values on 587 meters),
 not the block zone number a driver enters — so **every Boston zone is loaded
-with an empty, flagged-unknown zone number** rather than a guess. Numbers
-will have to come from street signage or the provider.
+with an empty, flagged-unknown zone number** rather than a guess. At pay
+time the Passport executor resolves the number from ParkBoston's own map
+(nearest zone pin to the car), guarded by the zone's `street` — see
+executor/README.md "Passport / ParkBoston".
 
 The dataset's rate fields are stale coin increments ($0.25 almost
 everywhere), so **rates are applied from the City's published schedule**,
@@ -122,7 +124,9 @@ or past a ~250 m span, since some STREET values span kilometres), a
 centerline fit through each run's points, then buffered exactly like NYC
 (one-sided 12 m toward the lane when `DIR` gives a side, symmetric 8 m
 otherwise). Properties additionally carry `zone_number` (empty),
-`zone_number_known` (false), `rate_area`, and `meter_count`.
+`zone_number_known` (false), `street` (the block's source street name, e.g.
+"BOYLSTON ST" — the executor's zone_mismatch guard compares the provider
+map's street against it), `rate_area`, and `meter_count`.
 
 `data/out/zones.geojson` — one feature per NYC block face. The dataset draws each
 face along its own curb (opposite faces sit ~9-21 m apart, median 12.7 m), so

@@ -16,6 +16,15 @@ import { z } from "zod";
 
 export const policySchema = z.strictObject({
   dry_run: z.boolean(),
+  // Shadow mode: the real executor pays with whatever payment method the
+  // user's provider account already has (linking skips setup-card and its
+  // consent gate), and every session start/extension ALSO fires a Stripe
+  // test-mode authorization for the same amount, so the webhook, budget
+  // checks, and ledger run in parallel with the real spend. The dry-run
+  // switches still gate the executor exactly as before — shadow mode never
+  // bypasses them; the shadow authorization itself is test-mode money.
+  // Optional so pre-shadow policy documents stay valid (absent = false).
+  shadow_mode: z.boolean().optional(),
   session_cap_usd: z.number().positive(),
   daily_cap_usd: z.number().positive(),
   auto_pay_max_rate_per_hour: z.number().nonnegative(),
@@ -116,6 +125,11 @@ export class PolicyService {
 
   effectiveDryRun(): boolean {
     return this.envDryRun || this.current.dry_run;
+  }
+
+  /** Shadow mode (see the schema comment); absent in the file means off. */
+  shadowMode(): boolean {
+    return this.current.shadow_mode === true;
   }
 
   /** Validate and persist a full replacement (PUT /policy). Throws ZodError. */

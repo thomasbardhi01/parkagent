@@ -30,6 +30,7 @@ import type {
   StorageStateValue,
   TopupWalletResult,
   VerifyAccountResult,
+  ZoneResolution,
 } from "../types.js";
 import { captureUnexpectedScreen } from "./capture.js";
 import { classifyFailure } from "./classify.js";
@@ -97,6 +98,9 @@ export class ParkNycClient {
       : await chromium.launch({ headless: this.options.headless ?? true });
     this.context = await this.browser.newContext({
       storageState: state,
+      // The map cross-check centers the zone map on the car by feeding the
+      // fix through browser geolocation.
+      permissions: ["geolocation"],
       ...(this.options.recordHarPath ? { recordHar: { path: this.options.recordHarPath } } : {}),
     });
     if (this.options.tracePath) {
@@ -175,17 +179,85 @@ export class ParkNycClient {
       .catch(() => false);
   }
 
+  /**
+   * NON-FATAL map cross-check: center the zone map on the car and read the
+   * zone number under the nearest pin. Any failure (map never renders, no
+   * pins, unreadable popup) returns null and the payment flow proceeds —
+   * this only ever adds evidence, it never blocks. Selectors are broad
+   * TODO-verify guesses (see selectors.map); tune on the first recording.
+   */
+  private async resolveZoneFromMap(
+    page: Page,
+    carLat: number,
+    carLng: number,
+  ): Promise<{ zoneNumber: string; street: string } | null> {
+    try {
+      await this.context!.setGeolocation({ latitude: carLat, longitude: carLng });
+      await page.goto(URLS.home);
+      await this.step("map-cross-check", page);
+      const markers = selectors.map.markers(page);
+      await markers.first().waitFor({ timeout: 8_000 });
+      const viewport = page.viewportSize() ?? { width: 1280, height: 720 };
+      const cx = viewport.width / 2;
+      const cy = viewport.height / 2;
+      const count = await markers.count();
+      let best = -1;
+      let bestDist = Number.POSITIVE_INFINITY;
+      for (let i = 0; i < Math.min(count, 100); i += 1) {
+        const box = await markers.nth(i).boundingBox();
+        if (!box) continue;
+        const d = Math.hypot(box.x + box.width / 2 - cx, box.y + box.height / 2 - cy);
+        if (d < bestDist) {
+          bestDist = d;
+          best = i;
+        }
+      }
+      if (best < 0) return null;
+      await markers.nth(best).click({ timeout: 4_000 });
+      const text = await selectors.map.popup(page).innerText({ timeout: 6_000 });
+      // ParkNYC zone numbers are 6 digits; the popup's first long digit run.
+      const zone = /(\d{5,7})/.exec(text)?.[1];
+      if (!zone) return null;
+      // First non-numeric line of the popup is the best street guess.
+      const street =
+        text
+          .split("\n")
+          .map((l) => l.trim())
+          .find((l) => l.length > 2 && !/^\d+$/.test(l)) ?? "";
+      return { zoneNumber: zone, street };
+    } catch {
+      return null;
+    }
+  }
+
   async startSession(
     zoneNumber: string,
     plate: string | undefined,
     minutes: number,
+    zoneCheck?: { carLat: number; carLng: number },
   ): Promise<ExecutorResult> {
     const opened = await this.open();
     if ("ok" in opened) return opened;
     const { page } = opened;
     const goal = `start ${minutes} min in zone ${zoneNumber}`;
 
-    return this.run(goal, page, async () => {
+    // Cross-check first, in its own navigation, so a wedged map can't
+    // derail the payment flow below. Both numbers land on the decision.
+    let zoneResolution: ZoneResolution | undefined;
+    if (zoneCheck) {
+      const resolved = await this.resolveZoneFromMap(page, zoneCheck.carLat, zoneCheck.carLng);
+      if (resolved) {
+        zoneResolution = {
+          mapZoneNumber: resolved.zoneNumber,
+          mapStreet: resolved.street,
+          storedZoneNumber: zoneNumber,
+          expectedStreet: null,
+          matched: resolved.zoneNumber === zoneNumber,
+        };
+      }
+    }
+
+    const result = await this.run(goal, page, async () => {
       await page.goto(URLS.home);
       await this.step("home", page);
       if (await this.atSignInScreen(page)) {
@@ -248,6 +320,10 @@ export class ParkNycClient {
       }
       return { ok: true, ...parsed };
     });
+    if (result.ok && zoneResolution) {
+      return { ...result, zoneResolution };
+    }
+    return result;
   }
 
   async extendSession(providerSessionId: string, minutes: number): Promise<ExecutorResult> {

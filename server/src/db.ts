@@ -16,6 +16,8 @@ export interface SessionRow {
   userId: string;
   vehicleId: string | null;
   zoneId: string;
+  /** "nyc" | "bos", from the zone at start; pre-city rows default "nyc". */
+  city: string;
   parknycZoneNumber: string;
   status: string;
   dryRun: boolean;
@@ -44,6 +46,7 @@ export interface SessionRow {
 export interface SessionWrite {
   userId?: string;
   zoneId?: string;
+  city?: string;
   parknycZoneNumber?: string;
   status?: string;
   dryRun?: boolean;
@@ -80,6 +83,8 @@ export interface ZoneTermsRow {
   zoneId: string;
   /** "nyc" | "bos"; optional so pre-city fakes/fixtures stay valid. */
   city?: string;
+  /** Street the zone is on (Boston rows); the zone_mismatch guard's side. */
+  street?: string | null;
   parknycZoneNumber: string;
   rateFirstHour: unknown;
   rateAdditionalHour: unknown;

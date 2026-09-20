@@ -120,6 +120,25 @@ export const selectors = {
       page.getByRole("button", { name: /yes|confirm|end/i }),
   },
 
+  // ------------------------------------------------------ Zone map (cross-check)
+  // The Parking home renders a map of zones. Used only by the NON-FATAL
+  // map cross-check (resolve the zone under the car's coordinates and log
+  // it next to the stored zone number) — never to decide payment. Flowbird's
+  // map widget has not been walked yet, so every selector here is a broad
+  // TODO-verify guess; a miss just skips the cross-check.
+  map: {
+    /** Zone pins, whichever map library Flowbird ships. */
+    markers: (page: Page): Locator =>
+      page.locator(
+        '.leaflet-marker-icon, .gm-style img[src*="marker"], [class*="map-marker"], [class*="zone-marker"]',
+      ),
+    /** The popup/panel a pin opens; its text carries the zone number. */
+    popup: (page: Page): Locator =>
+      page
+        .locator('.leaflet-popup-content, .gm-style-iw, [class*="popup"], [class*="info-window"]')
+        .first(),
+  },
+
   // -------------------------------------------------------- Account screen
   account: {
     /** Anything only a signed-in account page shows. */

@@ -39,7 +39,7 @@
     "moduleDetection": "force",
     "skipLibCheck": true,
 
-    "moduleResolution": "nodenext",
+    "moduleResolution": "nodenext"
   },
 
   // `build` compiles src only; tests live in test/ and run through vitest.

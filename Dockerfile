@@ -42,6 +42,13 @@ COPY --from=build /app/server/dist server/dist
 # @prisma/client, this needs a `pnpm -C server exec prisma generate` step — and
 # prisma/ must be COPYed in for it.
 
+# Build metadata surfaced by /health. The CI deploy step passes these;
+# local `fly deploy` / `docker build` without args falls back to "dev".
+ARG GIT_SHA=dev
+ARG BUILD_TIME=dev
+ENV GIT_SHA=$GIT_SHA \
+    BUILD_TIME=$BUILD_TIME
+
 USER node
 WORKDIR /app/server
 EXPOSE 3000

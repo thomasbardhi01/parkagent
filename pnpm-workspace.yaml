@@ -2,8 +2,9 @@ packages:
   - server
   - executor
 allowBuilds:
-  '@prisma/engines': true
+  "@prisma/engines": true
   esbuild: true
+  lefthook: true
   msgpackr-extract: false
   prisma: true
   workerd: false

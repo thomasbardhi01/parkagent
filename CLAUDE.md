@@ -89,19 +89,19 @@ and bare `dotenv/config` would miss it.
 The real ParkNYC executor is the Playwright package in `executor/`;
 `server/src/services/parknycExecutor.ts` is its only importer. It runs only
 when env `DRY_RUN=false` and `PARKNYC_STATE_PATH` points at a storage-state
-file (from `pnpm -C executor login` — auth state is gitignored, never
+file (from `pnpm -C executor run login` — auth state is gitignored, never
 committed). Its tests are unit tests over recorded fixture HTML; they never
 launch a browser or touch ParkNYC, and nothing in `executor/` runs in CI
 (CI only compiles it — `pnpm -C server build` needs `executor/dist` types,
-so run `pnpm -C executor build` first). It is a personal-use prototype
+so run `pnpm -C executor run build` first). It is a personal-use prototype
 against ParkNYC's own web app; issue #37 tracks moving it to a private repo
 before any customer use. Details: `executor/README.md`.
 
 ## Commands
 - `pnpm -C server dev`         start the API locally
 - `pnpm -C server prisma migrate dev`   apply migrations
-- `pnpm -C executor login`     headed browser; sign in to ParkNYC once, save auth state
-- `pnpm -C executor record`    record a real ParkNYC flow (HAR/trace/screens) to fixtures/
-- `pnpm -C executor build`     compile (server build needs its d.ts first)
+- `pnpm -C executor run login`     headed browser; sign in to ParkNYC once, save auth state
+- `pnpm -C executor run record`    record a real ParkNYC flow (HAR/trace/screens) to fixtures/
+- `pnpm -C executor run build`     compile (server build needs its d.ts first)
 - `uv run data/fetch_nyc.py`   refresh raw NYC data
 - `uv run data/build_zones.py` rebuild zones.geojson

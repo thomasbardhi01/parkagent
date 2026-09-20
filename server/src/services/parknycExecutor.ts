@@ -6,7 +6,7 @@
  * The package is loaded lazily, on the first real (non-dry-run) call:
  * server boot, tests, and vitest runs never need executor/dist to exist or
  * Playwright's browser to be installed. Only `pnpm -C server build` (tsc)
- * needs `pnpm -C executor build` to have run first, for the .d.ts.
+ * needs `pnpm -C executor run build` to have run first, for the .d.ts.
  *
  * makeExecutorProvider is the seam index.ts wires: the real executor is
  * used only when the env DRY_RUN is false AND PARKNYC_STATE_PATH is set;
@@ -89,7 +89,7 @@ export function makeExecutorProvider(config: ExecutorProviderConfig): ExecutorPr
         config.warn(
           "DRY_RUN=false but PARKNYC_STATE_PATH is not set — falling back to the " +
             "dry-run executor. Sessions will be recorded as real without moving money; " +
-            "run `pnpm -C executor login` and set PARKNYC_STATE_PATH to go live.",
+            "run `pnpm -C executor run login` and set PARKNYC_STATE_PATH to go live.",
         );
       }
       return config.dryRunExecutor;

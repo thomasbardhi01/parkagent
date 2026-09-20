@@ -37,7 +37,7 @@ export { ParkNycClient } from "./parknyc/client.js";
 export type { ParkNycClientOptions } from "./parknyc/client.js";
 
 export interface ParkNycExecutorOptions {
-  /** Playwright storageState JSON (from `pnpm -C executor login`). */
+  /** Playwright storageState JSON (from `pnpm -C executor run login`). */
   statePath: string;
   /** Vehicle used when a call doesn't name a plate (PARKNYC_PLATE). */
   defaultPlate?: string;

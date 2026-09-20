@@ -12,7 +12,7 @@
  * captured (screenshot + visible text) and returned as a typed error.
  *
  * The flows were drafted from memory of the ParkNYC web app and MUST be
- * walked once with `pnpm -C executor record` to verify selectors, the
+ * walked once with `pnpm -C executor run record` to verify selectors, the
  * duration-stepper increment, and the confirmation wording (see README).
  */
 
@@ -32,7 +32,7 @@ import { selectors, URLS } from "./selectors.js";
 const DURATION_STEP_MINUTES = 15;
 
 export interface ParkNycClientOptions {
-  /** Playwright storageState JSON (from `pnpm -C executor login`). */
+  /** Playwright storageState JSON (from `pnpm -C executor run login`). */
   statePath: string;
   /** Headed only for local debugging; prod is headless. */
   headless?: boolean;
@@ -66,7 +66,7 @@ export class ParkNycClient {
       return {
         ok: false,
         code: "auth_expired",
-        message: `no ParkNYC storage state at ${this.options.statePath}; run \`pnpm -C executor login\``,
+        message: `no ParkNYC storage state at ${this.options.statePath}; run \`pnpm -C executor run login\``,
       };
     }
     this.browser = await chromium.launch({ headless: this.options.headless ?? true });

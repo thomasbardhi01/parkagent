@@ -50,7 +50,7 @@ const sendPush = makeApnsSender(apnsConfig, db, log);
 
 // Fly machines have no persistent disk: the storage state arrives as a
 // secret (PARKNYC_STATE_JSON) and is written to PARKNYC_STATE_PATH at boot.
-// Local dev skips this — `pnpm -C executor login` writes the file directly.
+// Local dev skips this — `pnpm -C executor run login` writes the file directly.
 if (env.PARKNYC_STATE_JSON && env.PARKNYC_STATE_PATH) {
   mkdirSync(dirname(env.PARKNYC_STATE_PATH), { recursive: true });
   writeFileSync(env.PARKNYC_STATE_PATH, env.PARKNYC_STATE_JSON, { mode: 0o600 });

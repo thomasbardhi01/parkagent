@@ -6,7 +6,7 @@
  * experiment. Issue #37 tracks moving this package to a private repo; it
  * must move before any customer uses it.
  *
- * `pnpm -C executor login` — opens a HEADED browser on the ParkNYC sign-in
+ * `pnpm -C executor run login` — opens a HEADED browser on the ParkNYC sign-in
  * page. You sign in by hand (credentials never touch this repo, code, or
  * env), then press Enter here, and the session's cookies/localStorage are
  * saved as Playwright storageState at PARKNYC_STATE_PATH (default:

@@ -12,7 +12,7 @@
  * visible text over CSS paths; they survive markup churn.
  *
  * The role names / text patterns below were drafted from memory of the
- * ParkNYC web flow and MUST be verified against a `pnpm -C executor record`
+ * ParkNYC web flow and MUST be verified against a `pnpm -C executor run record`
  * run before first real use (see README "Updating selectors").
  */
 

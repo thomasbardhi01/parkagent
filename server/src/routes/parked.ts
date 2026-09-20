@@ -1,0 +1,150 @@
+import type { FastifyInstance } from "fastify";
+import { z } from "zod";
+
+import type { AppDeps } from "../app.js";
+import { nycStartOfDay } from "../services/hours.js";
+import type { Quote } from "../services/quote.js";
+import { quoteZone } from "../services/quote.js";
+import type { Candidate } from "../services/zoneLookup.js";
+import { lookupRadiusM, resolveCandidates } from "../services/zoneLookup.js";
+
+const bodySchema = z.object({
+  lat: z.number().gte(-90).lte(90),
+  lng: z.number().gte(-180).lte(180),
+  accuracy: z.number().nonnegative().lte(10_000),
+  ts: z.iso.datetime({ offset: true }),
+  signals: z.array(z.string()).max(32).default([]),
+});
+
+type Action = "pay" | "confirm" | "ignore" | "unknown_zone";
+
+function candidatePayload(candidate: Candidate, quote: Quote) {
+  return {
+    zoneId: candidate.zoneId,
+    parknycZoneNumber: candidate.parknycZoneNumber,
+    distanceM: Math.round(candidate.distanceM * 10) / 10,
+    containsPoint: candidate.containsPoint,
+    rateFirstHourUsd: candidate.rateFirstHourUsd,
+    rateAdditionalHourUsd: candidate.rateAdditionalHourUsd,
+    maxStayMinutes: candidate.maxStayMinutes,
+    hours: candidate.hours,
+    quote,
+  };
+}
+
+export function registerParked(app: FastifyInstance, deps: AppDeps): void {
+  app.post("/parked", { preHandler: deps.authenticate }, async (req, reply) => {
+    const parsed = bodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: z.treeifyError(parsed.error) });
+    }
+    const body = parsed.data;
+    const user = req.authedUser!;
+    const policy = deps.policy.get();
+    const at = new Date(body.ts);
+    const radiusM = lookupRadiusM(body.accuracy);
+
+    const found = await deps.findCandidates({
+      lat: body.lat,
+      lng: body.lng,
+      radiusM,
+    });
+    const resolution = resolveCandidates(found, at, policy.respect_enforcement_hours);
+
+    let action: Action;
+    let rule: string;
+    let candidates: ReturnType<typeof candidatePayload>[] = [];
+    let quote: Quote | null = null;
+
+    if (resolution.kind === "unknown") {
+      action = "unknown_zone";
+      rule = "unknown_zone";
+    } else if (resolution.kind === "disagree") {
+      // Both plausible sides differ in what they'd charge or allow — the
+      // driver has to say which curb the car is on.
+      action = "confirm";
+      rule = "candidates_disagree";
+      quote = quoteZone(resolution.nearest, policy, at);
+      candidates = [
+        candidatePayload(resolution.nearest, quote),
+        candidatePayload(resolution.alternative, quoteZone(resolution.alternative, policy, at)),
+      ];
+    } else {
+      quote = quoteZone(resolution.nearest, policy, at);
+      candidates = [candidatePayload(resolution.nearest, quote)];
+      const ladderMax = Math.max(
+        resolution.nearest.rateFirstHourUsd,
+        resolution.nearest.rateAdditionalHourUsd,
+      );
+      if (quote.totalUsd === 0) {
+        action = "ignore";
+        rule = "free_period";
+      } else if (ladderMax > policy.auto_pay_max_rate_per_hour) {
+        action = "confirm";
+        rule = "rate_above_ceiling";
+      } else if (quote.totalUsd > policy.session_cap_usd) {
+        action = "confirm";
+        rule = "session_cap_exceeded";
+      } else {
+        const todays = await deps.db.session.findMany({
+          where: {
+            userId: user.id,
+            dryRun: false,
+            status: { in: ["pending", "active", "stopped", "expired"] },
+            createdAt: { gte: nycStartOfDay(at) },
+          },
+          select: { amountUsd: true, feeUsd: true },
+        });
+        const spentTodayUsd = todays.reduce(
+          (sum, s) => sum + Number(s.amountUsd ?? 0) + Number(s.feeUsd ?? 0),
+          0,
+        );
+        if (spentTodayUsd + quote.totalUsd > policy.daily_cap_usd) {
+          action = "confirm";
+          rule = "daily_cap_exceeded";
+        } else {
+          action = "pay";
+          rule = "auto_pay_ok";
+        }
+      }
+    }
+
+    const dryRun = deps.policy.effectiveDryRun();
+    const parkedEvent = await deps.db.parkedEvent.create({
+      data: {
+        userId: user.id,
+        lat: body.lat,
+        lng: body.lng,
+        accuracyM: body.accuracy,
+        ts: at,
+        signals: body.signals,
+      },
+    });
+    const decision = await deps.db.decision.create({
+      data: {
+        kind: "parked_quote",
+        inputs: {
+          body,
+          radiusM,
+          candidateZoneIds: found.map((c) => c.zoneId),
+          dryRun,
+          policyHash: deps.policy.hash(),
+        },
+        rule,
+        outcome: { action, quote, candidates },
+        userId: user.id,
+        parkedEventId: parkedEvent.id,
+      },
+    });
+
+    return {
+      action,
+      candidates,
+      quote,
+      rule,
+      dryRun,
+      parkedEventId: parkedEvent.id,
+      decisionId: decision.id,
+    };
+  });
+}

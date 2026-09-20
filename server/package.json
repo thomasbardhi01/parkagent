@@ -4,11 +4,12 @@
   "description": "ParkAgent API: Fastify + TypeScript on Fly.io",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc",
+    "build": "prisma generate && tsc",
     "start": "node dist/index.js",
     "test": "vitest run",
     "lint": "eslint src",
-    "load:zones": "tsx src/scripts/load-zones.ts"
+    "load:zones": "tsx src/scripts/load-zones.ts",
+    "create:user": "tsx src/scripts/create-user.ts"
   },
   "license": "UNLICENSED",
   "type": "module",

@@ -91,14 +91,10 @@ async function main(): Promise<number> {
   }
 
   console.log(`Reading ${flags.file} ...`);
-  const collection = JSON.parse(
-    readFileSync(flags.file, "utf-8"),
-  ) as ZonesCollection;
+  const collection = JSON.parse(readFileSync(flags.file, "utf-8")) as ZonesCollection;
   const dataVersion = collection.metadata?.built_at;
   if (!dataVersion) {
-    console.error(
-      "zones.geojson has no metadata.built_at; rebuild it with data/build_zones.py.",
-    );
+    console.error("zones.geojson has no metadata.built_at; rebuild it with data/build_zones.py.");
     return 1;
   }
 
@@ -151,15 +147,10 @@ async function main(): Promise<number> {
            loaded_at = now()`,
         params,
       );
-      console.log(
-        `  upserted ${Math.min(start + CHUNK_SIZE, selected.length)}/${selected.length}`,
-      );
+      console.log(`  upserted ${Math.min(start + CHUNK_SIZE, selected.length)}/${selected.length}`);
     }
 
-    const stale = await client.query(
-      "DELETE FROM zones WHERE data_version <> $1",
-      [dataVersion],
-    );
+    const stale = await client.query("DELETE FROM zones WHERE data_version <> $1", [dataVersion]);
     if ((stale.rowCount ?? 0) > 0) {
       console.log(`  deleted ${stale.rowCount} stale rows (other data_version)`);
     }
@@ -167,18 +158,11 @@ async function main(): Promise<number> {
     await client.query(
       `INSERT INTO zone_loads (data_version, source_datasets, zone_count, passenger_only)
        VALUES ($1, $2, $3, $4)`,
-      [
-        dataVersion,
-        JSON.stringify(collection.metadata.sources),
-        selected.length,
-        !flags.all,
-      ],
+      [dataVersion, JSON.stringify(collection.metadata.sources), selected.length, !flags.all],
     );
 
     await client.query("COMMIT");
-    console.log(
-      `Loaded ${selected.length} zones (data_version ${dataVersion}).`,
-    );
+    console.log(`Loaded ${selected.length} zones (data_version ${dataVersion}).`);
     return 0;
   } catch (error) {
     await client.query("ROLLBACK");

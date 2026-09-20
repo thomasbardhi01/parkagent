@@ -38,6 +38,124 @@ model Zone {
   @@map("zones")
 }
 
+// The two humans this prototype serves. api_key is the whole auth story.
+model User {
+  id        String   @id @default(cuid())
+  name      String
+  apiKey    String   @unique @map("api_key")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  vehicles     Vehicle[]
+  parkedEvents ParkedEvent[]
+  sessions     Session[]
+  decisions    Decision[]
+
+  @@map("users")
+}
+
+model Vehicle {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  plate     String
+  state     String   @default("NY")
+  label     String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user     User      @relation(fields: [userId], references: [id])
+  sessions Session[]
+
+  @@unique([plate, state])
+  @@map("vehicles")
+}
+
+// Raw phone-detected park, exactly as reported. What the server decided
+// about it lives in the linked decisions row, not here.
+model ParkedEvent {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  lat       Float
+  lng       Float
+  // Reported horizontal accuracy, meters.
+  accuracyM Float    @map("accuracy_m")
+  // When the phone detected the park (device clock).
+  ts        DateTime @db.Timestamptz(6)
+  // Detector evidence, e.g. ["motion_stop", "bt_disconnect"].
+  signals   Json
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user      User       @relation(fields: [userId], references: [id])
+  decisions Decision[]
+
+  @@map("parked_events")
+}
+
+// One ParkNYC paid session (Phase 5 fills these in; the schema exists now so
+// /parked can already sum today's spend against daily_cap_usd).
+// zoneId is a plain string, NOT a relation: the zones table mirrors each
+// loader run and stale rows are deleted, so an FK would break reloads.
+model Session {
+  id                   String    @id @default(cuid())
+  userId               String    @map("user_id")
+  vehicleId            String?   @map("vehicle_id")
+  zoneId               String    @map("zone_id")
+  parknycZoneNumber    String    @map("parknyc_zone_number")
+  // pending | active | stopped | expired | failed
+  status               String
+  dryRun               Boolean   @map("dry_run")
+  startedAt            DateTime? @map("started_at") @db.Timestamptz(6)
+  expiresAt            DateTime? @map("expires_at") @db.Timestamptz(6)
+  amountUsd            Decimal?  @map("amount_usd") @db.Decimal(6, 2)
+  feeUsd               Decimal?  @map("fee_usd") @db.Decimal(6, 2)
+  parknycConfirmation  String?   @map("parknyc_confirmation")
+  createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user      User       @relation(fields: [userId], references: [id])
+  vehicle   Vehicle?   @relation(fields: [vehicleId], references: [id])
+  decisions Decision[]
+
+  @@index([userId, createdAt])
+  @@map("sessions")
+}
+
+// Non-negotiable: every automated decision writes a row here with its inputs.
+model Decision {
+  id            String   @id @default(cuid())
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  // What kind of decision, e.g. "parked_quote".
+  kind          String
+  // Everything the rule saw: request body, candidates, policy hash, dry run.
+  inputs        Json
+  // The rule that fired, e.g. "auto_pay_ok", "candidates_disagree".
+  rule          String
+  // What came of it: action, quote, zone.
+  outcome       Json
+  userId        String?  @map("user_id")
+  parkedEventId String?  @map("parked_event_id")
+  sessionId     String?  @map("session_id")
+
+  user        User?        @relation(fields: [userId], references: [id])
+  parkedEvent ParkedEvent? @relation(fields: [parkedEventId], references: [id])
+  session     Session?     @relation(fields: [sessionId], references: [id])
+
+  @@index([createdAt])
+  @@map("decisions")
+}
+
+// Every distinct policy.json the server has run with or accepted via PUT.
+model PolicySnapshot {
+  id        Int      @id @default(autoincrement())
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  // sha256 of the canonical (sorted-keys) JSON.
+  hash      String
+  policy    Json
+  // "boot" | "put"
+  source    String
+
+  @@index([hash])
+  @@map("policy_snapshots")
+}
+
 // Audit row per loader run.
 model ZoneLoad {
   id             Int      @id @default(autoincrement())

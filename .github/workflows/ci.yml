@@ -15,7 +15,11 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm -C server lint
       - run: pnpm -C server test
+      # `build` runs `prisma generate` first (src/generated is gitignored).
+      # generate never connects, but prisma7.config.ts wants a URL present.
       - run: pnpm -C server build
+        env:
+          DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
 
   ios:
     runs-on: macos-latest

@@ -4,22 +4,35 @@
  * user finishing in SpotHero through a prefilled link. We never automate
  * SpotHero login or checkout — that line is a design rule, not a TODO.
  *
- * The public endpoint is unofficial: the parser is a total function over
- * whatever comes back (bad shapes yield [] and a decisions-visible
- * message, never a throw), and fixtures pin the shape we saw. When the
- * Partner API key arrives this file is replaced behind the same
- * GarageProvider interface (see API.md "Assistant > SpotHero").
+ * Endpoint (verified live 2026-09-21, Seaport probe returned 31 results):
+ *   GET https://api.spothero.com/v2/search/transient?lat=&lon=&starts=&ends=
+ * The old /v2/search with latitude/longitude 404s — that shape change is
+ * exactly why search() returns a TYPED outcome now: "the search broke"
+ * and "no garages" must never read the same. Errors are never cached;
+ * only good results are. SpotHero is not blocking unauthenticated reads
+ * at low volume (plain requests succeed) — if that ever changes, the
+ * right behavior is the `blocked` error, not evasion.
  */
 
 import type { GarageBooking, GarageOption, GarageProvider, GarageSearchQuery } from "./garageProvider.js";
 
-const SEARCH_BASE = "https://api.spothero.com/v2/search";
+const SEARCH_BASE = "https://api.spothero.com/v2/search/transient";
 const CACHE_TTL_MS = 10 * 60_000;
 const MAX_RESULTS = 8;
 const WALK_M_PER_MIN = 80;
 
+export type GarageSearchError = "blocked" | "parse_failed" | "network";
+
+export type GarageSearchOutcome =
+  | { ok: true; options: GarageOption[]; fromCache: boolean }
+  | { ok: false; error: GarageSearchError; detail: string };
+
 interface Fetcher {
-  (url: string): Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
+  (url: string, init?: { headers?: Record<string, string> }): Promise<{
+    ok: boolean;
+    status: number;
+    json(): Promise<unknown>;
+  }>;
 }
 
 export interface SpotHeroOptions {
@@ -49,29 +62,36 @@ export function spotheroDeepLink(query: {
 }
 
 /**
- * Defensive extraction of the fields we surface from one search result.
- * Returns null when the entry doesn't carry enough to be an option.
+ * One row of the transient-search response (shape pinned by the fixture,
+ * recorded live 2026-09-21): price at rates[0].quote.total_price.value
+ * (cents), facility under facility.common (title, addresses, slug),
+ * distance at distance.linear_meters, entry type at
+ * rates[0].transient.redemption_type. Total function: a row that doesn't
+ * carry enough drops to null, never throws.
  */
-export function parseSpotHeroResult(raw: unknown, origin: { lat: number; lng: number }): Omit<GarageOption, "deepLink" | "provider"> | null {
+export function parseSpotHeroResult(
+  raw: unknown,
+  origin: { lat: number; lng: number },
+): Omit<GarageOption, "deepLink" | "provider"> | null {
   if (typeof raw !== "object" || raw === null) return null;
   const r = raw as Record<string, unknown>;
-  const facility = (r["facility"] ?? r) as Record<string, unknown>;
+  const facility = r["facility"] as Record<string, unknown> | undefined;
+  const common = (facility?.["common"] ?? facility ?? r) as Record<string, unknown>;
 
-  const id = firstString(r["id"], facility["id"], facility["parking_spot_id"]);
-  const name = firstString(facility["title"], facility["name"]);
-  const address = extractAddress(facility);
+  const id = firstString(common["id"], r["id"]);
+  const name = firstString(common["title"], common["name"]);
   const priceUsd = extractPriceUsd(r);
-  const distanceM = extractDistanceM(r, facility, origin);
   if (id === null || name === null || priceUsd === null) return null;
 
+  const distanceM = extractDistanceM(r, common, origin);
   return {
     id,
     name,
-    address: address ?? "",
+    address: extractAddress(common) ?? "",
     priceUsd,
     distanceM: distanceM ?? 0,
     walkMinutes: distanceM !== null ? Math.max(1, Math.round(distanceM / WALK_M_PER_MIN)) : 0,
-    entryType: extractEntryType(facility),
+    entryType: extractEntryType(r, common),
   };
 }
 
@@ -83,10 +103,10 @@ function firstString(...candidates: unknown[]): string | null {
   return null;
 }
 
-function extractAddress(facility: Record<string, unknown>): string | null {
-  const direct = firstString(facility["street_address"], facility["address"]);
+function extractAddress(common: Record<string, unknown>): string | null {
+  const direct = firstString(common["street_address"], common["address"]);
   if (direct) return direct;
-  const addresses = facility["addresses"];
+  const addresses = common["addresses"];
   if (Array.isArray(addresses) && addresses.length > 0) {
     const a = addresses[0] as Record<string, unknown>;
     return firstString(a["street_address"], a["address_line_1"]);
@@ -95,8 +115,6 @@ function extractAddress(facility: Record<string, unknown>): string | null {
 }
 
 function extractPriceUsd(r: Record<string, unknown>): number | null {
-  // Shapes seen: {price: 1200} cents; {rates:[{price: 1200}]};
-  // {rates:[{quote:{total_price:{value:1200}}}]}.
   const cents = (v: unknown): number | null =>
     typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.round(v) / 100 : null;
   const direct = cents(r["price"]);
@@ -116,24 +134,35 @@ function extractPriceUsd(r: Record<string, unknown>): number | null {
 
 function extractDistanceM(
   r: Record<string, unknown>,
-  facility: Record<string, unknown>,
+  common: Record<string, unknown>,
   origin: { lat: number; lng: number },
 ): number | null {
-  const direct = r["distance"] ?? facility["distance"];
-  if (typeof direct === "number" && Number.isFinite(direct)) return Math.round(direct);
-  const lat = facility["latitude"];
-  const lng = facility["longitude"];
+  const distance = r["distance"];
+  if (typeof distance === "number" && Number.isFinite(distance)) return Math.round(distance);
+  if (typeof distance === "object" && distance !== null) {
+    const meters = (distance as Record<string, unknown>)["linear_meters"];
+    if (typeof meters === "number" && Number.isFinite(meters)) return Math.round(meters);
+  }
+  const addresses = common["addresses"];
+  const first = Array.isArray(addresses) ? (addresses[0] as Record<string, unknown>) : undefined;
+  const lat = first?.["latitude"] ?? common["latitude"];
+  const lng = first?.["longitude"] ?? common["longitude"];
   if (typeof lat === "number" && typeof lng === "number") {
     return Math.round(haversineM(origin.lat, origin.lng, lat, lng));
   }
   return null;
 }
 
-function extractEntryType(facility: Record<string, unknown>): string {
-  const raw = firstString(
-    facility["parking_type"],
-    (facility["operator_display_name"] as Record<string, unknown> | undefined)?.["entry_type"],
-  );
+function extractEntryType(r: Record<string, unknown>, common: Record<string, unknown>): string {
+  const rates = r["rates"];
+  if (Array.isArray(rates) && rates.length > 0) {
+    const transient = (rates[0] as Record<string, unknown>)["transient"] as
+      | Record<string, unknown>
+      | undefined;
+    const redemption = transient?.["redemption_type"];
+    if (typeof redemption === "string" && redemption.length > 0) return redemption;
+  }
+  const raw = firstString(common["parking_type"], common["facility_type"]);
   if (raw === null) return "unknown";
   const lower = raw.toLowerCase();
   if (lower.includes("valet")) return "valet";
@@ -151,8 +180,9 @@ function haversineM(aLat: number, aLng: number, bLat: number, bLng: number): num
   return 2 * R * Math.asin(Math.sqrt(s));
 }
 
-/** Pull the results array out of whatever envelope the endpoint used. */
-export function extractResults(body: unknown): unknown[] {
+/** Pull the results array out of whatever envelope the endpoint used;
+ * null (vs []) means "no recognizable envelope at all". */
+export function extractResults(body: unknown): unknown[] | null {
   if (Array.isArray(body)) return body;
   if (typeof body === "object" && body !== null) {
     const b = body as Record<string, unknown>;
@@ -160,46 +190,72 @@ export function extractResults(body: unknown): unknown[] {
       if (Array.isArray(b[key])) return b[key] as unknown[];
     }
   }
-  return [];
+  return null;
 }
 
 export function makeSpotHeroProvider(options: SpotHeroOptions = {}): GarageProvider {
-  const fetcher: Fetcher = options.fetcher ?? ((url) => fetch(url));
+  const fetcher: Fetcher = options.fetcher ?? ((url, init) => fetch(url, init));
   const now = options.now ?? Date.now;
   const cache = new Map<string, { at: number; options: GarageOption[] }>();
 
-  async function search(query: GarageSearchQuery): Promise<GarageOption[]> {
+  async function search(query: GarageSearchQuery): Promise<GarageSearchOutcome> {
     const key = cacheKey(query);
     const hit = cache.get(key);
     if (hit && now() - hit.at < CACHE_TTL_MS) {
-      return filterBudget(hit.options, query.budgetUsd);
+      return { ok: true, options: filterBudget(hit.options, query.budgetUsd), fromCache: true };
     }
 
     const params = new URLSearchParams({
-      latitude: String(query.lat),
-      longitude: String(query.lng),
+      lat: String(query.lat),
+      lon: String(query.lng),
       starts: query.startsAt,
       ends: query.endsAt,
     });
-    let parsed: GarageOption[] = [];
+    let response: Awaited<ReturnType<Fetcher>>;
     try {
-      const res = await fetcher(`${SEARCH_BASE}?${params.toString()}`);
-      if (res.ok) {
-        const body = await res.json();
-        const link = spotheroDeepLink(query);
-        parsed = extractResults(body)
-          .map((raw) => parseSpotHeroResult(raw, query))
-          .filter((o): o is NonNullable<typeof o> => o !== null)
-          .slice(0, MAX_RESULTS)
-          .map((o) => ({ ...o, provider: "spothero", deepLink: link }));
-      }
+      response = await fetcher(`${SEARCH_BASE}?${params.toString()}`, {
+        // Plain, honest headers — the endpoint serves unauthenticated
+        // JSON at low volume; nothing here evades anything.
+        headers: { Accept: "application/json", "User-Agent": "parkagent-prototype/1.0" },
+      });
+    } catch (err) {
+      return {
+        ok: false,
+        error: "network",
+        detail: err instanceof Error ? err.message.split("\n")[0]! : String(err),
+      };
+    }
+    if (response.status === 403 || response.status === 429) {
+      return { ok: false, error: "blocked", detail: `HTTP ${response.status}` };
+    }
+    if (!response.ok) {
+      // A 404 here is the endpoint moving again — a site-shape problem,
+      // not connectivity.
+      return { ok: false, error: "parse_failed", detail: `HTTP ${response.status}` };
+    }
+    let body: unknown;
+    try {
+      body = await response.json();
     } catch {
-      // Unreachable or reshaped endpoint: the assistant says "no garage
-      // results" rather than crashing the turn.
-      parsed = [];
+      return { ok: false, error: "parse_failed", detail: "response was not JSON" };
+    }
+    const rows = extractResults(body);
+    if (rows === null) {
+      return { ok: false, error: "parse_failed", detail: "no results array in response" };
+    }
+    const link = spotheroDeepLink(query);
+    const parsed = rows
+      .map((raw) => parseSpotHeroResult(raw, query))
+      .filter((o): o is NonNullable<typeof o> => o !== null)
+      .slice(0, MAX_RESULTS)
+      .map((o) => ({ ...o, provider: "spothero", deepLink: link }));
+    if (rows.length > 0 && parsed.length === 0) {
+      // The endpoint answered with rows we can no longer read — say the
+      // site changed rather than claiming an empty lot map.
+      return { ok: false, error: "parse_failed", detail: `0 of ${rows.length} rows parseable` };
     }
     cache.set(key, { at: now(), options: parsed });
-    return filterBudget(parsed, query.budgetUsd);
+    return { ok: true, options: filterBudget(parsed, query.budgetUsd), fromCache: false };
   }
 
   return {

@@ -50,7 +50,7 @@ function fakeGarage(): GarageProvider {
   return {
     id: "spothero",
     canReserve: false,
-    search: async () => [GARAGE],
+    search: async () => ({ ok: true, options: [GARAGE], fromCache: false }),
     book: async (id) => {
       if (id !== "g1") throw new Error("unknown option");
       return { kind: "deeplink_handoff", option: GARAGE, deepLink: GARAGE.deepLink };
@@ -364,5 +364,83 @@ describe("history and explanations", () => {
       decision_id: "d1",
     });
     expect((theirs.result as { error?: string }).error).toBeTruthy();
+  });
+});
+
+describe("garage search failure vs empty (Seaport prod bug)", () => {
+  function askForGarage(garage: GarageProvider, replyText: string) {
+    const model = scriptedModel([
+      {
+        content: [
+          {
+            type: "tool_use",
+            id: "t1",
+            name: "search_garages",
+            input: {
+              lat: 42.3503,
+              lng: -71.04,
+              starts_at: "2026-09-21T18:00:00",
+              ends_at: "2026-09-21T22:00:00",
+              budget_usd: 30,
+            },
+          },
+        ],
+        stopReason: "tool_use",
+      },
+      { content: [{ type: "text", text: replyText }], stopReason: "end_turn" },
+    ]);
+    return makeTestApp({ assistantModel: model, garage });
+  }
+
+  test("a FAILED search reaches the model as garage_search_unavailable, audited with the error", async () => {
+    const broken: GarageProvider = {
+      id: "spothero",
+      canReserve: false,
+      search: async () => ({ ok: false, error: "parse_failed", detail: "HTTP 404" }),
+      book: async () => {
+        throw new Error("unreachable");
+      },
+    };
+    const t = askForGarage(broken, "I couldn't check garages right now — street is still an option.");
+    const res = await t.app.inject({
+      method: "POST",
+      url: "/assistant/message",
+      headers: HEADERS,
+      payload: { text: "garage near the Seaport from 6 to 10 tonight, under $30" },
+    });
+    expect(res.statusCode).toBe(200);
+    // The decision records the failure, typed.
+    const audit = t.state.decisions.find((d) => d.rule === "garage_search_error");
+    expect(audit?.outcome).toMatchObject({ error: "parse_failed", detail: "HTTP 404" });
+    // The tool result the model saw distinguishes failure from empty.
+    const turns = JSON.stringify(t.state.conversations[0]!.turns);
+    expect(turns).toContain("garage_search_unavailable");
+    expect(turns).toContain("NOT 'no garages'");
+    expect(res.json().reply).toContain("couldn't check garages");
+  });
+
+  test("a genuinely EMPTY search stays a plain empty options list", async () => {
+    const empty: GarageProvider = {
+      id: "spothero",
+      canReserve: false,
+      search: async () => ({ ok: true, options: [], fromCache: false }),
+      book: async () => {
+        throw new Error("unreachable");
+      },
+    };
+    const t = askForGarage(empty, "No garages matched that budget.");
+    await t.app.inject({
+      method: "POST",
+      url: "/assistant/message",
+      headers: HEADERS,
+      payload: { text: "garage under $1" },
+    });
+    const audit = t.state.decisions.find(
+      (d) => d.kind === "assistant_tool" && d.rule === "ok",
+    );
+    expect(audit?.outcome).toMatchObject({ count: 0 });
+    const turns = JSON.stringify(t.state.conversations[0]!.turns);
+    expect(turns).toContain('\\"options\\":[]');
+    expect(turns).not.toContain("garage_search_unavailable");
   });
 });

@@ -1000,7 +1000,7 @@ export function makeTestApp(options: {
     options.garage ?? {
       id: "fake-garage",
       canReserve: false,
-      search: async () => [],
+      search: async () => ({ ok: true, options: [], fromCache: false }),
       book: async () => {
         throw new Error("no garage options in this test");
       },

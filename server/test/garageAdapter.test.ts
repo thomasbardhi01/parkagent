@@ -1,7 +1,9 @@
 /**
- * The SpotHero deep-link adapter against fixture JSON: defensive parsing
- * (bad rows drop, never throw), the prefilled deep link, caching, budget
- * filtering, and the deep-link-only booking contract.
+ * The SpotHero deep-link adapter against the LIVE transient-search shape
+ * (fixture recorded 2026-09-21 from the Seaport probe that exposed the
+ * prod bug): typed outcomes — error is never "no results" — defensive
+ * parsing, the prefilled deep link, caching, budget filtering, and the
+ * deep-link-only booking contract.
  */
 
 import { readFileSync } from "node:fs";
@@ -17,106 +19,160 @@ import {
 } from "../src/services/garage/spotheroDeepLink.js";
 
 const fixture = JSON.parse(
-  readFileSync(fileURLToPath(new URL("./fixtures/spothero-search.json", import.meta.url)), "utf8"),
+  readFileSync(
+    fileURLToPath(new URL("./fixtures/spothero-transient-search.json", import.meta.url)),
+    "utf8",
+  ),
 ) as unknown;
 
+/** The prod request: Seaport, 6–10 tonight. */
 const QUERY = {
-  lat: 42.3495,
-  lng: -71.0798,
-  startsAt: "2026-01-05T15:00:00-05:00",
-  endsAt: "2026-01-05T17:00:00-05:00",
+  lat: 42.3503,
+  lng: -71.04,
+  startsAt: "2026-09-21T18:00:00",
+  endsAt: "2026-09-21T22:00:00",
 };
 
-function providerOver(body: unknown, now?: () => number) {
-  let fetches = 0;
+function providerOver(
+  responses: { ok: boolean; status: number; body?: unknown; throws?: boolean }[],
+  now?: () => number,
+) {
+  let call = 0;
+  const urls: string[] = [];
   const provider = makeSpotHeroProvider({
-    fetcher: async () => {
-      fetches += 1;
-      return { ok: true, status: 200, json: async () => body };
+    fetcher: async (url) => {
+      urls.push(url);
+      const r = responses[Math.min(call, responses.length - 1)]!;
+      call += 1;
+      if (r.throws) throw new Error("ECONNREFUSED");
+      return { ok: r.ok, status: r.status, json: async () => r.body };
     },
     ...(now ? { now } : {}),
   });
-  return { provider, count: () => fetches };
+  return { provider, urls, count: () => call };
 }
 
-describe("fixture parsing", () => {
-  test("well-formed rows parse; malformed rows drop without throwing", () => {
-    const results = extractResults(fixture);
-    expect(results).toHaveLength(5);
-    const parsed = results.map((r) => parseSpotHeroResult(r, QUERY));
+describe("live transient-search shape (Seaport fixture)", () => {
+  test("the endpoint and params are the verified live ones", async () => {
+    const { provider, urls } = providerOver([{ ok: true, status: 200, body: fixture }]);
+    await provider.search(QUERY);
+    expect(urls[0]).toContain("https://api.spothero.com/v2/search/transient?");
+    // lat/lon, not latitude/longitude — the rename that broke prod.
+    expect(urls[0]).toContain("lat=42.3503");
+    expect(urls[0]).toContain("lon=-71.04");
+  });
+
+  test("well-formed rows parse (nested facility.common, cents quote, linear_meters); malformed rows drop", () => {
+    const rows = extractResults(fixture)!;
+    expect(rows).toHaveLength(5);
+    const parsed = rows.map((r) => parseSpotHeroResult(r, QUERY));
     expect(parsed.filter((p) => p !== null)).toHaveLength(2);
 
-    const deck = parsed[0]!;
-    expect(deck).toMatchObject({
-      id: "40167",
-      name: "Underground Deck - 1 Test St",
-      address: "1 Test St",
-      priceUsd: 18,
+    expect(parsed[0]).toMatchObject({
+      id: "10607",
+      name: "South Boston Waterfront Transportation Center Garage - 503 Congress Street",
+      address: "503 Congress Street",
+      priceUsd: 27.13,
       distanceM: 240,
       walkMinutes: 3,
       entryType: "self",
     });
+    expect(parsed[1]).toMatchObject({
+      name: "601 D St. (1 Seaport Ln.) - Seaport Hotel Garage",
+      priceUsd: 30.74,
+    });
+  });
 
-    const valet = parsed[1]!;
-    expect(valet).toMatchObject({ name: "Valet Plaza", priceUsd: 24, entryType: "valet" });
-    expect(valet.distanceM).toBeGreaterThan(1000); // haversine fallback
-    expect(valet.address).toBe("9 Center Plaza");
+  test("the prod query yields a $27.13 option under the $30 budget — 'none available' was false", async () => {
+    const { provider } = providerOver([{ ok: true, status: 200, body: fixture }]);
+    const outcome = await provider.search({ ...QUERY, budgetUsd: 30 });
+    expect(outcome).toMatchObject({ ok: true, fromCache: false });
+    if (!outcome.ok) throw new Error("unreachable");
+    expect(outcome.options).toHaveLength(1);
+    expect(outcome.options[0]!.priceUsd).toBe(27.13);
+    expect(outcome.options[0]!.deepLink).toContain("spothero.com/search");
   });
 
   test("the deep link prefills location and window", () => {
     const link = spotheroDeepLink(QUERY);
-    expect(link).toContain("https://spothero.com/search?");
-    expect(link).toContain("latitude=42.3495");
-    expect(link).toContain(encodeURIComponent("2026-01-05T15:00:00-05:00"));
+    expect(link).toContain("latitude=42.3503");
+    expect(link).toContain(encodeURIComponent("2026-09-21T18:00:00"));
+  });
+});
+
+describe("error vs empty — never the same fact", () => {
+  test("HTTP 404 (the endpoint moving, as in prod) is parse_failed, not an empty result", async () => {
+    const { provider } = providerOver([{ ok: false, status: 404, body: "page not found" }]);
+    const outcome = await provider.search(QUERY);
+    expect(outcome).toEqual({ ok: false, error: "parse_failed", detail: "HTTP 404" });
   });
 
-  test("unrecognized envelopes and junk bodies yield zero options, not a crash", async () => {
-    for (const body of [null, 42, "html error page", { totally: "different" }]) {
-      const { provider } = providerOver(body);
-      expect(await provider.search(QUERY)).toEqual([]);
+  test("403 and 429 are blocked; a thrown fetch is network", async () => {
+    for (const status of [403, 429]) {
+      const { provider } = providerOver([{ ok: false, status }]);
+      expect(await provider.search(QUERY)).toMatchObject({ ok: false, error: "blocked" });
     }
+    const { provider } = providerOver([{ ok: true, status: 200, throws: true }]);
+    expect(await provider.search(QUERY)).toMatchObject({ ok: false, error: "network" });
+  });
+
+  test("a 200 with an unrecognizable envelope, or rows that all fail to parse, is parse_failed", async () => {
+    const junk = providerOver([{ ok: true, status: 200, body: { totally: "different" } }]);
+    expect(await junk.provider.search(QUERY)).toMatchObject({ ok: false, error: "parse_failed" });
+
+    const unreadable = providerOver([
+      { ok: true, status: 200, body: { results: [{ new: "shape" }, { also: "new" }] } },
+    ]);
+    expect(await unreadable.provider.search(QUERY)).toMatchObject({
+      ok: false,
+      error: "parse_failed",
+      detail: "0 of 2 rows parseable",
+    });
+  });
+
+  test("a genuinely empty results list IS ok — that's 'none found'", async () => {
+    const { provider } = providerOver([{ ok: true, status: 200, body: { results: [] } }]);
+    expect(await provider.search(QUERY)).toEqual({ ok: true, options: [], fromCache: false });
+  });
+
+  test("errors are never cached: the next call retries; good results are cached", async () => {
+    let at = 0;
+    const { provider, count } = providerOver(
+      [
+        { ok: false, status: 404 },
+        { ok: true, status: 200, body: fixture },
+      ],
+      () => at,
+    );
+    expect(await provider.search(QUERY)).toMatchObject({ ok: false });
+    const second = await provider.search(QUERY);
+    expect(second).toMatchObject({ ok: true, fromCache: false });
+    expect(count()).toBe(2);
+    // Now cached.
+    at = 60_000;
+    expect(await provider.search(QUERY)).toMatchObject({ ok: true, fromCache: true });
+    expect(count()).toBe(2);
   });
 });
 
 describe("provider behavior", () => {
-  test("search caches for 10 minutes and expires after", async () => {
-    let at = 0;
-    const { provider, count } = providerOver(fixture, () => at);
-    await provider.search(QUERY);
-    await provider.search(QUERY);
-    expect(count()).toBe(1);
-    at = 11 * 60_000;
-    await provider.search(QUERY);
-    expect(count()).toBe(2);
-  });
-
-  test("budget filters without refetching; options carry the deep link", async () => {
-    const { provider, count } = providerOver(fixture);
+  test("budget filters from cache without refetching", async () => {
+    const { provider, count } = providerOver([{ ok: true, status: 200, body: fixture }]);
     const all = await provider.search(QUERY);
-    expect(all).toHaveLength(2);
-    expect(all[0]!.deepLink).toContain("spothero.com/search");
-    const cheap = await provider.search({ ...QUERY, budgetUsd: 20 });
-    expect(cheap).toHaveLength(1);
-    expect(cheap[0]!.priceUsd).toBe(18);
+    if (!all.ok) throw new Error("unreachable");
+    expect(all.options).toHaveLength(2);
+    const cheap = await provider.search({ ...QUERY, budgetUsd: 30 });
+    if (!cheap.ok) throw new Error("unreachable");
+    expect(cheap.options).toHaveLength(1);
     expect(count()).toBe(1);
   });
 
   test("book is a deep-link handoff for cached options and refuses unknown ids", async () => {
-    const { provider } = providerOver(fixture);
+    const { provider } = providerOver([{ ok: true, status: 200, body: fixture }]);
     await provider.search(QUERY);
-    const booking = await provider.book("40167");
+    const booking = await provider.book("10607");
     expect(booking.kind).toBe("deeplink_handoff");
-    expect(booking.deepLink).toContain("spothero.com/search");
     expect(provider.canReserve).toBe(false);
     await expect(provider.book("nope")).rejects.toThrow("unknown garage option");
-  });
-
-  test("a failing endpoint degrades to no results", async () => {
-    const provider = makeSpotHeroProvider({
-      fetcher: async () => {
-        throw new Error("ECONNREFUSED");
-      },
-    });
-    expect(await provider.search(QUERY)).toEqual([]);
   });
 });

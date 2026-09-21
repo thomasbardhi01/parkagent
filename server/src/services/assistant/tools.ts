@@ -239,18 +239,37 @@ export class AssistantTools {
   }
 
   private async searchGarages(ctx: ToolContext, input: Record<string, unknown>): Promise<ToolOutcome> {
-    const options = await this.deps.garage.search({
+    const outcome = await this.deps.garage.search({
       lat: num(input["lat"]),
       lng: num(input["lng"]),
       startsAt: String(input["starts_at"]),
       endsAt: String(input["ends_at"]),
       ...(input["budget_usd"] !== undefined ? { budgetUsd: num(input["budget_usd"]) } : {}),
     });
+    if (!outcome.ok) {
+      // Search FAILED — a different fact from "no garages". The model
+      // must say it couldn't check and still offer street.
+      await this.audit(ctx, "search_garages", input, "garage_search_error", {
+        provider: this.deps.garage.id,
+        error: outcome.error,
+        detail: outcome.detail,
+      });
+      return {
+        result: {
+          error: "garage_search_unavailable",
+          reason: outcome.error,
+          instruction:
+            "The garage search is unavailable right now (this is NOT 'no garages'). Tell the user " +
+            "you couldn't check garages at the moment, and still offer the street option.",
+        },
+      };
+    }
     await this.audit(ctx, "search_garages", input, "ok", {
       provider: this.deps.garage.id,
-      count: options.length,
+      count: outcome.options.length,
+      fromCache: outcome.fromCache,
     });
-    return { result: { provider: this.deps.garage.id, options } };
+    return { result: { provider: this.deps.garage.id, options: outcome.options } };
   }
 
   private async quoteStreet(ctx: ToolContext, input: Record<string, unknown>): Promise<ToolOutcome> {
@@ -317,14 +336,16 @@ export class AssistantTools {
         startsAt: arrival,
         endsAt,
       });
-      const bestGarage = garages[0] ?? null;
       out.push({
         label: stop["label"],
         address: stop["address"] ?? "",
         arrival,
         durationMinutes: minutes,
         street: street.result,
-        garage: bestGarage,
+        garage: garages.ok ? (garages.options[0] ?? null) : null,
+        ...(garages.ok
+          ? {}
+          : { garageSearchUnavailable: true, garageSearchError: garages.error }),
       });
     }
     const spentTodayUsd = await spentToday(this.deps.db, ctx.userId, at);

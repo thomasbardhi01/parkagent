@@ -20,6 +20,13 @@ export const singleSpotOptionSchema = z.object({
   zoneId: z.string().optional(),
   /** garage options — the id search_garages returned. */
   garageOptionId: z.string().optional(),
+  /** ISO start of the stay; how the server tells "now" from "later". */
+  startsAt: z.string().optional(),
+  /** SERVER-COMPUTED on street options (model input ignored): a future
+   * meter can't be started now — the detector pays at the curb, so the
+   * card shows "We'll pay automatically when you park here" and no
+   * Confirm. Garages and street-right-now stay confirmable. */
+  payOnArrival: z.boolean().optional(),
   deepLink: z.string().url().optional(),
   recommended: z.boolean().default(false),
 });

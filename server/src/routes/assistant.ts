@@ -139,6 +139,25 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
       return reply.code(404).send({ error: "plan_not_found" });
     }
 
+    // A future street option has nothing to confirm — the detector pays
+    // when the car parks there. Refuse BEFORE minting anything.
+    if (planRow.kind === "single_spot" && parsed.data.optionId !== undefined) {
+      const plan = planRow.plan as SingleSpotPlan;
+      const option = plan.options.find((o) => o.id === parsed.data.optionId);
+      if (option?.type === "street" && option.payOnArrival === true) {
+        await deps.db.decision.create({
+          data: {
+            kind: "assistant_confirm",
+            inputs: { planId: planRow.id, optionId: option.id },
+            rule: "street_pay_on_arrival",
+            outcome: { allowed: false },
+            userId: user.id,
+          },
+        });
+        return reply.code(409).send({ error: "street_pay_on_arrival" });
+      }
+    }
+
     // The tap IS the authorization: mint the single-use token here and
     // nowhere else, then run the consequential tool through the same
     // gate the model faces.

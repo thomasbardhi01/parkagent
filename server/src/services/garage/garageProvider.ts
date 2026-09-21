@@ -56,7 +56,13 @@ export interface GarageProvider {
   readonly id: string;
   /** True when book() can reserve without the user finishing checkout. */
   readonly canReserve: boolean;
-  search(query: GarageSearchQuery): Promise<GarageOption[]>;
+  /** Typed outcome: "the search broke" (blocked | parse_failed |
+   * network) is a different fact from "no garages" ({ok, options: []})
+   * and the assistant must never conflate them. */
+  search(query: GarageSearchQuery): Promise<
+    | { ok: true; options: GarageOption[]; fromCache: boolean }
+    | { ok: false; error: "blocked" | "parse_failed" | "network"; detail: string }
+  >;
   /** Hand off (deep link) or reserve (Partner API) a searched option. */
   book(optionId: string): Promise<GarageBooking>;
 }

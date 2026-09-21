@@ -1,0 +1,104 @@
+{
+ "tracking": {},
+ "results": [
+  {
+   "distance": {
+    "linear_meters": 240.02586931127902
+   },
+   "rates": [
+    {
+     "quote": {
+      "total_price": {
+       "currency_code": "USD",
+       "value": 2713
+      },
+      "order": [
+       {
+        "starts": "2026-09-21T18:00:00-04:00",
+        "ends": "2026-09-21T22:00:00-04:00"
+       }
+      ]
+     },
+     "transient": {
+      "redemption_type": "self"
+     }
+    }
+   ],
+   "facility": {
+    "common": {
+     "id": "10607",
+     "title": "South Boston Waterfront Transportation Center Garage - 503 Congress Street",
+     "facility_type": "garage",
+     "slug": "503-congress-st",
+     "addresses": [
+      {
+       "street_address": "503 Congress Street",
+       "city": "Boston",
+       "state": "MA",
+       "latitude": 42.3484855,
+       "longitude": -71.0415821
+      }
+     ]
+    }
+   }
+  },
+  {
+   "distance": {
+    "linear_meters": 146.72330448257577
+   },
+   "rates": [
+    {
+     "quote": {
+      "total_price": {
+       "currency_code": "USD",
+       "value": 3074
+      },
+      "order": [
+       {
+        "starts": "2026-09-21T18:00:00-04:00",
+        "ends": "2026-09-22T18:00:00-04:00"
+       }
+      ]
+     },
+     "transient": {
+      "redemption_type": "self"
+     }
+    }
+   ],
+   "facility": {
+    "common": {
+     "id": "126675",
+     "title": "601 D St. (1 Seaport Ln.) - Seaport Hotel Garage",
+     "facility_type": "garage",
+     "slug": "1-seaport-ln-5",
+     "addresses": [
+      {
+       "street_address": "1 Seaport Lane",
+       "city": "Boston",
+       "state": "MA",
+       "latitude": 42.349251,
+       "longitude": -71.04122399999999
+      }
+     ]
+    }
+   }
+  },
+  {
+   "facility": {
+    "common": {
+     "title": "No price row"
+    }
+   }
+  },
+  "not-an-object",
+  {
+   "rates": [],
+   "facility": {
+    "common": {
+     "id": "9",
+     "title": "Empty rates"
+    }
+   }
+  }
+ ]
+}

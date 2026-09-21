@@ -258,16 +258,23 @@ export function makeSpotHeroProvider(options: SpotHeroOptions = {}): GarageProvi
     return { ok: true, options: filterBudget(parsed, query.budgetUsd), fromCache: false };
   }
 
+  function optionById(optionId: string): GarageOption | null {
+    for (const entry of cache.values()) {
+      const option = entry.options.find((o) => o.id === optionId);
+      if (option) return option;
+    }
+    return null;
+  }
+
   return {
     id: "spothero",
     canReserve: false,
     search,
+    optionById,
     async book(optionId: string): Promise<GarageBooking> {
-      for (const entry of cache.values()) {
-        const option = entry.options.find((o) => o.id === optionId);
-        if (option) {
-          return { kind: "deeplink_handoff", option, deepLink: option.deepLink };
-        }
+      const option = optionById(optionId);
+      if (option) {
+        return { kind: "deeplink_handoff", option, deepLink: option.deepLink };
       }
       throw new Error(`unknown garage option ${optionId} (search first — options expire with the cache)`);
     },

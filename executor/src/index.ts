@@ -100,9 +100,14 @@ export function createParkNycExecutor(options: ParkNycExecutorOptions): Executor
           args.zoneNumber,
           args.plate ?? options.defaultPlate,
           args.minutes,
-          // Car coordinates enable the non-fatal map cross-check.
+          // Car coordinates enable the non-fatal map cross-check; the
+          // expected street rides along as decision evidence.
           args.carLat !== undefined && args.carLng !== undefined
-            ? { carLat: args.carLat, carLng: args.carLng }
+            ? {
+                carLat: args.carLat,
+                carLng: args.carLng,
+                expectedStreet: args.expectedStreet ?? null,
+              }
             : undefined,
         ),
       ),

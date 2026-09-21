@@ -36,6 +36,13 @@ export interface ParkNycOptions {
   captureDir?: string;
 }
 
+/** One line of an arbitrary error — multi-line Playwright call logs can
+ * embed resolved-element HTML, which has no business in a decisions row. */
+function firstLine(err: unknown): string {
+  const text = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+  return text.split("\n")[0] ?? text;
+}
+
 /** Lazily-loaded executor over a decrypted per-user storage state. */
 function makeLazyExecutor(provider: ProviderId, load: () => Promise<Executor>): Executor {
   let real: Promise<Executor> | null = null;
@@ -51,7 +58,9 @@ function makeLazyExecutor(provider: ProviderId, load: () => Promise<Executor>): 
       return {
         ok: false,
         code: "unknown",
-        message: `${provider} executor failed to load or crashed: ${String(err)}`,
+        // First line only: a multi-line Playwright call log can embed page
+        // state; the capture on the decisions row is the full story.
+        message: `${provider} executor failed to load or crashed: ${firstLine(err)}`,
       };
     }
   };
@@ -63,6 +72,20 @@ function makeLazyExecutor(provider: ProviderId, load: () => Promise<Executor>): 
 }
 
 /** ParkNYC session executor over a decrypted per-user storage state. */
+/** Graceful-shutdown hook: close the package's warm shared Chromium so a
+ * deploy never leaks the browser process. Loads the package the same lazy
+ * way as everything else here — a server that never ran a real call skips
+ * the import entirely (dynamic import of an already-loaded module is a
+ * cache hit, so this never launches anything). */
+export async function closeExecutorBrowser(): Promise<void> {
+  try {
+    const mod = await import("executor");
+    await mod.closeWarmBrowser();
+  } catch {
+    // No executor build (dev, tests) — nothing to close.
+  }
+}
+
 export function makeParkNycExecutor(
   state: ProviderStorageState,
   options: ParkNycOptions,
@@ -134,7 +157,7 @@ export function makeProviderOpsFactory(options: ParkNycOptions): ProviderOpsFact
         return {
           ok: false,
           code: "unknown",
-          message: `parknyc account ops failed to load or crashed: ${String(err)}`,
+          message: `parknyc account ops failed to load or crashed: ${firstLine(err)}`,
         } as T;
       }
     };

@@ -209,7 +209,11 @@ export function registerProviders(app: FastifyInstance, deps: AppDeps): void {
           }
         })
         .catch((err: unknown) => {
-          req.log.error({ err }, "chained setup-card crashed");
+          // Message only, never the error object: this path holds the card
+          // number/CVC, and a serialized Playwright call log can embed the
+          // resolved form element's HTML.
+          const message = err instanceof Error ? err.message.split("\n")[0] : String(err);
+          req.log.error({ setupCardError: message }, "chained setup-card crashed");
           jobs.update(id, { phase: "failed", reason: "unknown", retrySafe: true });
         });
     }

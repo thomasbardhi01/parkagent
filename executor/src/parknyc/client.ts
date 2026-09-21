@@ -234,7 +234,7 @@ export class ParkNycClient {
     zoneNumber: string,
     plate: string | undefined,
     minutes: number,
-    zoneCheck?: { carLat: number; carLng: number },
+    zoneCheck?: { carLat: number; carLng: number; expectedStreet?: string | null },
   ): Promise<ExecutorResult> {
     const opened = await this.open();
     if ("ok" in opened) return opened;
@@ -251,7 +251,7 @@ export class ParkNycClient {
           mapZoneNumber: resolved.zoneNumber,
           mapStreet: resolved.street,
           storedZoneNumber: zoneNumber,
-          expectedStreet: null,
+          expectedStreet: zoneCheck.expectedStreet ?? null,
           matched: resolved.zoneNumber === zoneNumber,
         };
       }

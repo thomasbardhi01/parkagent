@@ -64,3 +64,17 @@ test("visibleTextFromHtml strips markup, scripts, and entities", () => {
   // script content must not leak into classification
   expect(classifyPageText(text)).toBeNull();
 });
+
+test("a captcha wall is ui_changed, never auth_expired (no false account expiry)", () => {
+  const captchaSayingSignIn =
+    "Security check to continue. Please verify you are not a robot, then sign in to your account.";
+  // Page-text classification must refuse the auth reading…
+  expect(classifyPageText(captchaSayingSignIn)).toBeNull();
+  // …and a selector timeout on that page lands as ui_changed with the
+  // capture as evidence, not as an account-expiring auth_expired.
+  const timeout = Object.assign(new Error("Timeout 30000ms exceeded"), { name: "TimeoutError" });
+  expect(classifyFailure(timeout, captchaSayingSignIn)).toBe("ui_changed");
+  expect(classifyFailure(new Error("weird state"), "Complete the reCAPTCHA to proceed")).toBe(
+    "ui_changed",
+  );
+});

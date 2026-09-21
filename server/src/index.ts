@@ -4,6 +4,7 @@ import { loadEnv } from "./env.js";
 import { buildApp, makeAuthenticate } from "./app.js";
 import { asAppDb, createPrisma } from "./db.js";
 import { makeCardJanitor } from "./jobs/cardJanitor.js";
+import { makeLinkJobJanitor } from "./jobs/linkJobJanitor.js";
 import { makeExtender } from "./jobs/extendTick.js";
 import { makeApnsSender } from "./services/apns.js";
 import { makeStateCrypto } from "./services/crypto.js";
@@ -111,10 +112,12 @@ const extender = makeExtender({
   ...(stripe ? { stripe } : {}),
 });
 const cardJanitor = makeCardJanitor({ db, stripe, log });
+const linkJobJanitor = makeLinkJobJanitor({ db, log });
 
 app.listen({ port: env.PORT, host: "0.0.0.0" });
 extender.start();
 cardJanitor.start();
+linkJobJanitor.start();
 
 // Graceful shutdown: stop the jobs and close the executor's warm Chromium
 // (otherwise every Fly restart leaks the browser process to container
@@ -124,6 +127,7 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
   process.once(signal, () => {
     extender.stop();
     cardJanitor.stop();
+    linkJobJanitor.stop();
     void closeExecutorBrowser()
       .catch(() => {})
       .finally(() => {

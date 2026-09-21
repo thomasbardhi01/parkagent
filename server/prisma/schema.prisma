@@ -252,6 +252,27 @@ model DeviceToken {
   @@map("device_tokens")
 }
 
+// A chained link → setup-card job the app polls (GET
+// /providers/:provider/link-status). Durable so a deploy or machine stop
+// mid-job doesn't lose the answer; a janitor times out rows stuck
+// in-progress past 15 minutes.
+model LinkJob {
+  id        String   @id
+  userId    String   @map("user_id")
+  provider  String
+  // linking | adding_card | done | failed
+  phase     String
+  // Typed failure reason (executor code, "no_card", or "timeout").
+  reason    String?
+  retrySafe Boolean? @map("retry_safe")
+  dryRun    Boolean? @map("dry_run")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([phase, createdAt])
+  @@map("link_jobs")
+}
+
 // Non-negotiable: every automated decision writes a row here with its inputs.
 model Decision {
   id            String   @id @default(cuid())

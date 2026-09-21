@@ -720,9 +720,7 @@ request itself). On failure it carries a typed `reason`
 (executor code, `unsupported_card_brand`, or `no_card`) and `retrySafe`:
 whether re-running `POST /providers/:provider/setup-card` as-is is worth
 it (transient failure) or something needs fixing first (re-link, different
-card). `dryRun: true` marks a job that "completed" by dry-run skip. The
-store is in-memory — a lost job id just means checking
-`GET /providers/status` instead. `404 unknown_job` for ids that aren't
+card). `dryRun: true` marks a job that "completed" by dry-run skip. Jobs live in the link_jobs table (deploy-safe); a janitor times out rows stuck past 15 minutes. `404 unknown_job` for ids that aren't
 yours.
 
 ### GET /providers/status

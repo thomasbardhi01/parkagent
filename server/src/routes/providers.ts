@@ -56,7 +56,7 @@ export function registerProviders(app: FastifyInstance, deps: AppDeps): void {
   const limitWrites = makeRateLimiter({ max: 10, windowMs: 60_000 });
   const limitReads = makeRateLimiter({ max: 60, windowMs: 60_000 });
   const now = () => deps.now?.() ?? new Date();
-  const jobs = new LinkJobStore();
+  const jobs = new LinkJobStore(deps.db);
 
   /** Resolve :provider or reply 404; null means already replied. */
   function requireProvider(req: FastifyRequest, reply: FastifyReply): ProviderInfo | null {
@@ -199,19 +199,18 @@ export function registerProviders(app: FastifyInstance, deps: AppDeps): void {
     let jobId: string | null = null;
     if (setUpCard) {
       jobId = randomUUID();
-      jobs.create({ id: jobId, userId: user.id, provider: provider.id, phase: "adding_card" });
+      await jobs.create({ id: jobId, userId: user.id, provider: provider.id, phase: "adding_card" });
       const id = jobId;
       void runSetupCard(deps, user.id, provider)
         .then((outcome) => {
           if (outcome.ok) {
-            jobs.update(id, { phase: "done", dryRun: outcome.dryRun });
-          } else {
-            jobs.update(id, {
-              phase: "failed",
-              reason: outcome.code,
-              retrySafe: outcome.retrySafe,
-            });
+            return jobs.update(id, { phase: "done", dryRun: outcome.dryRun });
           }
+          return jobs.update(id, {
+            phase: "failed",
+            reason: outcome.code,
+            retrySafe: outcome.retrySafe,
+          });
         })
         .catch((err: unknown) => {
           // Message only, never the error object: this path holds the card
@@ -219,7 +218,7 @@ export function registerProviders(app: FastifyInstance, deps: AppDeps): void {
           // resolved form element's HTML.
           const message = err instanceof Error ? err.message.split("\n")[0] : String(err);
           req.log.error({ setupCardError: message }, "chained setup-card crashed");
-          jobs.update(id, { phase: "failed", reason: "unknown", retrySafe: true });
+          void jobs.update(id, { phase: "failed", reason: "unknown", retrySafe: true });
         });
     }
 
@@ -241,7 +240,7 @@ export function registerProviders(app: FastifyInstance, deps: AppDeps): void {
         return reply.code(400).send({ error: z.treeifyError(parsed.error) });
       }
       const user = req.authedUser!;
-      const job = jobs.get(parsed.data.jobId);
+      const job = await jobs.get(parsed.data.jobId);
       if (!job || job.userId !== user.id || job.provider !== provider.id) {
         return reply.code(404).send({ error: "unknown_job" });
       }

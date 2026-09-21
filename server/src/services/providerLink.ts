@@ -24,10 +24,10 @@ import type {
 import type { StripeGateway } from "./stripeGateway.js";
 
 // ---------------------------------------------------------------------------
-// Link jobs (the chained setup). In-memory on purpose: two users, one
-// process, and every durable fact (account status, card status, decisions)
-// lives in the database — a lost job answer just means the app re-checks
-// GET /providers/status.
+// Link jobs (the chained setup). Durable in link_jobs: a deploy or
+// machine stop mid-job must not lose the answer the app is polling for
+// (GET /providers/:provider/link-status). Rows stuck in progress past 15
+// minutes are failed with reason "timeout" by the link-job janitor.
 
 export type LinkJobPhase = "linking" | "adding_card" | "done" | "failed";
 
@@ -36,7 +36,7 @@ export interface LinkJob {
   userId: string;
   provider: string;
   phase: LinkJobPhase;
-  /** Typed failure reason (ProviderOpErrorCode or "no_card"). */
+  /** Typed failure reason (ProviderOpErrorCode, "no_card", or "timeout"). */
   reason?: string;
   /** On failure: is POST /providers/:provider/setup-card worth retrying
    * as-is (transient), or does something need fixing first? */
@@ -46,19 +46,46 @@ export interface LinkJob {
 }
 
 export class LinkJobStore {
-  private jobs = new Map<string, LinkJob>();
+  constructor(private readonly db: AppDb) {}
 
-  create(job: LinkJob): void {
-    this.jobs.set(job.id, job);
+  async create(job: LinkJob): Promise<void> {
+    await this.db.linkJob.create({
+      data: {
+        id: job.id,
+        userId: job.userId,
+        provider: job.provider,
+        phase: job.phase,
+        ...(job.reason !== undefined ? { reason: job.reason } : {}),
+        ...(job.retrySafe !== undefined ? { retrySafe: job.retrySafe } : {}),
+        ...(job.dryRun !== undefined ? { dryRun: job.dryRun } : {}),
+      },
+    });
   }
 
-  update(id: string, patch: Partial<LinkJob>): void {
-    const job = this.jobs.get(id);
-    if (job) Object.assign(job, patch);
+  async update(id: string, patch: Partial<Omit<LinkJob, "id">>): Promise<void> {
+    await this.db.linkJob.update({
+      where: { id },
+      data: {
+        ...(patch.phase !== undefined ? { phase: patch.phase } : {}),
+        ...(patch.reason !== undefined ? { reason: patch.reason } : {}),
+        ...(patch.retrySafe !== undefined ? { retrySafe: patch.retrySafe } : {}),
+        ...(patch.dryRun !== undefined ? { dryRun: patch.dryRun } : {}),
+      },
+    });
   }
 
-  get(id: string): LinkJob | undefined {
-    return this.jobs.get(id);
+  async get(id: string): Promise<LinkJob | undefined> {
+    const row = await this.db.linkJob.findUnique({ where: { id } });
+    if (!row) return undefined;
+    return {
+      id: row.id,
+      userId: row.userId,
+      provider: row.provider,
+      phase: row.phase as LinkJobPhase,
+      ...(row.reason !== null ? { reason: row.reason } : {}),
+      ...(row.retrySafe !== null ? { retrySafe: row.retrySafe } : {}),
+      ...(row.dryRun !== null ? { dryRun: row.dryRun } : {}),
+    };
   }
 }
 

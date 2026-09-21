@@ -204,6 +204,38 @@ export interface AppDb {
       where: { ts: { gte: Date } };
     }): Promise<{ id: string; userId: string; signals: unknown; ts: Date }[]>;
   };
+  linkJob: {
+    create(args: {
+      data: {
+        id: string;
+        userId: string;
+        provider: string;
+        phase: string;
+        reason?: string;
+        retrySafe?: boolean;
+        dryRun?: boolean;
+      };
+    }): Promise<{ id: string }>;
+    update(args: {
+      where: { id: string };
+      data: { phase?: string; reason?: string; retrySafe?: boolean; dryRun?: boolean };
+    }): Promise<unknown>;
+    findUnique(args: { where: { id: string } }): Promise<{
+      id: string;
+      userId: string;
+      provider: string;
+      phase: string;
+      reason: string | null;
+      retrySafe: boolean | null;
+      dryRun: boolean | null;
+      createdAt: Date;
+    } | null>;
+    /** The janitor's timeout sweep. */
+    updateMany(args: {
+      where: { phase: { in: string[] }; createdAt: { lt: Date } };
+      data: { phase: string; reason: string; retrySafe: boolean };
+    }): Promise<{ count: number }>;
+  };
   decision: {
     create(args: {
       data: {

@@ -248,6 +248,16 @@ export interface FakeDbState {
   issuingAuthorizations: FakeIssuingAuthorizationRow[];
   providerAccounts: ProviderAccountRow[];
   zoneNumberReports: ZoneNumberReportRow[];
+  linkJobs: {
+    id: string;
+    userId: string;
+    provider: string;
+    phase: string;
+    reason: string | null;
+    retrySafe: boolean | null;
+    dryRun: boolean | null;
+    createdAt: Date;
+  }[];
 }
 
 function emptySession(id: string): SessionRow {
@@ -321,6 +331,7 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
     issuingAuthorizations: [],
     providerAccounts: [],
     zoneNumberReports: [],
+    linkJobs: [],
   };
   const cardholderFor = (userId: string) => {
     const explicit = state.issuingCardholders.find((c) => c.userId === userId);
@@ -401,6 +412,34 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
       },
       findUnique: async ({ where }) => state.parkedEvents.find((p) => p.id === where.id) ?? null,
       findMany: async ({ where }) => state.parkedEvents.filter((p) => p.ts >= where.ts.gte),
+    },
+    linkJob: {
+      create: async ({ data }) => {
+        state.linkJobs.push({
+          reason: null,
+          retrySafe: null,
+          dryRun: null,
+          createdAt: new Date(MONDAY_2PM),
+          ...data,
+        } as FakeDbState["linkJobs"][number]);
+        return { id: data.id };
+      },
+      update: async ({ where, data }) => {
+        const row = state.linkJobs.find((j) => j.id === where.id);
+        if (row) Object.assign(row, data);
+        return row ?? {};
+      },
+      findUnique: async ({ where }) => state.linkJobs.find((j) => j.id === where.id) ?? null,
+      updateMany: async ({ where, data }) => {
+        let count = 0;
+        for (const job of state.linkJobs) {
+          if (where.phase.in.includes(job.phase) && job.createdAt < where.createdAt.lt) {
+            Object.assign(job, data);
+            count += 1;
+          }
+        }
+        return { count };
+      },
     },
     decision: {
       create: async ({ data }) => {

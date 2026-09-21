@@ -19,6 +19,7 @@ import { priceStay } from "../quote.js";
 import { spentToday } from "../sessions.js";
 import type { CandidateFetcher } from "../zoneLookup.js";
 import { lookupRadiusM, resolveCandidates } from "../zoneLookup.js";
+import { currentTimeLine } from "./loop.js";
 import { itineraryTotalUsd, planSchema } from "./plans.js";
 import type { AssistantPlanBody } from "./plans.js";
 
@@ -238,7 +239,28 @@ export class AssistantTools {
     }
   }
 
+  /** A window starting in the past is always a model date mistake (the
+   * prod bug: "tonight" hallucinated as a 2024 date → SpotHero 400).
+   * Bounce it back with the current time so the model self-corrects in
+   * the same turn instead of the provider erroring opaquely. */
+  private pastWindowError(ctx: ToolContext, tool: string, input: unknown, startsAt: string) {
+    const at = this.now();
+    if (!startsAt || Number.isNaN(new Date(startsAt).getTime())) return null;
+    if (at.getTime() - new Date(startsAt).getTime() <= 60 * 60_000) return null;
+    return this.audit(ctx, tool, input, "past_window", { startsAt }).then(() => ({
+      result: {
+        error: "window_in_the_past",
+        startsAt,
+        instruction:
+          `That start time is in the past — you guessed the date. ${currentTimeLine(at)} ` +
+          "Recompute the window from the current time and call this tool again.",
+      },
+    }));
+  }
+
   private async searchGarages(ctx: ToolContext, input: Record<string, unknown>): Promise<ToolOutcome> {
+    const past = await this.pastWindowError(ctx, "search_garages", input, String(input["starts_at"] ?? ""));
+    if (past) return past;
     const outcome = await this.deps.garage.search({
       lat: num(input["lat"]),
       lng: num(input["lng"]),
@@ -273,6 +295,8 @@ export class AssistantTools {
   }
 
   private async quoteStreet(ctx: ToolContext, input: Record<string, unknown>): Promise<ToolOutcome> {
+    const past = await this.pastWindowError(ctx, "quote_street", input, String(input["when"] ?? ""));
+    if (past) return past;
     const lat = num(input["lat"]);
     const lng = num(input["lng"]);
     const minutes = num(input["duration_minutes"]);

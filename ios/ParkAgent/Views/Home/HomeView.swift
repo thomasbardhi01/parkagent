@@ -86,6 +86,18 @@ struct HomeView: View {
         VStack(alignment: .leading, spacing: Spacing.unit) {
             spendRow
 
+            Button {
+                model.openAssistant()
+            } label: {
+                Label("Ask ParkAgent", systemImage: "bubble.left.and.text.bubble.right")
+            }
+            .buttonStyle(.secondary)
+            .accessibilityIdentifier("home.askAssistantButton")
+
+            if let day = model.activeItinerary {
+                ItineraryDaySection(day: day)
+            }
+
             if let session = model.activeSession {
                 NavigationLink(value: session.sessionId) {
                     SessionRow(

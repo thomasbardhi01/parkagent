@@ -40,6 +40,34 @@ final class AppModel {
     /// routing, Settings re-link, the provider_relink push).
     var providerLinkPrompt: ProviderLinkPrompt?
 
+    // MARK: - Assistant
+
+    /// Presents the assistant sheet (Home button, Siri intent, deep link).
+    var assistantPresented = false
+    /// Prefilled question when Siri ("Ask ParkAgent") opened the sheet.
+    var assistantInitialQuery: String?
+    /// Signed-off days from the server; the first signed_off one drives
+    /// Home's live day section.
+    var itineraries: [ItinerarySummary] = []
+    var linkWalletConnected = false
+
+    var activeItinerary: ItinerarySummary? {
+        itineraries.first { $0.status == "signed_off" }
+    }
+
+    func refreshItineraries() async {
+        itineraries = (try? await api.itineraries())?.itineraries ?? []
+    }
+
+    func refreshLinkWalletStatus() async {
+        linkWalletConnected = (try? await api.linkWalletStatus())?.connected ?? false
+    }
+
+    func openAssistant(query: String? = nil) {
+        assistantInitialQuery = query
+        assistantPresented = true
+    }
+
     // MARK: - City
 
     /// City key from the last successful GET /city (or the city of the last

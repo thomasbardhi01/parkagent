@@ -188,6 +188,110 @@ struct LiveAPI: APIClient {
         }
     }
 
+    // MARK: - Assistant
+
+    func assistantMessage(
+        text: String,
+        conversationId: String?,
+        location: (lat: Double, lng: Double)?
+    ) -> AsyncThrowingStream<AssistantEvent, Error> {
+        struct MessageBody: Encodable {
+            let text: String
+            let conversation_id: String?
+            let location: Location?
+            struct Location: Encodable {
+                let lat: Double
+                let lng: Double
+            }
+        }
+        let baseURL = baseURL
+        let apiKey = apiKey
+        let body = MessageBody(
+            text: text,
+            conversation_id: conversationId,
+            location: location.map { MessageBody.Location(lat: $0.lat, lng: $0.lng) }
+        )
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                var request = URLRequest(url: baseURL.appending(path: "assistant/message"))
+                request.httpMethod = "POST"
+                request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+                request.httpBody = try Self.encoder.encode(body)
+                do {
+                    let (bytes, response) = try await URLSession.shared.bytes(for: request)
+                    let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                    guard (200..<300).contains(status) else {
+                        throw status == 503
+                            ? APIError.refused(code: "assistant_not_configured")
+                            : APIError.server(status: status)
+                    }
+                    // SSE frames: "event: <name>" then "data: <json>".
+                    var event = ""
+                    for try await line in bytes.lines {
+                        if line.hasPrefix("event: ") {
+                            event = String(line.dropFirst(7))
+                        } else if line.hasPrefix("data: "), let data = line.dropFirst(6).data(using: .utf8) {
+                            switch event {
+                            case "text":
+                                struct Delta: Decodable { let delta: String }
+                                if let delta = try? Self.decoder.decode(Delta.self, from: data) {
+                                    continuation.yield(.delta(delta.delta))
+                                }
+                            case "done":
+                                let reply = try Self.decoder.decode(AssistantReply.self, from: data)
+                                continuation.yield(.done(reply))
+                            case "error":
+                                throw APIError.refused(code: "assistant_failed")
+                            default:
+                                break
+                            }
+                        }
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    func confirmPlan(planId: String, optionId: String?) async throws -> AssistantConfirmResponse {
+        struct Body: Encodable {
+            let planId: String
+            let optionId: String?
+        }
+        return try await send("assistant/confirm", method: "POST", body: Body(planId: planId, optionId: optionId))
+    }
+
+    func itineraries() async throws -> ItinerariesResponse {
+        try await send("assistant/itineraries")
+    }
+
+    func patchItinerary(id: String, stops: [ItineraryStop]) async throws -> ItineraryPatchResponse {
+        struct Body: Encodable { let stops: [ItineraryStop] }
+        return try await send("assistant/itineraries/\(id)", method: "PATCH", body: Body(stops: stops))
+    }
+
+    func linkWalletStatus() async throws -> LinkWalletStatus {
+        try await send("link/status")
+    }
+
+    func linkWalletConnect() async throws -> LinkConnectResponse {
+        try await send("link/connect", method: "POST", body: ["": ""])
+    }
+
+    func linkWalletDisconnect() async throws {
+        struct Ignored: Decodable { let ok: Bool }
+        let _: Ignored = try await send("link/disconnect", method: "POST", body: ["": ""])
+    }
+
+    func syncLinkSpendRequest(id: String) async throws -> LinkSpendSyncResponse {
+        try await send("link/spend-requests/\(id)/sync", method: "POST", body: ["": ""])
+    }
+
     // MARK: - Transport
 
     private struct Refusal: Decodable { let error: String }

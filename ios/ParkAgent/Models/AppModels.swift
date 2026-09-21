@@ -45,6 +45,8 @@ struct ActiveSession: Identifiable {
     var maxExtendCount: Int
     var maxStayReached: Bool
     var autoExtend: Bool
+    /// "issuing_card" | "link_wallet" — which source pays this session.
+    var paymentSource: String = "issuing_card"
 
     var id: String { sessionId }
 

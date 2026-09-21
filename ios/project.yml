@@ -77,6 +77,18 @@ targets:
         NSFaceIDUsageDescription: >-
           ParkAgent asks for Face ID before revealing your full card number, so
           only you can see it.
+        NSSpeechRecognitionUsageDescription: >-
+          ParkAgent transcribes what you say to the parking assistant, on this
+          device when it can, so you can ask for a spot without typing.
+        NSMicrophoneUsageDescription: >-
+          ParkAgent listens only while you hold the assistant's mic button, to
+          hear your parking question.
+
+        # parkagent:// deep links: tap-to-pay pushes, assistant, the Link
+        # wallet OAuth bounce-back.
+        CFBundleURLTypes:
+          - CFBundleURLName: com.thomasbardhi.parkagent
+            CFBundleURLSchemes: [parkagent]
 
         UIBackgroundModes:
           - location

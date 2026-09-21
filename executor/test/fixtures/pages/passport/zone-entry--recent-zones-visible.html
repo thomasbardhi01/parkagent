@@ -1,0 +1,128 @@
+<!-- REGRESSION: recent-zones panel visible with a chip, overlaying Continue. Sanitized slice (Enter Zone + recent-zones panel) of a 2026-09-21 Passport start recording. Test data only. -->
+<!doctype html><html><body>
+<div id="zoneEntry" data-role="page" data-theme="a" data-title="Enter Zone" data-url="zoneEntry" tabindex="-1" class="ui-page ui-page-theme-a ui-page-active" style="min-height: 720px;">
+    <div id="navpanel_zoneEntry" role="region" aria-labelledby="navpanelControl_zoneEntry" data-role="panel" class="sidemenu ui-panel ui-panel-position-left ui-panel-display-overlay ui-panel-closed ui-body-a ui-panel-animate" data-theme="a" data-position="left" data-display="overlay"><ul class="listview ui-listview ui-listview-inset ui-corner-all ui-shadow ui-group-theme-c" data-divider-theme="c" data-inset="true" data-role="listview" data-theme="c">
+            <li class="parkingSideMenuHeader infoFirstSideMenuItem ui-li-divider ui-bar-c ui-first-child" data-role="list-divider" aria-level="2" role="heading">
+            Parking        </li>
+        <li class="newSessionSideMenuItem parkingSideMenuItem">
+            <a class="sidemenu_newsession_button ui-link ui-btn ui-icon-new-session-white-48-sidemenu ui-btn-icon-left ui-shadow" data-role="button" data-corners="false" data-icon="new-session-white-48-sidemenu" data-iconpos="left" tabindex="0" href="#" role="button">
+                New Session            </a>
+        </li>
+                                            <li class="findParkingSideMenuItem parkingSideMenuItem infoFirstSideMenuItem">
+                <a data-role="button" data-corners="false" data-icon="map-white-48-sidemenu" data-iconpos="left" href="#findParking" class="ui-link ui-btn ui-icon-map-white-48-sidemenu ui-btn-icon-left ui-shadow" role="button">
+                    Find Parking                </a>
+            </li>
+                <li class="parkerHistorySideMenuItem parkingSideMenuItem">
+            <a data-role="button" data-corners="false" data-icon="history-white-48-sidemenu" data-iconpos="left" href="#parkerHistory" class="ui-link ui-btn ui-icon-history-white-48-sidemenu ui-btn-icon-left ui-shadow" role="button">
+                Parker History            </a>
+        </li>
+            
+    
+    <li class="settingsSideMenuHeader ui-li-divider ui-bar-c" data-role="list-divider" aria-level="2" role="heading">
+        Settings    </li>
+    <li class="profileSideMenuItem settingsSideMenuItem">
+        <a data-role="button" data-corners="false" data-icon="profile-white-48-sidemenu" data-iconpos="left" href="#profile" class="ui-link ui-btn ui-icon-profile-white-48-sidemenu ui-btn-icon-left ui-shadow" role="button">
+            Profile        </a>
+    </li>
+                <li class="paymentSideMenuItem settingsSideMenuItem">
+            <a data-role="button" data-corners="false" data-icon="payment-white-48-sidemenu" data-iconpos="left" href="#creditCards" class="ui-link ui-btn ui-icon-payment-white-48-sidemenu ui-btn-icon-left ui-shadow" role="button">
+                Payment            </a>
+        </li>
+                <li class="citationPaymentSideMenuItem settingsSideMenuItem" style="display: none;">
+            <a data-role="button" data-corners="false" data-icon="citation-payment-white-48-sidemenu" data-iconpos="left" href="#citationPayment" class="ui-link ui-btn ui-icon-citation-payment-white-48-sidemenu ui-btn-icon-left ui-shadow" role="button">
+                Citation Payment            </a>
+        </li>
+        <li class="optionsSideMenuItem settingsSideMenuItem">
+        <a data-role="button" data-corners="false" data-icon="options-white-48-sidemenu" data-iconpos="left" href="#options" class="ui-link ui-btn ui-icon-options-white-48-sidemenu ui-btn-icon-left ui-shadow" role="button">
+            Options        </a>
+    </li>
+            <li class="zoneCashSideMenuItem settingsSideMenuItem">
+            <a data-role="button" data-corners="false" data-icon="zonecash-white-48-sidemenu" data-iconpos="left" href="#" class="ui-link ui-btn ui-icon-zonecash-white-48-sidemenu ui-btn-icon-left ui-shadow" role="button">
+                Wallets            </a>
+        </li>
+              <li class="vehiclesSideMenuItem settingsSideMenuItem">
+          <a data-role="button" data-corners="false" data-icon="car-white-48-sidemenu" data-iconpos="left" href="#vehicleManagement" class="ui-link ui-btn ui-icon-car-white-48-sidemenu ui-btn-icon-left ui-shadow" role="button">
+              Vehicles          </a>
+      </li>
+    
+    
+    <li class="helpSideMenuHeader infoFirstSideMenuItem ui-li-divider ui-bar-c" data-role="list-divider" aria-level="2" role="heading">
+        Help    </li>
+    <li class="supportSideMenuItem helpSideMenuItem infoFirstSideMenuItem">
+        <a data-role="button" data-corners="false" data-icon="help-white-48-sidemenu" data-iconpos="left" href="#support" class="ui-link ui-btn ui-icon-help-white-48-sidemenu ui-btn-icon-left ui-shadow" role="button">
+            Help        </a>
+    </li>
+        <li class="bugReportSideMenuItem helpSideMenuItem">
+        <a data-role="button" data-corners="false" data-icon="bug-report-white-48-sidemenu" data-iconpos="left" href="#bugReport" class="ui-link ui-btn ui-icon-bug-report-white-48-sidemenu ui-btn-icon-left ui-shadow" role="button">
+            Send Bug Report        </a>
+    </li>
+    <li class="faqSideMenuItem helpSideMenuItem infoFirstSideMenuItem">
+        <a data-role="button" data-corners="false" data-icon="info-white-48-sidemenu" data-iconpos="left" href="https://passportinc.com/faq/" target="_blank" class="ui-link ui-btn ui-icon-info-white-48-sidemenu ui-btn-icon-left ui-shadow" role="button">
+            FAQ        </a>
+    </li>
+    <li class="termsSideMenuItem helpSideMenuItem infoFirstSideMenuItem">
+        <a data-role="button" data-corners="false" data-icon="terms-white-48-sidemenu" data-iconpos="left" href="https://passportinc.com/terms-and-conditions/" target="_blank" class="ui-link ui-btn ui-icon-terms-white-48-sidemenu ui-btn-icon-left ui-shadow" role="button">
+            Terms &amp; Conditions        </a>
+    </li>
+    <li class="privacySideMenuItem helpSideMenuItem infoFirstSideMenuItem">
+        <a data-role="button" data-corners="false" data-icon="privacy-white-48-sidemenu" data-iconpos="left" href="https://passportinc.com/privacy-policy/" target="_blank" class="ui-link ui-btn ui-icon-privacy-white-48-sidemenu ui-btn-icon-left ui-shadow" role="button">
+            Privacy Policy        </a>
+    </li>
+<li class="logoutSideMenuItem helpSideMenuItem ui-last-child"><a data-corners="false" data-icon="logout-white-48-sidemenu" data-iconpos="left" data-role="button" href="#" tabindex="0" class="sidemenu_logout_button ui-link ui-btn ui-icon-logout-white-48-sidemenu ui-btn-icon-left ui-shadow" role="button">Logout</a></li></ul></div>
+    <div id="zoneEntryMenuHeader" class="header ui-header ui-bar-a" data-role="header" data-theme="a" role="banner">
+        <div role="navigation" aria-label="main">
+            <a id="navpanelControl_zoneEntry" class="sidemenu_toggle_button ui-link ui-btn-left ui-btn ui-btn-d ui-icon-bars ui-btn-icon-notext ui-shadow ui-corner-all" href="#navpanel_zoneEntry" aria-expanded="false" aria-controls="navpanel_zoneEntry" data-icon="bars" data-theme="d" data-iconpos="notext" tabindex="0">Toggle Menu</a>
+        </div>
+        <h1 class="ui-title" role="heading" aria-level="1">
+            Enter Zone        </h1>
+    </div>
+    <div id="zoneEntryBackHeader" class="header ui-header ui-bar-a" data-role="header" data-theme="a" style="display: none" role="banner">
+        <a href="#parkrightSplash" data-icon="back-header" data-theme="d" data-iconpos="notext" tabindex="0" class="ui-link ui-btn-left ui-btn ui-btn-d ui-icon-back-header ui-btn-icon-notext ui-shadow ui-corner-all" data-role="button" role="button">Back</a>
+        <h1 class="ui-title" role="heading" aria-level="1">
+            Enter Zone        </h1>
+    </div>
+    <div data-role="content" id="zoneEntryPageContent" class="ui-content" role="main" style="min-height: 851px;">
+        <label class="toplabelalignment" for="zoneNumber">
+            Enter the zone number posted at this location:         </label>
+        <div id="zoneEntryContainer" class="ui-grid-a">
+            <div id="zoneSuggestBasedEntryContainer">
+                <div id="zoneNumberInputContainer" class="">
+                    <div class="ui-input-text ui-body-c ui-corner-all ui-shadow-inset"><input type="tel" name="zoneNumber" id="zoneNumber" placeholder="Zone Number" value="" data-theme="c" tabindex="0" style="" autocorrect="off" autocomplete="off"></div>
+                    <ul id="addressSuggestions" data-role="listview" data-inset="true" style="cursor: pointer; display: none;" class="ui-listview ui-listview-inset ui-corner-all ui-shadow"></ul>
+                </div>
+                <div id="zoneInfoButtonContainer" class="ui-block-b" style="display: none;">
+                    <button aria-label="Zone Number Info" id="zoneInfo" data-role="button" data-icon="info" data-iconpos="notext" tabindex="0" class=" ui-btn ui-icon-info ui-btn-icon-notext ui-shadow ui-corner-all"></button>
+                </div>
+            </div>
+            <div id="addressDropdownBasedEntryContainer" style="display: none">
+                <div class="ui-block-aa">
+                    <div class="ui-input-text ui-body-c ui-corner-all ui-shadow-inset"><input type="tel" name="addressNumber" id="addressNumber" placeholder="NUM" value="" data-theme="c" style="" autocorrect="off" autocomplete="off"></div>
+                </div>
+                <div class="ui-block-bb">
+                    <label for="addressDropdown" style="display: none">
+                        Choose Address
+                    </label>
+                    <div class="ui-select"><div id="addressDropdown-button" class="ui-btn ui-icon-select-down ui-btn-icon-right ui-corner-all ui-shadow"><span>&nbsp;</span><select name="addressDropdown" id="addressDropdown" data-icon="select-down"></select></div></div>
+                </div>
+            </div>
+        </div>
+        <div>
+            <button id="zoneNext" data-role="button" data-icon="chevron-right-white-48" data-iconpos="right" tabindex="0" class=" ui-btn ui-icon-chevron-right-white-48 ui-btn-icon-right ui-shadow ui-corner-all">
+                Continue            </button>
+                    </div>
+        <div id="recentZones">
+                        <ul id="recentZonesList" data-role="listview" data-inset="true" data-theme="d" data-divider-theme="d" class="ui-listview ui-listview-inset ui-corner-all ui-shadow ui-group-theme-d"><li data-theme="c" data-icon="chevron-right-white-48-dark" data-iconpos="right" class="ui-li-static ui-body-c ui-first-child ui-last-child"><button data-theme="c" tabindex="0" class=" ui-btn ui-btn-c ui-shadow ui-corner-all">456</button></li></ul>
+        </div>
+        <div id="imageContainer" class="centered">
+                    </div>
+        <div class="footer_msg" id="zoneNumberInstruction">
+            <p class="footer_label bottomlabelalignment">
+                By continuing you agree you are abiding to all zone signage on restrictions and rules.            </p>
+            <p class="footer_label bottomlabelalignment acceptTextMessagesInfo" style="display: none;">
+                To purchase parking on the phone you may be sent up to five text messages including texts processing and confirming your transactions, and parking expiration alerts. Standard message and data rates apply.            </p>
+        </div>
+        <div id="secondaryImageContainer" class="centered">
+                    </div>
+    </div>
+</div>
+</body></html>

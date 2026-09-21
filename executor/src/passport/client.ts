@@ -33,7 +33,7 @@ import { warmBrowser } from "../browser.js";
 import { captureUnexpectedScreen } from "../parknyc/capture.js";
 import { classifyFailure } from "../parknyc/classify.js";
 import { parseAmountUsd, parseConfirmation, parseExpiresAt } from "../parknyc/parse.js";
-import { isAddPaymentScreen } from "./parse.js";
+import { isAddPaymentScreen, recentZonesState } from "./parse.js";
 import type {
   CardFormDetails,
   ExecutorError,
@@ -278,7 +278,22 @@ export class PassportClient {
         return this.fail(page, "auth_expired", "Passport asked to sign in; state is stale");
       }
       await selectors.zone.zoneNumberInput(page).fill(zoneNumber);
-      await selectors.zone.nextButton(page).click();
+      // The recent-zones panel pops on input focus and, when the account
+      // has recent zones, renders right after #zoneNext and shifts/
+      // overlays it — clicking Continue then times out on actionability
+      // (2026-09-21 regression). Blur to collapse the panel, wait for it
+      // to go away, then click Continue once it's actionable.
+      await selectors.zone.zoneNumberInput(page).blur().catch(() => {});
+      if (recentZonesState(await page.content()).visible) {
+        await page.keyboard.press("Escape").catch(() => {});
+        await selectors.zone
+          .recentZonesPanel(page)
+          .waitFor({ state: "hidden", timeout: 3_000 })
+          .catch(() => {});
+      }
+      const next = selectors.zone.nextButton(page);
+      await next.scrollIntoViewIfNeeded().catch(() => {});
+      await next.click();
       await this.step("zone-submitted", page);
       if (
         await selectors.zone

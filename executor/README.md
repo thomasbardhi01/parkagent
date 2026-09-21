@@ -131,6 +131,14 @@ mirrored into `test/fixtures/pages/passport/zone-entry.html`). The
 ParkNYC client runs its own **non-fatal map cross-check**; both sides
 land on the `decisions` row as `zoneResolution`.
 
+**Enter Zone gotcha (2026-09-21):** a recent-zones panel (`#recentZones`)
+pops on input focus and, when the account has recent zones, renders right
+after the Continue button (`#zoneNext`) and shifts/overlays it — clicking
+Continue then times out. The start flow fills the input, blurs to
+collapse the panel, waits for it to hide, then clicks Continue
+(`recentZonesState` in `parse.ts` is the pure reading, pinned by the
+zone-entry--recent-zones-{visible,hidden} fixtures).
+
 **Verification status.** Walked live: the gated entry (Sign In / Register /
 Guest), T&C accept, and e-mail verification screens (2026-09-20, headless)
 and the Enter Zone screen (2026-09-21, signed in). Everything after zone

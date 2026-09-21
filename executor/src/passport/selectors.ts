@@ -124,6 +124,13 @@ export const selectors = {
     /** Shown when the zone number is rejected (wording TODO-verify). */
     notFoundMessage: (page: Page): Locator =>
       page.getByText(/zone.*(not.*(found|recognized|valid)|invalid)/i),
+    /** Recent-zones panel: pops on input focus, sits right after
+     * #zoneNext, and (when non-empty) shifts/overlays it — the
+     * 2026-09-21 regression. Dismissed before clicking Continue. */
+    recentZonesPanel: (page: Page): Locator => page.locator("#recentZones"),
+    /** A recent-zone chip for a specific number, if the account has one. */
+    recentZoneChip: (page: Page, zoneNumber: string): Locator =>
+      page.locator("#recentZonesList button", { hasText: new RegExp(`^\\s*${escapeForRegex(zoneNumber)}\\s*$`) }),
   },
 
   // ------------------- Zone info panel (zone-info.js ids; TODO-verify text)

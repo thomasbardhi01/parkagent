@@ -133,9 +133,15 @@ cheap zone before any real use.
 | `auth_expired` | Storage state missing or the provider asked to sign in again |
 | `zone_not_found` | The provider rejected the zone number |
 | `payment_declined` | The payment step refused |
-| `ui_changed` | An expected screen/element never appeared (capture attached) |
+| `ui_changed` | An expected screen/element never appeared (capture attached) — includes captcha/bot-check walls, which classify.ts deliberately never reads as `auth_expired` (that would wrongly expire the linked account and push a relink) |
 | `network` | Couldn't reach the provider |
 | `unknown` | Anything else |
+
+Account ops (`setupCard` — see the card flow) can additionally return
+`unsupported_card_brand`: the Stripe card's brand has no mapping to the
+payment form's card-type radio (`brandRadioPattern` in
+`src/parknyc/selectors.ts`); it can never appear on a session
+start/extend/stop.
 
 On any failure the session stays unpaid and the server sends the
 `payment_failed` push with a `parkagent://pay?zone=<zone>` deep link.

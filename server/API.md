@@ -17,6 +17,13 @@ Unknown or missing key → `401 {"error": "unauthorized"}`. Keys are created
 with `pnpm -C server create:user -- --name <name>` and live only in the
 `users` table.
 
+Auth is an app-level hook with a public allowlist (`/health`,
+`/webhooks/stripe` — the Stripe signature is that route's auth), so
+unknown paths 401 too. Abuse-prone routes are rate-limited per user
+(429 + `Retry-After`): `/parked` 30/min, provider writes 10/min, provider
+reads 60/min, `/zones/:zoneId/provider-number` 12/min. Unhandled errors
+answer `500 {"error": "internal"}` — details go to the server log only.
+
 ## Dry run
 
 `DRY_RUN` (env) and `dry_run` (policy.json) are independent switches; money
@@ -46,8 +53,11 @@ Request:
 
 Quotes are priced at `ts` when the phone sends one, else at server time;
 the decision's `inputs` record `pricedAt` and `pricedAtSource`
-(`"request_ts"` | `"server_time"`), and a ts-less park stores server time
-as the event's `ts`.
+(`"request_ts"` | `"server_time"` | `"request_ts_clamped"`), and a ts-less
+park stores server time as the event's `ts`. A `ts` more than 24 h in the
+past or 10 min in the future (wrong phone clock, replayed request) would
+price the wrong enforcement window, so it is clamped to server time and
+the decision says so (`request_ts_clamped`).
 
 Response `200`:
 
@@ -271,11 +281,15 @@ guarantees and cannot be confirmed through — raise them via `PUT /policy`):
 | `409 {"error": "policy_violation", "rule": …}` | Condition |
 |---|---|
 | `max_stay_exceeded` | `minutes` > zone max stay |
+| `free_period` | the whole stay prices to $0 (outside enforcement) — nothing to buy, and typing minutes into the provider anyway could charge money the quote never priced |
 | `session_cap_exceeded` | purchase total > `session_cap_usd` |
 | `daily_cap_exceeded` | real (non-dry-run) spend today + total > `daily_cap_usd` |
 
 Other errors: `404` unknown/foreign `parkedEventId` or `zoneId`, `409
-{"error": "session_already_active"}` (one active session per user), `409
+{"error": "session_already_active"}` (one open session per user — enforced
+both by the pre-check and by a partial unique DB index, so two concurrent
+starts can never both pay; a pending row orphaned by a crash is swept to
+`failed` after 10 minutes), `409
 {"error": "provider_not_linked", "provider": "parknyc", "displayName":
 "ParkNYC"}` when the zone's city has a provider and the caller has no
 account with status `linked` there (dry run included — the executor pays
@@ -410,6 +424,12 @@ and daily limits) are the first line of defense; authorizations they block
 never reach the webhook. Every `.request` writes an `issuing_authorizations`
 row and a `decisions` row (`kind: "issuing_authorization"`, inputs include
 amount, MCC, spend-so-far, pending-session answer, dry run, policy hash).
+
+Redelivery is idempotent: a replayed `.request` answers the recorded
+decision (deciding twice could flip the answer once spend moved) and its
+decisions row records `replayed: true`; a `.request` retry that arrives
+after a lifecycle `.created` already created the row (decision
+`"external"`) decides for real and updates that row in place.
 
 ### Ledger events
 
@@ -820,3 +840,43 @@ to start on an invalid file.
 ## GET /health
 
 No auth. `{ok, dryRun, commit, builtAt}`.
+
+---
+
+## GET /admin/summary
+
+Auth-gated like everything else (`x-api-key`). The field-test dashboard:
+today's activity (NYC calendar day) aggregated from the
+decisions/parked_events/sessions tables, per city. Read-only.
+
+```json
+{
+  "since": "2026-09-21T04:00:00.000Z",
+  "now": "2026-09-21T18:00:00.000Z",
+  "dryRun": true,
+  "policyHash": "sha256:…",
+  "cities": {
+    "nyc": {
+      "parks": 4,                  // parked_quote decisions
+      "unknownZone": 1,
+      "sessionsStarted": 2,        // sessions rows (non-failed)
+      "sessionsFailed": 0,
+      "extensionsAuto": 1,         // extend_tick rule "extend"
+      "extensionsManual": 0,       // session_extend rule "extend_ok"
+      "declines": { "daily_cap_exceeded": 1, "declined_wrong_mcc": 1 },
+      "executorErrors": { "ui_changed": 1 },
+      "shadow": { "fired": 2, "approved": 2, "declined": 0, "missed": 0 },
+      "spendUsd": 14.56            // meter + fees on today's sessions
+    }
+  },
+  "detectorSignals": { "motion_stop": 4, "audio_disconnect": 3, "location_settled": 4 },
+  "decisionCount": 23
+}
+```
+
+A decision's city comes from its session's stored `city`, the quoted
+zone's id prefix, or the first candidate; unattributable rows land under
+`"unknown"`. Every decisions row also emits one structured log line
+(`{"decision": {id, kind, rule, userId, sessionId, parkedEventId}}`) —
+identifiers and the rule only, never inputs/outcome (those can carry
+ui_changed screenshots).

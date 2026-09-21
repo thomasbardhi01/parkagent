@@ -210,6 +210,7 @@ export interface FakeDbState {
     userId?: string | null;
     parkedEventId?: string;
     sessionId?: string;
+    createdAt?: Date;
   }[];
   snapshots: { hash: string; policy: unknown; source: string }[];
   sessions: SessionRow[];
@@ -385,15 +386,45 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
         return { id: row.id };
       },
       findUnique: async ({ where }) => state.parkedEvents.find((p) => p.id === where.id) ?? null,
+      findMany: async ({ where }) => state.parkedEvents.filter((p) => p.ts >= where.ts.gte),
     },
     decision: {
       create: async ({ data }) => {
-        state.decisions.push(data as FakeDbState["decisions"][number]);
+        state.decisions.push({
+          createdAt: new Date(MONDAY_2PM),
+          ...(data as FakeDbState["decisions"][number]),
+        });
         return { id: `d${state.decisions.length}` };
       },
+      findMany: async ({ where }) =>
+        state.decisions
+          .filter((d) => (d.createdAt ?? new Date(MONDAY_2PM)) >= where.createdAt.gte)
+          .map((d, i) => ({
+            kind: d.kind,
+            rule: d.rule,
+            outcome: d.outcome,
+            inputs: d.inputs,
+            userId: d.userId ?? null,
+            sessionId: d.sessionId ?? null,
+            createdAt: d.createdAt ?? new Date(MONDAY_2PM),
+            id: `d${i + 1}`,
+          })),
     },
     session: {
       create: async ({ data }) => {
+        // Mirrors the one_open_session_per_user partial unique index
+        // (prisma/migrations/20260921140000): a second pending/active row
+        // for a user fails P2002, exactly like prod Postgres.
+        const userId = (data as { userId?: string }).userId ?? "u1";
+        if (
+          state.sessions.some(
+            (s) => s.userId === userId && (s.status === "pending" || s.status === "active"),
+          )
+        ) {
+          throw Object.assign(new Error("Unique constraint failed: one_open_session_per_user"), {
+            code: "P2002",
+          });
+        }
         const row = { ...emptySession(`s${state.sessions.length + 1}`), ...data } as SessionRow;
         state.sessions.push(row);
         return row;
@@ -575,7 +606,9 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
         const row = state.issuingAuthorizations.find(
           (a) => a.stripeAuthorizationId === where.stripeAuthorizationId,
         );
-        return row ? { id: row.stripeAuthorizationId } : null;
+        return row
+          ? { id: row.stripeAuthorizationId, approved: row.approved, decision: row.decision }
+          : null;
       },
       findFirst: async ({ where }) => {
         const row = state.issuingAuthorizations.find((a) => a.stripeCardId === where.stripeCardId);
@@ -751,7 +784,11 @@ export function makeTestApp(options: {
     seedProviderAccount(state);
   }
   const pushes: TestApp["pushes"] = [];
-  const dryRunExecutor = new DryRunExecutor(() => {}, options.now ?? (() => new Date()));
+  // Deterministic clock: without it, fixture timestamps (Jan 2026) drift
+  // ever further past /parked's ts-clamp window and tests become
+  // wall-clock-dependent. Tests that care pass their own `now`.
+  const now = options.now ?? (() => new Date(MONDAY_2PM));
+  const dryRunExecutor = new DryRunExecutor(() => {}, now);
   const deps: AppDeps = {
     db,
     policy: makePolicyService(options.policy, options.envDryRun ?? true),
@@ -764,7 +801,7 @@ export function makeTestApp(options: {
     stateCrypto: testStateCrypto(),
     ...(options.providerOps ? { providerOps: options.providerOps } : {}),
     ...(options.stripe ? { stripe: options.stripe } : {}),
-    ...(options.now ? { now: options.now } : {}),
+    now,
   };
   return { app: buildApp(deps), state, deps, pushes };
 }

@@ -8,6 +8,7 @@ import { spentToday } from "../services/sessions.js";
 import { quoteZone } from "../services/quote.js";
 import type { Candidate } from "../services/zoneLookup.js";
 import { lookupRadiusM, resolveCandidates } from "../services/zoneLookup.js";
+import { makeRateLimiter } from "../services/rateLimit.js";
 
 const bodySchema = z.object({
   lat: z.number().gte(-90).lte(90),
@@ -35,7 +36,10 @@ function candidatePayload(candidate: Candidate, quote: Quote) {
 }
 
 export function registerParked(app: FastifyInstance, deps: AppDeps): void {
-  app.post("/parked", { preHandler: deps.authenticate }, async (req, reply) => {
+  // A phone parks a handful of times a day; a runaway detector loop (or a
+  // stolen key probing the zone map) should not hammer PostGIS.
+  const limit = makeRateLimiter({ max: 30, windowMs: 60_000 });
+  app.post("/parked", { preHandler: limit }, async (req, reply) => {
     const parsed = bodySchema.safeParse(req.body);
     if (!parsed.success) {
       return reply.code(400).send({ error: z.treeifyError(parsed.error) });
@@ -44,9 +48,24 @@ export function registerParked(app: FastifyInstance, deps: AppDeps): void {
     const user = req.authedUser!;
     const policy = deps.policy.get();
     // Price at the phone's detection time when it sent one; a missing or
-    // delayed ts falls back to server time. The decision records which.
-    const at = body.ts ? new Date(body.ts) : (deps.now?.() ?? new Date());
-    const pricedAtSource = body.ts ? "request_ts" : "server_time";
+    // delayed ts falls back to server time. A ts too far off the server
+    // clock (a phone with a wrong clock, a replayed request) would price
+    // the wrong enforcement window, so it is clamped to server time — the
+    // decision records which source won.
+    const serverNow = deps.now?.() ?? new Date();
+    const requestTs = body.ts ? new Date(body.ts) : null;
+    const MAX_TS_PAST_MS = 24 * 60 * 60_000;
+    const MAX_TS_FUTURE_MS = 10 * 60_000;
+    const tsUsable =
+      requestTs !== null &&
+      serverNow.getTime() - requestTs.getTime() <= MAX_TS_PAST_MS &&
+      requestTs.getTime() - serverNow.getTime() <= MAX_TS_FUTURE_MS;
+    const at = tsUsable ? requestTs : serverNow;
+    const pricedAtSource = tsUsable
+      ? "request_ts"
+      : requestTs !== null
+        ? "request_ts_clamped"
+        : "server_time";
     const radiusM = lookupRadiusM(body.accuracy);
 
     const found = await deps.findCandidates({

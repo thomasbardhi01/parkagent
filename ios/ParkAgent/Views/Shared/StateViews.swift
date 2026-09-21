@@ -28,15 +28,19 @@ struct EmptyStateView: View {
 /// Shown on Home when location permission is missing — without it the whole
 /// detect-and-pay loop is off.
 struct PermissionBanner: View {
+    var icon = "location.slash.fill"
+    var title = "Location is off"
+    var message = "ParkAgent cannot detect parking without it."
+
     var body: some View {
         HStack(spacing: Spacing.half) {
-            Image(systemName: "location.slash.fill")
+            Image(systemName: icon)
                 .foregroundStyle(Color.warningGold)
             VStack(alignment: .leading, spacing: 2) {
-                Text("Location is off")
+                Text(title)
                     .font(.captionTextSemibold)
                     .foregroundStyle(Color.textPrimary)
-                Text("ParkAgent cannot detect parking without it.")
+                Text(message)
                     .font(.captionText)
                     .foregroundStyle(Color.textSecondary)
             }

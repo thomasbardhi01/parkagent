@@ -32,6 +32,8 @@ const ROUTE_FACTOR = 1.3; // straight-line → street grid
 const HEADING_NOISE_M = 15; // GPS jitter floor over the 3-fix window
 const MIN_EXTEND_MINUTES = 15;
 const TICKET_COST_MARGIN = 1.2; // extend only when ticket risk clearly wins
+const FIX_MAX_AGE_MS = 10 * 60_000; // older fixes say nothing about "now"
+const AT_CAR_ETA_MIN = 2; // within ~2 walking minutes = standing at the car
 
 export type Heading = "toward" | "away" | "still" | "unknown";
 
@@ -106,6 +108,12 @@ export function pReturnInTime(args: {
   dwellP50Min: number;
 }): number {
   const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x));
+  // Standing at (or next to) the car: they can drive off or feed the meter
+  // themselves — extending against a ticket is money down the drain. Same
+  // 0.98 as walking-back-with-time-to-spare, and for the same reason: it
+  // must sit high enough that ticket_cost × (1 − p) undercuts even a
+  // cheap extension.
+  if (args.walkEtaMin !== null && args.walkEtaMin <= AT_CAR_ETA_MIN) return 0.98;
   if (args.heading === "toward" && args.walkEtaMin !== null) {
     // Walking back with time to spare: near-certain. Must sit high enough
     // that ticket_cost × (1 - p) drops below a cheap extension's cost, or
@@ -160,12 +168,16 @@ export function makeExtender(deps: ExtenderDeps): Extender {
       return;
     }
 
-    // Where the driver is, relative to the car.
-    const fixes = await deps.db.locationFix.findMany({
+    // Where the driver is, relative to the car. A fix that's ten minutes
+    // old describes where they were, not where they are — stale fixes are
+    // dropped, and with none fresh the model falls back to dwell history
+    // (heading "unknown"), same as a phone that never reported.
+    const allFixes = await deps.db.locationFix.findMany({
       where: { sessionId: session.id },
       orderBy: { ts: "desc" },
       take: 3,
     });
+    const fixes = allFixes.filter((f) => at.getTime() - f.ts.getTime() <= FIX_MAX_AGE_MS);
     const chronological = [...fixes].reverse();
     const distances =
       session.carLat !== null && session.carLng !== null
@@ -269,6 +281,7 @@ export function makeExtender(deps: ExtenderDeps): Extender {
       remainingMin: Math.round(remainingMin * 10) / 10,
       elapsedMin: Math.round(elapsedMin * 10) / 10,
       fixCount: fixes.length,
+      staleFixCount: allFixes.length - fixes.length,
       distanceM: distanceM !== null ? Math.round(distanceM) : null,
       walkEtaMin: walkEtaMin !== null ? Math.round(walkEtaMin * 10) / 10 : null,
       heading,

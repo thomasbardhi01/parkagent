@@ -62,7 +62,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
     return session;
   }
 
-  app.post("/session/start", { preHandler: deps.authenticate }, async (req, reply) => {
+  app.post("/session/start", async (req, reply) => {
     const parsed = startSchema.safeParse(req.body);
     if (!parsed.success) {
       return reply.code(400).send({ error: z.treeifyError(parsed.error) });
@@ -75,6 +75,17 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
     const parkedEvent = await deps.db.parkedEvent.findUnique({ where: { id: body.parkedEventId } });
     if (!parkedEvent || parkedEvent.userId !== user.id) {
       return reply.code(404).send({ error: "parked_event_not_found" });
+    }
+    // A pending row is normally seconds old (created just before the
+    // executor runs). One orphaned by a crash mid-start would block the
+    // one-open-session-per-user index forever, so sweep stale ones first.
+    const pendings = await deps.db.session.findMany({
+      where: { userId: user.id, status: "pending" },
+    });
+    for (const stale of pendings) {
+      if (at.getTime() - stale.createdAt.getTime() > 10 * 60_000) {
+        await deps.db.session.update({ where: { id: stale.id }, data: { status: "failed" } });
+      }
     }
     const existing = await deps.db.session.findFirst({
       where: { userId: user.id, status: "active" },
@@ -166,6 +177,11 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
     let rule: string | null = null;
     if (zone.maxStayMinutes !== null && minutes > zone.maxStayMinutes) {
       rule = "max_stay_exceeded";
+    } else if (price.totalUsd === 0) {
+      // A wholly free window: there is nothing to buy, and typing minutes
+      // into the provider anyway could charge real money our quote said
+      // was $0 (/parked answers "ignore" for the same reason).
+      rule = "free_period";
     } else if (price.totalUsd > policy.session_cap_usd) {
       rule = "session_cap_exceeded";
     } else if (!dryRun && spentTodayUsd + price.totalUsd > policy.daily_cap_usd) {
@@ -194,25 +210,36 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
       return reply.code(409).send({ error: "policy_violation", rule, decisionId: decision.id });
     }
 
-    const session = await deps.db.session.create({
-      data: {
-        userId: user.id,
-        zoneId: zone.zoneId,
-        city: terms.city,
-        providerZoneNumber: zone.providerZoneNumber,
-        status: "pending",
-        dryRun,
-        parkedEventId: parkedEvent.id,
-        carLat: parkedEvent.lat,
-        carLng: parkedEvent.lng,
-        rateFirstHour: terms.rateFirstHourUsd,
-        rateAdditionalHour: terms.rateAdditionalHourUsd,
-        maxStayMinutes: zone.maxStayMinutes,
-        hoursJson: terms.hours,
-        amountUsd: 0,
-        feeUsd: 0,
-      },
-    });
+    let session;
+    try {
+      session = await deps.db.session.create({
+        data: {
+          userId: user.id,
+          zoneId: zone.zoneId,
+          city: terms.city,
+          providerZoneNumber: zone.providerZoneNumber,
+          status: "pending",
+          dryRun,
+          parkedEventId: parkedEvent.id,
+          carLat: parkedEvent.lat,
+          carLng: parkedEvent.lng,
+          rateFirstHour: terms.rateFirstHourUsd,
+          rateAdditionalHour: terms.rateAdditionalHourUsd,
+          maxStayMinutes: zone.maxStayMinutes,
+          hoursJson: terms.hours,
+          amountUsd: 0,
+          feeUsd: 0,
+        },
+      });
+    } catch (err) {
+      // The one_open_session_per_user partial unique index closes the race
+      // two concurrent starts open between the active check above and this
+      // insert — the loser must never reach the executor and pay twice.
+      if ((err as { code?: string }).code === "P2002") {
+        return reply.code(409).send({ error: "session_already_active" });
+      }
+      throw err;
+    }
 
     const startedAtMs = Date.now();
     const result = await deps.executorFor({ userId: user.id, city, dryRun }).startSession({
@@ -341,7 +368,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
     return { sessionId: session.id, expiresAt: result.expiresAt, amountUsd: price.totalUsd };
   });
 
-  app.post("/session/extend", { preHandler: deps.authenticate }, async (req, reply) => {
+  app.post("/session/extend", async (req, reply) => {
     const parsed = extendSchema.safeParse(req.body);
     if (!parsed.success) {
       return reply.code(400).send({ error: z.treeifyError(parsed.error) });
@@ -420,7 +447,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
     return { sessionId: session.id, expiresAt: outcome.expiresAt, amountUsd: price.totalUsd };
   });
 
-  app.post("/session/stop", { preHandler: deps.authenticate }, async (req, reply) => {
+  app.post("/session/stop", async (req, reply) => {
     const parsed = stopSchema.safeParse(req.body);
     if (!parsed.success) {
       return reply.code(400).send({ error: z.treeifyError(parsed.error) });

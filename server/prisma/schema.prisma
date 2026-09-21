@@ -26,8 +26,9 @@ model Zone {
   providerZoneNumberVerified Boolean @default(false) @map("provider_zone_number_verified")
   // The street the zone is on, as the source data names it (Boston:
   // Analyze Boston's STREET; null for NYC rows until the builder carries
-  // one). The Passport executor refuses with zone_mismatch when the
-  // provider map's street disagrees with this.
+  // one). Evidence, not a gate: session start forwards it into the ParkNYC
+  // map cross-check's zoneResolution on the decisions row (non-fatal);
+  // Passport has no map, so its rows never get a cross-check.
   street             String?
   // "all" | "commercial" | "charter_bus" | "dual" (see data/build_zones.py)
   vehicleType        String   @map("vehicle_type")

@@ -163,7 +163,12 @@ export interface IssuingAuthorizationRow {
 
 export interface AppDb {
   user: {
-    findUnique(args: { where: { apiKey: string } }): Promise<{ id: string; name: string } | null>;
+    findUnique(args: {
+      where: { apiKey: string };
+      /** Always pass this: without it the runtime row carries api_key,
+       * masked by this type, one spread away from a response body. */
+      select?: { id: true; name: true };
+    }): Promise<{ id: string; name: string } | null>;
   };
   zone: {
     findUnique(args: { where: { zoneId: string } }): Promise<ZoneTermsRow | null>;
@@ -194,6 +199,10 @@ export interface AppDb {
     findUnique(args: {
       where: { id: string };
     }): Promise<{ id: string; userId: string; lat: number; lng: number; ts: Date } | null>;
+    /** The /admin/summary read: today's parks and their detector signals. */
+    findMany(args: {
+      where: { ts: { gte: Date } };
+    }): Promise<{ id: string; userId: string; signals: unknown; ts: Date }[]>;
   };
   decision: {
     create(args: {
@@ -208,6 +217,18 @@ export interface AppDb {
         sessionId?: string;
       };
     }): Promise<{ id: string }>;
+    /** The /admin/summary read: today's decisions, oldest first. */
+    findMany(args: { where: { createdAt: { gte: Date } } }): Promise<
+      {
+        kind: string;
+        rule: string;
+        outcome: unknown;
+        inputs: unknown;
+        userId: string | null;
+        sessionId: string | null;
+        createdAt: Date;
+      }[]
+    >;
   };
   providerAccount: {
     findUnique(args: {
@@ -272,7 +293,9 @@ export interface AppDb {
     deleteMany(args: { where: { cardholderId: string } }): Promise<unknown>;
   };
   issuingAuthorization: {
-    findUnique(args: { where: { stripeAuthorizationId: string } }): Promise<{ id: string } | null>;
+    findUnique(args: {
+      where: { stripeAuthorizationId: string };
+    }): Promise<{ id: string; approved?: boolean; decision?: string } | null>;
     /** "Has this card ever transacted?" — the janitor's cancel-vs-freeze test. */
     findFirst(args: { where: { stripeCardId: string } }): Promise<{ id: string } | null>;
     // Two shapes share findMany (interface overloads): the daily/monthly spend
@@ -305,6 +328,7 @@ export interface AppDb {
       where: { stripeAuthorizationId: string };
       data: {
         approved?: boolean;
+        decision?: string;
         status?: string;
         amountUsd?: number;
         stripeTransactionId?: string;

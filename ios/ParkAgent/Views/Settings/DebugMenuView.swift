@@ -37,6 +37,7 @@ struct DebugMenuView: View {
     @Environment(AppModel.self) private var model
     @State private var fixture = NYCFixturePoint.columbusW81
     @State private var simulating = false
+    @AppStorage(SignalLog.enabledKey) private var signalLogEnabled = false
 
     var body: some View {
         Form {
@@ -83,6 +84,36 @@ struct DebugMenuView: View {
                         String(format: "%.4f, %.4f", $0.latitude, $0.longitude)
                     } ?? "none"
                 )
+                if !model.detector.missingPermissions.isEmpty {
+                    LabeledContent(
+                        "Missing permissions",
+                        value: model.detector.missingPermissions
+                            .map(\.rawValue).joined(separator: ", ")
+                    )
+                }
+            }
+
+            Section {
+                Toggle("Log raw detector signals", isOn: $signalLogEnabled)
+                    .accessibilityIdentifier("debug.signalLogToggle")
+                if signalLogEnabled {
+                    LabeledContent("Logged events", value: "\(SignalLog.shared.lineCount)")
+                    ForEach(SignalLog.shared.tail(), id: \.self) { line in
+                        Text(line)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(Color.textSecondary)
+                    }
+                    ShareLink(item: SignalLog.shared.fileURL) {
+                        Label("Export signal log", systemImage: "square.and.arrow.up")
+                    }
+                    Button("Clear log", role: .destructive) {
+                        SignalLog.shared.clear()
+                    }
+                }
+            } header: {
+                Text("Signal log")
+            } footer: {
+                Text("Every raw motion, car-audio, and location event with its timestamp, kept on this phone. Export it after a field-test drive to see what fired.")
             }
         }
         .navigationTitle("Debug")

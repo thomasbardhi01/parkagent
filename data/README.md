@@ -10,7 +10,10 @@ Python scripts that fetch open data and build zone GeoJSON, one file per city.
     # Boston
     uv run data/fetch_boston.py         # -> data/raw/boston_meters.geojson
     uv run data/build_boston_zones.py   # -> data/out/boston_zones.geojson
-    pnpm -C server load:zones --file ../data/out/boston_zones.geojson
+    pnpm -C server load:zones --file data/out/boston_zones.geojson
+
+(A relative `--file` resolves against the repo root; the old
+`../data/out/…` cwd-relative form still works.)
 
 Both output directories are gitignored; the pipeline is reproducible from the
 scripts. Loads are per-city: each run mirrors only the rows of the city in
@@ -33,7 +36,7 @@ each step from the repo root:
     # 3. Load dev (Neon) — DATABASE_URL comes from the repo-root .env.
     #    One loader run per city; each mirrors only its own city's rows.
     pnpm -C server load:zones
-    pnpm -C server load:zones --file ../data/out/boston_zones.geojson
+    pnpm -C server load:zones --file data/out/boston_zones.geojson
 
     # 4. Load prod (Fly Postgres) — proxy the cluster to localhost first.
     #    Terminal A (leave it running):
@@ -45,7 +48,7 @@ each step from the repo root:
     DATABASE_URL="postgres://<user>:<password>@localhost:15432/<db>?sslmode=disable" \
       pnpm -C server load:zones
     DATABASE_URL="postgres://<user>:<password>@localhost:15432/<db>?sslmode=disable" \
-      pnpm -C server load:zones --file ../data/out/boston_zones.geojson
+      pnpm -C server load:zones --file data/out/boston_zones.geojson
 
 An exported `DATABASE_URL` wins over the `.env` one (dotenv never overrides
 existing variables), which is what makes step 4 safe to run from the same
@@ -130,8 +133,9 @@ centerline fit through each run's points, then buffered exactly like NYC
 (one-sided 12 m toward the lane when `DIR` gives a side, symmetric 8 m
 otherwise). Properties additionally carry `zone_number` (empty),
 `zone_number_known` (false), `street` (the block's source street name, e.g.
-"BOYLSTON ST" — the executor's zone_mismatch guard compares the provider
-map's street against it), `rate_area`, and `meter_count`.
+"BOYLSTON ST" — decision evidence: session start forwards it into the
+zoneResolution cross-check record; ParkBoston has no map, so nothing gates
+on it), `rate_area`, and `meter_count`.
 
 `data/out/zones.geojson` — one feature per NYC block face. The dataset draws each
 face along its own curb (opposite faces sit ~9-21 m apart, median 12.7 m), so

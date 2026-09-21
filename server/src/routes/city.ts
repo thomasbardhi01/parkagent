@@ -21,7 +21,7 @@ const querySchema = z.object({
 const CITY_DETECT_RADIUS_M = 20_000;
 
 export function registerCity(app: FastifyInstance, deps: AppDeps): void {
-  app.get("/city", { preHandler: deps.authenticate }, async (req, reply) => {
+  app.get("/city", async (req, reply) => {
     const parsed = querySchema.safeParse(req.query);
     if (!parsed.success) {
       return reply.code(400).send({ error: z.treeifyError(parsed.error) });

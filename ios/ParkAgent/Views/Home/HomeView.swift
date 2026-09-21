@@ -27,6 +27,13 @@ struct HomeView: View {
                     if permissions.locationDenied {
                         PermissionBanner()
                     }
+                    if permissions.motionDenied {
+                        PermissionBanner(
+                            icon: "figure.walk.circle",
+                            title: "Motion & Fitness is off",
+                            message: "Park detection loses its driving-to-walking signal without it."
+                        )
+                    }
                 }
                 .padding(.top, Spacing.half)
                 .padding(.horizontal, Spacing.unit)

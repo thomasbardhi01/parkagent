@@ -7,8 +7,13 @@ import { makeCardJanitor } from "./jobs/cardJanitor.js";
 import { makeExtender } from "./jobs/extendTick.js";
 import { makeApnsSender } from "./services/apns.js";
 import { makeStateCrypto } from "./services/crypto.js";
+import { withDecisionLogging } from "./services/decisionLog.js";
 import { DryRunExecutor } from "./services/executor.js";
-import { makeProviderOpsFactory, makeUserExecutorProvider } from "./services/parknycExecutor.js";
+import {
+  closeExecutorBrowser,
+  makeProviderOpsFactory,
+  makeUserExecutorProvider,
+} from "./services/parknycExecutor.js";
 import { makePendingSessionCheck } from "./services/pendingSession.js";
 import { PolicyService, snapshotPolicy } from "./services/policy.js";
 import { makeStripeGateway } from "./services/stripeGateway.js";
@@ -28,7 +33,12 @@ const policy = new PolicyService(
 );
 
 const prisma = createPrisma(env.DATABASE_URL);
-const db = asAppDb(prisma);
+// Every decisions row also emits one structured log line (kind, rule, ids
+// — never inputs/outcome), wrapped here once so routes, the extension
+// worker, and the janitor can't forget. `app` is bound lazily below.
+const db = withDecisionLogging(asAppDb(prisma), {
+  info: (payload, msg) => app.log.info(payload, msg),
+});
 await snapshotPolicy(db, policy.get(), "boot");
 
 // APNs sends only with the full credential set; otherwise pushes log and drop.
@@ -105,3 +115,19 @@ const cardJanitor = makeCardJanitor({ db, stripe, log });
 app.listen({ port: env.PORT, host: "0.0.0.0" });
 extender.start();
 cardJanitor.start();
+
+// Graceful shutdown: stop the jobs and close the executor's warm Chromium
+// (otherwise every Fly restart leaks the browser process to container
+// teardown). The executor package is loaded lazily, so import it the same
+// way — never at boot.
+for (const signal of ["SIGTERM", "SIGINT"] as const) {
+  process.once(signal, () => {
+    extender.stop();
+    cardJanitor.stop();
+    void closeExecutorBrowser()
+      .catch(() => {})
+      .finally(() => {
+        void app.close().finally(() => process.exit(0));
+      });
+  });
+}

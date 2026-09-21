@@ -55,14 +55,16 @@ export async function captureUnexpectedScreen(
     try {
       mkdirSync(captureDir, { recursive: true });
       const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      // Owner-only (0600): a capture can show a signed-in account page —
+      // and in the card-setup flow, a filled payment form.
       if (screenshot) {
         const screenshotPath = join(captureDir, `${stamp}.jpg`);
-        writeFileSync(screenshotPath, screenshot);
+        writeFileSync(screenshotPath, screenshot, { mode: 0o600 });
         diagnostics.screenshotPath = screenshotPath;
       }
       if (diagnostics.pageText !== undefined) {
         const textPath = join(captureDir, `${stamp}.txt`);
-        writeFileSync(textPath, diagnostics.pageText);
+        writeFileSync(textPath, diagnostics.pageText, { mode: 0o600 });
         diagnostics.textPath = textPath;
       }
     } catch {

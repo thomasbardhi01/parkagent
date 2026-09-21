@@ -109,7 +109,10 @@ test("Broadway ($8.25 second hour) is over the $8 ceiling: confirm", async () =>
 });
 
 test("free period: parked after enforcement ends → ignore, $0 quote", async () => {
-  const { app, state } = makeTestApp({ candidates: [STEINWAY_A, STEINWAY_B] });
+  const { app, state } = makeTestApp({
+    candidates: [STEINWAY_A, STEINWAY_B],
+    now: () => new Date(MONDAY_8PM),
+  });
   const res = await post(app, parkedBody({ ts: MONDAY_8PM }));
   const body = res.json();
   expect(body.action).toBe("ignore");
@@ -144,7 +147,10 @@ test("today's spend under the daily cap still pays", async () => {
 });
 
 test("Tuesday afternoon at Mott & Canal prices nonzero from the request ts", async () => {
-  const { app, state } = makeTestApp({ candidates: [MOTT_A, MOTT_B] });
+  const { app, state } = makeTestApp({
+    candidates: [MOTT_A, MOTT_B],
+    now: () => new Date("2026-01-06T14:05:00-05:00"),
+  });
   // Tuesday 2026-01-06 14:00 EST — enforcement (Mon-Sat 08:30-19:00) is on.
   const res = await post(app, parkedBody({ ts: "2026-01-06T14:00:00-05:00" }));
   const body = res.json();

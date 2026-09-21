@@ -17,6 +17,12 @@ import type { ExecutorErrorCode } from "../types.js";
 // fixtures (see README). Keep them tight enough not to misfire on words that
 // appear on every page (e.g. a "Log out" header link must not read as a
 // sign-in screen).
+// A bot-check wall. Checked BEFORE the auth patterns: captcha pages often
+// also say "please sign in", and reading one as auth_expired would wrongly
+// flip the provider account to expired and push a relink — a captcha is a
+// screen we can't drive, i.e. ui_changed, with the capture as evidence.
+const CAPTCHA_TEXT =
+  /(captcha|recaptcha|hcaptcha|verify (you are|you're|that you are) (not a robot|human)|prove you are (not a robot|human)|unusual traffic|security check to continue)/i;
 const AUTH_TEXT =
   /(sign in to|log in to|session (has )?expired|please (sign|log) ?in|forgot (your )?password|invalid (email|credentials))/i;
 const ZONE_TEXT =
@@ -35,6 +41,7 @@ const TIMEOUT_ERROR = /Timeout \d+m?s exceeded/i;
 export function classifyPageText(
   text: string,
 ): Extract<ExecutorErrorCode, "auth_expired" | "zone_not_found" | "payment_declined"> | null {
+  if (CAPTCHA_TEXT.test(text)) return null; // see CAPTCHA_TEXT: never auth_expired
   if (AUTH_TEXT.test(text)) return "auth_expired";
   if (ZONE_TEXT.test(text)) return "zone_not_found";
   if (PAYMENT_TEXT.test(text)) return "payment_declined";
@@ -51,6 +58,7 @@ export function classifyPageText(
 export function classifyFailure(err: unknown, pageText: string | null): ExecutorErrorCode {
   const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
   if (NETWORK_ERROR.test(message)) return "network";
+  if (pageText && CAPTCHA_TEXT.test(pageText)) return "ui_changed";
   if (pageText) {
     const fromText = classifyPageText(pageText);
     if (fromText) return fromText;

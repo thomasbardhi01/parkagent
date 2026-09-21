@@ -13,9 +13,9 @@ function policyResponse(deps: AppDeps) {
 }
 
 export function registerPolicy(app: FastifyInstance, deps: AppDeps): void {
-  app.get("/policy", { preHandler: deps.authenticate }, async () => policyResponse(deps));
+  app.get("/policy", async () => policyResponse(deps));
 
-  app.put("/policy", { preHandler: deps.authenticate }, async (req, reply) => {
+  app.put("/policy", async (req, reply) => {
     try {
       deps.policy.update(req.body);
     } catch (error) {

@@ -143,7 +143,24 @@ try {
   } else {
     result = await client.stopSession(flags.session!);
   }
-  console.log(JSON.stringify(result, null, 2));
+  // Never dump diagnostics raw: pageText is 20 KB of a signed-in account
+  // page and screenshotBase64 is half a megabyte of JPEG — both are already
+  // on disk in outDir for anyone who needs them.
+  console.log(
+    JSON.stringify(
+      result,
+      (key, value: unknown) => {
+        if (key === "screenshotBase64" && typeof value === "string") {
+          return `<${value.length} chars omitted — see ${outDir}>`;
+        }
+        if (key === "pageText" && typeof value === "string" && value.length > 400) {
+          return `${value.slice(0, 400)}… <truncated — see ${outDir}>`;
+        }
+        return value;
+      },
+      2,
+    ),
+  );
   console.log(`\nRecording saved to ${outDir}`);
   console.log("Copy sanitized page HTML into test/fixtures/pages/ to grow the unit tests.");
   const failed =

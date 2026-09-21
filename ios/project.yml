@@ -101,6 +101,20 @@ targets:
         ENABLE_USER_SCRIPT_SANDBOXING: YES
         SWIFT_STRICT_CONCURRENCY: complete
 
+  ParkAgentTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: ParkAgentTests
+    dependencies:
+      - target: ParkAgent
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.thomasbardhi.parkagent.tests
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/ParkAgent.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ParkAgent"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+        GENERATE_INFOPLIST_FILE: YES
+
   ParkAgentUITests:
     type: bundle.ui-testing
     platform: iOS
@@ -121,12 +135,14 @@ schemes:
     build:
       targets:
         ParkAgent: all
+        ParkAgentTests: [test]
         ParkAgentUITests: [test]
     run:
       config: Debug
     test:
       config: Debug
       targets:
+        - ParkAgentTests
         - ParkAgentUITests
     profile:
       config: Release

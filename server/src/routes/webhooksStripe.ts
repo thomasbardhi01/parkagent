@@ -245,13 +245,31 @@ async function upsertAuthorization(deps: AppDeps, auth: Stripe.Issuing.Authoriza
  * /card/funding/topup-intent): the user's money settled into our Stripe
  * balance — move it onto the financial account backing the cards and audit
  * it. Intents not tagged parkagent=card_topup are someone else's business.
- * Stripe may redeliver events; a redelivered intent moves test funds twice,
- * which the decisions trail makes visible (prototype trade-off, see API.md).
+ * Idempotent against Stripe redelivery: an intent already in
+ * processed_topups is acknowledged without moving anything again; a FAILED
+ * move records no row, so the redelivery retries it.
  */
 async function handleTopupSucceeded(deps: AppDeps, intent: Stripe.PaymentIntent): Promise<void> {
   if (intent.metadata?.["parkagent"] !== "card_topup") return;
   const userId = intent.metadata["userId"] ?? null;
   const amountUsd = centsToUsd(intent.amount_received ?? intent.amount);
+
+  const processed = await deps.db.processedTopup.findUnique({
+    where: { paymentIntentId: intent.id },
+  });
+  if (processed) {
+    await deps.db.decision.create({
+      data: {
+        kind: "card_topup_funded",
+        inputs: { paymentIntentId: intent.id, amountUsd, replayed: true },
+        rule: "replayed",
+        outcome: { ok: true, skipped: true },
+        userId,
+      },
+    });
+    return;
+  }
+
   let moved = false;
   let error: string | null = null;
   try {
@@ -260,12 +278,25 @@ async function handleTopupSucceeded(deps: AppDeps, intent: Stripe.PaymentIntent)
   } catch (err) {
     error = String(err);
   }
+  if (moved) {
+    try {
+      await deps.db.processedTopup.create({
+        data: { paymentIntentId: intent.id, amountUsd, userId },
+      });
+    } catch (err) {
+      // A concurrent delivery won the insert — the move above still ran,
+      // so this is the one residual double-move window; surface it in
+      // the audit rather than crashing the webhook.
+      if ((err as { code?: string }).code !== "P2002") throw err;
+      error = "duplicate_processed_row";
+    }
+  }
   await deps.db.decision.create({
     data: {
       kind: "card_topup_funded",
       inputs: { paymentIntentId: intent.id, amountUsd },
       rule: moved ? "funded" : "funding_move_failed",
-      outcome: moved ? { ok: true } : { ok: false, error },
+      outcome: moved ? { ok: true, ...(error ? { note: error } : {}) } : { ok: false, error },
       userId,
     },
   });

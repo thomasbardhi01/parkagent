@@ -248,6 +248,7 @@ export interface FakeDbState {
   issuingAuthorizations: FakeIssuingAuthorizationRow[];
   providerAccounts: ProviderAccountRow[];
   zoneNumberReports: ZoneNumberReportRow[];
+  processedTopups: { paymentIntentId: string; amountUsd: number; userId: string | null }[];
   linkJobs: {
     id: string;
     userId: string;
@@ -331,6 +332,7 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
     issuingAuthorizations: [],
     providerAccounts: [],
     zoneNumberReports: [],
+    processedTopups: [],
     linkJobs: [],
   };
   const cardholderFor = (userId: string) => {
@@ -412,6 +414,21 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
       },
       findUnique: async ({ where }) => state.parkedEvents.find((p) => p.id === where.id) ?? null,
       findMany: async ({ where }) => state.parkedEvents.filter((p) => p.ts >= where.ts.gte),
+    },
+    processedTopup: {
+      findUnique: async ({ where }) =>
+        state.processedTopups.find((t) => t.paymentIntentId === where.paymentIntentId)
+          ? { paymentIntentId: where.paymentIntentId }
+          : null,
+      create: async ({ data }) => {
+        if (state.processedTopups.some((t) => t.paymentIntentId === data.paymentIntentId)) {
+          throw Object.assign(new Error("Unique constraint failed: processed_topups_pkey"), {
+            code: "P2002",
+          });
+        }
+        state.processedTopups.push({ userId: null, ...data });
+        return {};
+      },
     },
     linkJob: {
       create: async ({ data }) => {

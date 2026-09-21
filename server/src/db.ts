@@ -204,6 +204,14 @@ export interface AppDb {
       where: { ts: { gte: Date } };
     }): Promise<{ id: string; userId: string; signals: unknown; ts: Date }[]>;
   };
+  processedTopup: {
+    findUnique(args: {
+      where: { paymentIntentId: string };
+    }): Promise<{ paymentIntentId: string } | null>;
+    create(args: {
+      data: { paymentIntentId: string; amountUsd: number; userId?: string | null };
+    }): Promise<unknown>;
+  };
   linkJob: {
     create(args: {
       data: {

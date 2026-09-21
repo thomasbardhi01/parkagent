@@ -273,6 +273,19 @@ model LinkJob {
   @@map("link_jobs")
 }
 
+// Idempotency ledger for Apple Pay top-ups: one row per
+// payment_intent.succeeded whose amount was moved onto the financial
+// account. Stripe redelivers events; a second delivery finds the row and
+// skips the move instead of doubling it.
+model ProcessedTopup {
+  paymentIntentId String   @id @map("payment_intent_id")
+  amountUsd       Decimal  @map("amount_usd") @db.Decimal(8, 2)
+  userId          String?  @map("user_id")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("processed_topups")
+}
+
 // Non-negotiable: every automated decision writes a row here with its inputs.
 model Decision {
   id            String   @id @default(cuid())

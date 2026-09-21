@@ -616,9 +616,10 @@ confirms client-side with the Apple Pay sheet.
 Step 2 is the webhook: on `payment_intent.succeeded` for a tagged intent,
 the server moves the settled amount onto the financial account backing the
 cards (test mode: the sandbox ACH-credit helper) and writes a `decisions`
-row (kind `card_topup_funded`). Stripe may redeliver events; a redelivered
-intent would move test funds twice — visible in the decisions trail,
-accepted for the prototype.
+row (kind `card_topup_funded`). Idempotent against Stripe redelivery: a
+processed intent is recorded in `processed_topups`, so a second delivery
+is acknowledged (decision rule `replayed`) without moving funds again; a
+FAILED move records nothing, so redelivery retries it.
 
 **Apple Pay setup (one-time, Stripe dashboard + Apple):** native in-app
 Apple Pay needs (1) an Apple **merchant ID** (e.g.

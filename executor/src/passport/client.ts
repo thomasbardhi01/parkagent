@@ -370,11 +370,33 @@ export class PassportClient {
       }
 
       // Optional "Review Signage" interstitial (operator-configured; may
-      // or may not appear). If it's up, click Continue; never fail when
-      // it's absent.
-      const signageContinue = selectors.zone.signageContinue(page);
-      if (await signageContinue.isVisible({ timeout: 3_000 }).catch(() => false)) {
+      // or may not appear). Its popup keeps hidden Continue duplicates and
+      // opens under an animating .ui-popup-screen overlay, so: scope to
+      // the open popup's VISIBLE Continue, let the overlay settle, click —
+      // and if the modal is still up, dispatch the click straight on the
+      // button (bypasses overlay pointer interception). Never fail when
+      // the modal is absent.
+      const signageModal = selectors.zone.signageModal(page);
+      if (await signageModal.isVisible({ timeout: 3_000 }).catch(() => false)) {
+        const signageContinue = selectors.zone.signageContinue(page);
+        // Overlay opens with class "in"; wait for it to stop animating
+        // before clicking (it intercepts pointer events until then).
+        await page
+          .waitForFunction(
+            () => {
+              const doc = (globalThis as unknown as { document: { querySelector(s: string): { classList: { contains(t: string): boolean } } | null } }).document;
+              const screen = doc.querySelector(".ui-popup-screen");
+              return !screen || !screen.classList.contains("in");
+            },
+            { timeout: 5_000 },
+          )
+          .catch(() => {});
         await this.stableClick(page, signageContinue, "signage-continue");
+        if (await signageModal.isVisible({ timeout: 2_000 }).catch(() => false)) {
+          this.options.log?.("signage: still open after click; dispatching click event");
+          await signageContinue.dispatchEvent("click").catch(() => {});
+          await signageModal.waitFor({ state: "hidden", timeout: 5_000 }).catch(() => {});
+        }
         await this.step("signage-dismissed", page);
       }
 

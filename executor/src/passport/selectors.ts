@@ -128,15 +128,25 @@ export const selectors = {
      * Enter Zone: a popup with signage/meter-hours text and
      * Continue/Cancel. Operator-configured, so matched by structure +
      * keyword, not exact wording. */
+    // Scope to the OPEN popup container (jQM keeps hidden popup copies in
+    // the DOM, and TWO can be ui-popup-active at once); the signage one
+    // has no id, so match it by its text. Verified live 2026-09-21.
     signageModal: (page: Page): Locator =>
       page
-        .locator('[data-role="popup"], .ui-popup, [role="dialog"]')
+        .locator(".ui-popup-container.ui-popup-active")
         .filter({ hasText: /signage|meter hours|parking restrictions/i }),
+    // The real Continue is a normal-sized in-popup button; the same popup
+    // markup also carries zero-size "Continue" duplicates (.submit,
+    // #saveProfile), so filter to the VISIBLE one — resolves to exactly 1.
     signageContinue: (page: Page): Locator =>
       page
-        .locator('[data-role="popup"], .ui-popup, [role="dialog"]')
+        .locator(".ui-popup-container.ui-popup-active")
         .filter({ hasText: /signage|meter hours|parking restrictions/i })
-        .getByRole("button", { name: /continue|ok|got it|i understand/i }),
+        .getByRole("button", { name: /continue|ok|got it|i understand/i })
+        .filter({ visible: true }),
+    /** The popup-open overlay; it animates in (class "in") over the popup
+     * and can intercept the click until it settles. */
+    signageOverlay: (page: Page): Locator => page.locator(".ui-popup-screen"),
     /** Recent-zones panel: pops on input focus, sits right after
      * #zoneNext, and (when non-empty) shifts/overlays it — the
      * 2026-09-21 regression. Dismissed before clicking Continue. */

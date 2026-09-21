@@ -1,28 +1,33 @@
-<!-- Reconstructed from the reported "Review Signage" interstitial
-     (2026-09-21 start run): the modal is operator-configured and
-     runtime-injected, so it wasn't in the page capture. Structure mirrors
-     the app's jQuery-Mobile popup; wording is the reported generic
-     instruction (no account/card data). Test data only. -->
+<!-- Sanitized from the live 2026-09-21 "Review Signage" popup DOM: the
+     open popup is a .ui-popup-container.ui-popup-active with NO id (matched
+     by text), its real Continue is a normal-sized in-popup button, and the
+     same markup carries zero-size "Continue" duplicates (.submit,
+     #saveProfile) — plus a second active popup and the animating overlay.
+     The scoped+visible selector must resolve to exactly one. No account/
+     card data. -->
 <!doctype html><html><body>
-<div data-role="page" id="lengthOfStay" data-theme="a">
-  <div data-role="header"><h1>Length of Stay</h1></div>
-  <div data-role="content">
-    <p id="zoneWarningMessage" class="footer_label bold">
-      By continuing you agree you are abiding to all zone signage on restrictions and rules.
-    </p>
+<!-- an unrelated second active popup (no signage text) -->
+<div class="confirmationPopupIdentify ui-popup-container ui-popup-active" style="max-width:1890px;top:386px;left:797px;">
+  <div data-role="popup" id="acceptLatestTermsPopup" class="ui-popup ui-body-a">
+    <div data-role="content"><p>Terms updated.</p>
+      <a href="#" data-role="button" id="saveProfile" class="ui-btn" style="width:0;height:0;overflow:hidden">Continue</a>
+    </div>
   </div>
 </div>
-<div data-role="popup" id="signageReviewPopup" class="ui-popup ui-body-a ui-overlay-shadow ui-corner-all"
-     role="dialog" aria-labelledby="signageReviewTitle" style="">
-  <div data-role="header" class="ui-header ui-bar-a">
-    <h1 id="signageReviewTitle" class="ui-title">Review Signage</h1>
-  </div>
-  <div data-role="content" class="ui-content">
-    <p id="signageReviewMessage">
-      Please be sure to check the signage around you for parking restrictions and meter hours.
-    </p>
-    <a href="#" id="signageReviewContinue" data-role="button" data-theme="b" class="ui-btn ui-corner-all">Continue</a>
-    <a href="#" id="signageReviewCancel" data-role="button" data-theme="c" class="ui-btn ui-corner-all">Cancel</a>
+<!-- the Review Signage popup: no id, matched by text -->
+<div class="ui-popup-container ui-popup-active" style="max-width:1250px;top:250px;left:318px;">
+  <div data-role="popup" class="ui-popup ui-body-a ui-overlay-shadow ui-corner-all" role="dialog">
+    <div data-role="header" class="ui-header ui-bar-a"><h1 class="ui-title">Review Signage</h1></div>
+    <div data-role="content" class="ui-content">
+      <p>Please be sure to check the signage around you for parking restrictions and meter hours.</p>
+      <!-- zero-size duplicate the app leaves in the markup -->
+      <button data-role="button" class="submit" style="width:0;height:0;overflow:hidden">Continue</button>
+      <!-- the real, rendered Continue -->
+      <a href="#" data-role="button" class="ui-btn ui-shadow ui-btn-corner-all ui-btn-up-a"
+         style="display:block;width:610px;height:49px">Continue</a>
+      <a href="#" data-role="button" class="ui-btn">Cancel</a>
+    </div>
   </div>
 </div>
+<div class="ui-popup-screen ui-overlay-a" style="height:100%;width:100%"></div>
 </body></html>

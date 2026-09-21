@@ -245,3 +245,15 @@ describe("duration picker + jQM transition settle", () => {
     ).toBe(true);
   });
 })
+
+describe("screen after Review Signage (confirmed live 2026-09-21)", () => {
+  const dir = fileURLToPath(new URL("./fixtures/pages/passport", import.meta.url));
+
+  test("dismissing signage advances to the vehicle screen, and it isn't the modal", () => {
+    const html = readFileSync(join(dir, "after-signage-vehicle.html"), "utf8");
+    expect(html).toContain('id="vehicleManagement"');
+    expect(html).toContain('id="addVehicleButton"');
+    // Sanity: the next screen is not itself the signage modal.
+    expect(isSignageModal(html)).toBe(false);
+  });
+})

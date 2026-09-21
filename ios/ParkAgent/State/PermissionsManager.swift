@@ -33,6 +33,10 @@ final class PermissionsManager: NSObject, CLLocationManagerDelegate {
         locationStatus == .denied || locationStatus == .restricted
     }
 
+    var motionDenied: Bool {
+        motionAvailable && (motionStatus == .denied || motionStatus == .restricted)
+    }
+
     var notificationsGranted: Bool {
         notificationStatus == .authorized || notificationStatus == .provisional
     }

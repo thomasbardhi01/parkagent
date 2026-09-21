@@ -4,40 +4,57 @@ import CoreMotion
 import Foundation
 import Observation
 
-/// Detects "the car just parked" from three independent signals:
+/// Wires the system signal sources into `ParkFusionEngine` (which owns the
+/// two-of-three rule, settling, and debounce — see that file):
 ///
-/// 1. Motion: CoreMotion reports automotive → stationary/walking.
-/// 2. Location: a burst fix settles (the resting coordinate).
-/// 3. Audio: the car's Bluetooth/CarPlay audio route disconnects.
+/// - CMMotionActivityManager: automotive → stationary/walking transitions.
+/// - AVAudioSession route changes: the car's CarPlay/Bluetooth output
+///   disappearing (reason `oldDeviceUnavailable`) — the "car turned off"
+///   proxy.
+/// - CLLocationManager: a burst of high-accuracy fixes on demand, plus
+///   significant-change monitoring so iOS relaunches the app (and re-arms
+///   the detector via startBackgroundWork) after a terminate.
 ///
-/// A park fires when two of the three land within 60 seconds of each other,
-/// at most once every 3 minutes. The location burst is started by either of
-/// the other signals so the fix is fresh at the moment we need it.
+/// Missing permissions never crash detection — the remaining signals keep
+/// running (two still suffice) — but are surfaced via `missingPermissions`
+/// so Home can prompt for Settings.
 @MainActor
 @Observable
 final class ParkDetector: NSObject, CLLocationManagerDelegate {
-    static let agreementWindow: TimeInterval = 60
-    static let debounce: TimeInterval = 3 * 60
+    /// What Home's banner needs to say; empty when fully armed.
+    enum MissingPermission: String {
+        case locationAlways = "Location (Always)"
+        case motion = "Motion & Fitness"
+    }
 
     /// Fires with the resting fix and the signal names for /parked.
     var onPark: ((CLLocationCoordinate2D, Double, [String]) -> Void)?
 
     private(set) var isRunning = false
+    private(set) var missingPermissions: [MissingPermission] = []
 
+    private let engine: ParkFusionEngine
+    private let signalLog: SignalLog
     private let motionManager = CMMotionActivityManager()
     private let locationManager = CLLocationManager()
     private var routeChangeObserver: (any NSObjectProtocol)?
+    private var burstDeadline: Task<Void, Never>?
 
-    private var wasDriving = false
-    private var lastMotionStop: Date?
-    private var lastAudioDisconnect: Date?
-    private var lastFix: (coordinate: CLLocationCoordinate2D, accuracy: Double, at: Date)?
-    private var lastFired: Date?
-
-    override init() {
+    init(engine: ParkFusionEngine = ParkFusionEngine(), signalLog: SignalLog = .shared) {
+        self.engine = engine
+        self.signalLog = signalLog
         super.init()
         locationManager.delegate = self
-        locationManager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
+        locationManager.desiredAccuracy = kCLLocationAccuracyBest
+
+        engine.onPark = { [weak self] fix, signals in
+            self?.onPark?(fix.coordinate, fix.accuracy, signals)
+        }
+        engine.onStartBurst = { [weak self] in self?.startBurst() }
+        engine.onStopBurst = { [weak self] in self?.stopBurst() }
+        engine.onRawSignal = { [weak self] signal, at, detail in
+            self?.signalLog.append(signal, at: at, detail: detail)
+        }
     }
 
     func start() {
@@ -49,6 +66,10 @@ final class ParkDetector: NSObject, CLLocationManagerDelegate {
         if locationManager.authorizationStatus == .authorizedWhenInUse {
             locationManager.requestAlwaysAuthorization()
         }
+        // iOS relaunches the app on a significant move (~500 m); RootView
+        // calls startBackgroundWork on every launch, so this is the re-arm
+        // path after a terminate.
+        locationManager.startMonitoringSignificantLocationChanges()
 
         if CMMotionActivityManager.isActivityAvailable() {
             motionManager.startActivityUpdates(to: .main) { [weak self] activity in
@@ -56,7 +77,7 @@ final class ParkDetector: NSObject, CLLocationManagerDelegate {
                 let driving = activity.automotive && activity.confidence != .low
                 let stopped = activity.stationary || activity.walking
                 Task { @MainActor in
-                    self?.handleMotion(driving: driving, stopped: stopped)
+                    self?.engine.motionEvent(driving: driving, stopped: stopped)
                 }
             }
         }
@@ -69,89 +90,105 @@ final class ParkDetector: NSObject, CLLocationManagerDelegate {
             guard
                 let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
                 AVAudioSession.RouteChangeReason(rawValue: raw) == .oldDeviceUnavailable,
-                let previous = note.userInfo?[AVAudioSessionRouteChangePreviousRouteKey] as? AVAudioSessionRouteDescription
+                let previous = note.userInfo?[AVAudioSessionRouteChangePreviousRouteKey]
+                    as? AVAudioSessionRouteDescription
             else { return }
-            let carPorts: Set<AVAudioSession.Port> = [.carAudio, .bluetoothA2DP, .bluetoothHFP]
+            let carPorts: Set<AVAudioSession.Port> = [
+                .carAudio, .bluetoothA2DP, .bluetoothHFP, .bluetoothLE,
+            ]
             let wasCar = previous.outputs.contains { carPorts.contains($0.portType) }
             guard wasCar else { return }
             Task { @MainActor in
-                self?.handleAudioDisconnect()
+                self?.engine.audioDisconnected()
             }
         }
+
+        refreshPermissions()
     }
 
     func stop() {
         guard isRunning else { return }
         isRunning = false
         motionManager.stopActivityUpdates()
+        locationManager.stopMonitoringSignificantLocationChanges()
+        stopBurst()
         if let routeChangeObserver {
             NotificationCenter.default.removeObserver(routeChangeObserver)
         }
         routeChangeObserver = nil
     }
 
-    // MARK: - Signals
-
-    private func handleMotion(driving: Bool, stopped: Bool) {
-        if driving {
-            wasDriving = true
-            return
+    /// Recompute what Home's Settings banner should show. Detection keeps
+    /// running on whatever signals remain (two of three still fire).
+    func refreshPermissions() {
+        var missing: [MissingPermission] = []
+        if locationManager.authorizationStatus != .authorizedAlways {
+            missing.append(.locationAlways)
         }
-        // Only the transition out of driving counts, not standing still
-        // at a desk all day.
-        guard wasDriving, stopped else { return }
-        wasDriving = false
-        lastMotionStop = .now
-        requestBurstFix()
-        evaluate()
+        if CMMotionActivityManager.isActivityAvailable(),
+           CMMotionActivityManager.authorizationStatus() == .denied
+            || CMMotionActivityManager.authorizationStatus() == .restricted {
+            missing.append(.motion)
+        }
+        missingPermissions = missing
     }
 
-    private func handleAudioDisconnect() {
-        lastAudioDisconnect = .now
-        requestBurstFix()
-        evaluate()
-    }
+    // MARK: - Location burst
 
-    private func requestBurstFix() {
-        locationManager.requestLocation()
-    }
-
-    nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        guard let location = locations.last else { return }
-        let latitude = location.coordinate.latitude
-        let longitude = location.coordinate.longitude
-        let accuracy = location.horizontalAccuracy
-        Task { @MainActor in
-            self.lastFix = (CLLocationCoordinate2D(latitude: latitude, longitude: longitude), accuracy, .now)
-            self.evaluate()
+    private func startBurst() {
+        // Continuous updates (not requestLocation) so settling sees a run
+        // of fixes; background delivery needs the Always grant.
+        if locationManager.authorizationStatus == .authorizedAlways {
+            locationManager.allowsBackgroundLocationUpdates = true
+        }
+        locationManager.startUpdatingLocation()
+        // Belt and braces beside the engine's own timeout: never leave the
+        // radio in high-accuracy mode more than two minutes.
+        burstDeadline?.cancel()
+        burstDeadline = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(120))
+            guard !Task.isCancelled else { return }
+            self?.stopBurst()
         }
     }
 
-    nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: any Error) {
+    private func stopBurst() {
+        burstDeadline?.cancel()
+        burstDeadline = nil
+        locationManager.stopUpdatingLocation()
+    }
+
+    // MARK: - CLLocationManagerDelegate
+
+    nonisolated func locationManager(
+        _ manager: CLLocationManager,
+        didUpdateLocations locations: [CLLocation]
+    ) {
+        for location in locations where location.horizontalAccuracy >= 0 {
+            let latitude = location.coordinate.latitude
+            let longitude = location.coordinate.longitude
+            let accuracy = location.horizontalAccuracy
+            let at = location.timestamp
+            Task { @MainActor in
+                self.engine.fixReceived(ParkFix(
+                    coordinate: CLLocationCoordinate2D(latitude: latitude, longitude: longitude),
+                    accuracy: accuracy,
+                    at: at
+                ))
+            }
+        }
+    }
+
+    nonisolated func locationManager(
+        _ manager: CLLocationManager,
+        didFailWithError error: any Error
+    ) {
         // A failed burst just means we fall back to the other two signals.
     }
 
-    // MARK: - Decision
-
-    private func evaluate() {
-        let now = Date.now
-        if let lastFired, now.timeIntervalSince(lastFired) < Self.debounce { return }
-
-        var signals: [String] = []
-        if let lastMotionStop, now.timeIntervalSince(lastMotionStop) <= Self.agreementWindow {
-            signals.append("motion_stop")
+    nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        Task { @MainActor in
+            self.refreshPermissions()
         }
-        if let lastAudioDisconnect, now.timeIntervalSince(lastAudioDisconnect) <= Self.agreementWindow {
-            signals.append("audio_disconnect")
-        }
-        if let lastFix, now.timeIntervalSince(lastFix.at) <= Self.agreementWindow {
-            signals.append("location_fix")
-        }
-        guard signals.count >= 2, let fix = lastFix else { return }
-
-        lastFired = now
-        lastMotionStop = nil
-        lastAudioDisconnect = nil
-        onPark?(fix.coordinate, fix.accuracy, signals)
     }
 }

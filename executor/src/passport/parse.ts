@@ -200,12 +200,14 @@ export function recentZonesState(html: string): {
  * operator-configured), so it won't fire on the inline zoneWarningMessage
  * label. Pure, for the fixture test. */
 export function isSignageModal(html: string): boolean {
-  const popup = /<[^>]*(?:data-role="popup"|class="[^"]*ui-popup|role="dialog")[^>]*>([\s\S]*?)<\/div>\s*<\/div>/i.exec(html);
-  const scope = popup ? popup[0] : html;
-  const isPopupish = /data-role="popup"|ui-popup|role="dialog"/i.test(scope);
-  const mentionsSignage = /signage|meter hours|parking restrictions/i.test(scope);
-  const hasContinue = /(continue|i understand|got it)</i.test(scope);
-  const hasCancel = /(cancel|not now|go back)</i.test(scope);
+  // Whole-document combination (a page can hold several popups): a popup
+  // container, signage/meter-hours/restrictions wording, and both a
+  // Continue and a Cancel action. The structural + both-buttons
+  // requirement keeps it from firing on the inline zoneWarningMessage.
+  const isPopupish = /data-role="popup"|ui-popup|role="dialog"/i.test(html);
+  const mentionsSignage = /signage|meter hours|parking restrictions/i.test(html);
+  const hasContinue = /(continue|i understand|got it)</i.test(html);
+  const hasCancel = /(cancel|not now|go back)</i.test(html);
   return isPopupish && mentionsSignage && hasContinue && hasCancel;
 }
 

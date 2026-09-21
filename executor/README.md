@@ -161,10 +161,20 @@ payment-method page — that next screen stays TODO-verify.
 
 **Review Signage interstitial (2026-09-21):** an optional operator-
 configured popup ("check the signage around you for parking restrictions
-and meter hours", Continue/Cancel) can appear after Enter Zone. The start
-flow clicks Continue when it's present and proceeds when it's absent —
-never fails on it. Matched by structure + keyword, not exact wording
-(`isSignageModal` in `parse.ts`, pinned by `signage-modal.html`).
+and meter hours", Continue/Cancel) appears after Enter Zone. Live
+inspection showed the trap: jQuery Mobile keeps hidden zero-size
+"Continue" duplicates (.submit, #saveProfile) in the markup, TWO popups
+can be .ui-popup-active at once, and a .ui-popup-screen overlay animates
+(class "in") over the popup and intercepts the click. So the flow scopes
+to the OPEN popup by its text (`.ui-popup-container.ui-popup-active`
+filtered on signage wording), takes the VISIBLE Continue only
+(`.filter({visible:true})` → exactly one), waits for the overlay to stop
+animating, clicks, and falls back to dispatching the click event if the
+modal is still up. Absent → skipped. `isSignageModal` (parse.ts, pinned
+by signage-modal.html) is the pure detector; the exactly-one-visible
+assertion is a Playwright setContent test. Confirmed live: dismissing it
+advances to the vehicle screen (#vehicleManagement, after-signage-vehicle
+.html) — the following screens stay TODO-verify.
 
 **Verification status.** Walked live: the gated entry (Sign In / Register /
 Guest), T&C accept, and e-mail verification screens (2026-09-20, headless)

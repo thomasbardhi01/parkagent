@@ -304,6 +304,15 @@ export class PassportClient {
         return this.fail(page, "zone_not_found", `Passport rejected zone ${zoneNumber}`);
       }
 
+      // Optional "Review Signage" interstitial (operator-configured; may
+      // or may not appear). If it's up, click Continue; never fail when
+      // it's absent.
+      const signageContinue = selectors.zone.signageContinue(page);
+      if (await signageContinue.isVisible({ timeout: 3_000 }).catch(() => false)) {
+        await signageContinue.click();
+        await this.step("signage-dismissed", page);
+      }
+
       // After a valid zone the app shows the zone's info (rates) with a
       // Select Zone button, or goes straight on — both drafted from the
       // shipped view source, TODO-verify on the first paid recording.

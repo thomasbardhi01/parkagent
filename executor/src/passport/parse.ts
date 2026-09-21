@@ -192,3 +192,19 @@ export function recentZonesState(html: string): {
   const chips = [...m[1]!.matchAll(/<button[^>]*>\s*([^<]+?)\s*<\/button>/g)].map((c) => c[1]!.trim());
   return { present: true, visible: !hidden && chips.length > 0, chips };
 }
+
+
+/** True when the HTML shows the optional "Review Signage" interstitial —
+ * a popup/dialog with signage/meter-hours/restrictions text AND both a
+ * Continue and a Cancel action. Structure + keyword (the banner text is
+ * operator-configured), so it won't fire on the inline zoneWarningMessage
+ * label. Pure, for the fixture test. */
+export function isSignageModal(html: string): boolean {
+  const popup = /<[^>]*(?:data-role="popup"|class="[^"]*ui-popup|role="dialog")[^>]*>([\s\S]*?)<\/div>\s*<\/div>/i.exec(html);
+  const scope = popup ? popup[0] : html;
+  const isPopupish = /data-role="popup"|ui-popup|role="dialog"/i.test(scope);
+  const mentionsSignage = /signage|meter hours|parking restrictions/i.test(scope);
+  const hasContinue = /(continue|i understand|got it)</i.test(scope);
+  const hasCancel = /(cancel|not now|go back)</i.test(scope);
+  return isPopupish && mentionsSignage && hasContinue && hasCancel;
+}

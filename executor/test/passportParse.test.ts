@@ -21,6 +21,7 @@ import {
   parseNearbyZones,
   isAddPaymentScreen,
   recentZonesState,
+  isSignageModal,
 } from "../src/passport/parse.js";
 
 const pagesDir = fileURLToPath(new URL("./fixtures/pages/passport", import.meta.url));
@@ -191,3 +192,29 @@ describe("Enter Zone recent-zones panel (2026-09-21 Continue-timeout regression)
     });
   });
 });
+
+describe("Review Signage interstitial (optional, after Enter Zone)", () => {
+  const dir = fileURLToPath(new URL("./fixtures/pages/passport", import.meta.url));
+  const read = (name: string) => readFileSync(join(dir, name), "utf8");
+
+  test("isSignageModal fires on the popup (signage text + Continue/Cancel)", () => {
+    expect(isSignageModal(read("signage-modal.html"))).toBe(true);
+  });
+
+  test("it does NOT fire on the inline zoneWarningMessage label alone", () => {
+    // The Length-of-Stay page carries the same 'signage/restrictions'
+    // words in a plain <p> with no popup and no Continue/Cancel — the
+    // structural requirement keeps that from being a false positive.
+    const inlineOnly =
+      '<div data-role="page"><p id="zoneWarningMessage">By continuing you agree you are ' +
+      "abiding to all zone signage on restrictions and rules.</p></div>";
+    expect(isSignageModal(inlineOnly)).toBe(false);
+  });
+
+  test("it does not fire on the other Passport screens", () => {
+    for (const other of ["zone-entry--recent-zones-visible.html", "add-payment-details.html"]) {
+      expect(isSignageModal(read(other))).toBe(false);
+    }
+    expect(isSignageModal("<html><body>nothing here</body></html>")).toBe(false);
+  });
+})

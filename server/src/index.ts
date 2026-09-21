@@ -7,6 +7,7 @@ import { makeCardJanitor } from "./jobs/cardJanitor.js";
 import { makeExtender } from "./jobs/extendTick.js";
 import { makeApnsSender } from "./services/apns.js";
 import { makeStateCrypto } from "./services/crypto.js";
+import { withDecisionLogging } from "./services/decisionLog.js";
 import { DryRunExecutor } from "./services/executor.js";
 import {
   closeExecutorBrowser,
@@ -32,7 +33,12 @@ const policy = new PolicyService(
 );
 
 const prisma = createPrisma(env.DATABASE_URL);
-const db = asAppDb(prisma);
+// Every decisions row also emits one structured log line (kind, rule, ids
+// — never inputs/outcome), wrapped here once so routes, the extension
+// worker, and the janitor can't forget. `app` is bound lazily below.
+const db = withDecisionLogging(asAppDb(prisma), {
+  info: (payload, msg) => app.log.info(payload, msg),
+});
 await snapshotPolicy(db, policy.get(), "boot");
 
 // APNs sends only with the full credential set; otherwise pushes log and drop.

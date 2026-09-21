@@ -17,6 +17,13 @@ Unknown or missing key → `401 {"error": "unauthorized"}`. Keys are created
 with `pnpm -C server create:user -- --name <name>` and live only in the
 `users` table.
 
+Auth is an app-level hook with a public allowlist (`/health`,
+`/webhooks/stripe` — the Stripe signature is that route's auth), so
+unknown paths 401 too. Abuse-prone routes are rate-limited per user
+(429 + `Retry-After`): `/parked` 30/min, provider writes 10/min, provider
+reads 60/min, `/zones/:zoneId/provider-number` 12/min. Unhandled errors
+answer `500 {"error": "internal"}` — details go to the server log only.
+
 ## Dry run
 
 `DRY_RUN` (env) and `dry_run` (policy.json) are independent switches; money
@@ -833,3 +840,43 @@ to start on an invalid file.
 ## GET /health
 
 No auth. `{ok, dryRun, commit, builtAt}`.
+
+---
+
+## GET /admin/summary
+
+Auth-gated like everything else (`x-api-key`). The field-test dashboard:
+today's activity (NYC calendar day) aggregated from the
+decisions/parked_events/sessions tables, per city. Read-only.
+
+```json
+{
+  "since": "2026-09-21T04:00:00.000Z",
+  "now": "2026-09-21T18:00:00.000Z",
+  "dryRun": true,
+  "policyHash": "sha256:…",
+  "cities": {
+    "nyc": {
+      "parks": 4,                  // parked_quote decisions
+      "unknownZone": 1,
+      "sessionsStarted": 2,        // sessions rows (non-failed)
+      "sessionsFailed": 0,
+      "extensionsAuto": 1,         // extend_tick rule "extend"
+      "extensionsManual": 0,       // session_extend rule "extend_ok"
+      "declines": { "daily_cap_exceeded": 1, "declined_wrong_mcc": 1 },
+      "executorErrors": { "ui_changed": 1 },
+      "shadow": { "fired": 2, "approved": 2, "declined": 0, "missed": 0 },
+      "spendUsd": 14.56            // meter + fees on today's sessions
+    }
+  },
+  "detectorSignals": { "motion_stop": 4, "audio_disconnect": 3, "location_settled": 4 },
+  "decisionCount": 23
+}
+```
+
+A decision's city comes from its session's stored `city`, the quoted
+zone's id prefix, or the first candidate; unattributable rows land under
+`"unknown"`. Every decisions row also emits one structured log line
+(`{"decision": {id, kind, rule, userId, sessionId, parkedEventId}}`) —
+identifiers and the rule only, never inputs/outcome (those can carry
+ui_changed screenshots).

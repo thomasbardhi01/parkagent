@@ -199,6 +199,10 @@ export interface AppDb {
     findUnique(args: {
       where: { id: string };
     }): Promise<{ id: string; userId: string; lat: number; lng: number; ts: Date } | null>;
+    /** The /admin/summary read: today's parks and their detector signals. */
+    findMany(args: {
+      where: { ts: { gte: Date } };
+    }): Promise<{ id: string; userId: string; signals: unknown; ts: Date }[]>;
   };
   decision: {
     create(args: {
@@ -213,6 +217,18 @@ export interface AppDb {
         sessionId?: string;
       };
     }): Promise<{ id: string }>;
+    /** The /admin/summary read: today's decisions, oldest first. */
+    findMany(args: { where: { createdAt: { gte: Date } } }): Promise<
+      {
+        kind: string;
+        rule: string;
+        outcome: unknown;
+        inputs: unknown;
+        userId: string | null;
+        sessionId: string | null;
+        createdAt: Date;
+      }[]
+    >;
   };
   providerAccount: {
     findUnique(args: {

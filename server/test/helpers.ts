@@ -210,6 +210,7 @@ export interface FakeDbState {
     userId?: string | null;
     parkedEventId?: string;
     sessionId?: string;
+    createdAt?: Date;
   }[];
   snapshots: { hash: string; policy: unknown; source: string }[];
   sessions: SessionRow[];
@@ -385,12 +386,29 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
         return { id: row.id };
       },
       findUnique: async ({ where }) => state.parkedEvents.find((p) => p.id === where.id) ?? null,
+      findMany: async ({ where }) => state.parkedEvents.filter((p) => p.ts >= where.ts.gte),
     },
     decision: {
       create: async ({ data }) => {
-        state.decisions.push(data as FakeDbState["decisions"][number]);
+        state.decisions.push({
+          createdAt: new Date(MONDAY_2PM),
+          ...(data as FakeDbState["decisions"][number]),
+        });
         return { id: `d${state.decisions.length}` };
       },
+      findMany: async ({ where }) =>
+        state.decisions
+          .filter((d) => (d.createdAt ?? new Date(MONDAY_2PM)) >= where.createdAt.gte)
+          .map((d, i) => ({
+            kind: d.kind,
+            rule: d.rule,
+            outcome: d.outcome,
+            inputs: d.inputs,
+            userId: d.userId ?? null,
+            sessionId: d.sessionId ?? null,
+            createdAt: d.createdAt ?? new Date(MONDAY_2PM),
+            id: `d${i + 1}`,
+          })),
     },
     session: {
       create: async ({ data }) => {

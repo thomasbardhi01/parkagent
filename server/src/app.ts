@@ -8,6 +8,7 @@ import type {
 } from "fastify";
 
 import type { AppDb } from "./db.js";
+import { registerAdmin } from "./routes/admin.js";
 import { registerCard } from "./routes/card.js";
 import { registerCity } from "./routes/city.js";
 import { registerDevice } from "./routes/device.js";
@@ -149,6 +150,7 @@ export function buildApp(deps?: AppDeps): FastifyInstance {
     registerDevice(app, deps);
     registerCard(app, deps);
     registerProviders(app, deps);
+    registerAdmin(app, deps);
     registerStripeWebhook(app, deps);
   }
   return app;

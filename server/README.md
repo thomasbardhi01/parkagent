@@ -70,7 +70,15 @@ before the webhook if above the per-auth cap too).
 ### decisions:recent
 
     pnpm -C server decisions:recent
+    pnpm -C server decisions:recent -- --user Thomas --city bos --limit 50
 
 Prints the last 20 `decisions` rows — timestamp, rule, action, zone, quote —
-which is the evening read during the dry-run week. Point it at prod (proxy +
-exported `DATABASE_URL`) to read what the live app decided.
+which is the evening read during the dry-run week. `--user` filters by the
+users row (id or case-insensitive name); `--city nyc|bos` keeps rows
+attributable to that city (quoted zone prefix, the session's stored city,
+or the first candidate); `--limit` changes the count. Point it at prod
+(proxy + exported `DATABASE_URL`) to read what the live app decided.
+
+During a field test, `GET /admin/summary` (see API.md) is the same story
+pre-aggregated: today's parks, sessions, extensions, declines, executor
+error counts, shadow results, and detector signal counts per city.

@@ -18,7 +18,7 @@
  * intentionally removes the rows the selection no longer covers.
  */
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 
@@ -97,8 +97,14 @@ async function main(): Promise<number> {
     return 1;
   }
 
-  console.log(`Reading ${flags.file} ...`);
-  const collection = JSON.parse(readFileSync(flags.file, "utf-8")) as ZonesCollection;
+  // A relative --file resolves against the REPO ROOT — `pnpm -C server`
+  // runs with cwd server/, and "--file data/out/boston_zones.geojson"
+  // should mean what it says. A path that only exists relative to the cwd
+  // (the old ../data/… form) still works as a fallback.
+  const fromRoot = resolve(repoRoot, flags.file);
+  const filePath = existsSync(fromRoot) ? fromRoot : resolve(flags.file);
+  console.log(`Reading ${filePath} ...`);
+  const collection = JSON.parse(readFileSync(filePath, "utf-8")) as ZonesCollection;
   const dataVersion = collection.metadata?.built_at;
   if (!dataVersion) {
     console.error("zones.geojson has no metadata.built_at; rebuild it with data/build_zones.py.");

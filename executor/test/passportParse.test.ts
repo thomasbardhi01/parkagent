@@ -20,6 +20,7 @@ import {
   streetsMatch,
   parseNearbyZones,
   isAddPaymentScreen,
+  recentZonesState,
 } from "../src/passport/parse.js";
 
 const pagesDir = fileURLToPath(new URL("./fixtures/pages/passport", import.meta.url));
@@ -161,5 +162,32 @@ describe("Add Payment Details screen (card-less account)", () => {
     for (const secret of ["5143772191773606", "02184", "067", "thomas_bardhi_venmo_card"]) {
       expect(addPayment).not.toContain(secret);
     }
+  });
+});
+
+describe("Enter Zone recent-zones panel (2026-09-21 Continue-timeout regression)", () => {
+  const dir = fileURLToPath(new URL("./fixtures/pages/passport", import.meta.url));
+  const read = (name: string) => readFileSync(join(dir, name), "utf8");
+
+  test("recentZonesState sees the visible panel + chip that overlays Continue", () => {
+    const state = recentZonesState(read("zone-entry--recent-zones-visible.html"));
+    expect(state.present).toBe(true);
+    expect(state.visible).toBe(true);
+    expect(state.chips).toContain("456");
+  });
+
+  test("the baseline capture's panel is hidden (display:none) — Continue was clear", () => {
+    const state = recentZonesState(read("zone-entry--recent-zones-hidden.html"));
+    expect(state.present).toBe(true);
+    expect(state.visible).toBe(false);
+    expect(state.chips).toEqual([]);
+  });
+
+  test("no #recentZones at all reads as not-present, not a crash", () => {
+    expect(recentZonesState("<html><body>Enter Zone</body></html>")).toEqual({
+      present: false,
+      visible: false,
+      chips: [],
+    });
   });
 });

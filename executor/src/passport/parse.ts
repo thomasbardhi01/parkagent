@@ -174,3 +174,21 @@ export function isAddPaymentScreen(html: string): boolean {
   const hasForm = /id="cardNumber"/.test(html) && /id="saveCard"/.test(html);
   return hasHeader && hasForm;
 }
+
+
+/** State of the Enter Zone recent-zones panel in a page's HTML — the
+ * element that pops on input focus and, when visible with chips, can
+ * overlay the Continue button (the 2026-09-21 regression). Pure, so the
+ * flow's dismiss logic and the fixture test share one reading. */
+export function recentZonesState(html: string): {
+  present: boolean;
+  visible: boolean;
+  chips: string[];
+} {
+  const m = /<div id="recentZones"[^>]*>([\s\S]*?)<\/div>/.exec(html);
+  if (!m) return { present: false, visible: false, chips: [] };
+  const openTag = /<div id="recentZones"[^>]*>/.exec(html)?.[0] ?? "";
+  const hidden = /style="[^"]*display:\s*none/i.test(openTag);
+  const chips = [...m[1]!.matchAll(/<button[^>]*>\s*([^<]+?)\s*<\/button>/g)].map((c) => c[1]!.trim());
+  return { present: true, visible: !hidden && chips.length > 0, chips };
+}

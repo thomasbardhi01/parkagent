@@ -19,6 +19,7 @@ import {
   parseZoneNumberText,
   streetsMatch,
   parseNearbyZones,
+  isAddPaymentScreen,
 } from "../src/passport/parse.js";
 
 const pagesDir = fileURLToPath(new URL("./fixtures/pages/passport", import.meta.url));
@@ -125,5 +126,40 @@ describe("parseNearbyZones (Find Parking map feed)", () => {
     );
     expect(parseNearbyZones(null)).toEqual([]);
     expect(parseNearbyZones({})).toEqual([]);
+  });
+});
+
+
+describe("Add Payment Details screen (card-less account)", () => {
+  const dir = fileURLToPath(new URL("./fixtures/pages/passport", import.meta.url));
+  const addPayment = readFileSync(join(dir, "add-payment-details.html"), "utf8");
+
+  test("isAddPaymentScreen recognizes the #updateCard form from the recording", () => {
+    expect(isAddPaymentScreen(addPayment)).toBe(true);
+  });
+
+  test("it does not fire on the other Passport screens", () => {
+    for (const other of ["zone-entry.html", "zone-info--81234--boylston-st.html"]) {
+      expect(isAddPaymentScreen(readFileSync(join(dir, other), "utf8"))).toBe(false);
+    }
+    expect(isAddPaymentScreen("<html><body>anything else</body></html>")).toBe(false);
+    // Header without the form (e.g. a confirmation echoing the words) is not it.
+    expect(
+      isAddPaymentScreen('<h1 id="updateCardWindowHeader">Add Payment Details</h1>'),
+    ).toBe(false);
+  });
+
+  test("the same form backs setupCard: the fixture carries every selector id the flow fills", () => {
+    // Selectors in passport/selectors.ts payment.* target these ids; the
+    // recording is where they came from, so both flows share one form.
+    for (const id of ["cardNumber", "selectMonth", "selectYear", "cvv", "billingZipcode", "cardName", "saveCard"]) {
+      expect(addPayment).toContain(`id="${id}"`);
+    }
+  });
+
+  test("the fixture is sanitized — none of the reported card values survive", () => {
+    for (const secret of ["5143772191773606", "02184", "067", "thomas_bardhi_venmo_card"]) {
+      expect(addPayment).not.toContain(secret);
+    }
   });
 });

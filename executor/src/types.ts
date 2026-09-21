@@ -20,6 +20,7 @@ export type ExecutorErrorCode =
   | "ui_changed" // an expected screen/element never appeared
   | "network" // couldn't reach the provider at all
   | "browser_crashed" // the shared Chromium died mid-call (retried once first)
+  | "payment_method_missing" // the account has no saved payment method to charge
   | "unknown"; // none of the above matched
 
 /** Evidence captured from an unexpected screen; attached to decisions. */

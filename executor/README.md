@@ -148,6 +148,7 @@ cheap zone before any real use.
 | `auth_expired` | Storage state missing or the provider asked to sign in again |
 | `zone_not_found` | The provider rejected the zone number |
 | `payment_declined` | The payment step refused |
+| `payment_method_missing` | The provider account has no saved payment method — the start flow hit "Add Payment Details" (ParkBoston). The server pushes an "add a card" prompt, not a retry |
 | `ui_changed` | An expected screen/element never appeared (capture attached) — includes captcha/bot-check walls, which classify.ts deliberately never reads as `auth_expired` (that would wrongly expire the linked account and push a relink) |
 | `network` | Couldn't reach the provider |
 | `browser_crashed` | The shared Chromium died mid-call. The executor retries the call ONCE on a fresh context first (warmBrowser relaunches lazily); this code means the retry failed too |

@@ -122,6 +122,32 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
       }
     }
 
+    // A provider-covered zone without a known pay-by-app number can't be
+    // typed into the provider's Enter Zone screen — the app must collect
+    // it first (POST /zones/:zoneId/provider-number).
+    if (provider && zone.providerZoneNumber === "") {
+      const decision = await deps.db.decision.create({
+        data: {
+          kind: "session_start",
+          inputs: {
+            body,
+            provider: provider.id,
+            dryRun: deps.policy.effectiveDryRun(),
+            policyHash: deps.policy.hash(),
+          },
+          rule: "needs_zone_number",
+          outcome: { allowed: false },
+          userId: user.id,
+          parkedEventId: parkedEvent.id,
+        },
+      });
+      return reply.code(409).send({
+        error: "needs_zone_number",
+        zoneId: zone.zoneId,
+        decisionId: decision.id,
+      });
+    }
+
     const terms = {
       // The zone's city picks the per-city fee (ParkBoston $0.35 vs
       // ParkNYC $0.15) and rides onto the session row below.
@@ -173,7 +199,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
         userId: user.id,
         zoneId: zone.zoneId,
         city: terms.city,
-        parknycZoneNumber: zone.parknycZoneNumber,
+        providerZoneNumber: zone.providerZoneNumber,
         status: "pending",
         dryRun,
         parkedEventId: parkedEvent.id,
@@ -190,13 +216,13 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
 
     const startedAtMs = Date.now();
     const result = await deps.executorFor({ userId: user.id, city, dryRun }).startSession({
-      zoneNumber: zone.parknycZoneNumber,
+      zoneNumber: zone.providerZoneNumber,
       minutes,
       amountUsd: price.meterUsd,
       feeUsd: price.feeUsd,
-      // The car's fix drives the executor's map-based zone resolution:
-      // authoritative for Boston (no stored zone numbers), a logged
-      // cross-check for NYC.
+      // The car's fix feeds ParkNYC's non-fatal map cross-check; the
+      // Passport executor ignores it (ParkBoston has no map — its zone
+      // numbers come from user reports, checked above).
       carLat: parkedEvent.lat,
       carLng: parkedEvent.lng,
       ...(zone.street ? { expectedStreet: zone.street } : {}),
@@ -239,7 +265,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
       });
       await deps.sendPush(
         user.id,
-        paymentFailedPush({ zoneNumber: zone.parknycZoneNumber, what: "pay", code: result.code }),
+        paymentFailedPush({ zoneNumber: zone.providerZoneNumber, what: "pay", code: result.code }),
       );
       return reply
         .code(502)
@@ -257,11 +283,6 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
         purchasedMinutes: minutes,
         chargedMinutes: price.chargedMinutes,
         parknycConfirmation: result.providerSessionId,
-        // Boston zones store no zone number; backfill the one the executor
-        // resolved from the provider's map so pushes and deep links work.
-        ...(zone.parknycZoneNumber === "" && result.zoneResolution
-          ? { parknycZoneNumber: result.zoneResolution.mapZoneNumber }
-          : {}),
       },
     });
     await deps.db.sessionEvent.create({
@@ -310,7 +331,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
     await deps.sendPush(
       user.id,
       sessionStartedPush({
-        zoneNumber: zone.parknycZoneNumber,
+        zoneNumber: zone.providerZoneNumber,
         minutes,
         totalUsd: price.totalUsd,
         expiresAt: result.expiresAt,

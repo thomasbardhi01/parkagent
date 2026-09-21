@@ -7,15 +7,15 @@
  * repo; it must move before any customer uses it.
  *
  * `pnpm -C executor run record -- --flow start --zone 110436 --minutes 15`
- * `pnpm -C executor run record -- --provider passport --flow resolve --lat 42.3495 --lng -71.0798`
  *
  * Recording harness: drives one flow against the REAL provider site with
  * tracing on, saving to executor/fixtures/<provider>-<flow>-<stamp>/
  * (gitignored): har.har, trace.zip, and NN-<step>.html/.png per screen.
  *
- * Flows: start | extend | stop | resolve. `resolve` (Passport, and ParkNYC's
- * cross-check) drives ONLY the map-based zone resolution — it never reaches
- * a payment screen, so it is the safe first recording to make in Boston.
+ * Flows: start | extend | stop. (`resolve` is retired: the 2026-09-21
+ * recording showed ParkBoston has no map — asking for it just prints an
+ * explanation. ParkNYC's map cross-check records inside --flow start when
+ * --lat/--lng are given.)
  *
  * ⚠ `--flow start` and `--flow extend` PAY A REAL METER with the signed-in
  * account's payment method. Use a cheap zone and the minimum duration.
@@ -54,7 +54,6 @@ function usage(): never {
       "  pnpm -C executor run record -- [--provider parknyc|passport] --flow start --zone <zoneNumber> [--plate <plate>] [--minutes 15] [--lat .. --lng .. [--street ..]]",
       "  pnpm -C executor run record -- [--provider ..] --flow extend --session <providerSessionId> [--minutes 15]",
       "  pnpm -C executor run record -- [--provider ..] --flow stop --session <providerSessionId>",
-      "  pnpm -C executor run record -- [--provider ..] --flow resolve --lat <lat> --lng <lng>   # map only, pays nothing",
     ].join("\n"),
   );
   process.exit(1);
@@ -65,9 +64,9 @@ if (provider !== "parknyc" && provider !== "passport") usage();
 const flow = flags.flow;
 if (flow !== "start" && flow !== "extend" && flow !== "stop" && flow !== "resolve") usage();
 const hasCoords = flags.lat !== undefined && flags.lng !== undefined;
-if (flow === "start" && !flags.zone && !(provider === "passport" && hasCoords)) usage();
+// Every start types a zone number now — Passport included (no map).
+if (flow === "start" && !flags.zone) usage();
 if ((flow === "extend" || flow === "stop") && !flags.session) usage();
-if (flow === "resolve" && !hasCoords) usage();
 const minutes = Number(flags.minutes);
 
 if (!flags.yes && (flow === "start" || flow === "extend")) {
@@ -122,18 +121,17 @@ const resolveArgs = hasCoords
 try {
   let result: unknown;
   if (flow === "resolve") {
+    // The 2026-09-21 recording settled it: the ParkBoston web app has no
+    // map — signed-in navigation lands on Enter Zone. Zone numbers come
+    // from users (POST /zones/:zoneId/provider-number); ParkNYC's map runs
+    // only as the non-fatal cross-check inside --flow start.
     result =
-      client instanceof PassportClient
-        ? await client.resolveZoneFromMap(resolveArgs!)
-        : // ParkNYC's resolver is private (non-fatal cross-check); record it
-          // through a start that stops at the map by omitting the zone: not
-          // supported — use the passport resolve flow, or run start with
-          // --lat/--lng and read the zoneResolution off the result.
-          "resolve is a passport flow; for parknyc run --flow start with --lat/--lng";
+      "resolve is gone: ParkBoston has no map (2026-09-21 recording). " +
+      "Record --flow start with --zone; for parknyc add --lat/--lng and read zoneResolution.";
   } else if (flow === "start") {
     result =
       client instanceof PassportClient
-        ? await client.startSession(flags.zone ?? "", flags.plate, minutes, resolveArgs)
+        ? await client.startSession(flags.zone ?? "", flags.plate, minutes)
         : await client.startSession(
             flags.zone!,
             flags.plate,

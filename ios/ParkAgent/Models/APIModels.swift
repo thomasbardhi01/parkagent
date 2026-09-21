@@ -28,10 +28,24 @@ struct ParkedResponse: Codable, Sendable, Identifiable {
     /// Who runs this city's meters; nil when the zone is unknown or the
     /// city has no provider. `linked == false` routes into the link flow.
     var provider: ParkedProvider?
+    /// True → the zone's pay-by-app number is unknown (Boston: the open
+    /// data has none); the app collects it from the meter via
+    /// POST /zones/:zoneId/provider-number before paying.
+    var needsZoneNumber: Bool
     var parkedEventId: String
     var decisionId: String
 
     var id: String { parkedEventId }
+}
+
+/// POST /zones/:zoneId/provider-number — storing the number the driver
+/// read off the meter. Verified once two different users agree.
+struct ZoneNumberReportResponse: Codable, Sendable {
+    var ok: Bool
+    var zoneId: String
+    var number: String
+    var verified: Bool
+    var confirmations: Int
 }
 
 /// The provider block on /parked and /city responses.
@@ -49,7 +63,7 @@ struct Candidate: Codable, Sendable, Identifiable, Equatable {
     var zoneId: String
     /// "nyc" | "bos" — which city's meter system the zone belongs to.
     var city: String
-    var parknycZoneNumber: String
+    var providerZoneNumber: String
     var distanceM: Double
     var containsPoint: Bool
     var rateFirstHourUsd: Double
@@ -69,7 +83,7 @@ struct EnforcementHours: Codable, Sendable, Equatable {
 
 struct Quote: Codable, Sendable, Equatable {
     var zoneId: String
-    var parknycZoneNumber: String
+    var providerZoneNumber: String
     var stayMinutes: Int
     var chargedMinutes: Int
     var meterUsd: Double

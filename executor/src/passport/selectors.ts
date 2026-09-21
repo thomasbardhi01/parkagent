@@ -13,19 +13,22 @@
  * for another Passport city by swapping the base domain — everything below
  * takes the base URL from `passportUrls(base)`.
  *
- * Provenance of what's below — investigated headlessly on 2026-09-20:
- *  - VERIFIED live: the gated entry screen (Sign In / Register / Continue as
- *    Guest, ids #registerBtn/#guestContinueBtn), the T&C interstitial
- *    (#acceptTermsConditionsBtn), and the e-mail/phone verification screen
- *    (#regEmail/#verify_email) behind "Sign In" — the app is passwordless:
- *    it e-mails/texts a short code, then a 4-digit PIN.
- *  - FROM SHIPPED SOURCE, NOT YET WALKED (TODO-verify on the first
- *    `record` run): everything else. The app is a Backbone SPA whose view
- *    templates are static files (js/application/views/*.js); the ids below
- *    (#zoneNumber, #zi_zoneno, #zi_zoneName, #loginBtn, …) and the hash
- *    routes (Common.PageSlug) were read out of that source, so they are the
- *    app's real vocabulary — but the flows around them are drafted and MUST
- *    be verified against a signed-in recording before first real use.
+ * Provenance of what's below:
+ *  - VERIFIED live (headless, 2026-09-20): the gated entry screen (Sign In /
+ *    Register / Continue as Guest, ids #registerBtn/#guestContinueBtn), the
+ *    T&C interstitial (#acceptTermsConditionsBtn), and the e-mail/phone
+ *    verification screen (#regEmail/#verify_email) behind "Sign In" — the
+ *    app is passwordless: a short code, then a 4-digit PIN.
+ *  - VERIFIED from the signed-in recording (2026-09-21,
+ *    fixtures/passport-resolve-…, mirrored into
+ *    test/fixtures/pages/passport/zone-entry.html): the Enter Zone screen —
+ *    input #zoneNumber (type=tel, "Zone Number"), button #zoneNext
+ *    ("Continue"). That recording also established the app has NO map:
+ *    signed-in navigation lands on Enter Zone, so zone numbers must come
+ *    from us, not from a Find Parking map.
+ *  - FROM SHIPPED SOURCE, NOT YET WALKED (TODO-verify on the first paid
+ *    `record` run): everything after zone submit — the zone info panel
+ *    (#zi_*), vehicle, duration, confirm, session, and card screens.
  */
 
 import type { Locator, Page } from "playwright";
@@ -47,9 +50,8 @@ export function passportUrls(base: string = BOSTON_BASE_URL) {
     signIn: root,
     /** Passwordless login (e-mail/phone + code + PIN). */
     login: `${root}#login`,
-    /** The map: markers for every nearby zone (TODO-verify signed in). */
-    findParking: `${root}#findParking`,
-    /** Type-a-zone-number entry. */
+    /** Type-a-zone-number entry — where every ParkBoston session starts
+     * (the app has no map; #findParking lands here). */
     zoneEntry: `${root}#zoneEntry`,
     /** One zone's panel: name/street, zone number, rates, Select Zone. */
     zoneInfo: `${root}#zoneInfoPage`,
@@ -97,27 +99,13 @@ export const selectors = {
     pinInput: (page: Page): Locator => page.locator("#confirmPin"),
   },
 
-  // --------------------------- Zone entry (ids from zone-entry.js; TODO-verify)
+  // ---- Zone entry (VERIFIED, 2026-09-21 recording: zone-entry.html fixture)
   zone: {
     zoneNumberInput: (page: Page): Locator => page.locator("#zoneNumber"),
     nextButton: (page: Page): Locator => page.locator("#zoneNext"),
     /** Shown when the zone number is rejected (wording TODO-verify). */
     notFoundMessage: (page: Page): Locator =>
       page.getByText(/zone.*(not.*(found|recognized|valid)|invalid)/i),
-  },
-
-  // ------------------- Find Parking map (find-parking.js; TODO-verify).
-  // Google Maps markers; each marker carries its zone. Clicking one opens
-  // an info window whose zone-name link leads to the zone info page.
-  map: {
-    /** The rendered Google map. */
-    canvas: (page: Page): Locator => page.locator(".gm-style").first(),
-    /** Individual zone pins (Marker images inside the map pane). */
-    markers: (page: Page): Locator =>
-      page.locator('.gm-style img[src*="marker"], .gm-style img[src*="custom_markers"]'),
-    /** The info window's zone-name link (displayInfoWindow builds an <a>). */
-    infoWindowZoneLink: (page: Page): Locator =>
-      page.locator(".gm-style-iw a, .gm-style-iw-d a").first(),
   },
 
   // ------------------- Zone info panel (zone-info.js ids; TODO-verify text)

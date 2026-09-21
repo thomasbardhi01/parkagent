@@ -48,9 +48,14 @@ export { closeWarmBrowser, warmBrowser } from "./browser.js";
 export { ParkNycClient } from "./parknyc/client.js";
 export type { ParkNycClientOptions } from "./parknyc/client.js";
 export { PassportClient } from "./passport/client.js";
-export type { PassportClientOptions, ZoneResolveArgs } from "./passport/client.js";
-export { normalizeStreet, parseZoneInfoHtml, streetsMatch } from "./passport/parse.js";
-export type { ZonePanel } from "./passport/parse.js";
+export type { PassportClientOptions } from "./passport/client.js";
+export {
+  normalizeStreet,
+  parseZoneEntryHtml,
+  parseZoneInfoHtml,
+  streetsMatch,
+} from "./passport/parse.js";
+export type { ZoneEntryScreen, ZonePanel } from "./passport/parse.js";
 export type { ZoneResolution } from "./types.js";
 
 export interface ParkNycExecutorOptions {
@@ -145,23 +150,11 @@ export function createPassportExecutor(options: PassportExecutorOptions): Execut
   }
 
   return {
+    // No map in the ParkBoston web app (2026-09-21 recording): the zone
+    // number is required and typed into the Enter Zone screen; car
+    // coordinates are ignored here (they only feed ParkNYC's cross-check).
     startSession: (args: StartSessionArgs) =>
-      withClient((c) =>
-        c.startSession(
-          args.zoneNumber,
-          args.plate,
-          args.minutes,
-          // Boston zones have no stored number: the map resolution is the
-          // whole zone story, with the street as the mismatch guard.
-          args.carLat !== undefined && args.carLng !== undefined
-            ? {
-                carLat: args.carLat,
-                carLng: args.carLng,
-                expectedStreet: args.expectedStreet ?? null,
-              }
-            : undefined,
-        ),
-      ),
+      withClient((c) => c.startSession(args.zoneNumber, args.plate, args.minutes)),
     extendSession: (args: ExtendSessionArgs) =>
       withClient((c) => c.extendSession(args.providerSessionId, args.minutes)),
     stopSession: (args: StopSessionArgs) =>

@@ -242,8 +242,8 @@ final class AppModel {
             let autoExtendPolicy = policyResponse?.policy.autoExtend
             activeSession = ActiveSession(
                 sessionId: response.sessionId,
-                zoneNumber: candidate.parknycZoneNumber,
-                zoneLabel: "Zone \(candidate.parknycZoneNumber)",
+                zoneNumber: candidate.providerZoneNumber,
+                zoneLabel: "Zone \(candidate.providerZoneNumber)",
                 startedAt: AppClock.now,
                 expiresAt: response.expiresAt,
                 amountUsd: response.amountUsd,
@@ -265,6 +265,13 @@ final class AppModel {
     func dismissParkedSheet() {
         pendingParked = nil
         paymentError = nil
+    }
+
+    /// The needsZoneNumber flow: store the number the driver read off the
+    /// meter so this block (and everyone's next park here) is automatic.
+    /// False → the report didn't reach the server; nothing was charged.
+    func reportZoneNumber(zoneId: String, number: String) async -> Bool {
+        (try? await api.reportZoneNumber(zoneId: zoneId, number: number))?.ok == true
     }
 
     // MARK: - Session actions

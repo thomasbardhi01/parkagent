@@ -1,10 +1,9 @@
 /**
- * Map-based zone resolution, the pure parts: reading the Passport zone info
- * panel out of fixture HTML and the street-match rule that guards against
- * paying the wrong block (zone_mismatch). Fixture pages live in
- * test/fixtures/pages/passport/ — hand-built from the app's shipped view
- * template today, to be replaced by sanitized recordings (see the fixture's
- * own header). Never hits the provider.
+ * Passport screens, the pure parts: recognizing the Enter Zone screen (the
+ * app's only zone entry — recorded 2026-09-21, no map exists), reading the
+ * zone info panel out of fixture HTML, and the street-match rule. Fixture
+ * pages live in test/fixtures/pages/passport/; zone-entry.html is a
+ * sanitized slice of the real recording. Never hits the provider.
  */
 
 import { readFileSync, readdirSync } from "node:fs";
@@ -15,12 +14,34 @@ import { describe, expect, test } from "vitest";
 
 import {
   normalizeStreet,
+  parseZoneEntryHtml,
   parseZoneInfoHtml,
   parseZoneNumberText,
   streetsMatch,
 } from "../src/passport/parse.js";
 
 const pagesDir = fileURLToPath(new URL("./fixtures/pages/passport", import.meta.url));
+
+describe("the recorded Enter Zone screen (zone-entry.html)", () => {
+  const html = readFileSync(join(pagesDir, "zone-entry.html"), "utf8");
+
+  test("carries exactly the ids the client drives (#zoneNumber, #zoneNext)", () => {
+    const screen = parseZoneEntryHtml(html);
+    expect(screen).not.toBeNull();
+    expect(screen!.hasZoneNumberInput).toBe(true);
+    expect(screen!.hasContinueButton).toBe(true);
+    expect(screen!.label).toContain("Enter the zone number posted");
+  });
+
+  test("is not mistaken for the zone info panel", () => {
+    expect(parseZoneInfoHtml(html)).toBeNull();
+  });
+});
+
+test("parseZoneEntryHtml answers null on unrelated pages", () => {
+  expect(parseZoneEntryHtml("<div id='zi_zoneName'>Boylston St</div>")).toBeNull();
+  expect(parseZoneEntryHtml("<html><body>Sign In</body></html>")).toBeNull();
+});
 
 describe("zone info fixtures (zone-info--<number>--<street-slug>.html)", () => {
   const files = readdirSync(pagesDir).filter((f) => f.startsWith("zone-info--"));
@@ -67,7 +88,7 @@ test("streetsMatch: our abbreviated data vs the provider's spelled-out names", (
   expect(streetsMatch("BOYLSTON ST", "Boylston Street (Copley Square)")).toBe(true);
   expect(streetsMatch("COMMONWEALTH AV", "Commonwealth Avenue")).toBe(true);
   expect(streetsMatch("D ST", "D Street")).toBe(true);
-  // Disagreement → the caller refuses with zone_mismatch.
+  // Disagreement is cross-check evidence for the decision trail.
   expect(streetsMatch("NEWBURY ST", "Boylston Street")).toBe(false);
   expect(streetsMatch("BOYLSTON ST", "")).toBe(false);
   expect(streetsMatch("", "Boylston Street")).toBe(false);

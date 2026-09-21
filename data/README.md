@@ -77,10 +77,15 @@ Analyze Boston publishes **no ParkBoston zone layer** (a CKAN search finds
 only this dataset and a 2015 transactions CSV), and the one zone-ish field,
 `G_PASSPORT_ZONES`, is a per-meter id (588 distinct values on 587 meters),
 not the block zone number a driver enters — so **every Boston zone is loaded
-with an empty, flagged-unknown zone number** rather than a guess. At pay
-time the Passport executor resolves the number from ParkBoston's own map
-(nearest zone pin to the car), guarded by the zone's `street` — see
-executor/README.md "Passport / ParkBoston".
+with an empty, flagged-unknown zone number** rather than a guess. And
+ParkBoston's own web app has no map to resolve them from either (2026-09-21
+signed-in recording: after login it shows only an "Enter Zone" number
+field). Numbers come from drivers instead: the app collects the posted
+number on the first park at a block (`POST /zones/:zoneId/provider-number`,
+verified once two users agree), the loader preserves and rehydrates
+reported numbers across reloads, and the Passport executor types the
+stored number into Enter Zone — see executor/README.md
+"Passport / ParkBoston".
 
 The dataset's rate fields are stale coin increments ($0.25 almost
 everywhere), so **rates are applied from the City's published schedule**,

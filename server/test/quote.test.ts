@@ -8,7 +8,7 @@ test("90-minute stay walks the ladder: first hour + prorated second", () => {
   const quote = quoteZone(STEINWAY_A, DEFAULT_POLICY, new Date(MONDAY_2PM));
   expect(quote).toEqual({
     zoneId: "nyc-417371",
-    parknycZoneNumber: "417371",
+    providerZoneNumber: "417371",
     stayMinutes: 90,
     chargedMinutes: 90,
     meterUsd: 3.5,

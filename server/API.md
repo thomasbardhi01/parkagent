@@ -66,6 +66,8 @@ Response `200`:
     "status": "linked",      // linked | expired | unlinked
     "linked": true           // false → route the user into the link flow
   },
+  "needsZoneNumber": false,  // true → collect the posted zone number
+                             // (POST /zones/:zoneId/provider-number) first
   "parkedEventId": "…",
   "decisionId": "…"
 }
@@ -85,7 +87,7 @@ centerline:
 {
   "zoneId": "nyc-110436",
   "city": "nyc",               // "nyc" | "bos" — which city's meter system
-  "parknycZoneNumber": "110436",
+  "providerZoneNumber": "110436",
   "distanceM": 9.3,            // meters, point → centerline
   "containsPoint": true,       // fix landed inside the buffered lane polygon
   "rateFirstHourUsd": 5.0,
@@ -97,10 +99,15 @@ centerline:
 ```
 
 Boston (`city: "bos"`) candidates price with a flat hourly rate (both rate
-fields equal) and `parknycZoneNumber` is `""` — Analyze Boston publishes no
-ParkBoston zone numbers, so they are flagged unknown rather than guessed
-(see data/README.md). At pay time the Passport executor resolves the zone
-number from ParkBoston's own map instead (see `POST /session/start`).
+fields equal), and `providerZoneNumber` starts `""` — Analyze Boston
+publishes no ParkBoston zone numbers, and ParkBoston's own web app has no
+map to resolve them from (2026-09-21 recording: after login it shows only
+an "Enter Zone" number field). Numbers come from drivers instead: the
+first park at a block returns `needsZoneNumber: true`, the app collects
+the posted number (`POST /zones/:zoneId/provider-number`), and every later
+park at that block is automatic. (`providerZoneNumber` is the renamed
+`parknycZoneNumber` — the `zones`/`sessions` columns are now
+`provider_zone_number`.)
 
 ### Quote
 
@@ -109,7 +116,7 @@ Cost of the default stay in a zone, priced only over enforced minutes:
 ```json
 {
   "zoneId": "nyc-110436",
-  "parknycZoneNumber": "110436",
+  "providerZoneNumber": "110436",
   "stayMinutes": 90,        // min(policy.default_stay_minutes, zone max stay)
   "chargedMinutes": 90,     // minutes of the stay inside enforcement hours
   "meterUsd": 7.13,         // rate ladder applied to chargedMinutes
@@ -146,7 +153,12 @@ agree.
 | `rate_above_ceiling` | ladder max > `auto_pay_max_rate_per_hour` | `confirm` | nearest only |
 | `session_cap_exceeded` | `totalUsd` > `session_cap_usd` | `confirm` | nearest only |
 | `daily_cap_exceeded` | today's session spend + `totalUsd` > `daily_cap_usd` | `confirm` | nearest only |
+| `needs_zone_number` | would auto-pay, but the zone's pay-by-app number is unknown (Boston, unreported block) | `confirm` | nearest only |
 | `auto_pay_ok` | none of the above | `pay` | nearest only |
+
+`needsZoneNumber` rides on every response (true whenever a payable
+provider-covered zone has no stored number, whatever the rule); only an
+`auto_pay_ok` outcome is downgraded to `confirm` by it.
 
 Every `/parked` call writes a `decisions` row: `inputs` (request body,
 pricing time and its source, radius, candidate zone ids, effective dry run,
@@ -185,6 +197,27 @@ not there yet"). Errors: `400` bad query, `401` bad key.
 
 ---
 
+## POST /zones/:zoneId/provider-number
+
+The zone number the driver read off the meter — how Boston blocks get
+their ParkBoston numbers (the open data has none; the app has no map).
+`{"number": "81234", "source": "user"}` (`source` also takes `"scan"` for
+a future sticker scan; `number` is 3–10 digits).
+
+One report per (zone, user) — re-reporting replaces yours. The zone's
+stored number becomes the latest report; it turns **verified** once two
+different users agree on it, and a conflicting later report replaces the
+number and drops verified until someone confirms the new one. Reports
+survive `load:zones` reloads (no FK; the loader keeps non-empty numbers
+and rehydrates re-created rows).
+
+`200 {"ok": true, "zoneId": …, "number": "81234", "verified": false,
+"confirmations": 1, "decisionId": …}` — audited with a decisions row
+(kind `zone_number_report`) since it changes what the executor will type
+at the provider. `400` bad number, `404` unknown zone.
+
+---
+
 ## POST /session/start
 
 The money-moving path. Executes through the executor protocol
@@ -198,20 +231,19 @@ cookie state is decrypted per call (`PROVIDER_STATE_KEY`) into a fresh
 browser context on one warm shared Chromium process. No linked account, no
 state key, or an unparseable state → the call fails typed
 (`auth_expired`/`unknown`), it never falls back to someone else's session.
-Executor error codes: `auth_expired`, `zone_not_found`, `zone_mismatch`,
+Executor error codes: `auth_expired`, `zone_not_found`,
 `payment_declined`, `ui_changed`, `network`, `unknown`.
 
-**Map-based zone resolution.** The start call carries the parked event's
-fix. Boston zones store no zone number, so the Passport executor resolves
-it from ParkBoston's own map (nearest pin to the car; the panel's zone
-number and street), refusing with `zone_mismatch` when the panel's street
-disagrees with the zone row's `street`. The ParkNYC executor runs the same
-resolution as a **non-fatal cross-check** against the stored zone number.
-Either way, both sides are recorded on the `start_ok` decision outcome as
-`zoneResolution` (`{mapZoneNumber, mapStreet, storedZoneNumber,
-expectedStreet, matched}`), and a Boston session's resolved number is
-backfilled onto `sessions.parknyc_zone_number` so pushes and deep links
-carry it.
+**Zone numbers.** Every start types a zone number at the provider, so a
+provider-covered zone whose `provider_zone_number` is still `""` (a Boston
+block nobody has reported yet) refuses `409 {"error":
+"needs_zone_number", "zoneId": …}` before any session row or executor call
+— the app collects the number first (`POST /zones/:zoneId/provider-number`).
+The ParkNYC executor still runs its **non-fatal map cross-check** against
+the stored number when the start carries the parked event's fix: both
+sides land on the `start_ok` decision outcome as `zoneResolution`
+(`{mapZoneNumber, mapStreet, storedZoneNumber, expectedStreet, matched}`).
+Passport gets no such check — ParkBoston has no map.
 
 The session row stores the zone's `city` at start; extension pricing (the
 per-city fee) and the extension worker's ticket-risk math read it from the
@@ -247,8 +279,10 @@ Other errors: `404` unknown/foreign `parkedEventId` or `zoneId`, `409
 {"error": "provider_not_linked", "provider": "parknyc", "displayName":
 "ParkNYC"}` when the zone's city has a provider and the caller has no
 account with status `linked` there (dry run included — the executor pays
-through the user's own account now, see "Provider accounts"), `502
-{"error": "executor_failed", "code": …}` — the session row is marked
+through the user's own account now, see "Provider accounts"), `409
+{"error": "needs_zone_number", "zoneId": …}` when the zone's pay-by-app
+number is still unreported (see `POST /zones/:zoneId/provider-number`),
+`502 {"error": "executor_failed", "code": …}` — the session row is marked
 `failed` and a `payment_failed` push is sent. An `auth_expired` executor
 failure also flips the provider account to `expired` and sends a
 `provider_relink` push.

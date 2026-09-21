@@ -15,6 +15,15 @@ struct LiveAPI: APIClient {
         try await send("parked", method: "POST", body: request)
     }
 
+    func reportZoneNumber(zoneId: String, number: String) async throws -> ZoneNumberReportResponse {
+        let escaped = zoneId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? zoneId
+        return try await send(
+            "zones/\(escaped)/provider-number",
+            method: "POST",
+            body: ["number": number]
+        )
+    }
+
     func policy() async throws -> PolicyResponse {
         try await send("policy")
     }

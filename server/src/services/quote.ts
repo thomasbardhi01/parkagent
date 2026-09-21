@@ -17,7 +17,7 @@ export interface ZoneTerms {
   zoneId: string;
   /** "nyc" | "bos"; absent means pre-city data and prices as NYC. */
   city?: string;
-  parknycZoneNumber: string;
+  providerZoneNumber: string;
   rateFirstHourUsd: number;
   rateAdditionalHourUsd: number;
   maxStayMinutes: number | null;
@@ -26,7 +26,7 @@ export interface ZoneTerms {
 
 export interface Quote {
   zoneId: string;
-  parknycZoneNumber: string;
+  providerZoneNumber: string;
   stayMinutes: number;
   chargedMinutes: number;
   meterUsd: number;
@@ -97,7 +97,7 @@ export function quoteZone(zone: ZoneTerms, policy: Policy, at: Date): Quote {
   const price = priceStay(zone, policy, at, stayMinutes);
   return {
     zoneId: zone.zoneId,
-    parknycZoneNumber: zone.parknycZoneNumber,
+    providerZoneNumber: zone.providerZoneNumber,
     ...price,
   };
 }

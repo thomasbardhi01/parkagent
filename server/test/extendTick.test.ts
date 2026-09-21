@@ -27,7 +27,7 @@ function activeSession(state: FakeDbState, overrides: Partial<SessionRow> = {}):
     status: "active",
     dryRun: true,
     zoneId: "nyc-417371",
-    parknycZoneNumber: "417371",
+    providerZoneNumber: "417371",
     startedAt: T("13:00"),
     expiresAt: T("14:30"),
     createdAt: T("13:00"),

@@ -5,6 +5,8 @@ import Foundation
 /// outside Networking/ should construct URLRequests.
 protocol APIClient: Sendable {
     func parked(_ request: ParkedRequest) async throws -> ParkedResponse
+    /// The zone number the driver read off the meter (needsZoneNumber flow).
+    func reportZoneNumber(zoneId: String, number: String) async throws -> ZoneNumberReportResponse
     func policy() async throws -> PolicyResponse
     func startSession(_ request: SessionStartRequest) async throws -> SessionStartResponse
     func stopSession(sessionId: String) async throws -> SessionStopResponse
@@ -80,6 +82,7 @@ enum APIError: Error, LocalizedError {
         case "funding_unavailable": "The card's funding account is not ready yet."
         case "no_card": "No card is set up yet."
         case "provider_not_linked": "This city's parking account is not linked yet."
+        case "needs_zone_number": "This block's zone number is not known yet — read it off the meter."
         case "verification_failed": "The sign-in did not stick. Try signing in again."
         case "no_session_cookies": "No sign-in was captured. Try signing in again."
         case "consent_required": "Card setup needs your consent first."

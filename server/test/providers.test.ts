@@ -421,7 +421,7 @@ describe("POST /providers/:provider/topup", () => {
 describe("POST /session/start without a linked provider", () => {
   const STEINWAY_ZONE: ZoneTermsRow = {
     zoneId: "nyc-417371",
-    parknycZoneNumber: "417371",
+    providerZoneNumber: "417371",
     rateFirstHour: 2.0,
     rateAdditionalHour: 3.0,
     maxStayMinutes: 120,

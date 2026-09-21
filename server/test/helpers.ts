@@ -17,6 +17,7 @@ import type {
   ProviderAccountRow,
   SessionRow,
   SessionWhere,
+  ZoneNumberReportRow,
   ZoneTermsRow,
 } from "../src/db.js";
 import { makeStateCrypto } from "../src/services/crypto.js";
@@ -69,7 +70,7 @@ export const HOURS_MON_SAT = [
 export const BROADWAY_A: Candidate = {
   zoneId: "nyc-110436",
   city: "nyc",
-  parknycZoneNumber: "110436",
+  providerZoneNumber: "110436",
   rateFirstHourUsd: 5.0,
   rateAdditionalHourUsd: 8.25,
   maxStayMinutes: 120,
@@ -80,7 +81,7 @@ export const BROADWAY_A: Candidate = {
 export const BROADWAY_B: Candidate = {
   ...BROADWAY_A,
   zoneId: "nyc-113828",
-  parknycZoneNumber: "113828",
+  providerZoneNumber: "113828",
   distanceM: 10.2,
 };
 
@@ -88,7 +89,7 @@ export const BROADWAY_B: Candidate = {
 export const MOTT_A: Candidate = {
   zoneId: "nyc-107114",
   city: "nyc",
-  parknycZoneNumber: "107114",
+  providerZoneNumber: "107114",
   rateFirstHourUsd: 5.0,
   rateAdditionalHourUsd: 8.25,
   maxStayMinutes: 120,
@@ -99,7 +100,7 @@ export const MOTT_A: Candidate = {
 export const MOTT_B: Candidate = {
   ...MOTT_A,
   zoneId: "nyc-101369",
-  parknycZoneNumber: "101369",
+  providerZoneNumber: "101369",
   maxStayMinutes: 300,
   distanceM: 11.4,
   containsPoint: false,
@@ -109,7 +110,7 @@ export const MOTT_B: Candidate = {
 export const STEINWAY_A: Candidate = {
   zoneId: "nyc-417371",
   city: "nyc",
-  parknycZoneNumber: "417371",
+  providerZoneNumber: "417371",
   rateFirstHourUsd: 2.0,
   rateAdditionalHourUsd: 3.0,
   maxStayMinutes: 120,
@@ -120,7 +121,7 @@ export const STEINWAY_A: Candidate = {
 export const STEINWAY_B: Candidate = {
   ...STEINWAY_A,
   zoneId: "nyc-425957",
-  parknycZoneNumber: "425957",
+  providerZoneNumber: "425957",
   distanceM: 9.8,
 };
 
@@ -130,7 +131,7 @@ export const STEINWAY_B: Candidate = {
 export const BOYLSTON_BOS: Candidate = {
   zoneId: "bos-boylston-st-e-d-819305",
   city: "bos",
-  parknycZoneNumber: "",
+  providerZoneNumber: "",
   rateFirstHourUsd: 3.75,
   rateAdditionalHourUsd: 3.75,
   maxStayMinutes: 120,
@@ -240,6 +241,7 @@ export interface FakeDbState {
   issuingCardholders: { userId: string; name: string }[];
   issuingAuthorizations: FakeIssuingAuthorizationRow[];
   providerAccounts: ProviderAccountRow[];
+  zoneNumberReports: ZoneNumberReportRow[];
 }
 
 function emptySession(id: string): SessionRow {
@@ -249,7 +251,7 @@ function emptySession(id: string): SessionRow {
     vehicleId: null,
     zoneId: "",
     city: "nyc",
-    parknycZoneNumber: "",
+    providerZoneNumber: "",
     status: "pending",
     dryRun: true,
     startedAt: null,
@@ -312,6 +314,7 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
     issuingCardholders: [],
     issuingAuthorizations: [],
     providerAccounts: [],
+    zoneNumberReports: [],
   };
   const cardholderFor = (userId: string) => {
     const explicit = state.issuingCardholders.find((c) => c.userId === userId);
@@ -343,6 +346,37 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
     },
     zone: {
       findUnique: async ({ where }) => state.zones.find((z) => z.zoneId === where.zoneId) ?? null,
+      update: async ({ where, data }) => {
+        const zone = state.zones.find((z) => z.zoneId === where.zoneId);
+        if (!zone) throw new Error(`fake zone.update: no zone ${where.zoneId}`);
+        if (data.providerZoneNumber !== undefined)
+          zone.providerZoneNumber = data.providerZoneNumber;
+        if (data.providerZoneNumberVerified !== undefined) {
+          zone.providerZoneNumberVerified = data.providerZoneNumberVerified;
+        }
+        return zone;
+      },
+    },
+    zoneNumberReport: {
+      findMany: async ({ where }) =>
+        state.zoneNumberReports.filter((r) => r.zoneId === where.zoneId),
+      upsert: async ({ where, create, update }) => {
+        const existing = state.zoneNumberReports.find(
+          (r) => r.zoneId === where.zoneId_userId.zoneId && r.userId === where.zoneId_userId.userId,
+        );
+        if (existing) {
+          existing.number = update.number;
+          existing.source = update.source;
+          return existing;
+        }
+        const row = {
+          id: `znr${state.zoneNumberReports.length + 1}`,
+          createdAt: new Date(MONDAY_2PM),
+          ...create,
+        };
+        state.zoneNumberReports.push(row);
+        return row;
+      },
     },
     parkedEvent: {
       create: async ({ data }) => {

@@ -339,7 +339,7 @@ export function makeExtender(deps: ExtenderDeps): Extender {
       await deps.sendPush(
         session.userId,
         sessionExpiringPush({
-          zoneNumber: session.parknycZoneNumber,
+          zoneNumber: session.providerZoneNumber,
           minutesLeft: Math.max(0, Math.round(remainingMin)),
           reason: expiringReason,
         }),

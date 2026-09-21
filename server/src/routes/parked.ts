@@ -23,7 +23,7 @@ function candidatePayload(candidate: Candidate, quote: Quote) {
   return {
     zoneId: candidate.zoneId,
     city: candidate.city,
-    parknycZoneNumber: candidate.parknycZoneNumber,
+    providerZoneNumber: candidate.providerZoneNumber,
     distanceM: Math.round(candidate.distanceM * 10) / 10,
     containsPoint: candidate.containsPoint,
     rateFirstHourUsd: candidate.rateFirstHourUsd,
@@ -102,6 +102,20 @@ export function registerParked(app: FastifyInstance, deps: AppDeps): void {
       }
     }
 
+    // A provider-covered zone whose pay-by-app number we don't know yet
+    // (Boston: user reports fill them in) can't be paid silently — the app
+    // asks the driver to read the number off the meter first. A free
+    // period still needs no payment, so "ignore" stands.
+    const needsZoneNumber =
+      resolution.kind !== "unknown" &&
+      action !== "ignore" &&
+      resolution.nearest.providerZoneNumber === "" &&
+      providerForCity(cityForZone(resolution.nearest.zoneId)) !== null;
+    if (needsZoneNumber && action === "pay") {
+      action = "confirm";
+      rule = "needs_zone_number";
+    }
+
     const dryRun = deps.policy.effectiveDryRun();
     const parkedEvent = await deps.db.parkedEvent.create({
       data: {
@@ -126,7 +140,7 @@ export function registerParked(app: FastifyInstance, deps: AppDeps): void {
           policyHash: deps.policy.hash(),
         },
         rule,
-        outcome: { action, quote, candidates },
+        outcome: { action, quote, candidates, needsZoneNumber },
         userId: user.id,
         parkedEventId: parkedEvent.id,
       },
@@ -158,6 +172,9 @@ export function registerParked(app: FastifyInstance, deps: AppDeps): void {
       quote,
       rule,
       dryRun,
+      // True → the app collects the posted zone number
+      // (POST /zones/:zoneId/provider-number) before offering to pay.
+      needsZoneNumber,
       provider,
       parkedEventId: parkedEvent.id,
       decisionId: decision.id,

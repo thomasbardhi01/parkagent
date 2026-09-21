@@ -9,12 +9,27 @@ struct ParkingDetectedSheet: View {
 
     @State private var selectedZoneId: String?
     @State private var manualZoneNumber = ""
+    /// Presents the link flow from inside this sheet; set by the "Link
+    /// <provider>" primary action or a provider_not_linked refusal.
+    @State private var linkingProviderId: String?
+    /// Set when the link flow finishes so Pay comes back without waiting
+    /// for a fresh /parked (whose provider block is now stale).
+    @State private var linkedInSheet = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.unit) {
             if let error = model.paymentError {
                 if case .notImplemented = error {
                     SessionsNotBuiltView(dismiss: { model.dismissParkedSheet() })
+                } else if case .refused(let code) = error, code == "provider_not_linked" {
+                    // Same routing as an unlinked provider block: the fix
+                    // is linking, not retrying the payment.
+                    ProviderNotLinkedView(providerName: providerName) {
+                        model.paymentError = nil
+                        linkingProviderId = parked.provider?.id ?? "parknyc"
+                    } dismiss: {
+                        model.dismissParkedSheet()
+                    }
                 } else {
                     PaymentFailedView(
                         retry: { Task { await paySelected() } },
@@ -29,8 +44,28 @@ struct ParkingDetectedSheet: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(Color.appBackground)
         .interactiveDismissDisabled(model.isPaying)
+        .fullScreenCover(
+            isPresented: Binding(
+                get: { linkingProviderId != nil },
+                set: { if !$0 { linkingProviderId = nil } }
+            )
+        ) {
+            ProviderLinkFlowView(providerId: linkingProviderId ?? "parknyc") {
+                linkedInSheet = true
+            }
+        }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("parkedSheet.view")
+    }
+
+    private var providerName: String {
+        parked.provider?.displayName ?? "your parking account"
+    }
+
+    /// The provider needs linking before Pay makes sense.
+    private var needsLink: Bool {
+        guard let provider = parked.provider else { return false }
+        return !provider.linked && !linkedInSheet
     }
 
     @ViewBuilder
@@ -178,6 +213,12 @@ struct ParkingDetectedSheet: View {
             Text("\(Format.minutes(quote.stayMinutes)) · \(Format.money(quote.meterUsd)) meter + \(Format.money(quote.feeUsd)) fee")
                 .font(.captionText)
                 .foregroundStyle(Color.textSecondary)
+            if let provider = parked.provider {
+                Text("Pays through \(provider.displayName)")
+                    .font(.captionText)
+                    .foregroundStyle(Color.textSecondary)
+                    .accessibilityIdentifier("parkedSheet.provider")
+            }
             if parked.dryRun {
                 Text("Dry run — no money moves")
                     .font(.captionTextSemibold)
@@ -190,12 +231,21 @@ struct ParkingDetectedSheet: View {
 
     @ViewBuilder
     private func payButtons(for candidate: Candidate) -> some View {
-        Button("Pay \(Format.money(candidate.quote.totalUsd)) for \(Format.minutes(candidate.quote.stayMinutes))") {
-            Task { await model.pay(candidate: candidate) }
+        if needsLink {
+            // Paying would 409 — the primary action becomes linking.
+            Button("Link \(providerName)") {
+                linkingProviderId = parked.provider?.id
+            }
+            .buttonStyle(.primary)
+            .accessibilityIdentifier("parkedSheet.linkProviderButton")
+        } else {
+            Button("Pay \(Format.money(candidate.quote.totalUsd)) for \(Format.minutes(candidate.quote.stayMinutes))") {
+                Task { await model.pay(candidate: candidate) }
+            }
+            .buttonStyle(.primary)
+            .disabled(model.isPaying)
+            .accessibilityIdentifier("parkedSheet.payButton")
         }
-        .buttonStyle(.primary)
-        .disabled(model.isPaying)
-        .accessibilityIdentifier("parkedSheet.payButton")
         dismissButton
     }
 
@@ -257,6 +307,39 @@ struct SessionsNotBuiltView: View {
                 .buttonStyle(.secondary)
         }
         .frame(maxWidth: .infinity)
+    }
+}
+
+/// POST /session/start answered provider_not_linked: nothing was charged,
+/// and the fix is linking the account, not retrying.
+struct ProviderNotLinkedView: View {
+    let providerName: String
+    let link: () -> Void
+    let dismiss: () -> Void
+
+    var body: some View {
+        VStack(spacing: Spacing.unit) {
+            Spacer(minLength: Spacing.unit)
+            Image(systemName: "link.badge.plus")
+                .font(.system(size: 44))
+                .foregroundStyle(Color.warningGold)
+            Text("\(providerName) isn't linked")
+                .font(.bodyTextSemibold)
+                .foregroundStyle(Color.textPrimary)
+            Text("Paying here goes through your own \(providerName) account. Link it once and this works automatically.")
+                .font(.secondaryText)
+                .foregroundStyle(Color.textSecondary)
+                .multilineTextAlignment(.center)
+            Spacer(minLength: 0)
+            Button("Link \(providerName)", action: link)
+                .buttonStyle(.primary)
+                .accessibilityIdentifier("parkedSheet.linkProviderButton")
+            Button("Not now", action: dismiss)
+                .buttonStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("parkedSheet.notLinked")
     }
 }
 

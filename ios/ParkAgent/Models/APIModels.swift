@@ -25,14 +25,30 @@ struct ParkedResponse: Codable, Sendable, Identifiable {
     var quote: Quote?
     var rule: String
     var dryRun: Bool
+    /// Who runs this city's meters; nil when the zone is unknown or the
+    /// city has no provider. `linked == false` routes into the link flow.
+    var provider: ParkedProvider?
     var parkedEventId: String
     var decisionId: String
 
     var id: String { parkedEventId }
 }
 
+/// The provider block on /parked and /city responses.
+struct ParkedProvider: Codable, Sendable, Equatable {
+    var id: String
+    var city: String
+    var displayName: String
+    var loginUrl: String
+    /// "linked" | "expired" | "unlinked"
+    var status: String
+    var linked: Bool
+}
+
 struct Candidate: Codable, Sendable, Identifiable, Equatable {
     var zoneId: String
+    /// "nyc" | "bos" — which city's meter system the zone belongs to.
+    var city: String
     var parknycZoneNumber: String
     var distanceM: Double
     var containsPoint: Bool
@@ -63,6 +79,9 @@ struct Quote: Codable, Sendable, Equatable {
 
 struct Policy: Codable, Sendable {
     var dryRun: Bool
+    /// Carried so PUT /policy (a full replacement) round-trips the server's
+    /// shadow-mode rehearsal switch instead of silently turning it off.
+    var shadowMode: Bool?
     var sessionCapUsd: Double
     var dailyCapUsd: Double
     var autoPayMaxRatePerHour: Double
@@ -71,9 +90,13 @@ struct Policy: Codable, Sendable {
     var autoExtend: AutoExtendPolicy
     var respectEnforcementHours: Bool
     var ticketCostUsd: Double
+    /// Carried so PUT /policy (a full replacement) round-trips the per-city
+    /// fees the onboarding budget step doesn't touch.
+    var cityOverrides: [String: CityPolicyOverride]?
 
     enum CodingKeys: String, CodingKey {
         case dryRun = "dry_run"
+        case shadowMode = "shadow_mode"
         case sessionCapUsd = "session_cap_usd"
         case dailyCapUsd = "daily_cap_usd"
         case autoPayMaxRatePerHour = "auto_pay_max_rate_per_hour"
@@ -81,6 +104,17 @@ struct Policy: Codable, Sendable {
         case parknycFeeUsd = "parknyc_fee_usd"
         case autoExtend = "auto_extend"
         case respectEnforcementHours = "respect_enforcement_hours"
+        case ticketCostUsd = "ticket_cost_usd"
+        case cityOverrides = "city_overrides"
+    }
+}
+
+struct CityPolicyOverride: Codable, Sendable {
+    var parkingFeeUsd: Double?
+    var ticketCostUsd: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case parkingFeeUsd = "parking_fee_usd"
         case ticketCostUsd = "ticket_cost_usd"
     }
 }
@@ -215,6 +249,111 @@ struct RevealedCardDetails: Sendable, Equatable {
     var cvc: String
     var expMonth: Int
     var expYear: Int
+}
+
+// MARK: - City & providers (server/API.md "GET /city", "Provider accounts")
+
+struct CityDetectResponse: Codable, Sendable {
+    /// Zone-id prefix ("nyc" | "bos"), or nil when nowhere near a metered zone.
+    var city: String?
+    var cityDisplayName: String?
+    var provider: ParkedProvider?
+}
+
+struct ProvidersStatusResponse: Codable, Sendable {
+    var providers: [ProviderAccountStatus]
+}
+
+/// One registry provider merged with the caller's account (GET /providers/status).
+struct ProviderAccountStatus: Codable, Sendable, Identifiable, Equatable {
+    var id: String
+    var city: String
+    var cityDisplayName: String
+    var displayName: String
+    var loginUrl: String
+    /// The registry's session domains — the link web view watches these to
+    /// know when the user has signed in before capturing cookies.
+    var cookieDomains: [String]
+    /// "linked" | "expired" | "unlinked"
+    var status: String
+    var linkedAt: Date?
+    var lastVerifiedAt: Date?
+    var cardAdded: Bool
+    var walletBalanceCents: Int?
+
+    var isLinked: Bool { status == "linked" }
+}
+
+/// One cookie captured from the link web view, shaped like the server's
+/// cookie schema (a Playwright storage-state cookie).
+struct ProviderCookie: Codable, Sendable, Equatable {
+    var name: String
+    var value: String
+    var domain: String
+    var path: String?
+    var expires: Double?
+    var httpOnly: Bool?
+    var secure: Bool?
+    var sameSite: String?
+}
+
+struct ProviderLinkRequest: Codable, Sendable {
+    var cookies: [ProviderCookie]
+    var setUpCard: Bool
+    var consentReplacePaymentMethod: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case cookies
+        case setUpCard = "set_up_card"
+        case consentReplacePaymentMethod = "consent_replace_payment_method"
+    }
+}
+
+struct ProviderLinkResponse: Codable, Sendable {
+    var status: String
+    var walletBalanceCents: Int?
+    /// Non-nil when card setup was chained; poll link-status with it.
+    var jobId: String?
+}
+
+struct LinkStatusResponse: Codable, Sendable {
+    /// "linking" | "adding_card" | "done" | "failed"
+    var phase: String
+    /// Executor code, "unsupported_card_brand", or "no_card" on failure.
+    var reason: String?
+    /// Whether re-running setup-card as-is is worth it.
+    var retrySafe: Bool?
+    var dryRun: Bool?
+}
+
+struct SetupCardResponse: Codable, Sendable {
+    var ok: Bool
+    var dryRun: Bool?
+}
+
+struct UnlinkResponse: Codable, Sendable {
+    var ok: Bool
+    var cardRemoval: String
+    var cardFrozen: Bool
+}
+
+struct CardPrepareResponse: Codable, Sendable {
+    var created: Bool
+    var card: PreparedCard
+
+    struct PreparedCard: Codable, Sendable {
+        var stripeCardId: String
+        var last4: String
+        var status: String
+    }
+}
+
+/// POST /card/funding/topup-intent — step 1 of the Apple Pay top-up.
+struct TopupIntentResponse: Codable, Sendable {
+    var clientSecret: String
+    var paymentIntentId: String?
+    /// True → no PaymentIntent exists; nothing can ever charge.
+    var dryRun: Bool
 }
 
 struct LocationReport: Codable, Sendable {

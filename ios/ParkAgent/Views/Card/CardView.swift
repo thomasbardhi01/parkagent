@@ -8,6 +8,7 @@ struct CardView: View {
     @Environment(AppModel.self) private var model
     @State private var card = CardModel()
     @State private var fundingDirection: FundingDirection?
+    @State private var showingAddMoney = false
     @State private var confirmingFreeze = false
 
     var body: some View {
@@ -50,6 +51,13 @@ struct CardView: View {
             FundingSheet(direction: direction)
                 .environment(card)
                 .presentationDetents([.medium, .large])
+        }
+        // Same Apple Pay sheet as onboarding's add-money step.
+        .sheet(isPresented: $showingAddMoney) {
+            AddMoneySheet {
+                Task { await card.load(api: model.api) }
+            }
+            .presentationDetents([.medium, .large])
         }
         .alert(
             "Something went wrong",
@@ -184,7 +192,7 @@ struct CardView: View {
                 tint: .actionCoralLink,
                 identifier: "card.addMoneyButton"
             ) {
-                fundingDirection = .topup
+                showingAddMoney = true
             }
             CardActionButton(
                 icon: "arrow.down.circle",

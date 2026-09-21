@@ -36,6 +36,64 @@ final class AppModel {
     var history: [SessionRecord] = []
     var todaySpendUsd: Double = 0
 
+    /// Presents the provider link flow outside onboarding (parked-sheet
+    /// routing, Settings re-link, the provider_relink push).
+    var providerLinkPrompt: ProviderLinkPrompt?
+
+    // MARK: - City
+
+    /// City key from the last successful GET /city (or the city of the last
+    /// parked candidate). Persisted so the Home chip survives a relaunch.
+    var detectedCity: String? {
+        didSet { UserDefaults.standard.set(detectedCity, forKey: "detectedCity") }
+    }
+
+    /// Settings override: "auto" follows detection; "nyc"/"bos"/"other" pin it.
+    var cityOverride: String = "auto" {
+        didSet { UserDefaults.standard.set(cityOverride, forKey: "cityOverride") }
+    }
+
+    var effectiveCity: String? {
+        cityOverride == "auto" ? detectedCity : cityOverride
+    }
+
+    /// What the Home chip shows; nil when the city is unknown or unsupported.
+    var cityDisplayName: String? {
+        CityCatalog.displayName(effectiveCity)
+    }
+
+    /// One-shot city detection against the server; remembers the answer.
+    func detectCity(lat: Double, lng: Double) async -> CityDetectResponse? {
+        guard let response = try? await api.detectCity(lat: lat, lng: lng) else { return nil }
+        if let city = response.city { detectedCity = city }
+        return response
+    }
+
+    /// Onboarding's "Your city": detect from where the phone is now. The
+    /// mock skips CoreLocation so the simulator and UI tests stay
+    /// deterministic; nil means "couldn't tell — offer the manual choice".
+    func detectCityFromCurrentLocation() async -> CityDetectResponse? {
+        let coordinate = useMockAPI ? Self.fixtureCoordinate : await OneShotLocation.request()
+        guard let coordinate else { return nil }
+        return await detectCity(lat: coordinate.latitude, lng: coordinate.longitude)
+    }
+
+    /// Onboarding's budget step: PUT the caps and default stay back as a
+    /// full policy replacement. False means the save failed (the step lets
+    /// the user retry or continue with the server's values).
+    func saveBudget(sessionCapUsd: Double, dailyCapUsd: Double, defaultStayMinutes: Int) async -> Bool {
+        guard var policy = policyResponse?.policy else { return false }
+        policy.sessionCapUsd = sessionCapUsd
+        policy.dailyCapUsd = dailyCapUsd
+        policy.defaultStayMinutes = defaultStayMinutes
+        do {
+            policyResponse = try await api.updatePolicy(policy)
+            return true
+        } catch {
+            return false
+        }
+    }
+
     /// Persisted so the pin survives a relaunch while the car is parked.
     var carCoordinate: CLLocationCoordinate2D? {
         didSet {
@@ -72,6 +130,8 @@ final class AppModel {
         if mock { seedMockHistory() }
 
         let defaults = UserDefaults.standard
+        detectedCity = defaults.string(forKey: "detectedCity")
+        cityOverride = defaults.string(forKey: "cityOverride") ?? "auto"
         if let lat = defaults.object(forKey: "carLat") as? Double,
            let lng = defaults.object(forKey: "carLng") as? Double {
             carCoordinate = CLLocationCoordinate2D(latitude: lat, longitude: lng)
@@ -107,6 +167,10 @@ final class AppModel {
         }
         detector.start()
         PushManager.shared.activate(api: api)
+        // A provider_relink push routes straight into the link flow.
+        PushManager.shared.onProviderRelink = { [weak self] providerId in
+            self?.providerLinkPrompt = ProviderLinkPrompt(providerId: providerId)
+        }
         if activeSession != nil {
             reporter.start(api: api, carCoordinate: carCoordinate)
         }
@@ -140,6 +204,10 @@ final class AppModel {
             carCoordinate = coordinate
             paymentError = nil
             pendingParked = response
+            // A real park is the freshest city signal there is.
+            if let city = response.candidates.first?.city {
+                detectedCity = city
+            }
         } catch {
             paymentError = error as? APIError ?? .transport(error)
         }

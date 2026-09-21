@@ -73,8 +73,12 @@ export function registerProviders(app: FastifyInstance, deps: AppDeps): void {
         return {
           id: p.id,
           city: p.city,
+          cityDisplayName: p.cityDisplayName,
           displayName: p.displayName,
           loginUrl: p.loginUrl,
+          // The app's link web view watches these domains to know when the
+          // user has actually signed in before capturing cookies.
+          cookieDomains: p.cookieDomains,
           status: account?.status ?? "unlinked",
           linkedAt: account?.linkedAt?.toISOString() ?? null,
           lastVerifiedAt: account?.lastVerifiedAt?.toISOString() ?? null,

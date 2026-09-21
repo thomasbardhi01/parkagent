@@ -14,3 +14,7 @@ API_BASE_URL = http:$()/$()/localhost:3000
 // Per-user API key (users.api_key on the server; see server/API.md). Empty is
 // fine for the simulator — the app falls back to the mock API without it.
 API_KEY =
+
+// Stripe publishable key (pk_test_…), only needed to confirm real Apple Pay
+// or card top-ups. Empty is fine — dry run and the mock never reach Stripe.
+STRIPE_PUBLISHABLE_KEY =

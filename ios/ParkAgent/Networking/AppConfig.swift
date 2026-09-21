@@ -12,6 +12,13 @@ enum AppConfig {
         infoString("API_KEY")
     }
 
+    /// Stripe publishable key (pk_test_…), needed only for the live Apple
+    /// Pay / card top-up confirmation. The mock and dry-run paths never
+    /// reach the Stripe SDK.
+    static var stripePublishableKey: String? {
+        infoString("STRIPE_PUBLISHABLE_KEY")
+    }
+
     private static func infoString(_ key: String) -> String? {
         guard let raw = Bundle.main.object(forInfoDictionaryKey: key) as? String,
               !raw.isEmpty

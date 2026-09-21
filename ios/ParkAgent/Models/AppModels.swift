@@ -2,6 +2,37 @@ import Foundation
 
 // Local UI state, distinct from the wire types in APIModels.swift.
 
+/// A request to run the provider link flow outside onboarding — from the
+/// parked sheet, Settings re-link, or the provider_relink push.
+struct ProviderLinkPrompt: Identifiable {
+    var providerId: String
+    var id: String { providerId }
+}
+
+/// The app's names for city keys (zone-id prefixes). Mirrors the server
+/// registry's cityDisplayName for offline use (chips, pickers).
+enum CityCatalog {
+    static let all = ["nyc", "bos"]
+
+    static func displayName(_ city: String?) -> String? {
+        switch city {
+        case "nyc": "New York City"
+        case "bos": "Boston"
+        default: nil
+        }
+    }
+
+    /// Which provider runs the city's meters (mirrors the server registry),
+    /// so onboarding can resume its link step after a relaunch.
+    static func providerId(for city: String?) -> String? {
+        switch city {
+        case "nyc": "parknyc"
+        case "bos": "passport"
+        default: nil
+        }
+    }
+}
+
 /// The session the user is currently paying for.
 struct ActiveSession: Identifiable {
     var sessionId: String

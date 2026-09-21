@@ -156,6 +156,35 @@ Errors: `400` invalid body (zod details in `error`), `401` bad key.
 
 ---
 
+## GET /city
+
+`?lat=…&lng=…` — which city's meter system (and so which provider) covers
+where the phone is. Onboarding's "Your city" step calls this; it reuses the
+zone candidate lookup with a metro-scale radius (20 km), so the nearest
+zone's city wins even from home, km away from a meter. Read-only — no
+`parked_events` or `decisions` rows.
+
+```json
+{
+  "city": "nyc",                       // zone-id prefix, or null
+  "cityDisplayName": "New York City",  // null when city is null
+  "provider": {                        // same shape as /parked's provider,
+    "id": "parknyc",                   // plus cookieDomains for the app's
+    "city": "nyc",                     // link web view; null when no
+    "displayName": "ParkNYC",          // provider covers the city
+    "loginUrl": "https://…",
+    "cookieDomains": ["nyc.flowbirdapp.com", "flowbirdapp.com"],
+    "status": "linked",
+    "linked": true
+  }
+}
+```
+
+Nowhere near any metered zone → `200` with all three fields null ("we're
+not there yet"). Errors: `400` bad query, `401` bad key.
+
+---
+
 ## POST /session/start
 
 The money-moving path. Executes through the executor protocol
@@ -630,8 +659,12 @@ yours.
 Every registry provider merged with the caller's account:
 
 ```json
-{ "providers": [ { "id": "parknyc", "city": "nyc", "displayName": "ParkNYC", "loginUrl": "https://…", "status": "linked", "linkedAt": "…", "lastVerifiedAt": "…", "cardAdded": true, "walletBalanceCents": 1250 } ] }
+{ "providers": [ { "id": "parknyc", "city": "nyc", "cityDisplayName": "New York City", "displayName": "ParkNYC", "loginUrl": "https://…", "cookieDomains": ["nyc.flowbirdapp.com", "flowbirdapp.com"], "status": "linked", "linkedAt": "…", "lastVerifiedAt": "…", "cardAdded": true, "walletBalanceCents": 1250 } ] }
 ```
+
+`cookieDomains` is the registry's session-domain list — the app's link web
+view watches them to know when the user has signed in before capturing
+cookies.
 
 ### POST /providers/:provider/setup-card
 

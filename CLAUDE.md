@@ -68,6 +68,13 @@ and your `DEVELOPMENT_TEAM` filled in; the file is gitignored and holds
 Maps use MapKit for now; Mapbox is a possible later swap and nothing outside
 the map views should depend on MapKit types.
 
+The app depends on the Stripe iOS SDK (SPM, declared in `project.yml`) for
+Apple Pay / card top-ups of the card's funding balance;
+`Support/StripeTopup.swift` is the only file that imports it, and dry run
+and the mock never reach it. Live confirmation needs `STRIPE_PUBLISHABLE_KEY`
+in `Config.xcconfig` plus the one-time Apple Pay merchant setup
+(`merchant.com.thomasbardhi.parkagent`; see server/API.md "Apple Pay setup").
+
 The Card tab's "Add to Apple Pay" is behind `FeatureFlags.applePayProvisioning`
 (default off, showing "coming soon"). Turning it on for real requires the
 `com.apple.developer.payment-pass-provisioning` entitlement, which Apple

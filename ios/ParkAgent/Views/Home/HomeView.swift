@@ -61,10 +61,17 @@ struct HomeView: View {
     }
 
     private var chipText: String {
+        let status: String
         if let session = model.activeSession {
-            return "Paid until \(Format.clockTime(session.expiresAt))"
+            status = "Paid until \(Format.clockTime(session.expiresAt))"
+        } else {
+            status = "No active session"
         }
-        return "No active session"
+        // Multi-city state, always in view: which city's meters we'd pay.
+        if let city = model.cityDisplayName {
+            return "\(city) · \(status)"
+        }
+        return status
     }
 
     @ViewBuilder

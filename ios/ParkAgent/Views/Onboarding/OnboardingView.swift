@@ -1,37 +1,104 @@
 import SwiftUI
 
-/// Three steps: what this is, how it decides, permissions.
+/// Onboarding, rebuilt around linking the local parking provider:
+/// welcome → permissions → vehicle → your city → link provider →
+/// add money → budget → done. One coral action per screen; abandoning
+/// mid-way resumes at the last incomplete step on next launch.
+enum OnboardingStep: Int, CaseIterable {
+    case welcome
+    case permissions
+    case vehicle
+    case city
+    /// "Somewhere else" — we're not there yet; finishes without a provider.
+    case elsewhere
+    case linkProvider
+    case addMoney
+    case budget
+    case done
+
+    static let defaultsKey = "onboardingStep"
+}
+
 struct OnboardingView: View {
     @AppStorage("hasOnboarded") private var hasOnboarded = false
-    @State private var step = 0
+    /// The effective city chosen in step 4 ("nyc" | "bos" | "other").
+    @AppStorage("selectedCity") private var selectedCity = ""
+    @State private var step: OnboardingStep
 
-    var body: some View {
-        VStack(spacing: 0) {
-            TabView(selection: $step) {
-                welcome.tag(0)
-                howItWorks.tag(1)
-                OnboardingPermissionsStep().tag(2)
-            }
-            .tabViewStyle(.page(indexDisplayMode: .always))
-            .indexViewStyle(.page(backgroundDisplayMode: .always))
-
-            Button(step < 2 ? "Continue" : "Get started") {
-                if step < 2 {
-                    withAnimation { step += 1 }
-                } else {
-                    hasOnboarded = true
-                }
-            }
-            .buttonStyle(.primary)
-            .padding(Spacing.unit)
-            .accessibilityIdentifier("onboarding.continueButton")
-        }
-        .background(Color.appBackground)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("onboarding.view")
+    init() {
+        let saved = UserDefaults.standard.integer(forKey: OnboardingStep.defaultsKey)
+        _step = State(initialValue: OnboardingStep(rawValue: saved) ?? .welcome)
     }
 
-    private var welcome: some View {
+    var body: some View {
+        // No accessibility container here: the switch renders each step
+        // directly, so a container modifier on this node would stack on the
+        // step's own and overwrite its identifier. Each step declares its
+        // own "onboarding.<step>" container instead.
+        content
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.appBackground)
+            .onChange(of: step) { _, next in
+                UserDefaults.standard.set(next.rawValue, forKey: OnboardingStep.defaultsKey)
+            }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch step {
+        case .welcome:
+            OnboardingWelcomeStep { advance(to: .permissions) }
+        case .permissions:
+            OnboardingPermissionsStep { advance(to: .vehicle) }
+        case .vehicle:
+            OnboardingVehicleStep { advance(to: .city) }
+        case .city:
+            OnboardingCityStep { city in
+                selectedCity = city
+                advance(to: city == "other" ? .elsewhere : .linkProvider)
+            }
+        case .elsewhere:
+            OnboardingElsewhereStep { complete() }
+        case .linkProvider:
+            if let providerId = CityCatalog.providerId(for: selectedCity) {
+                OnboardingLinkStep(
+                    providerId: providerId,
+                    onDone: { advance(to: .addMoney) },
+                    onSkip: { advance(to: .addMoney) }
+                )
+                .id(providerId)
+            } else {
+                // Resume landed here without a stored city — re-ask.
+                OnboardingCityStep { city in
+                    selectedCity = city
+                    advance(to: city == "other" ? .elsewhere : .linkProvider)
+                }
+            }
+        case .addMoney:
+            OnboardingAddMoneyStep { advance(to: .budget) }
+        case .budget:
+            OnboardingBudgetStep { advance(to: .done) }
+        case .done:
+            OnboardingDoneStep { complete() }
+        }
+    }
+
+    private func advance(to next: OnboardingStep) {
+        withAnimation { step = next }
+    }
+
+    private func complete() {
+        UserDefaults.standard.removeObject(forKey: OnboardingStep.defaultsKey)
+        hasOnboarded = true
+    }
+}
+
+// MARK: - Step 1: Welcome
+
+private struct OnboardingWelcomeStep: View {
+    let onContinue: () -> Void
+
+    var body: some View {
         VStack(spacing: Spacing.unit) {
             Spacer()
             Image(systemName: "parkingsign.circle.fill")
@@ -40,101 +107,73 @@ struct OnboardingView: View {
             Text("Meet ParkAgent")
                 .font(.numeral)
                 .foregroundStyle(Color.textPrimary)
-            Text("Park in a metered NYC zone and ParkAgent notices, quotes the cost, and pays the meter for you.")
+            Text("Park at a meter and ParkAgent notices, quotes the cost, and pays through your own parking account — within limits you set.")
                 .font(.bodyText)
                 .foregroundStyle(Color.textSecondary)
                 .multilineTextAlignment(.center)
             Spacer()
-            Spacer()
+            Button("Continue") { onContinue() }
+                .buttonStyle(.primary)
+                .accessibilityIdentifier("onboarding.continueButton")
         }
-        .padding(.horizontal, Spacing.unitAndHalf)
+        .padding(Spacing.unitAndHalf)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("onboarding.welcome")
     }
-
-    private var howItWorks: some View {
-        VStack(alignment: .leading, spacing: Spacing.unitAndHalf) {
-            Spacer()
-            Text("Calm by design")
-                .font(.numeral)
-                .foregroundStyle(Color.textPrimary)
-            explainerRow(
-                icon: "car.fill",
-                title: "Detects the park",
-                detail: "Motion, location, and car audio agree before anything happens."
-            )
-            explainerRow(
-                icon: "dollarsign.circle.fill",
-                title: "Quotes before paying",
-                detail: "You see the zone, the rate, and the total. Payment stays inside your caps."
-            )
-            explainerRow(
-                icon: "clock.fill",
-                title: "Extends within limits",
-                detail: "Auto-extend follows your policy and never passes the posted max stay."
-            )
-            Spacer()
-            Spacer()
-        }
-        .padding(.horizontal, Spacing.unitAndHalf)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("onboarding.howItWorks")
-    }
-
-    private func explainerRow(icon: String, title: String, detail: String) -> some View {
-        HStack(alignment: .top, spacing: Spacing.unit) {
-            Image(systemName: icon)
-                .font(.system(size: 22))
-                .foregroundStyle(Color.textSecondary)
-                .frame(width: 32)
-            VStack(alignment: .leading, spacing: Spacing.quarter) {
-                Text(title)
-                    .font(.bodyTextSemibold)
-                    .foregroundStyle(Color.textPrimary)
-                Text(detail)
-                    .font(.secondaryText)
-                    .foregroundStyle(Color.textSecondary)
-            }
-        }
-    }
 }
+
+// MARK: - Step 2: Permissions
 
 private struct OnboardingPermissionsStep: View {
     @Environment(PermissionsManager.self) private var permissions
+    let onContinue: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.unit) {
             Spacer()
-            Text("Two permissions")
+            Text("Three permissions")
                 .font(.numeral)
                 .foregroundStyle(Color.textPrimary)
-            Text("ParkAgent works in the background, so it needs to know where you are and whether you are driving.")
-                .font(.bodyText)
-                .foregroundStyle(Color.textSecondary)
 
             permissionRow(
                 icon: "location.fill",
-                title: "Location",
+                title: "Location — Always",
+                reason: "Notices where you parked, even in the background.",
                 granted: permissions.locationGranted,
                 denied: permissions.locationDenied,
+                identifier: "onboarding.permission.location",
                 action: permissions.requestLocation
             )
             permissionRow(
                 icon: "figure.walk.motion",
-                title: "Motion activity",
+                title: "Motion",
+                reason: "Tells driving from walking, so parks are real.",
                 granted: permissions.motionStatus == .authorized,
                 denied: permissions.motionStatus == .denied || !permissions.motionAvailable,
                 deniedLabel: permissions.motionAvailable ? "Denied" : "Unavailable here",
+                identifier: "onboarding.permission.motion",
                 action: permissions.requestMotion
             )
+            permissionRow(
+                icon: "bell.fill",
+                title: "Notifications",
+                reason: "Tells you when a meter was paid or is running out.",
+                granted: permissions.notificationsGranted,
+                denied: permissions.notificationsDenied,
+                identifier: "onboarding.permission.notifications",
+                action: permissions.requestNotifications
+            )
 
-            Text("You can grant these later in Settings; detection stays off until then.")
+            Text("You can skip any of these, but detection won't work without location and motion.")
                 .font(.captionText)
                 .foregroundStyle(Color.textSecondary)
+                .accessibilityIdentifier("onboarding.permissionsNote")
             Spacer()
-            Spacer()
+            Button("Continue") { onContinue() }
+                .buttonStyle(.primary)
+                .accessibilityIdentifier("onboarding.continueButton")
         }
-        .padding(.horizontal, Spacing.unitAndHalf)
+        .padding(Spacing.unitAndHalf)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("onboarding.permissions")
     }
@@ -142,21 +181,29 @@ private struct OnboardingPermissionsStep: View {
     private func permissionRow(
         icon: String,
         title: String,
+        reason: String,
         granted: Bool,
         denied: Bool,
         deniedLabel: String = "Denied",
+        identifier: String,
         action: @escaping () -> Void
     ) -> some View {
-        HStack(spacing: Spacing.unit) {
+        HStack(alignment: .top, spacing: Spacing.unit) {
             Image(systemName: icon)
                 .foregroundStyle(Color.textSecondary)
                 .frame(width: 28)
-            Text(title)
-                .font(.bodyText)
-                .foregroundStyle(Color.textPrimary)
+                .padding(.top, 2)
+            VStack(alignment: .leading, spacing: Spacing.quarter) {
+                Text(title)
+                    .font(.bodyText)
+                    .foregroundStyle(Color.textPrimary)
+                Text(reason)
+                    .font(.captionText)
+                    .foregroundStyle(Color.textSecondary)
+            }
             Spacer()
             if granted {
-                Label("Allowed", systemImage: "checkmark.circle.fill")
+                Label("On", systemImage: "checkmark.circle.fill")
                     .font(.captionTextSemibold)
                     .foregroundStyle(Color.success)
             } else if denied {
@@ -164,7 +211,7 @@ private struct OnboardingPermissionsStep: View {
                     .font(.captionTextSemibold)
                     .foregroundStyle(Color.textSecondary)
             } else {
-                Button("Allow", action: action)
+                Button("Enable", action: action)
                     .font(.captionTextSemibold)
                     .foregroundStyle(Color.actionCoralLink)
             }
@@ -172,10 +219,415 @@ private struct OnboardingPermissionsStep: View {
         .padding(Spacing.unit)
         .background(Color.surface)
         .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
+        // Identifier only, no container: a container here would be
+        // flattened by the step's own and vanish from the hierarchy.
+        .accessibilityIdentifier(identifier)
+    }
+}
+
+// MARK: - Step 3: Vehicle
+
+private struct OnboardingVehicleStep: View {
+    @AppStorage("vehicle.plate") private var plate = ""
+    @AppStorage("vehicle.state") private var state = ""
+    @AppStorage("vehicle.nickname") private var nickname = ""
+    let onContinue: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.unit) {
+            Spacer()
+            Text("Your car")
+                .font(.numeral)
+                .foregroundStyle(Color.textPrimary)
+            Text("Meters are paid against a plate. This stays on your phone.")
+                .font(.bodyText)
+                .foregroundStyle(Color.textSecondary)
+
+            field("Plate", text: $plate, identifier: "onboarding.plateField")
+                .textInputAutocapitalization(.characters)
+                .autocorrectionDisabled()
+            field("State (e.g. NY)", text: $state, identifier: "onboarding.stateField")
+                .textInputAutocapitalization(.characters)
+                .autocorrectionDisabled()
+            field("Nickname (optional)", text: $nickname, identifier: "onboarding.nicknameField")
+
+            Spacer()
+            Button("Continue") { onContinue() }
+                .buttonStyle(.primary)
+                .disabled(!isValid)
+                .accessibilityIdentifier("onboarding.continueButton")
+        }
+        .padding(Spacing.unitAndHalf)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("onboarding.vehicle")
+    }
+
+    /// Loose on purpose: plates vary wildly; 2–8 characters is enough of a
+    /// sanity check.
+    private var isValid: Bool {
+        let trimmedPlate = plate.trimmingCharacters(in: .whitespaces)
+        let trimmedState = state.trimmingCharacters(in: .whitespaces)
+        return (2...8).contains(trimmedPlate.count) && trimmedState.count == 2
+    }
+
+    private func field(_ placeholder: String, text: Binding<String>, identifier: String) -> some View {
+        TextField(placeholder, text: text)
+            .font(.bodyText)
+            .padding(Spacing.unit)
+            .background(Color.surface)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
+            .accessibilityIdentifier(identifier)
+    }
+}
+
+// MARK: - Step 4: Your city
+
+private struct OnboardingCityStep: View {
+    @Environment(AppModel.self) private var model
+    /// Called with "nyc" | "bos" | "other".
+    let onSelect: (String) -> Void
+
+    @State private var isDetecting = true
+    @State private var detection: CityDetectResponse?
+    @State private var choice: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.unit) {
+            Spacer()
+            Text("Your city")
+                .font(.numeral)
+                .foregroundStyle(Color.textPrimary)
+
+            if isDetecting {
+                HStack(spacing: Spacing.half) {
+                    ProgressView()
+                    Text("Checking where you are")
+                        .font(.secondaryText)
+                        .foregroundStyle(Color.textSecondary)
+                }
+            } else if let detection, let name = detection.cityDisplayName {
+                Label {
+                    // Identifier on the text, not the Label: on the Label it
+                    // propagates to the icon too, and the tests would match
+                    // the image (labeled "Location Services") first.
+                    Text("Looks like \(name)\(detection.provider.map { " — meters run on \($0.displayName)" } ?? "")")
+                        .font(.secondaryText)
+                        .foregroundStyle(Color.textPrimary)
+                        .accessibilityIdentifier("onboarding.cityDetected")
+                } icon: {
+                    Image(systemName: "location.fill")
+                        .foregroundStyle(Color.textSecondary)
+                }
+            } else {
+                Text("Couldn't tell from here — pick your city.")
+                    .font(.secondaryText)
+                    .foregroundStyle(Color.textSecondary)
+                    .accessibilityIdentifier("onboarding.cityUnknown")
+            }
+
+            cityOption("nyc", label: "New York City", detail: "ParkNYC")
+            cityOption("bos", label: "Boston", detail: "ParkBoston")
+            cityOption("other", label: "Somewhere else", detail: nil)
+
+            Spacer()
+            Button("Continue") {
+                if let choice { onSelect(choice) }
+            }
+            .buttonStyle(.primary)
+            .disabled(choice == nil)
+            .accessibilityIdentifier("onboarding.continueButton")
+        }
+        .padding(Spacing.unitAndHalf)
+        .task {
+            guard detection == nil else { return }
+            detection = await model.detectCityFromCurrentLocation()
+            if let city = detection?.city, CityCatalog.displayName(city) != nil {
+                choice = choice ?? city
+            }
+            isDetecting = false
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("onboarding.city")
+    }
+
+    private func cityOption(_ key: String, label: String, detail: String?) -> some View {
+        Button {
+            choice = key
+        } label: {
+            HStack {
+                VStack(alignment: .leading, spacing: Spacing.quarter) {
+                    Text(label)
+                        .font(.bodyText)
+                        .foregroundStyle(Color.textPrimary)
+                    if let detail {
+                        Text(detail)
+                            .font(.captionText)
+                            .foregroundStyle(Color.textSecondary)
+                    }
+                }
+                Spacer()
+                Image(systemName: choice == key ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(choice == key ? Color.actionCoralLink : Color.separator)
+            }
+            .padding(Spacing.unit)
+            .background(Color.surface)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
+            // Chrome and shape live inside the label: with them outside, a
+            // tap over the Spacer falls through the plain button style.
+            .contentShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("onboarding.city.\(key)")
+    }
+}
+
+// MARK: - Step 4b: Somewhere else
+
+private struct OnboardingElsewhereStep: View {
+    let onFinish: () -> Void
+
+    var body: some View {
+        VStack(spacing: Spacing.unit) {
+            Spacer()
+            Image(systemName: "map")
+                .font(.system(size: 56))
+                .foregroundStyle(Color.textSecondary)
+            Text("We're not there yet")
+                .font(.numeral)
+                .foregroundStyle(Color.textPrimary)
+            Text("ParkAgent pays meters in New York City and Boston for now. You can still browse the app, and pick a city later in Settings when you're in one.")
+                .font(.bodyText)
+                .foregroundStyle(Color.textSecondary)
+                .multilineTextAlignment(.center)
+            Spacer()
+            Button("Finish") { onFinish() }
+                .buttonStyle(.primary)
+                .accessibilityIdentifier("onboarding.finishButton")
+        }
+        .padding(Spacing.unitAndHalf)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("onboarding.elsewhere")
+    }
+}
+
+// MARK: - Step 5: Link provider
+
+private struct OnboardingLinkStep: View {
+    @State private var link: ProviderLinkModel
+    let onDone: () -> Void
+    let onSkip: () -> Void
+
+    init(providerId: String, onDone: @escaping () -> Void, onSkip: @escaping () -> Void) {
+        _link = State(initialValue: ProviderLinkModel(providerId: providerId))
+        self.onDone = onDone
+        self.onSkip = onSkip
+    }
+
+    var body: some View {
+        // No container identifier here — it would swallow the stage
+        // containers (link.intro, link.done, …) the tests key off.
+        VStack(spacing: 0) {
+            ProviderLinkStagesView(link: link, onDone: onDone)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if showsSkip {
+                Button("Skip for now") { onSkip() }
+                    .font(.captionTextSemibold)
+                    .foregroundStyle(Color.textSecondary)
+                    .padding(.bottom, Spacing.unit)
+                    .accessibilityIdentifier("onboarding.linkSkipButton")
+            }
+        }
+    }
+
+    /// Never mid-flight: skipping while the server is adding the card
+    /// would just hide the outcome.
+    private var showsSkip: Bool {
+        switch link.stage {
+        case .intro, .unavailable, .failed: true
+        default: false
+        }
+    }
+}
+
+// MARK: - Step 6: Add money
+
+private struct OnboardingAddMoneyStep: View {
+    let onContinue: () -> Void
+
+    var body: some View {
+        // AddMoneyView carries the "addMoney.view" container; wrapping it
+        // in another would flatten it away.
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Add money")
+                .font(.numeral)
+                .foregroundStyle(Color.textPrimary)
+                .padding(.horizontal, Spacing.unitAndHalf)
+                .padding(.top, Spacing.double)
+            AddMoneyView(allowSkip: true) { onContinue() }
+        }
+    }
+}
+
+// MARK: - Step 7: Budget
+
+private struct OnboardingBudgetStep: View {
+    @Environment(AppModel.self) private var model
+    let onContinue: () -> Void
+
+    @State private var sessionCap: Double = 45
+    @State private var dailyCap: Double = 60
+    @State private var defaultMinutes: Int = 90
+    @State private var seeded = false
+    @State private var isSaving = false
+    @State private var saveFailed = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.unit) {
+            Spacer()
+            Text("Your limits")
+                .font(.numeral)
+                .foregroundStyle(Color.textPrimary)
+
+            stepperRow(
+                "Per stop",
+                value: Format.money(sessionCap),
+                identifier: "onboarding.budget.sessionCap",
+                decrement: { sessionCap = max(5, sessionCap - 5) },
+                increment: { sessionCap = min(200, sessionCap + 5) }
+            )
+            stepperRow(
+                "Per day",
+                value: Format.money(dailyCap),
+                identifier: "onboarding.budget.dailyCap",
+                decrement: { dailyCap = max(5, dailyCap - 5) },
+                increment: { dailyCap = min(400, dailyCap + 5) }
+            )
+            stepperRow(
+                "Default stay",
+                value: Format.minutes(defaultMinutes),
+                identifier: "onboarding.budget.defaultStay",
+                decrement: { defaultMinutes = max(15, defaultMinutes - 15) },
+                increment: { defaultMinutes = min(240, defaultMinutes + 15) }
+            )
+
+            Text("We'll pay up to \(Format.money(sessionCap)) per stop and \(Format.money(dailyCap)) per day without asking.")
+                .font(.secondaryText)
+                .foregroundStyle(Color.textSecondary)
+                .accessibilityIdentifier("onboarding.budgetPreview")
+
+            if saveFailed {
+                Text("Couldn't save to the server. Try again, or continue with the server's current limits.")
+                    .font(.captionTextSemibold)
+                    .foregroundStyle(Color.warningGold)
+            }
+
+            Spacer()
+            Button(isSaving ? "Saving…" : "Save and continue") {
+                Task { await save() }
+            }
+            .buttonStyle(.primary)
+            .disabled(isSaving)
+            .accessibilityIdentifier("onboarding.continueButton")
+            if saveFailed {
+                Button("Continue without saving") { onContinue() }
+                    .buttonStyle(.secondary)
+                    .accessibilityIdentifier("onboarding.budgetSkipSave")
+            }
+        }
+        .padding(Spacing.unitAndHalf)
+        .task {
+            guard !seeded, let policy = model.policyResponse?.policy else { return }
+            seeded = true
+            sessionCap = policy.sessionCapUsd
+            dailyCap = policy.dailyCapUsd
+            defaultMinutes = policy.defaultStayMinutes
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("onboarding.budget")
+    }
+
+    private func save() async {
+        isSaving = true
+        saveFailed = false
+        let ok = await model.saveBudget(
+            sessionCapUsd: sessionCap,
+            dailyCapUsd: dailyCap,
+            defaultStayMinutes: defaultMinutes
+        )
+        isSaving = false
+        if ok {
+            onContinue()
+        } else {
+            saveFailed = true
+        }
+    }
+
+    private func stepperRow(
+        _ label: String,
+        value: String,
+        identifier: String,
+        decrement: @escaping () -> Void,
+        increment: @escaping () -> Void
+    ) -> some View {
+        HStack {
+            Text(label)
+                .font(.bodyText)
+                .foregroundStyle(Color.textPrimary)
+            Spacer()
+            Button(action: decrement) {
+                Image(systemName: "minus.circle")
+                    .foregroundStyle(Color.textSecondary)
+            }
+            .accessibilityIdentifier("\(identifier).minus")
+            Text(value)
+                .font(.bodyTextSemibold)
+                .monospacedDigit()
+                .foregroundStyle(Color.textPrimary)
+                .frame(minWidth: 90)
+                .accessibilityIdentifier(identifier)
+            Button(action: increment) {
+                Image(systemName: "plus.circle")
+                    .foregroundStyle(Color.textSecondary)
+            }
+            .accessibilityIdentifier("\(identifier).plus")
+        }
+        .padding(Spacing.unit)
+        .background(Color.surface)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
+    }
+}
+
+// MARK: - Step 8: Done
+
+private struct OnboardingDoneStep: View {
+    let onFinish: () -> Void
+
+    var body: some View {
+        VStack(spacing: Spacing.unit) {
+            Spacer()
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 64))
+                .foregroundStyle(Color.success)
+            Text("You're set")
+                .font(.numeral)
+                .foregroundStyle(Color.textPrimary)
+            Text("Park at a meter and ParkAgent takes it from there.")
+                .font(.bodyText)
+                .foregroundStyle(Color.textSecondary)
+                .multilineTextAlignment(.center)
+            Spacer()
+            Button("Go to Home") { onFinish() }
+                .buttonStyle(.primary)
+                .accessibilityIdentifier("onboarding.goHomeButton")
+        }
+        .padding(Spacing.unitAndHalf)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("onboarding.done")
     }
 }
 
 #Preview {
     OnboardingView()
+        .environment(AppModel())
         .environment(PermissionsManager())
 }

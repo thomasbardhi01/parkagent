@@ -15,6 +15,9 @@ final class PushManager: NSObject, UNUserNotificationCenterDelegate {
     /// The most recent push, surfaced as an in-app notice.
     private(set) var lastNotice: String?
 
+    /// Set by AppModel: a provider_relink push routes into the link flow.
+    var onProviderRelink: ((String) -> Void)?
+
     private var api: (any APIClient)?
     private var pendingToken: String?
 
@@ -76,12 +79,17 @@ final class PushManager: NSObject, UNUserNotificationCenterDelegate {
         #endif
     }
 
-    private func handle(type: String) {
+    private func handle(type: String, provider: String?) {
         switch type {
         case "session_started": lastNotice = "Meter paid"
         case "session_extended": lastNotice = "Session extended"
         case "session_expiring": lastNotice = "Session expiring soon"
         case "payment_failed": lastNotice = "Payment failed — the meter is unpaid"
+        case "provider_relink":
+            lastNotice = "Your parking account needs a fresh sign-in"
+            if let provider {
+                onProviderRelink?(provider)
+            }
         default: break
         }
     }
@@ -92,9 +100,13 @@ final class PushManager: NSObject, UNUserNotificationCenterDelegate {
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
-        let type = notification.request.content.userInfo["type"] as? String
+        // Pull the (Sendable) strings out before hopping actors — the raw
+        // userInfo dictionary can't cross.
+        let userInfo = notification.request.content.userInfo
+        let type = userInfo["type"] as? String
+        let provider = userInfo["provider"] as? String
         if let type {
-            await MainActor.run { self.handle(type: type) }
+            await MainActor.run { self.handle(type: type, provider: provider) }
         }
         return [.banner, .sound]
     }
@@ -103,9 +115,11 @@ final class PushManager: NSObject, UNUserNotificationCenterDelegate {
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse
     ) async {
-        let type = response.notification.request.content.userInfo["type"] as? String
+        let userInfo = response.notification.request.content.userInfo
+        let type = userInfo["type"] as? String
+        let provider = userInfo["provider"] as? String
         if let type {
-            await MainActor.run { self.handle(type: type) }
+            await MainActor.run { self.handle(type: type, provider: provider) }
         }
     }
 }

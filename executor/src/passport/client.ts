@@ -33,6 +33,7 @@ import { warmBrowser } from "../browser.js";
 import { captureUnexpectedScreen } from "../parknyc/capture.js";
 import { classifyFailure } from "../parknyc/classify.js";
 import { parseAmountUsd, parseConfirmation, parseExpiresAt } from "../parknyc/parse.js";
+import { isAddPaymentScreen } from "./parse.js";
 import type {
   CardFormDetails,
   ExecutorError,
@@ -319,6 +320,17 @@ export class PassportClient {
       await selectors.confirm.payButton(page).click();
       await this.step("payment-submitted", page);
 
+      // No saved payment method → the app routes to "Add Payment Details"
+      // instead of a receipt (recorded 2026-09-21). Typed so the server
+      // can tell the user to add a card, not retry blindly.
+      if (isAddPaymentScreen(await page.content())) {
+        return this.fail(
+          page,
+          "payment_method_missing",
+          "ParkBoston has no saved payment method on this account",
+        );
+      }
+
       await selectors.confirmation
         .successMarker(page)
         .or(selectors.confirm.declinedMessage(page))
@@ -463,14 +475,14 @@ export class PassportClient {
           "Passport asked to sign in; cookies are not a session",
         );
       }
+      // Same #updateCard "Add Payment Details" form the start flow detects.
+      // Field ids verified against the recording; the SUBMIT (saveButton
+      // → successMarker) is TODO-verify — not yet walked with a real card.
       await selectors.payment.cardNumberInput(page).fill(card.number);
-      await selectors.payment
-        .expiryInput(page)
-        .fill(
-          `${String(card.expMonth).padStart(2, "0")}/${String(card.expYear % 100).padStart(2, "0")}`,
-        );
+      await selectors.payment.expiryMonthSelect(page).selectOption(String(card.expMonth).padStart(2, "0"));
+      await selectors.payment.expiryYearSelect(page).selectOption(String(card.expYear));
       await selectors.payment.cvcInput(page).fill(card.cvc);
-      await selectors.payment.saveButton(page).click();
+      await selectors.payment.saveButton(page).click(); // TODO-verify: submit + success
       await this.step("card-submitted", page);
       await selectors.payment.successMarker(page).waitFor();
       await this.step("card-saved", page);

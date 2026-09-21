@@ -187,6 +187,30 @@ test("executor failure fails the session and pushes payment_failed", async () =>
   });
 });
 
+test("payment_method_missing pushes an 'add a card to ParkBoston' failure, not a retry", async () => {
+  const failure: ExecutorResult = {
+    ok: false,
+    code: "payment_method_missing",
+    message: "ParkBoston has no saved payment method on this account",
+  };
+  const { app, state, pushes } = makeApp({
+    executor: {
+      startSession: async () => failure,
+      extendSession: async () => failure,
+      stopSession: async () => failure,
+    },
+  });
+  const res = await post(app, "/session/start", START);
+  expect(res.statusCode).toBe(502);
+  expect(res.json()).toMatchObject({ error: "executor_failed", code: "payment_method_missing" });
+  expect(state.sessions[0]!.status).toBe("failed");
+  const push = pushes.at(-1)!.push;
+  expect(push.type).toBe("payment_failed");
+  expect(push.title).toBe("Add a card to ParkBoston");
+  expect(push.body).toContain("add a card to ParkBoston");
+  expect(push.extra).toMatchObject({ code: "payment_method_missing" });
+});
+
 test("location without an active session: 409", async () => {
   const { app } = makeApp();
   const res = await post(app, "/location", {

@@ -1,0 +1,180 @@
+<!-- Sanitized slice of the ParkBoston #updateCard 'Add Payment Details' screen (2026-09-21 start recording). Runtime template: the form is empty as captured; no card values were ever present here, and any reported values were scrubbed. Test data only. -->
+<!doctype html><html><body>
+<div id="updateCard" data-role="page" data-theme="a" data-url="updateCard">
+    <div data-role="panel" id="navpanel_updateCard" class="sidemenu" data-theme="a" data-position="left" data-display="overlay">
+        <ul class="listview">
+            <li class="parkingSideMenuHeader infoFirstSideMenuItem" data-role="list-divider" aria-level="2">
+            Parking        </li>
+        <li class="newSessionSideMenuItem parkingSideMenuItem">
+            <a class="sidemenu_newsession_button" data-role="button" data-corners="false" data-icon="new-session-white-48-sidemenu" data-iconpos="left" tabindex="0" href="#">
+                New Session            </a>
+        </li>
+                                            <li class="findParkingSideMenuItem parkingSideMenuItem infoFirstSideMenuItem">
+                <a data-role="button" data-corners="false" data-icon="map-white-48-sidemenu" data-iconpos="left" href="#findParking">
+                    Find Parking                </a>
+            </li>
+                <li class="parkerHistorySideMenuItem parkingSideMenuItem">
+            <a data-role="button" data-corners="false" data-icon="history-white-48-sidemenu" data-iconpos="left" href="#parkerHistory">
+                Parker History            </a>
+        </li>
+            
+    
+    <li class="settingsSideMenuHeader" data-role="list-divider" aria-level="2">
+        Settings    </li>
+    <li class="profileSideMenuItem settingsSideMenuItem">
+        <a data-role="button" data-corners="false" data-icon="profile-white-48-sidemenu" data-iconpos="left" href="#profile">
+            Profile        </a>
+    </li>
+                <li class="paymentSideMenuItem settingsSideMenuItem">
+            <a data-role="button" data-corners="false" data-icon="payment-white-48-sidemenu" data-iconpos="left" href="#creditCards">
+                Payment            </a>
+        </li>
+                <li class="citationPaymentSideMenuItem settingsSideMenuItem">
+            <a data-role="button" data-corners="false" data-icon="citation-payment-white-48-sidemenu" data-iconpos="left" href="#citationPayment">
+                Citation Payment            </a>
+        </li>
+        <li class="optionsSideMenuItem settingsSideMenuItem">
+        <a data-role="button" data-corners="false" data-icon="options-white-48-sidemenu" data-iconpos="left" href="#options">
+            Options        </a>
+    </li>
+            <li class="zoneCashSideMenuItem settingsSideMenuItem">
+            <a data-role="button" data-corners="false" data-icon="zonecash-white-48-sidemenu" data-iconpos="left" href="#">
+                Wallets            </a>
+        </li>
+              <li class="vehiclesSideMenuItem settingsSideMenuItem">
+          <a data-role="button" data-corners="false" data-icon="car-white-48-sidemenu" data-iconpos="left" href="#vehicleManagement">
+              Vehicles          </a>
+      </li>
+    
+    
+    <li class="helpSideMenuHeader infoFirstSideMenuItem" data-role="list-divider" aria-level="2">
+        Help    </li>
+    <li class="supportSideMenuItem helpSideMenuItem infoFirstSideMenuItem">
+        <a data-role="button" data-corners="false" data-icon="help-white-48-sidemenu" data-iconpos="left" href="#support">
+            Help        </a>
+    </li>
+        <li class="bugReportSideMenuItem helpSideMenuItem">
+        <a data-role="button" data-corners="false" data-icon="bug-report-white-48-sidemenu" data-iconpos="left" href="#bugReport">
+            Send Bug Report        </a>
+    </li>
+    <li class="faqSideMenuItem helpSideMenuItem infoFirstSideMenuItem">
+        <a data-role="button" data-corners="false" data-icon="info-white-48-sidemenu" data-iconpos="left" href="https://passportinc.com/faq/" target="_blank">
+            FAQ        </a>
+    </li>
+    <li class="termsSideMenuItem helpSideMenuItem infoFirstSideMenuItem">
+        <a data-role="button" data-corners="false" data-icon="terms-white-48-sidemenu" data-iconpos="left" href="https://passportinc.com/terms-and-conditions/" target="_blank">
+            Terms &amp; Conditions        </a>
+    </li>
+    <li class="privacySideMenuItem helpSideMenuItem infoFirstSideMenuItem">
+        <a data-role="button" data-corners="false" data-icon="privacy-white-48-sidemenu" data-iconpos="left" href="https://passportinc.com/privacy-policy/" target="_blank">
+            Privacy Policy        </a>
+    </li>
+</ul>
+    </div>
+    <div class="header" data-role="header" data-theme="a">
+        <a href="#" class="backButtonOverride" data-icon="back-header" data-theme="d" data-iconpos="notext" tabindex="0">Back</a>
+        <h1 id="updateCardWindowHeader">
+            Add Payment Details        </h1>
+    </div>
+    <div data-role="content">
+        <label class="inputlabel" id="cardInputLabel" for="cardNumber">Enter your debit/credit card number:</label>
+        <div id="cardInputContainer">
+            <input type="tel" maxlength="19" name="cardNumber" id="cardNumber" class="cardInput" data-theme="c" placeholder="Enter Card Number" aria-describedby="acceptedCards" style="">
+            <input aria-labelledby="cardInputLabel" type="tel" maxlength="19" id="cardNumberMasked" class="cardInput" data-theme="c" placeholder="Enter Card Number" style="">
+            <span id="cardNumberMaskToggle">Show</span>
+        </div>
+        <div class="ui-grid-a">
+            <div class="ui-block-a">
+                <label class="inputlabel" for="selectMonth">
+                    Exp. month:                </label>
+                <select name="select_month" id="selectMonth" data-icon="select-down">
+                    <option value="1">01</option><option value="2">02</option><option value="3">03</option><option value="4">04</option><option value="5">05</option><option value="6">06</option><option value="7">07</option><option value="8">08</option><option value="9">09</option><option value="10">10</option><option value="11">11</option><option value="12">12</option>                </select>
+            </div>
+            <div class="ui-block-b">
+                <label class="inputlabel" for="selectYear">
+                    Exp. year:                </label>
+                <select name="select_year" id="selectYear" data-icon="select-down">
+                    <option value="2026">2026</option><option value="2027">2027</option><option value="2028">2028</option><option value="2029">2029</option><option value="2030">2030</option><option value="2031">2031</option><option value="2032">2032</option><option value="2033">2033</option><option value="2034">2034</option><option value="2035">2035</option><option value="2036">2036</option><option value="2037">2037</option><option value="2038">2038</option><option value="2039">2039</option><option value="2040">2040</option><option value="2041">2041</option><option value="2042">2042</option><option value="2043">2043</option><option value="2044">2044</option><option value="2045">2045</option><option value="2046">2046</option>                </select>
+            </div>
+        </div>
+        <div>
+            <div class="ui-grid-a">
+                <div id="firstNameDiv" class="ui-block-a">
+                    <label class="inputlabel" for="firstName">
+                                            </label>
+                    <input type="text" name="firstName" id="firstName" data-theme="c" placeholder="" style="">
+                </div>
+                <div id="lastNameDiv" class="ui-block-b">
+                    <label class="inputlabel" for="lastName">
+                                            </label>
+                    <input type="text" name="lastName" id="lastName" data-theme="c" placeholder="" style="">
+                </div>
+            </div>
+             <div id="addr1Div">
+                <label class="inputlabel" for="billingAddr1">
+                                    </label>
+                <input type="text" name="billingAddr1" id="billingAddr1" data-theme="c" placeholder="" style="">
+            </div>
+            <div id="addr2Div">
+                <label class="inputlabel" for="billingAddr2">
+                                    </label>
+                <input type="text" name="billingAddr2" id="billingAddr2" data-theme="c" placeholder="" style="">
+            </div>
+            <div class="ui-grid-a">
+                <div id="cityDiv" class="ui-block-a">
+                    <label class="inputlabel" for="billingCity">
+                                            </label>
+                    <input type="text" name="billingCity" id="billingCity" data-theme="c" placeholder="" style="">
+                </div>
+                <div id="stateDiv" class="ui-block-b">
+                    <label class="inputlabel" for="billingState">
+                                            </label>
+                    <select id="billingState" name="billing_state_select" data-icon="select-down"><option value="AK">AK</option><option value="AL">AL</option><option value="AR">AR</option><option value="AZ">AZ</option><option value="CA">CA</option><option value="CO">CO</option><option value="CT">CT</option><option value="DC">DC</option><option value="DE">DE</option><option value="FL">FL</option><option value="GA">GA</option><option value="GU">GU</option><option value="HI">HI</option><option value="IA">IA</option><option value="ID">ID</option><option value="IL">IL</option><option value="IN">IN</option><option value="KS">KS</option><option value="KY">KY</option><option value="LA">LA</option><option value="MA">MA</option><option value="MD">MD</option><option value="ME">ME</option><option value="MI">MI</option><option value="MN">MN</option><option value="MO">MO</option><option value="MS">MS</option><option value="MT">MT</option><option value="NC">NC</option><option value="ND">ND</option><option value="NE">NE</option><option value="NH">NH</option><option value="NJ">NJ</option><option value="NM">NM</option><option value="NV">NV</option><option value="NY">NY</option><option value="OH">OH</option><option value="OK">OK</option><option value="OR">OR</option><option value="PA">PA</option><option value="PR">PR</option><option value="RI">RI</option><option value="SC">SC</option><option value="SD">SD</option><option value="TN">TN</option><option value="TX">TX</option><option value="UT">UT</option><option value="VA">VA</option><option value="VI">VI</option><option value="VT">VT</option><option value="WA">WA</option><option value="WI">WI</option><option value="WV">WV</option><option value="WY">WY</option><option value="AB">AB</option><option value="BC">BC</option><option value="MB">MB</option><option value="NB">NB</option><option value="NL">NL</option><option value="NS">NS</option><option value="NT">NT</option><option value="NU">NU</option><option value="ON">ON</option><option value="PE">PE</option><option value="QC">QC</option><option value="SK">SK</option><option value="YT">YT</option><option value="---">---</option><option value="AGU">AGU</option><option value="BCN">BCN</option><option value="BCS">BCS</option><option value="CAM">CAM</option><option value="CHH">CHH</option><option value="CHP">CHP</option><option value="CMX">CMX</option><option value="COA">COA</option><option value="COL">COL</option><option value="DUR">DUR</option><option value="GRO">GRO</option><option value="GUA">GUA</option><option value="HID">HID</option><option value="JAL">JAL</option><option value="MEX">MEX</option><option value="MIC">MIC</option><option value="MOR">MOR</option><option value="MX">MX</option><option value="NAY">NAY</option><option value="NLE">NLE</option><option value="OAX">OAX</option><option value="PUE">PUE</option><option value="QUE">QUE</option><option value="ROO">ROO</option><option value="SIN">SIN</option><option value="SLP">SLP</option><option value="SON">SON</option><option value="TAB">TAB</option><option value="TAM">TAM</option><option value="TLA">TLA</option><option value="VER">VER</option><option value="YUC">YUC</option><option value="ZAC">ZAC</option><option value="GV">GV</option></select>
+                </div>
+            </div>
+            <div id="zipDiv">
+                <label class="inputlabel" for="billingZipcode">
+                    Billing Postal Code:                </label>
+                <input type="text" maxlength="16" name="billingZip" id="billingZipcode" autocomplete="billing zip-code" data-theme="c" placeholder="Postal Code" style="">
+            </div>
+            <div id="cvvDiv">
+                <label class="inputlabel" for="cvv">
+                    CVV:                </label>
+                <input type="text" maxlength="4" name="cvv" id="cvv" data-theme="c" placeholder="CVV" style="">
+            </div>
+            <div id="saveCardDiv">
+                <input type="checkbox" name="cardSaved" id="cardSaved" checked="checked" tabindex="0" style="">
+                <label class="inputlabel" for="cardSaved">
+                    Save payment info                </label>
+            </div>
+            <div id="cardNameDiv">
+                 <label class="inputlabel" for="cardName">
+                    Name this card:                </label>
+                <input type="text" name="cardName" id="cardName" data-theme="c" placeholder="Friendly card name" style="">
+            </div>
+            <div class="cardMakeDefaultDiv">
+                <label class="cardMakeDefaultLabel">Make card default payment</label>
+                <div class="Switch Round Off">
+                    <div class="Toggle"></div>
+                </div>
+                <div class="clearfix"></div>
+            </div>
+        </div>
+        <button id="saveCard" data-icon="chevron-right-white-48" data-iconpos="right" data-role="button" data-theme="a" tabindex="0">
+            Save        </button>
+        <div id="acceptedCards">
+            <p class="visually-hidden">Cards accepted include: </p>
+            <img id="visa" class="acceptedCardIcon" src="images/cctypes/card_visa.png" alt="Visa">
+            <img id="mastercard" class="acceptedCardIcon" src="images/cctypes/card_mastercard.png" alt="Mastercard">
+            <img id="americanexpress" class="acceptedCardIcon" src="images/cctypes/card_amex.png" alt="American Express">
+            <img id="discover" class="acceptedCardIcon" src="images/cctypes/card_discover.png" alt="Discover">
+            <img id="jcb" class="acceptedCardIcon" src="images/cctypes/card_jcb.png" alt="JCB">
+            <img id="unionpay" class="acceptedCardIcon" src="images/cctypes/card_unionpay.png" alt="UnionPay">
+        </div>
+        <div class="centered">
+            <a target="_blank" href="https://passportinc.com/privacy-policy/" class="privacyLink">
+                Read our privacy policy.            </a>
+        </div>
+    </div>
+</div>
+</body></html>

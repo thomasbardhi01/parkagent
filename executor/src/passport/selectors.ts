@@ -182,14 +182,22 @@ export const selectors = {
   },
 
   // ------------------- Card management (login.js UPDATE_CARD ids; TODO-verify)
+  // Card form ids verified against the 2026-09-21 start recording's
+  // #updateCard page ("Add Payment Details"): the same form both detects
+  // a card-less account mid-start AND is where setupCard adds our card.
   payment: {
     addCardButton: (page: Page): Locator =>
       page.getByRole("button", { name: /add (a )?(payment|card)|new card/i }),
-    cardNumberInput: (page: Page): Locator => page.getByRole("textbox", { name: /card number/i }),
-    expiryInput: (page: Page): Locator =>
-      page.getByRole("textbox", { name: /expir|mm\s*\/\s*yy/i }),
-    cvcInput: (page: Page): Locator =>
-      page.getByRole("textbox", { name: /cvc|cvv|security code/i }),
+    /** The "Add Payment Details" screen itself: the start flow lands here
+     * when the account has no saved payment method. */
+    addPaymentHeader: (page: Page): Locator => page.locator("#updateCardWindowHeader"),
+    addPaymentForm: (page: Page): Locator => page.locator("#updateCard #cardNumber"),
+    cardNumberInput: (page: Page): Locator => page.locator("#cardNumber"),
+    expiryMonthSelect: (page: Page): Locator => page.locator("#selectMonth"),
+    expiryYearSelect: (page: Page): Locator => page.locator("#selectYear"),
+    cvcInput: (page: Page): Locator => page.locator("#cvv"),
+    zipInput: (page: Page): Locator => page.locator("#billingZipcode"),
+    cardNameInput: (page: Page): Locator => page.locator("#cardName"),
     saveButton: (page: Page): Locator => page.locator("#saveCard"),
     successMarker: (page: Page): Locator =>
       page.getByText(/card (added|saved|updated)|payment method (added|updated)/i),

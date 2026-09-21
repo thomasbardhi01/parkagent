@@ -163,3 +163,14 @@ export function parseNearbyZones(body: unknown): NearbyZone[] {
   }
   return out;
 }
+
+
+/** True when the given page HTML is the "Add Payment Details" screen —
+ * the card-entry form the start flow lands on when the account has no
+ * saved payment method (header #updateCardWindowHeader + the #cardNumber
+ * / #saveCard form). Pure so it's testable against the recorded fixture. */
+export function isAddPaymentScreen(html: string): boolean {
+  const hasHeader = /id="updateCardWindowHeader"[^>]*>\s*Add Payment Details/i.test(html);
+  const hasForm = /id="cardNumber"/.test(html) && /id="saveCard"/.test(html);
+  return hasHeader && hasForm;
+}

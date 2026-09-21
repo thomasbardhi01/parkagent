@@ -11,6 +11,7 @@ import { registerPolicy } from "./routes/policy.js";
 import { registerProviders } from "./routes/providers.js";
 import { registerSession } from "./routes/session.js";
 import { registerStripeWebhook } from "./routes/webhooksStripe.js";
+import { registerZones } from "./routes/zones.js";
 import type { PushSender } from "./services/apns.js";
 import type { StateCrypto } from "./services/crypto.js";
 import type { ExecutorProvider } from "./services/executor.js";
@@ -79,6 +80,7 @@ export function buildApp(deps?: AppDeps): FastifyInstance {
   if (deps) {
     registerParked(app, deps);
     registerCity(app, deps);
+    registerZones(app, deps);
     registerPolicy(app, deps);
     registerSession(app, deps);
     registerLocation(app, deps);

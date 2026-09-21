@@ -35,7 +35,10 @@ const BOYLSTON_ZONE: ZoneTermsRow = {
   zoneId: "bos-boylston-st-e-d-819305",
   city: "bos",
   street: "BOYLSTON ST",
-  parknycZoneNumber: "", // no ParkBoston numbers in the source data
+  // User-reported at the meter (the source data has none, and ParkBoston's
+  // app has no map) — the unknown→reported→verified progression lives in
+  // zoneNumber.test.ts; here the number is already known.
+  providerZoneNumber: "81234",
   rateFirstHour: 3.75,
   rateAdditionalHour: 3.75,
   maxStayMinutes: 120,
@@ -102,6 +105,21 @@ test("a Boston start without a linked passport account refuses provider_not_link
     provider: "passport",
     displayName: "ParkBoston",
   });
+});
+
+test("a Boston start with no reported zone number refuses needs_zone_number", async () => {
+  // A copy, not the shared fixture: nobody has reported this one yet.
+  const { app, state } = makeApp({ zones: [{ ...BOYLSTON_ZONE, providerZoneNumber: "" }] });
+
+  const started = await post(app, "/session/start", START);
+  expect(started.statusCode).toBe(409);
+  expect(started.json()).toMatchObject({
+    error: "needs_zone_number",
+    zoneId: BOYLSTON_ZONE.zoneId,
+  });
+  // Refused before any session row or executor call; the decision records it.
+  expect(state.sessions).toHaveLength(0);
+  expect(state.decisions.find((d) => d.kind === "session_start")!.rule).toBe("needs_zone_number");
 });
 
 test("the extension worker prices Boston ticket risk with the $40 ticket", async () => {

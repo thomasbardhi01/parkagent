@@ -9,15 +9,17 @@
  * from storage state; the happy path is hardcoded against selectors.ts and
  * anything off-script is captured and returned as a typed error.
  *
- * Zone resolution is map-first: Boston's open data has NO ParkBoston zone
- * numbers, so startSession centers the provider's own Find Parking map on
- * the car's coordinates (context geolocation), opens the nearest zone pin,
- * and reads the zone number and street off the panel. A panel street that
- * disagrees with the street our zone data carries refuses with
- * zone_mismatch — paying the wrong block is worse than not paying.
+ * There is NO map in the ParkBoston web app (verified on the 2026-09-21
+ * signed-in recording, fixtures/passport-resolve-2026-09-21T01-17-11-693Z):
+ * after login the app lands on a single "Enter Zone" screen — a zone-number
+ * field and Continue. So startSession REQUIRES a zone number; the server
+ * collects them from users at the meter (POST /zones/:zoneId/provider-number)
+ * since Boston's open data carries none. Map-based resolution survives only
+ * as the ParkNYC client's non-fatal cross-check.
  *
- * Only the gated entry / T&C / e-mail verification screens have been walked
- * live (headless, 2026-09-20). Every signed-in flow below is drafted from
+ * The gated entry / T&C / e-mail verification screens and the Enter Zone
+ * screen (#zoneNumber, #zoneNext) are verified against recordings. The
+ * screens AFTER zone submit (rates/duration/confirm) are still drafted from
  * the app's shipped view source and MUST be verified against a
  * `pnpm -C executor run record -- --provider passport` run (see README).
  */
@@ -39,10 +41,7 @@ import type {
   StorageStateValue,
   TopupWalletResult,
   VerifyAccountResult,
-  ZoneResolution,
 } from "../types.js";
-import type { ZonePanel } from "./parse.js";
-import { parseZoneNumberText, streetsMatch } from "./parse.js";
 import { BOSTON_BASE_URL, passportUrls, selectors } from "./selectors.js";
 import type { PassportUrls } from "./selectors.js";
 
@@ -63,15 +62,6 @@ export interface PassportClientOptions {
   onStep?: (name: string, page: Page) => Promise<void>;
   recordHarPath?: string;
   tracePath?: string;
-}
-
-/** Coordinates + expectation for the map-based zone resolution. */
-export interface ZoneResolveArgs {
-  carLat: number;
-  carLng: number;
-  /** Refuse with zone_mismatch when the panel street disagrees; null/absent
-   * means we have nothing to check against (log-only). */
-  expectedStreet?: string | null;
 }
 
 export class PassportClient {
@@ -106,9 +96,6 @@ export class PassportClient {
       : await chromium.launch({ headless: this.options.headless ?? true });
     this.context = await this.browser.newContext({
       storageState: state,
-      // The Find Parking map centers on "my location": granting geolocation
-      // and setting it to the car's fix is how we center the map on the car.
-      permissions: ["geolocation"],
       ...(this.options.recordHarPath ? { recordHar: { path: this.options.recordHarPath } } : {}),
     });
     if (this.options.tracePath) {
@@ -171,167 +158,57 @@ export class PassportClient {
   }
 
   /**
-   * Map-based zone resolution: center the Find Parking map on the car,
-   * open the nearest zone pin, and read the panel. Returns the panel or a
-   * typed error; leaves the page ON the zone info panel so startSession can
-   * continue with Select Zone. TODO-verify end to end (drafted from
-   * find-parking.js / zone-info.js source).
-   */
-  async resolveZoneFromMap(args: ZoneResolveArgs): Promise<ZonePanel | ExecutorError> {
-    const opened = await this.open();
-    if ("ok" in opened) return opened;
-    const { page } = opened;
-
-    const outcome = await this.run(
-      `resolve zone from map at ${args.carLat.toFixed(5)},${args.carLng.toFixed(5)}`,
-      page,
-      async () => {
-        await this.context!.setGeolocation({ latitude: args.carLat, longitude: args.carLng });
-        await page.goto(this.urls.findParking);
-        await this.step("find-parking", page);
-        if (await this.atGatedEntry(page)) {
-          return this.fail(page, "auth_expired", "Passport asked to sign in; state is stale");
-        }
-        await selectors.map.canvas(page).waitFor();
-        // Give the map a beat to geolocate, fetch nearby zones, drop pins.
-        await selectors.map.markers(page).first().waitFor({ timeout: this.timeoutMs });
-        await this.step("map-markers", page);
-
-        // Nearest pin to the viewport center — the map is centered on the
-        // car (geolocation), so the nearest pin to center is the nearest
-        // zone to the car.
-        const markers = selectors.map.markers(page);
-        const count = await markers.count();
-        const viewport = page.viewportSize() ?? { width: 800, height: 600 };
-        const cx = viewport.width / 2;
-        const cy = viewport.height / 2;
-        let best = -1;
-        let bestDist = Number.POSITIVE_INFINITY;
-        for (let i = 0; i < count; i += 1) {
-          const box = await markers.nth(i).boundingBox();
-          if (!box) continue;
-          const d = Math.hypot(box.x + box.width / 2 - cx, box.y + box.height / 2 - cy);
-          if (d < bestDist) {
-            bestDist = d;
-            best = i;
-          }
-        }
-        if (best < 0) {
-          return this.fail(page, "zone_not_found", "no zone pins on the map at the car's location");
-        }
-        await markers.nth(best).click();
-        await this.step("marker-clicked", page);
-
-        // The info window's zone-name link opens the zone info panel.
-        await selectors.map.infoWindowZoneLink(page).click();
-        await selectors.zoneInfo.zoneNumber(page).waitFor();
-        await this.step("zone-info", page);
-
-        const zoneNoText = await selectors.zoneInfo.zoneNumber(page).innerText();
-        const street = (await selectors.zoneInfo.zoneName(page).innerText()).trim();
-        const zoneNumber = parseZoneNumberText(zoneNoText);
-        if (zoneNumber === null || street.length === 0) {
-          return this.fail(
-            page,
-            "ui_changed",
-            `zone panel did not carry a readable zone number/street (saw "${zoneNoText}")`,
-          );
-        }
-        // Success smuggled through the session-result shape; unwrapped below.
-        return {
-          ok: true,
-          providerSessionId: `${zoneNumber} ${street}`,
-          expiresAt: new Date(),
-          amountUsd: 0,
-        };
-      },
-    );
-    if (!outcome.ok) return outcome;
-    // First token is the zone number; the rest is the street (it has spaces).
-    const sep = outcome.providerSessionId.indexOf(" ");
-    return {
-      zoneNumber: outcome.providerSessionId.slice(0, sep),
-      street: outcome.providerSessionId.slice(sep + 1),
-    };
-  }
-
-  /**
-   * Start a session. Boston zones carry no zone number in our data, so when
-   * car coordinates are given the zone is resolved from the provider's map
-   * first; a stored zone number (other Passport cities) is used directly
-   * when no coordinates are available.
+   * Start a session by typing the zone number into the Enter Zone screen —
+   * the only entry the ParkBoston web app has (no map; verified on the
+   * 2026-09-21 recording). The zone number comes from our zones table,
+   * fed by user reports (POST /zones/:zoneId/provider-number).
    */
   async startSession(
     zoneNumber: string,
     plate: string | undefined,
     minutes: number,
-    resolve?: ZoneResolveArgs,
   ): Promise<ExecutorResult> {
+    if (zoneNumber === "") {
+      // Never reach the provider without a number: the server refuses
+      // earlier (needs_zone_number), this is the belt to that suspender.
+      return {
+        ok: false,
+        code: "zone_not_found",
+        message: "no zone number for this zone — ParkBoston needs the posted number",
+      };
+    }
     const opened = await this.open();
     if ("ok" in opened) return opened;
     const { page } = opened;
 
-    let zoneResolution: ZoneResolution | undefined;
-    let effectiveZone = zoneNumber;
-    let onZonePanel = false;
-
-    if (resolve) {
-      const panel = await this.resolveZoneFromMap(resolve);
-      if ("ok" in panel) return panel; // typed error, capture attached
-      const expected = resolve.expectedStreet ?? null;
-      const matched =
-        zoneNumber !== ""
-          ? panel.zoneNumber === zoneNumber
-          : expected !== null
-            ? streetsMatch(expected, panel.street)
-            : null;
-      zoneResolution = {
-        mapZoneNumber: panel.zoneNumber,
-        mapStreet: panel.street,
-        storedZoneNumber: zoneNumber,
-        expectedStreet: expected,
-        matched,
-      };
-      if (expected !== null && !streetsMatch(expected, panel.street)) {
-        return this.fail(
-          page,
-          "zone_mismatch",
-          `map zone ${panel.zoneNumber} is on "${panel.street}" but our zone data says "${expected}"`,
-        );
-      }
-      effectiveZone = zoneNumber !== "" ? zoneNumber : panel.zoneNumber;
-      onZonePanel = true;
-    }
-    if (effectiveZone === "") {
-      return {
-        ok: false,
-        code: "zone_not_found",
-        message: "no zone number and no car coordinates to resolve one from the map",
-      };
-    }
-
-    const goal = `start ${minutes} min in zone ${effectiveZone}`;
+    const goal = `start ${minutes} min in zone ${zoneNumber}`;
     const result = await this.run(goal, page, async () => {
-      if (onZonePanel) {
-        // resolveZoneFromMap left us on the zone info panel.
-        await selectors.zoneInfo.selectZoneButton(page).click();
-      } else {
-        await page.goto(this.urls.zoneEntry);
-        await this.step("zone-entry", page);
-        if (await this.atGatedEntry(page)) {
-          return this.fail(page, "auth_expired", "Passport asked to sign in; state is stale");
-        }
-        await selectors.zone.zoneNumberInput(page).fill(effectiveZone);
-        await selectors.zone.nextButton(page).click();
-        await this.step("zone-submitted", page);
-        if (
-          await selectors.zone
-            .notFoundMessage(page)
-            .isVisible({ timeout: 3_000 })
-            .catch(() => false)
-        ) {
-          return this.fail(page, "zone_not_found", `Passport rejected zone ${effectiveZone}`);
-        }
+      // Enter Zone (VERIFIED against the 2026-09-21 recording: input
+      // #zoneNumber type=tel "Zone Number", button #zoneNext "Continue").
+      await page.goto(this.urls.zoneEntry);
+      await this.step("zone-entry", page);
+      if (await this.atGatedEntry(page)) {
+        return this.fail(page, "auth_expired", "Passport asked to sign in; state is stale");
+      }
+      await selectors.zone.zoneNumberInput(page).fill(zoneNumber);
+      await selectors.zone.nextButton(page).click();
+      await this.step("zone-submitted", page);
+      if (
+        await selectors.zone
+          .notFoundMessage(page)
+          .isVisible({ timeout: 3_000 })
+          .catch(() => false)
+      ) {
+        return this.fail(page, "zone_not_found", `Passport rejected zone ${zoneNumber}`);
+      }
+
+      // After a valid zone the app shows the zone's info (rates) with a
+      // Select Zone button, or goes straight on — both drafted from the
+      // shipped view source, TODO-verify on the first paid recording.
+      const selectZone = selectors.zoneInfo.selectZoneButton(page);
+      if (await selectZone.isVisible({ timeout: 5_000 }).catch(() => false)) {
+        await selectZone.click();
+        await this.step("zone-selected", page);
       }
 
       // Vehicle (skipped by the app when only one is saved — TODO-verify).
@@ -377,9 +254,6 @@ export class PassportClient {
       }
       return { ok: true, ...parsed };
     });
-    if (result.ok && zoneResolution) {
-      return { ...result, zoneResolution };
-    }
     return result;
   }
 

@@ -18,7 +18,7 @@ export interface SessionRow {
   zoneId: string;
   /** "nyc" | "bos", from the zone at start; pre-city rows default "nyc". */
   city: string;
-  parknycZoneNumber: string;
+  providerZoneNumber: string;
   status: string;
   dryRun: boolean;
   startedAt: Date | null;
@@ -47,7 +47,7 @@ export interface SessionWrite {
   userId?: string;
   zoneId?: string;
   city?: string;
-  parknycZoneNumber?: string;
+  providerZoneNumber?: string;
   status?: string;
   dryRun?: boolean;
   startedAt?: Date;
@@ -83,13 +83,26 @@ export interface ZoneTermsRow {
   zoneId: string;
   /** "nyc" | "bos"; optional so pre-city fakes/fixtures stay valid. */
   city?: string;
-  /** Street the zone is on (Boston rows); the zone_mismatch guard's side. */
+  /** Street the zone is on (Boston rows); cross-check evidence. */
   street?: string | null;
-  parknycZoneNumber: string;
+  /** "" when unknown — Boston numbers come from user reports. */
+  providerZoneNumber: string;
+  /** Two different users reported the same number; optional for old fakes. */
+  providerZoneNumberVerified?: boolean;
   rateFirstHour: unknown;
   rateAdditionalHour: unknown;
   maxStayMinutes: number | null;
   hoursJson: unknown;
+}
+
+/** One user's report of the number posted at a zone. */
+export interface ZoneNumberReportRow {
+  id: string;
+  zoneId: string;
+  userId: string;
+  number: string;
+  source: string;
+  createdAt: Date;
 }
 
 /** One linked provider account (see providers/registry.ts). */
@@ -154,6 +167,18 @@ export interface AppDb {
   };
   zone: {
     findUnique(args: { where: { zoneId: string } }): Promise<ZoneTermsRow | null>;
+    update(args: {
+      where: { zoneId: string };
+      data: { providerZoneNumber?: string; providerZoneNumberVerified?: boolean };
+    }): Promise<ZoneTermsRow>;
+  };
+  zoneNumberReport: {
+    findMany(args: { where: { zoneId: string } }): Promise<ZoneNumberReportRow[]>;
+    upsert(args: {
+      where: { zoneId_userId: { zoneId: string; userId: string } };
+      create: { zoneId: string; userId: string; number: string; source: string };
+      update: { number: string; source: string };
+    }): Promise<ZoneNumberReportRow>;
   };
   parkedEvent: {
     create(args: {

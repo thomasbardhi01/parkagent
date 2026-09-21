@@ -8,6 +8,9 @@ enum MockScenario: String, CaseIterable, Identifiable, Sendable {
     case freePeriod
     case unknownZone
     case paymentFailed
+    /// Boston block with no known ParkBoston number: the sheet collects it
+    /// from the meter, and later parks at the block are automatic.
+    case bostonNeedsZone
 
     static let defaultsKey = "mockScenario"
 
@@ -20,6 +23,7 @@ enum MockScenario: String, CaseIterable, Identifiable, Sendable {
         case .freePeriod: "Free period"
         case .unknownZone: "Unknown zone"
         case .paymentFailed: "Payment failed"
+        case .bostonNeedsZone: "Boston — zone number needed"
         }
     }
 }
@@ -107,6 +111,7 @@ struct MockAPI: APIClient {
     private let cardStore = MockCardStore()
     private let providerStore = MockProviderStore()
     private let policyStore = MockPolicyStore()
+    private let zoneStore = MockZoneNumberStore()
 
     private var scenario: MockScenario {
         MockScenario(rawValue: UserDefaults.standard.string(forKey: MockScenario.defaultsKey) ?? "")
@@ -136,7 +141,28 @@ struct MockAPI: APIClient {
             return MockFixtures.freePeriod(provider: provider)
         case .unknownZone:
             return MockFixtures.unknownZone()
+        case .bostonNeedsZone:
+            // Once someone reported the block's number, parking there is
+            // automatic — like the real zones table.
+            let passportStatus = await providerStore.status(of: "passport", scenario: providerScenario)
+            let reported = await zoneStore.number(for: MockFixtures.bostonZoneId)
+            return MockFixtures.bostonQuote(
+                provider: MockFixtures.parkedProvider(id: "passport", status: passportStatus),
+                zoneNumber: reported
+            )
         }
+    }
+
+    func reportZoneNumber(zoneId: String, number: String) async throws -> ZoneNumberReportResponse {
+        try await pause()
+        await zoneStore.report(number, for: zoneId)
+        return ZoneNumberReportResponse(
+            ok: true,
+            zoneId: zoneId,
+            number: number,
+            verified: false,
+            confirmations: 1
+        )
     }
 
     private func parknycProvider() async -> ParkedProvider {
@@ -157,7 +183,9 @@ struct MockAPI: APIClient {
     func startSession(_ request: SessionStartRequest) async throws -> SessionStartResponse {
         try await pause()
         if scenario == .paymentFailed { throw APIError.paymentFailed }
-        if await providerStore.status(of: "parknyc", scenario: providerScenario) != "linked" {
+        // The zone's city names its provider, like the real server.
+        let providerId = request.zoneId.hasPrefix("bos-") ? "passport" : "parknyc"
+        if await providerStore.status(of: providerId, scenario: providerScenario) != "linked" {
             throw APIError.refused(code: "provider_not_linked")
         }
         let expiresAt = await store.start(minutes: request.minutes)
@@ -425,11 +453,11 @@ private actor MockProviderStore {
     /// Scenario gives the starting state; link/unlink actions override it.
     func status(of providerId: String, scenario: ProviderMockScenario) -> String {
         if let override = statusOverrides[providerId] { return override }
-        guard providerId == "parknyc" else { return "unlinked" }
         switch scenario {
+        // Both providers linked, so NYC and Boston pay flows both work.
         case .linked: return "linked"
         case .notLinked, .linkFails: return "unlinked"
-        case .expired: return "expired"
+        case .expired: return providerId == "parknyc" ? "expired" : "unlinked"
         }
     }
 
@@ -477,6 +505,21 @@ private actor MockProviderStore {
         return ["parknyc", "passport"]
             .filter { $0 != providerId }
             .contains { status(of: $0, scenario: scenario) == "linked" }
+    }
+}
+
+/// User-reported zone numbers for the mock (the real ones live on the
+/// server's zones table). Reporting sticks for the app run, so a second
+/// park at the block is automatic.
+private actor MockZoneNumberStore {
+    private var numbers: [String: String] = [:]
+
+    func number(for zoneId: String) -> String? {
+        numbers[zoneId]
+    }
+
+    func report(_ number: String, for zoneId: String) {
+        numbers[zoneId] = number
     }
 }
 
@@ -570,6 +613,47 @@ enum MockFixtures {
 
     static func unknownZone() -> ParkedResponse {
         response(action: .unknownZone, rule: "unknown_zone", candidates: [], quote: nil, provider: nil)
+    }
+
+    /// The Boylston St Back Bay block from server/test fixtures: flat
+    /// $3.75/hr, 120 min max, $0.35 ParkBoston fee.
+    static let bostonZoneId = "bos-boylston-st-e-d-819305"
+
+    /// Boston quote; `zoneNumber` nil means nobody has reported the block's
+    /// ParkBoston number yet (action confirm + needsZoneNumber).
+    static func bostonQuote(provider: ParkedProvider?, zoneNumber: String?) -> ParkedResponse {
+        let stayMinutes = 90
+        let meter = round2(Double(stayMinutes) / 60 * 3.75)
+        let quote = Quote(
+            zoneId: bostonZoneId,
+            providerZoneNumber: zoneNumber ?? "",
+            stayMinutes: stayMinutes,
+            chargedMinutes: stayMinutes,
+            meterUsd: meter,
+            feeUsd: 0.35,
+            totalUsd: round2(meter + 0.35)
+        )
+        let candidate = Candidate(
+            zoneId: bostonZoneId,
+            city: "bos",
+            providerZoneNumber: zoneNumber ?? "",
+            distanceM: 6.1,
+            containsPoint: true,
+            rateFirstHourUsd: 3.75,
+            rateAdditionalHourUsd: 3.75,
+            maxStayMinutes: 120,
+            hours: [EnforcementHours(days: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"], start: "08:00", end: "20:00")],
+            quote: quote
+        )
+        let known = zoneNumber != nil
+        return response(
+            action: known ? .pay : .confirm,
+            rule: known ? "auto_pay_ok" : "needs_zone_number",
+            candidates: [candidate],
+            quote: quote,
+            provider: provider,
+            needsZoneNumber: !known
+        )
     }
 
     // MARK: - Provider fixtures
@@ -749,7 +833,7 @@ enum MockFixtures {
         return Candidate(
             zoneId: "nyc-\(zoneNumber)",
             city: "nyc",
-            parknycZoneNumber: zoneNumber,
+            providerZoneNumber: zoneNumber,
             distanceM: distanceM,
             containsPoint: containsPoint,
             rateFirstHourUsd: firstHour,
@@ -758,7 +842,7 @@ enum MockFixtures {
             hours: hours,
             quote: Quote(
                 zoneId: "nyc-\(zoneNumber)",
-                parknycZoneNumber: zoneNumber,
+                providerZoneNumber: zoneNumber,
                 stayMinutes: stayMinutes,
                 chargedMinutes: stayMinutes,
                 meterUsd: meter,
@@ -773,7 +857,8 @@ enum MockFixtures {
         rule: String,
         candidates: [Candidate],
         quote: Quote?,
-        provider: ParkedProvider?
+        provider: ParkedProvider?,
+        needsZoneNumber: Bool = false
     ) -> ParkedResponse {
         ParkedResponse(
             action: action,
@@ -782,6 +867,7 @@ enum MockFixtures {
             rule: rule,
             dryRun: true,
             provider: provider,
+            needsZoneNumber: needsZoneNumber,
             parkedEventId: "mock-parked-\(UUID().uuidString.prefix(8))",
             decisionId: "mock-decision-\(UUID().uuidString.prefix(8))"
         )

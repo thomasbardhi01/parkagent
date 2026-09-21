@@ -12,21 +12,21 @@
  */
 
 export interface StartSessionArgs {
-  /** Zone number as entered on the meter/app, e.g. "110436". "" for Boston
-   * zones — the Passport executor resolves the zone from the provider's own
-   * map instead (Analyze Boston publishes no ParkBoston numbers). */
+  /** Zone number as entered on the meter/app, e.g. "110436". Always
+   * required now: Boston numbers come from user reports at the meter
+   * (POST /zones/:zoneId/provider-number) — the ParkBoston web app has no
+   * map to resolve them from, and /session/start refuses earlier
+   * (needs_zone_number) when the zone's number is still unknown. */
   zoneNumber: string;
   minutes: number;
   /** What the server priced the buy at; the executor verifies/echoes it. */
   amountUsd: number;
   feeUsd: number;
   plate?: string;
-  /** The car's fix: enables map-based zone resolution (Passport) and the
-   * non-fatal map cross-check (ParkNYC). */
+  /** The car's fix: feeds ParkNYC's NON-FATAL map cross-check only. */
   carLat?: number;
   carLng?: number;
-  /** Street our zone data carries; a Passport map resolution whose panel
-   * street disagrees refuses with zone_mismatch. */
+  /** Street our zone data carries; cross-check evidence only. */
   expectedStreet?: string;
 }
 
@@ -46,7 +46,6 @@ export interface StopSessionArgs {
 export type ExecutorErrorCode =
   | "auth_expired" // provider storage state no longer signs us in
   | "zone_not_found" // the provider rejected the zone number
-  | "zone_mismatch" // the provider map's zone disagrees with our zone data
   | "payment_declined" // the provider's payment step refused
   | "ui_changed" // an expected screen/element never appeared
   | "network" // couldn't reach the provider at all
@@ -64,16 +63,17 @@ export interface ExecutorDiagnostics {
 }
 
 /**
- * What the provider's own map said about where the car is. For Boston this
- * is the authoritative zone (our data has no ParkBoston numbers); for NYC a
- * cross-check against the stored number. Both sides land on the decision.
+ * What ParkNYC's own map said about where the car is — the NON-FATAL
+ * cross-check against the stored zone number; both sides land on the
+ * decision. (Passport has no map: ParkBoston numbers come from user
+ * reports, see POST /zones/:zoneId/provider-number.)
  */
 export interface ZoneResolution {
   mapZoneNumber: string;
   mapStreet: string;
   storedZoneNumber: string;
   expectedStreet: string | null;
-  /** Number match (NYC) / street match (Boston); null when uncheckable. */
+  /** Map number vs stored number; null when uncheckable. */
   matched: boolean | null;
 }
 

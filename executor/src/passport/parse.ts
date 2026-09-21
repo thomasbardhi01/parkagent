@@ -1,10 +1,11 @@
 /**
  * PERSONAL-USE PROTOTYPE — see ../types.ts header and issue #37.
  *
- * Pure functions for the Passport map-based zone resolution: reading the
- * zone info panel (zone number + street) and deciding whether the panel's
- * street matches the street our zone data carries. Pure so they are
- * unit-testable against fixture HTML — no browser, no provider.
+ * Pure functions over Passport screens: recognizing the Enter Zone screen
+ * (the app's only zone entry — there is no map, per the 2026-09-21
+ * recording), and reading the zone info panel (zone number + street) the
+ * app may show after a zone is submitted. Pure so they are unit-testable
+ * against fixture HTML — no browser, no provider.
  *
  * Receipt parsing (confirmation number, expiry, amount) is shared with the
  * ParkNYC client (../parknyc/parse.js): Boston is also America/New_York
@@ -28,6 +29,34 @@ const ZONE_NUMBER = /zone\s*(?:number|no\.?|#|id)?\s*[:#]?\s*(\d{3,10})/i;
 export function parseZoneNumberText(text: string): string | null {
   const m = ZONE_NUMBER.exec(text);
   return m?.[1] ?? null;
+}
+
+/** The Enter Zone screen, as the client's selectors see it. */
+export interface ZoneEntryScreen {
+  /** The zone-number input's id is present (#zoneNumber). */
+  hasZoneNumberInput: boolean;
+  /** The Continue button's id is present (#zoneNext). */
+  hasContinueButton: boolean;
+  /** The instruction label ("Enter the zone number posted…"). */
+  label: string | null;
+}
+
+/**
+ * Recognize the Enter Zone screen in raw page HTML — the exact ids the
+ * client types into (#zoneNumber) and clicks (#zoneNext). Null when
+ * neither id is present (not this screen). Verified against the
+ * 2026-09-21 recording (test/fixtures/pages/passport/zone-entry.html).
+ */
+export function parseZoneEntryHtml(html: string): ZoneEntryScreen | null {
+  const hasZoneNumberInput = /<input[^>]*id=["']zoneNumber["']/i.test(html);
+  const hasContinueButton = /<button[^>]*id=["']zoneNext["']/i.test(html);
+  if (!hasZoneNumberInput && !hasContinueButton) return null;
+  const label = /for=["']zoneNumber["'][^>]*>([\s\S]*?)<\//i.exec(html)?.[1];
+  return {
+    hasZoneNumberInput,
+    hasContinueButton,
+    label: label === undefined ? null : visibleTextFromHtml(label),
+  };
 }
 
 /**

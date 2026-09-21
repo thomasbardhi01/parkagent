@@ -15,7 +15,7 @@ const NOW = new Date(MONDAY_2PM);
 
 const STEINWAY_ZONE: ZoneTermsRow = {
   zoneId: "nyc-417371",
-  parknycZoneNumber: "417371",
+  providerZoneNumber: "417371",
   rateFirstHour: 2.0,
   rateAdditionalHour: 3.0,
   maxStayMinutes: 120,

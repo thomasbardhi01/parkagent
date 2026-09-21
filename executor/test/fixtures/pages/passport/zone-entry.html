@@ -1,0 +1,63 @@
+<!--
+  Enter Zone screen, mirrored from the signed-in recording
+  fixtures/passport-resolve-2026-09-21T01-17-11-693Z/01-find-parking.html
+  (bostonma.ppprk.com, 2026-09-21). Trimmed to the #zoneEntry page markup;
+  jQuery-Mobile enhancement classes left as recorded. This screen is the
+  ONLY zone entry the app has — there is no Find Parking map.
+-->
+<html><body>
+<div id="zoneEntryMenuHeader" class="header" data-role="header" data-theme="a">
+        <div role="navigation" aria-label="main">
+            <a id="navpanelControl_zoneEntry" class="sidemenu_toggle_button ui-link ui-btn-left ui-btn ui-btn-d ui-icon-bars ui-btn-icon-notext ui-shadow ui-corner-all" href="#navpanel_zoneEntry" aria-expanded="false" aria-controls="navpanel_zoneEntry" data-icon="bars" data-theme="d" data-iconpos="notext" tabindex="0">Toggle Menu</a>
+        </div>
+        <h1>
+            Enter Zone        </h1>
+    </div>
+    <div id="zoneEntryBackHeader" class="header" data-role="header" data-theme="a" style="display: none">
+        <a href="#parkrightSplash" data-icon="back-header" data-theme="d" data-iconpos="notext" tabindex="0">Back</a>
+        <h1>
+            Enter Zone        </h1>
+    </div>
+    <div data-role="content" id="zoneEntryPageContent">
+        <label class="toplabelalignment" for="zoneNumber">
+            Enter the zone number posted at this location:         </label>
+        <div id="zoneEntryContainer" class="ui-grid-a">
+            <div id="zoneSuggestBasedEntryContainer">
+                <div id="zoneNumberInputContainer" class="ui-block-a">
+                    <input type="tel" name="zoneNumber" id="zoneNumber" placeholder="Zone Number" value="" data-theme="c" tabindex="0">
+                    <ul id="addressSuggestions" data-role="listview" data-inset="true" style="cursor: pointer; display: none;"></ul>
+                </div>
+                <div id="zoneInfoButtonContainer" class="ui-block-b">
+                    <button aria-label="Zone Number Info" id="zoneInfo" data-role="button" data-icon="info" data-iconpos="notext" tabindex="0"></button>
+                </div>
+            </div>
+            <div id="addressDropdownBasedEntryContainer" style="display: none">
+                <div class="ui-block-aa">
+                    <input type="tel" name="addressNumber" id="addressNumber" placeholder="NUM" value="" data-theme="c">
+                </div>
+                <div class="ui-block-bb">
+                    <label for="addressDropdown" style="display: none">
+                        Choose Address
+                    </label>
+                    <select name="addressDropdown" id="addressDropdown" data-icon="select-down"></select>
+                </div>
+            </div>
+        </div>
+        <div>
+            <button id="zoneNext" data-role="button" data-icon="chevron-right-white-48" data-iconpos="right" tabindex="0">
+                Continue            </button>
+                    </div>
+        <div id="recentZones">
+                        <ul id="recentZonesList" data-role="listview" data-inset="true" data-theme="d" data-divider-theme="d"></ul>
+        </div>
+        <div id="imageContainer" class="centered">
+                    </div>
+        <div class="footer_msg" id="zoneNumberInstruction">
+            <p class="footer_label bottomlabelalignment">
+                By continuing you agree you are abiding to all zone signage on restrictions and rules.            </p>
+            <p class="footer_label bottomlabelalignment acceptTextMessagesInfo">
+                To purchase parking on the phone you may be sent up to five text messages including texts processing and confirming your transactions, and parking expiration alerts. Standard message and data rates apply.            </p>
+        </div>
+        <div id="secondaryImageContainer" class="centered">
+                    </div>
+</body></html>

@@ -16,7 +16,6 @@
 export type ExecutorErrorCode =
   | "auth_expired" // storage state no longer signs us in
   | "zone_not_found" // the provider rejected the zone number
-  | "zone_mismatch" // the provider map's zone disagrees with our zone data
   | "payment_declined" // the provider's payment step refused
   | "ui_changed" // an expected screen/element never appeared
   | "network" // couldn't reach the provider at all
@@ -86,12 +85,12 @@ export interface StartSessionArgs {
   amountUsd: number;
   feeUsd: number;
   plate?: string;
-  /** Where the car is (the parked event's fix): enables map-based zone
-   * resolution (Passport) and the map cross-check (ParkNYC). */
+  /** Where the car is (the parked event's fix): feeds ParkNYC's non-fatal
+   * map cross-check. The Passport client ignores it — ParkBoston has no
+   * map (2026-09-21 recording); its zone numbers come from user reports. */
   carLat?: number;
   carLng?: number;
-  /** The street our zone data says the car is on; a Passport map resolution
-   * whose panel street disagrees refuses with zone_mismatch. */
+  /** The street our zone data says the car is on; cross-check evidence. */
   expectedStreet?: string;
 }
 

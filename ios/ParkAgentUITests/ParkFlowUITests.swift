@@ -46,6 +46,52 @@ final class ParkFlowUITests: ParkAgentUITestCase {
         )
     }
 
+    /// Boston block with no reported ParkBoston number: the sheet collects
+    /// it from the meter, saves it, pays in the same tap — and the next
+    /// park at the block is automatic.
+    func testBostonZoneNumberCaptureThenAutomatic() {
+        let app = launchApp(scenario: "bostonNeedsZone")
+        simulateParkFromHome(app)
+
+        // Unknown number: capture field instead of a plain Pay.
+        let field = element(app, "parkedSheet.zoneNumberField")
+        XCTAssertTrue(field.waitForExistence(timeout: 5), "Zone-number capture missing")
+        XCTAssertTrue(element(app, "parkedSheet.zoneNumberHint").exists, "First-park hint missing")
+        let saveAndPay = element(app, "parkedSheet.saveAndPayButton")
+        XCTAssertTrue(saveAndPay.exists, "Save-and-pay missing")
+        XCTAssertFalse(saveAndPay.isEnabled, "Must wait for a plausible number")
+
+        field.tap()
+        field.typeText("81234")
+        XCTAssertTrue(saveAndPay.isEnabled, "Five digits should be enough")
+        saveAndPay.tap()
+
+        // Saved notice shows while the payment goes through, then the
+        // sheet closes onto an active session.
+        XCTAssertTrue(
+            element(app, "parkedSheet.zoneSavedNotice").waitForExistence(timeout: 5),
+            "Saved-for-this-block notice missing"
+        )
+        XCTAssertTrue(
+            element(app, "parkedSheet.view").waitForNonExistence(timeout: 10),
+            "Sheet did not close after paying"
+        )
+        XCTAssertTrue(
+            element(app, "home.activeSessionRow").waitForExistence(timeout: 5),
+            "No active session after save-and-pay"
+        )
+        XCTAssertTrue(app.staticTexts["Zone 81234"].exists, "Session should carry the saved number")
+
+        // Second park at the block: the stored number makes it automatic.
+        simulateParkViaDebugMenu(app)
+        XCTAssertTrue(
+            element(app, "parkedSheet.payButton").waitForExistence(timeout: 5),
+            "Second park should offer plain Pay"
+        )
+        XCTAssertFalse(element(app, "parkedSheet.zoneNumberField").exists, "No capture the second time")
+        XCTAssertTrue(app.staticTexts["Zone 81234"].exists, "Stored number should show on the card")
+    }
+
     /// Unknown-zone fixture: the manual zone-number input appears and
     /// resubmits for a quote.
     func testUnknownZoneManualEntryResubmits() {

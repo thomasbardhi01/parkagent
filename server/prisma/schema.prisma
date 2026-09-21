@@ -18,8 +18,12 @@ model Zone {
   // Which city's meter system the zone belongs to: "nyc" | "bos".
   city               String   @default("nyc")
   // The pay-by-app zone number a driver would enter (ParkNYC for nyc rows,
-  // ParkBoston for bos rows; "" when the source data doesn't carry one).
-  parknycZoneNumber  String   @map("parknyc_zone_number")
+  // ParkBoston for bos rows). "" when unknown: Boston's open data carries
+  // none, so bos numbers come from user reports at the meter
+  // (POST /zones/:zoneId/provider-number → zone_number_reports).
+  providerZoneNumber  String   @map("provider_zone_number")
+  // True once two different users reported the same number for this zone.
+  providerZoneNumberVerified Boolean @default(false) @map("provider_zone_number_verified")
   // The street the zone is on, as the source data names it (Boston:
   // Analyze Boston's STREET; null for NYC rows until the builder carries
   // one). The Passport executor refuses with zone_mismatch when the
@@ -45,6 +49,26 @@ model Zone {
   @@index([geom], type: Gist)
   @@index([centerline], type: Gist)
   @@map("zones")
+}
+
+// One user's report of the pay-by-app number posted at a zone (Boston: the
+// open data has none, so drivers read it off the meter). One row per
+// (zone, user) — re-reporting updates it; the zone's provider_zone_number
+// is the latest report, verified once two different users agree. No FK to
+// zones on purpose: zone rows are deleted and re-created on every
+// load:zones run and reports must survive that.
+model ZoneNumberReport {
+  id        String   @id @default(cuid())
+  zoneId    String   @map("zone_id")
+  userId    String   @map("user_id")
+  number    String
+  // "user" (typed at the meter) | "scan" (a future meter-sticker scan).
+  source    String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([zoneId, userId])
+  @@index([zoneId])
+  @@map("zone_number_reports")
 }
 
 // The two humans this prototype serves. api_key is the whole auth story.
@@ -112,7 +136,7 @@ model Session {
   // start ("nyc" | "bos"): the extension worker prices ticket risk and
   // fees per city from this, not from re-reading the zones table.
   city                 String    @default("nyc")
-  parknycZoneNumber    String    @map("parknyc_zone_number")
+  providerZoneNumber    String    @map("provider_zone_number")
   // pending | active | stopped | expired | failed
   status               String
   dryRun               Boolean   @map("dry_run")

@@ -9,6 +9,10 @@ struct ParkingDetectedSheet: View {
 
     @State private var selectedZoneId: String?
     @State private var manualZoneNumber = ""
+    /// The needsZoneNumber flow: what the driver read off the meter.
+    @State private var zoneNumberEntry = ""
+    @State private var zoneNumberSaved = false
+    @State private var zoneNumberSaveFailed = false
     /// Presents the link flow from inside this sheet; set by the "Link
     /// <provider>" primary action or a provider_not_linked refusal.
     @State private var linkingProviderId: String?
@@ -93,7 +97,7 @@ struct ParkingDetectedSheet: View {
         if let candidate = parked.candidates.first, let quote = parked.quote {
             header("Parking detected")
             ZoneCard(
-                zoneNumber: candidate.parknycZoneNumber,
+                zoneNumber: displayZoneNumber(candidate),
                 street: zoneSubtitle(candidate),
                 rateFirstHourUsd: candidate.rateFirstHourUsd,
                 rateAdditionalHourUsd: candidate.rateAdditionalHourUsd,
@@ -105,9 +109,63 @@ struct ParkingDetectedSheet: View {
                     .foregroundStyle(Color.warningGold)
             }
             quoteSummary(quote)
+            if parked.needsZoneNumber && !needsLink {
+                zoneNumberCapture
+            }
             Spacer(minLength: 0)
             payButtons(for: candidate)
         }
+    }
+
+    // MARK: - Zone number capture (needsZoneNumber)
+
+    /// Nobody has reported this block's pay-by-app number yet — collect it
+    /// from the meter once, then paying here is automatic for everyone.
+    @ViewBuilder
+    private var zoneNumberCapture: some View {
+        if zoneNumberSaved {
+            Label("Zone number saved for this block", systemImage: "checkmark.seal.fill")
+                .font(.captionTextSemibold)
+                .foregroundStyle(Color.success)
+                .accessibilityIdentifier("parkedSheet.zoneSavedNotice")
+        } else {
+            TextField("Zone number from the meter", text: $zoneNumberEntry)
+                .keyboardType(.numberPad)
+                .font(.bodyText)
+                .padding(Spacing.unit)
+                .background(Color.surface)
+                .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
+                .accessibilityIdentifier("parkedSheet.zoneNumberField")
+            Text(zoneNumberSaveFailed
+                ? "Couldn't save the number. Check the connection and try again."
+                : "First park on this block — enter the zone number posted at the meter.")
+                .font(.captionText)
+                .foregroundStyle(zoneNumberSaveFailed ? Color.danger : Color.textSecondary)
+                .accessibilityIdentifier("parkedSheet.zoneNumberHint")
+        }
+    }
+
+    private var trimmedZoneNumber: String {
+        zoneNumberEntry.trimmingCharacters(in: .whitespaces)
+    }
+
+    private var zoneNumberValid: Bool {
+        (3...10).contains(trimmedZoneNumber.count) && trimmedZoneNumber.allSatisfy(\.isNumber)
+    }
+
+    /// One tap: store the number, then pay with it.
+    private func saveNumberAndPay(_ candidate: Candidate) async {
+        zoneNumberSaveFailed = false
+        let number = trimmedZoneNumber
+        guard await model.reportZoneNumber(zoneId: candidate.zoneId, number: number) else {
+            zoneNumberSaveFailed = true
+            return
+        }
+        zoneNumberSaved = true
+        var updated = candidate
+        updated.providerZoneNumber = number
+        updated.quote.providerZoneNumber = number
+        await model.pay(candidate: updated)
     }
 
     // MARK: - Two candidates
@@ -123,7 +181,7 @@ struct ParkingDetectedSheet: View {
                 selectedZoneId = candidate.zoneId
             } label: {
                 ZoneCard(
-                    zoneNumber: candidate.parknycZoneNumber,
+                    zoneNumber: displayZoneNumber(candidate),
                     street: zoneSubtitle(candidate),
                     rateFirstHourUsd: candidate.rateFirstHourUsd,
                     rateAdditionalHourUsd: candidate.rateAdditionalHourUsd,
@@ -132,7 +190,7 @@ struct ParkingDetectedSheet: View {
                 )
             }
             .buttonStyle(.plain)
-            .accessibilityIdentifier("parkedSheet.candidate.\(candidate.parknycZoneNumber)")
+            .accessibilityIdentifier("parkedSheet.candidate.\(candidate.providerZoneNumber)")
         }
         Spacer(minLength: 0)
         if let selected = selectedCandidate {
@@ -158,7 +216,7 @@ struct ParkingDetectedSheet: View {
             .foregroundStyle(Color.success)
         if let candidate = parked.candidates.first {
             ZoneCard(
-                zoneNumber: candidate.parknycZoneNumber,
+                zoneNumber: displayZoneNumber(candidate),
                 street: zoneSubtitle(candidate),
                 rateFirstHourUsd: candidate.rateFirstHourUsd,
                 rateAdditionalHourUsd: candidate.rateAdditionalHourUsd,
@@ -238,6 +296,14 @@ struct ParkingDetectedSheet: View {
             }
             .buttonStyle(.primary)
             .accessibilityIdentifier("parkedSheet.linkProviderButton")
+        } else if parked.needsZoneNumber && !zoneNumberSaved {
+            // One tap saves the meter's number and pays with it.
+            Button("Save number and pay \(Format.money(candidate.quote.totalUsd))") {
+                Task { await saveNumberAndPay(candidate) }
+            }
+            .buttonStyle(.primary)
+            .disabled(!zoneNumberValid || model.isPaying)
+            .accessibilityIdentifier("parkedSheet.saveAndPayButton")
         } else {
             Button("Pay \(Format.money(candidate.quote.totalUsd)) for \(Format.minutes(candidate.quote.stayMinutes))") {
                 Task { await model.pay(candidate: candidate) }
@@ -265,6 +331,12 @@ struct ParkingDetectedSheet: View {
         parked.candidates.first { $0.zoneId == selectedZoneId }
     }
 
+    /// "Zone —" reads better than "Zone " while the block's pay-by-app
+    /// number is still unreported.
+    private func displayZoneNumber(_ candidate: Candidate) -> String {
+        candidate.providerZoneNumber.isEmpty ? "—" : candidate.providerZoneNumber
+    }
+
     /// The API carries no street names, so the subtitle is distance + hours.
     private func zoneSubtitle(_ candidate: Candidate) -> String {
         var parts = ["\(Format.distanceMeters(candidate.distanceM)) away"]
@@ -276,6 +348,8 @@ struct ParkingDetectedSheet: View {
 
     private var confirmReason: String? {
         switch parked.rule {
+        // The zone-number capture below explains itself.
+        case "needs_zone_number": nil
         case "rate_above_ceiling": "Above your auto-pay rate cap"
         case "session_cap_exceeded": "Above your per-session cap"
         case "daily_cap_exceeded": "Would pass your daily cap"

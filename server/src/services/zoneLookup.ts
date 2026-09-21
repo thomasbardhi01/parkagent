@@ -20,7 +20,7 @@ export interface Candidate {
   zoneId: string;
   /** "nyc" | "bos" — which city's meter system the zone belongs to. */
   city: string;
-  parknycZoneNumber: string;
+  providerZoneNumber: string;
   rateFirstHourUsd: number;
   rateAdditionalHourUsd: number;
   maxStayMinutes: number | null;
@@ -94,7 +94,7 @@ interface RawQuerier {
 interface CandidateRow {
   zone_id: string;
   city: string;
-  parknyc_zone_number: string;
+  provider_zone_number: string;
   rate_first_hour: number;
   rate_additional_hour: number;
   max_stay_minutes: number | null;
@@ -116,7 +116,7 @@ export function makeCandidateFetcher(db: RawQuerier): CandidateFetcher {
       SELECT
         z.zone_id,
         z.city,
-        z.parknyc_zone_number,
+        z.provider_zone_number,
         z.rate_first_hour::float8   AS rate_first_hour,
         z.rate_additional_hour::float8 AS rate_additional_hour,
         z.max_stay_minutes,
@@ -132,7 +132,7 @@ export function makeCandidateFetcher(db: RawQuerier): CandidateFetcher {
     return rows.map((row) => ({
       zoneId: row.zone_id,
       city: row.city,
-      parknycZoneNumber: row.parknyc_zone_number,
+      providerZoneNumber: row.provider_zone_number,
       rateFirstHourUsd: row.rate_first_hour,
       rateAdditionalHourUsd: row.rate_additional_hour,
       maxStayMinutes: row.max_stay_minutes,

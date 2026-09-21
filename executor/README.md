@@ -61,19 +61,18 @@ account's cookies into a fresh context on one warm shared Chromium process.
 pnpm -C executor run record -- --flow start --zone 110436 --minutes 15
 pnpm -C executor run record -- --flow extend --session <providerSessionId>
 pnpm -C executor run record -- --flow stop --session <providerSessionId>
-# Passport / ParkBoston:
-pnpm -C executor run record -- --provider passport --flow resolve --lat 42.3495 --lng -71.0798
-pnpm -C executor run record -- --provider passport --flow start --lat 42.3495 --lng -71.0798 --street "BOYLSTON ST" --minutes 15
+# Passport / ParkBoston (the zone number comes from a user report):
+pnpm -C executor run record -- --provider passport --flow start --zone 81234 --minutes 15
 ```
 
 Drives one flow against the **real** site, headed, with tracing on, and
 saves to `executor/fixtures/<provider>-<flow>-<stamp>/` (gitignored):
 `har.har`, `trace.zip`, and a `NN-<step>.html` + `.png` pair per screen.
 **`start` and `extend` pay a real meter** — the harness makes you type
-`pay` first; use a cheap zone and the minimum duration. `resolve` drives
-ONLY the map-based zone resolution (no payment screen), so it is the safe
-first recording to make in Boston. Open traces with
-`pnpm -C executor exec playwright show-trace <dir>/trace.zip`.
+`pay` first; use a cheap zone and the minimum duration. (The old
+`resolve` flow is gone: the 2026-09-21 recording showed ParkBoston has no
+map — signed-in navigation lands on the Enter Zone screen.) Open traces
+with `pnpm -C executor exec playwright show-trace <dir>/trace.zip`.
 
 To grow the unit tests, sanitize a recorded page (strip email, plate, card
 hints, tokens) and drop it into `test/fixtures/pages/` named for its
@@ -104,34 +103,35 @@ is `bostonma.ppprk.com/park/`, other Passport cities live at their own
 Passport city by swapping the base URL (`passportUrls(base)` in
 `src/passport/selectors.ts`; `PassportExecutorOptions.baseUrl`).
 
-**Map-based zone resolution.** Analyze Boston publishes no ParkBoston zone
-numbers (every `bos-…` zone row stores `""`), so the client resolves the
-zone from the provider's own map: it feeds the car's fix through browser
-geolocation, opens `#findParking`, clicks the pin nearest the (car-centered)
-viewport, follows the info window to the zone panel, and reads the zone
-number and street off `#zi_zoneno` / `#zi_zoneName`. If the panel's street
-doesn't match the street our zone data carries (`zones.street`,
-normalized/suffix-canonicalized — `src/passport/parse.ts`), it refuses with
-`zone_mismatch` instead of paying the wrong block. The ParkNYC client runs
-the same resolution as a **non-fatal cross-check** against its stored zone
-number; both sides land on the `decisions` row as `zoneResolution`.
+**Zone numbers come from users, not a map.** Analyze Boston publishes no
+ParkBoston zone numbers (every `bos-…` zone row starts `""`), and the
+2026-09-21 signed-in recording
+(`fixtures/passport-resolve-2026-09-21T01-17-11-693Z/`) settled that the
+web app has **no map either**: after login it shows a single "Enter Zone"
+screen — input `#zoneNumber`, button `#zoneNext` (mirrored into
+`test/fixtures/pages/passport/zone-entry.html`). So the server collects
+each block's posted number from drivers
+(`POST /zones/:zoneId/provider-number`) and `startSession` types the
+stored number into Enter Zone. The ParkNYC client still runs its own
+**non-fatal map cross-check** against its stored zone number; both sides
+land on the `decisions` row as `zoneResolution`.
 
-**Verification status.** Investigated headlessly on 2026-09-20: the gated
-entry (Sign In / Register / Guest), T&C accept, and e-mail verification
-screens were walked live; every signed-in flow (map, zone panel, duration,
-pay, session, cards) is drafted from the app's shipped Backbone view source
-(`js/application/views/*.js` — the element ids are real, the flows around
-them are not yet walked) and is marked TODO-verify in `selectors.ts`.
-Verify with a signed-in `record -- --provider passport --flow resolve` run
-before any real use.
+**Verification status.** Walked live: the gated entry (Sign In / Register /
+Guest), T&C accept, and e-mail verification screens (2026-09-20, headless)
+and the Enter Zone screen (2026-09-21, signed in). Everything after zone
+submit (zone panel, duration, pay, session, cards) is drafted from the
+app's shipped Backbone view source (`js/application/views/*.js` — the
+element ids are real, the flows around them are not yet walked) and is
+marked TODO-verify in `selectors.ts`. Verify with a signed-in
+`record -- --provider passport --flow start` run (pays a real meter) on a
+cheap zone before any real use.
 
 ## Error taxonomy
 
 | Code | Meaning |
 |---|---|
 | `auth_expired` | Storage state missing or the provider asked to sign in again |
-| `zone_not_found` | The provider rejected the zone number (or no pins near the car) |
-| `zone_mismatch` | The provider map's zone street disagrees with our zone data |
+| `zone_not_found` | The provider rejected the zone number |
 | `payment_declined` | The payment step refused |
 | `ui_changed` | An expected screen/element never appeared (capture attached) |
 | `network` | Couldn't reach the provider |

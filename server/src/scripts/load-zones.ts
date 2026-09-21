@@ -33,9 +33,9 @@ interface ZoneProperties {
   zone_id: string;
   /** "nyc" | "bos"; the NYC builder predates the field, so it may be absent. */
   city?: string;
-  /** NYC files use parknyc_zone_number; the Boston builder emits the generic
+  /** NYC files use provider_zone_number; the Boston builder emits the generic
    * zone_number ("" when ParkBoston's number isn't in the source data). */
-  parknyc_zone_number?: string;
+  provider_zone_number?: string;
   zone_number?: string;
   /** Boston builder emits the block's street; NYC files predate the field. */
   street?: string;
@@ -67,7 +67,7 @@ interface ZonesCollection {
 // Postgres protocol limit of 65535 and few enough round-trips over WAN.
 const CHUNK_SIZE = 400;
 
-const UPSERT_COLUMNS = `(zone_id, city, street, parknyc_zone_number, vehicle_type, passenger,
+const UPSERT_COLUMNS = `(zone_id, city, street, provider_zone_number, vehicle_type, passenger,
    rate_first_hour, rate_additional_hour, max_stay_minutes, hours_json,
    geom, centerline, data_version)`;
 
@@ -136,7 +136,7 @@ async function main(): Promise<number> {
           p.zone_id,
           city,
           p.street ?? null,
-          p.parknyc_zone_number ?? p.zone_number ?? "",
+          p.provider_zone_number ?? p.zone_number ?? "",
           p.vehicle_type,
           p.passenger,
           p.rate_first_hour,
@@ -154,7 +154,12 @@ async function main(): Promise<number> {
          ON CONFLICT (zone_id) DO UPDATE SET
            city = EXCLUDED.city,
            street = EXCLUDED.street,
-           parknyc_zone_number = EXCLUDED.parknyc_zone_number,
+           -- Never let a source file without numbers (Boston) wipe a
+           -- user-reported one; verified is deliberately untouched.
+           provider_zone_number = CASE
+             WHEN EXCLUDED.provider_zone_number = '' THEN zones.provider_zone_number
+             ELSE EXCLUDED.provider_zone_number
+           END,
            vehicle_type = EXCLUDED.vehicle_type,
            passenger = EXCLUDED.passenger,
            rate_first_hour = EXCLUDED.rate_first_hour,
@@ -177,6 +182,25 @@ async function main(): Promise<number> {
     ]);
     if ((stale.rowCount ?? 0) > 0) {
       console.log(`  deleted ${stale.rowCount} stale ${city} rows (other data_version)`);
+    }
+
+    // Rehydrate user-reported numbers onto rows the load re-created empty
+    // (reports survive reloads on purpose — no FK to zones).
+    const rehydrated = await client.query(
+      `UPDATE zones z
+       SET provider_zone_number = latest.number,
+           provider_zone_number_verified = latest.verified
+       FROM (
+         SELECT DISTINCT ON (r.zone_id) r.zone_id, r.number,
+           (SELECT COUNT(DISTINCT r2.user_id) FROM zone_number_reports r2
+             WHERE r2.zone_id = r.zone_id AND r2.number = r.number) >= 2 AS verified
+         FROM zone_number_reports r
+         ORDER BY r.zone_id, r.created_at DESC
+       ) latest
+       WHERE z.zone_id = latest.zone_id AND z.provider_zone_number = ''`,
+    );
+    if ((rehydrated.rowCount ?? 0) > 0) {
+      console.log(`  rehydrated ${rehydrated.rowCount} user-reported zone numbers`);
     }
 
     await client.query(

@@ -166,7 +166,7 @@ export async function applyExtension(
     await deps.sendPush(
       session.userId,
       paymentFailedPush({
-        zoneNumber: session.parknycZoneNumber,
+        zoneNumber: session.providerZoneNumber,
         what: "extend",
         code: result.code,
       }),
@@ -209,7 +209,7 @@ export async function applyExtension(
   await deps.sendPush(
     session.userId,
     sessionExtendedPush({
-      zoneNumber: session.parknycZoneNumber,
+      zoneNumber: session.providerZoneNumber,
       minutes,
       totalUsd: price.totalUsd,
       expiresAt: result.expiresAt,

@@ -18,6 +18,7 @@ import {
   parseZoneInfoHtml,
   parseZoneNumberText,
   streetsMatch,
+  parseNearbyZones,
 } from "../src/passport/parse.js";
 
 const pagesDir = fileURLToPath(new URL("./fixtures/pages/passport", import.meta.url));
@@ -92,4 +93,37 @@ test("streetsMatch: our abbreviated data vs the provider's spelled-out names", (
   expect(streetsMatch("NEWBURY ST", "Boylston Street")).toBe(false);
   expect(streetsMatch("BOYLSTON ST", "")).toBe(false);
   expect(streetsMatch("", "Boylston Street")).toBe(false);
+});
+
+describe("parseNearbyZones (Find Parking map feed)", () => {
+  const body = JSON.parse(
+    readFileSync(
+      fileURLToPath(new URL("./fixtures/passport/nearby-zones--boylston-back-bay.json", import.meta.url)),
+      "utf8",
+    ),
+  );
+
+  test("extracts every zone's number and block name, skipping malformed rows", () => {
+    const zones = parseNearbyZones(body);
+    expect(zones).toHaveLength(4); // the null-number row is dropped
+    expect(zones[0]).toMatchObject({
+      number: "12",
+      name: "West Exeter between Newbury and Boylston",
+    });
+    expect(zones.find((z) => z.number === "456")?.name).toBe(
+      "North Boylston between Dartmouth and Clarendon",
+    );
+    // Every returned row carries a usable number and name.
+    expect(zones.every((z) => z.number.length > 0 && z.name.length > 0)).toBe(true);
+    // Coordinates parse to numbers (coarse, but present).
+    expect(zones[0]!.latitude).toBeCloseTo(42.349998, 5);
+  });
+
+  test("returns [] for an error body or a no-data envelope", () => {
+    expect(parseNearbyZones({ status: 404, reason: "No zones in this radius.", data: null })).toEqual(
+      [],
+    );
+    expect(parseNearbyZones(null)).toEqual([]);
+    expect(parseNearbyZones({})).toEqual([]);
+  });
 });

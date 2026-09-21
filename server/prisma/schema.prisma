@@ -76,7 +76,14 @@ model ZoneNumberReport {
 model User {
   id        String   @id @default(cuid())
   name      String
-  apiKey    String   @unique @map("api_key")
+  // Legacy plaintext key: only on rows migrate:api-keys hasn't processed
+  // yet; nulled by that script and never written for new users.
+  apiKey    String?  @unique @map("api_key")
+  // SHA-256(pepper:key) hex — the auth lookup key. Pepper is the
+  // API_KEY_PEPPER env secret, so a DB dump alone can't validate keys.
+  apiKeyHash String? @unique @map("api_key_hash")
+  // First 8 chars of the key, for identification in logs/support only.
+  apiKeyPrefix String? @map("api_key_prefix")
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   vehicles     Vehicle[]

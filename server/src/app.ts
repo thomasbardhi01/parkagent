@@ -9,6 +9,7 @@ import type {
 
 import type { AppDb } from "./db.js";
 import { registerAdmin } from "./routes/admin.js";
+import { hashApiKey } from "./services/apiKeys.js";
 import { registerCard } from "./routes/card.js";
 import { registerCity } from "./routes/city.js";
 import { registerDevice } from "./routes/device.js";
@@ -56,18 +57,21 @@ export interface AppDeps {
   now?: () => Date;
 }
 
-/** x-api-key → users.api_key. Everything but /health and /webhooks/stripe
- * sits behind this — enforced app-wide by an onRequest hook in buildApp,
- * so a route forgotten from an allowlist fails closed, never open. */
-export function makeAuthenticate(db: AppDb): preHandlerHookHandler {
+/** x-api-key → SHA-256(pepper:key) → users.api_key_hash. Everything but
+ * /health and /webhooks/stripe sits behind this — enforced app-wide by an
+ * onRequest hook in buildApp, so a route forgotten from an allowlist
+ * fails closed, never open. Rows still carrying a plaintext api_key (the
+ * pre-migration state) do NOT authenticate — run
+ * `pnpm -C server migrate:api-keys` first. */
+export function makeAuthenticate(db: AppDb, pepper: string): preHandlerHookHandler {
   return async (req: FastifyRequest, reply: FastifyReply) => {
     const key = req.headers["x-api-key"];
-    // select is load-bearing: without it the runtime row includes the
-    // caller's api_key, one careless spread away from a response body.
+    // select is load-bearing: nothing beyond id/name should ride on the
+    // request, one careless spread away from a response body.
     const user =
       typeof key === "string" && key.length > 0
         ? await db.user.findUnique({
-            where: { apiKey: key },
+            where: { apiKeyHash: hashApiKey(pepper, key) },
             select: { id: true, name: true },
           })
         : null;

@@ -1,21 +1,23 @@
 /**
- * Create a user (and optionally a vehicle) and print the api_key once.
+ * Create a user (and optionally a vehicle) and print the api key ONCE.
  *
  * Usage:
  *   pnpm -C server create:user -- --name Thomas
  *   pnpm -C server create:user -- --name Thomas --plate ABC1234 --state NY
  *
- * The key is shown only here; it is stored in users.api_key and sent by the
- * app as the x-api-key header.
+ * Only SHA-256(pepper:key) and an 8-char identification prefix are stored
+ * (users.api_key_hash / api_key_prefix) — the plaintext appears exactly
+ * once, on this terminal, and the app sends it as the x-api-key header.
+ * Needs API_KEY_PEPPER in the environment (repo-root .env).
  */
 
-import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 import { config } from "dotenv";
 
 import { createPrisma } from "../db.js";
+import { apiKeyPrefix, generateApiKey, hashApiKey } from "../services/apiKeys.js";
 
 // Secrets live in the repo-root .env (see .env.example), not in server/.
 config({ path: fileURLToPath(new URL("../../../.env", import.meta.url)) });
@@ -39,15 +41,24 @@ async function main(): Promise<number> {
     console.error("DATABASE_URL is not set (repo-root .env).");
     return 1;
   }
+  const pepper = process.env["API_KEY_PEPPER"];
+  if (!pepper || pepper.length < 16) {
+    console.error("API_KEY_PEPPER is not set (repo-root .env; openssl rand -base64 32).");
+    return 1;
+  }
 
   const prisma = createPrisma(databaseUrl);
   try {
-    const apiKey = randomBytes(24).toString("base64url");
+    const apiKey = generateApiKey();
     const user = await prisma.user.create({
-      data: { name: flags.name, apiKey },
+      data: {
+        name: flags.name,
+        apiKeyHash: hashApiKey(pepper, apiKey),
+        apiKeyPrefix: apiKeyPrefix(apiKey),
+      },
     });
     console.log(`user ${user.id} (${user.name})`);
-    console.log(`api_key: ${apiKey}`);
+    console.log(`api_key: ${apiKey}   <- shown once, never stored; put it in Config.xcconfig`);
     if (flags.plate) {
       const vehicle = await prisma.vehicle.create({
         data: { userId: user.id, plate: flags.plate, state: flags.state },

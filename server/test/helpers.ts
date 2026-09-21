@@ -12,6 +12,7 @@ import type { FastifyInstance } from "fastify";
 
 import type { AppDeps } from "../src/app.js";
 import { buildApp, makeAuthenticate } from "../src/app.js";
+import { hashApiKey } from "../src/services/apiKeys.js";
 import type {
   AppDb,
   ProviderAccountRow,
@@ -31,6 +32,8 @@ import type { StripeGateway } from "../src/services/stripeGateway.js";
 import type { Candidate } from "../src/services/zoneLookup.js";
 
 export const API_KEY = "test-key";
+/** The pepper every test app hashes keys with (see makeAuthenticate). */
+export const TEST_PEPPER = "test-pepper-16-chars-min";
 
 // Monday 2026-01-05, 14:00 EST — mid-afternoon, meters running.
 export const MONDAY_2PM = "2026-01-05T14:00:00-05:00";
@@ -342,8 +345,12 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
     state.providerAccounts.find((a) => a.userId === userId && a.provider === provider);
   const db: AppDb = {
     user: {
+      // Auth looks up by hash now — mirror prod: only the peppered hash
+      // of API_KEY matches.
       findUnique: async ({ where }) =>
-        where.apiKey === API_KEY ? { id: "u1", name: "Thomas" } : null,
+        where.apiKeyHash === hashApiKey(TEST_PEPPER, API_KEY)
+          ? { id: "u1", name: "Thomas" }
+          : null,
     },
     zone: {
       findUnique: async ({ where }) => state.zones.find((z) => z.zoneId === where.zoneId) ?? null,
@@ -793,7 +800,7 @@ export function makeTestApp(options: {
     db,
     policy: makePolicyService(options.policy, options.envDryRun ?? true),
     findCandidates: async () => options.candidates ?? [],
-    authenticate: makeAuthenticate(db),
+    authenticate: makeAuthenticate(db, TEST_PEPPER),
     executorFor: () => options.executor ?? dryRunExecutor,
     sendPush: async (userId, push) => {
       pushes.push({ userId, push });

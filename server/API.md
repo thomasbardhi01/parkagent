@@ -14,8 +14,11 @@ Every endpoint except `GET /health` requires the header:
     x-api-key: <users.api_key>
 
 Unknown or missing key → `401 {"error": "unauthorized"}`. Keys are created
-with `pnpm -C server create:user -- --name <name>` and live only in the
-`users` table.
+with `pnpm -C server create:user -- --name <name>`, printed exactly once;
+at rest the `users` table holds only `SHA-256(API_KEY_PEPPER:key)` plus an
+8-char identification prefix (the pepper is a server env secret, so a DB
+dump alone can't validate keys). Existing plaintext rows are converted by
+`pnpm -C server migrate:api-keys`.
 
 Auth is an app-level hook with a public allowlist (`/health`,
 `/webhooks/stripe` — the Stripe signature is that route's auth), so

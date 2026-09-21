@@ -92,7 +92,7 @@ const app = buildApp({
   db,
   policy,
   findCandidates: makeCandidateFetcher(prisma),
-  authenticate: makeAuthenticate(db),
+  authenticate: makeAuthenticate(db, env.API_KEY_PEPPER),
   executorFor,
   sendPush,
   ...(stripe ? { stripe } : {}),

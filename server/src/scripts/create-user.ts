@@ -28,6 +28,7 @@ async function main(): Promise<number> {
       name: { type: "string" },
       plate: { type: "string" },
       state: { type: "string", default: "NY" },
+      admin: { type: "boolean", default: false },
     },
   });
   if (!flags.name) {
@@ -55,9 +56,11 @@ async function main(): Promise<number> {
         name: flags.name,
         apiKeyHash: hashApiKey(pepper, apiKey),
         apiKeyPrefix: apiKeyPrefix(apiKey),
+        // Admins may PUT /policy and read /admin/*.
+        isAdmin: flags.admin,
       },
     });
-    console.log(`user ${user.id} (${user.name})`);
+    console.log(`user ${user.id} (${user.name})${flags.admin ? " [admin]" : ""}`);
     console.log(`api_key: ${apiKey}   <- shown once, never stored; put it in Config.xcconfig`);
     if (flags.plate) {
       const vehicle = await prisma.vehicle.create({

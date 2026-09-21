@@ -84,6 +84,9 @@ model User {
   apiKeyHash String? @unique @map("api_key_hash")
   // First 8 chars of the key, for identification in logs/support only.
   apiKeyPrefix String? @map("api_key_prefix")
+  // Gates PUT /policy and /admin/* (403 otherwise). Set at create:user
+  // --admin, or by hand in SQL for an existing user.
+  isAdmin   Boolean  @default(false) @map("is_admin")
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   vehicles     Vehicle[]

@@ -22,7 +22,10 @@ dump alone can't validate keys). Existing plaintext rows are converted by
 
 Auth is an app-level hook with a public allowlist (`/health`,
 `/webhooks/stripe` — the Stripe signature is that route's auth), so
-unknown paths 401 too. Abuse-prone routes are rate-limited per user
+unknown paths 401 too. Authorization on top: `users.is_admin` gates
+`PUT /policy` and everything under `/admin/` — any other valid key gets
+`403 {"error": "forbidden"}` (`create:user -- --admin`, or flip the
+column in SQL for an existing user). Abuse-prone routes are rate-limited per user
 (429 + `Retry-After`): `/parked` 30/min, provider writes 10/min, provider
 reads 60/min, `/zones/:zoneId/provider-number` 12/min. Unhandled errors
 answer `500 {"error": "internal"}` — details go to the server log only.
@@ -779,6 +782,10 @@ Returns the active policy plus bookkeeping:
 
 ## PUT /policy
 
+**Admin only** (`403 forbidden` otherwise): the policy is the shared
+spending contract — caps, dry_run, the rate ceiling — so changing it is
+the owner's call; `GET /policy` stays open to every user (the app renders
+it, and onboarding's budget step simply reports "couldn't save" on 403).
 Full replacement of the policy document. Body is the entire policy object
 (same schema as `policy.json`; unknown keys rejected). On success the file
 is rewritten, a `policy_snapshots` row is recorded (`source: "put"`), and
@@ -848,7 +855,8 @@ No auth. `{ok, dryRun, commit, builtAt}`.
 
 ## GET /admin/summary
 
-Auth-gated like everything else (`x-api-key`). The field-test dashboard:
+Auth-gated like everything else (`x-api-key`) and **admin only**
+(`403 forbidden` for non-admin keys). The field-test dashboard:
 today's activity (NYC calendar day) aggregated from the
 decisions/parked_events/sessions tables, per city. Read-only.
 

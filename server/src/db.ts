@@ -167,8 +167,8 @@ export interface AppDb {
       where: { apiKeyHash: string };
       /** Always pass this: without it the runtime row carries the key
        * hash and prefix, one spread away from a response body. */
-      select?: { id: true; name: true };
-    }): Promise<{ id: string; name: string } | null>;
+      select?: { id: true; name: true; isAdmin: true };
+    }): Promise<{ id: string; name: string; isAdmin: boolean } | null>;
   };
   zone: {
     findUnique(args: { where: { zoneId: string } }): Promise<ZoneTermsRow | null>;

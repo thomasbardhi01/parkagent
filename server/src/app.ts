@@ -31,7 +31,7 @@ import type { CandidateFetcher } from "./services/zoneLookup.js";
 
 declare module "fastify" {
   interface FastifyRequest {
-    authedUser?: { id: string; name: string };
+    authedUser?: { id: string; name: string; isAdmin: boolean };
   }
 }
 
@@ -72,7 +72,7 @@ export function makeAuthenticate(db: AppDb, pepper: string): preHandlerHookHandl
       typeof key === "string" && key.length > 0
         ? await db.user.findUnique({
             where: { apiKeyHash: hashApiKey(pepper, key) },
-            select: { id: true, name: true },
+            select: { id: true, name: true, isAdmin: true },
           })
         : null;
     if (!user) {
@@ -85,6 +85,15 @@ export function makeAuthenticate(db: AppDb, pepper: string): preHandlerHookHandl
 /** Reachable without an api key: health probes, and the Stripe webhook
  * (its signature is the auth). Everything else 401s by default. */
 const PUBLIC_PATHS = new Set(["/health", "/webhooks/stripe"]);
+
+/** 403 unless the authenticated user is an admin. Guards mutations of the
+ * shared policy and everything under /admin/ — authorization on top of
+ * the app-wide authentication hook. */
+export function requireAdmin(req: FastifyRequest, reply: FastifyReply): boolean {
+  if (req.authedUser?.isAdmin === true) return true;
+  void reply.code(403).send({ error: "forbidden" });
+  return false;
+}
 
 /**
  * Build the Fastify app. Without deps only /health exists — enough for the

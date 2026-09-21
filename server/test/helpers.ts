@@ -32,6 +32,8 @@ import type { StripeGateway } from "../src/services/stripeGateway.js";
 import type { Candidate } from "../src/services/zoneLookup.js";
 
 export const API_KEY = "test-key";
+/** A second, non-admin user's key — for authorization (403) tests. */
+export const NONADMIN_API_KEY = "test-key-two";
 /** The pepper every test app hashes keys with (see makeAuthenticate). */
 export const TEST_PEPPER = "test-pepper-16-chars-min";
 
@@ -345,12 +347,17 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
     state.providerAccounts.find((a) => a.userId === userId && a.provider === provider);
   const db: AppDb = {
     user: {
-      // Auth looks up by hash now — mirror prod: only the peppered hash
-      // of API_KEY matches.
-      findUnique: async ({ where }) =>
-        where.apiKeyHash === hashApiKey(TEST_PEPPER, API_KEY)
-          ? { id: "u1", name: "Thomas" }
-          : null,
+      // Auth looks up by hash now — mirror prod: only the peppered hashes
+      // match. u1 is the owner/admin; u2 exercises the 403 paths.
+      findUnique: async ({ where }) => {
+        if (where.apiKeyHash === hashApiKey(TEST_PEPPER, API_KEY)) {
+          return { id: "u1", name: "Thomas", isAdmin: true };
+        }
+        if (where.apiKeyHash === hashApiKey(TEST_PEPPER, NONADMIN_API_KEY)) {
+          return { id: "u2", name: "Ana", isAdmin: false };
+        }
+        return null;
+      },
     },
     zone: {
       findUnique: async ({ where }) => state.zones.find((z) => z.zoneId === where.zoneId) ?? null,

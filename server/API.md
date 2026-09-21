@@ -46,8 +46,11 @@ Request:
 
 Quotes are priced at `ts` when the phone sends one, else at server time;
 the decision's `inputs` record `pricedAt` and `pricedAtSource`
-(`"request_ts"` | `"server_time"`), and a ts-less park stores server time
-as the event's `ts`.
+(`"request_ts"` | `"server_time"` | `"request_ts_clamped"`), and a ts-less
+park stores server time as the event's `ts`. A `ts` more than 24 h in the
+past or 10 min in the future (wrong phone clock, replayed request) would
+price the wrong enforcement window, so it is clamped to server time and
+the decision says so (`request_ts_clamped`).
 
 Response `200`:
 
@@ -271,11 +274,15 @@ guarantees and cannot be confirmed through — raise them via `PUT /policy`):
 | `409 {"error": "policy_violation", "rule": …}` | Condition |
 |---|---|
 | `max_stay_exceeded` | `minutes` > zone max stay |
+| `free_period` | the whole stay prices to $0 (outside enforcement) — nothing to buy, and typing minutes into the provider anyway could charge money the quote never priced |
 | `session_cap_exceeded` | purchase total > `session_cap_usd` |
 | `daily_cap_exceeded` | real (non-dry-run) spend today + total > `daily_cap_usd` |
 
 Other errors: `404` unknown/foreign `parkedEventId` or `zoneId`, `409
-{"error": "session_already_active"}` (one active session per user), `409
+{"error": "session_already_active"}` (one open session per user — enforced
+both by the pre-check and by a partial unique DB index, so two concurrent
+starts can never both pay; a pending row orphaned by a crash is swept to
+`failed` after 10 minutes), `409
 {"error": "provider_not_linked", "provider": "parknyc", "displayName":
 "ParkNYC"}` when the zone's city has a provider and the caller has no
 account with status `linked` there (dry run included — the executor pays
@@ -410,6 +417,12 @@ and daily limits) are the first line of defense; authorizations they block
 never reach the webhook. Every `.request` writes an `issuing_authorizations`
 row and a `decisions` row (`kind: "issuing_authorization"`, inputs include
 amount, MCC, spend-so-far, pending-session answer, dry run, policy hash).
+
+Redelivery is idempotent: a replayed `.request` answers the recorded
+decision (deciding twice could flip the answer once spend moved) and its
+decisions row records `replayed: true`; a `.request` retry that arrives
+after a lifecycle `.created` already created the row (decision
+`"external"`) decides for real and updates that row in place.
 
 ### Ledger events
 

@@ -272,7 +272,9 @@ export interface AppDb {
     deleteMany(args: { where: { cardholderId: string } }): Promise<unknown>;
   };
   issuingAuthorization: {
-    findUnique(args: { where: { stripeAuthorizationId: string } }): Promise<{ id: string } | null>;
+    findUnique(args: {
+      where: { stripeAuthorizationId: string };
+    }): Promise<{ id: string; approved?: boolean; decision?: string } | null>;
     /** "Has this card ever transacted?" — the janitor's cancel-vs-freeze test. */
     findFirst(args: { where: { stripeCardId: string } }): Promise<{ id: string } | null>;
     // Two shapes share findMany (interface overloads): the daily/monthly spend
@@ -305,6 +307,7 @@ export interface AppDb {
       where: { stripeAuthorizationId: string };
       data: {
         approved?: boolean;
+        decision?: string;
         status?: string;
         amountUsd?: number;
         stripeTransactionId?: string;

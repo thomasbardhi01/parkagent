@@ -99,6 +99,36 @@ async function handleAuthorizationRequest(
     ? await (deps.hasPendingSession ?? noPendingSessions)(userId, at)
     : false;
 
+  // Stripe redelivers events, and a lifecycle .created can arrive before a
+  // slow .request retry. A row that already carries one of OUR decisions is
+  // answered idempotently — deciding twice could flip the answer (spend
+  // moved between deliveries) and the create below would crash on the
+  // unique stripeAuthorizationId. A row first seen via .created (decision
+  // "external") gets a real decision now, updated in place.
+  const existing = await deps.db.issuingAuthorization.findUnique({
+    where: { stripeAuthorizationId: auth.id },
+  });
+  if (
+    existing?.decision !== undefined &&
+    existing.decision !== "external" &&
+    existing.approved !== undefined
+  ) {
+    await deps.db.decision.create({
+      data: {
+        kind: "issuing_authorization",
+        inputs: { stripeAuthorizationId: auth.id, stripeCardId, amountUsd, replayed: true },
+        rule: existing.decision,
+        outcome: { approved: existing.approved, replayed: true },
+        userId,
+      },
+    });
+    return reply
+      .code(200)
+      .header("Stripe-Version", event.api_version ?? deps.stripe!.apiVersion)
+      .header("Content-Type", "application/json")
+      .send({ approved: existing.approved, metadata: { reason: existing.decision } });
+  }
+
   const decision = decideAuthorization(
     {
       amountUsd,
@@ -115,20 +145,31 @@ async function handleAuthorizationRequest(
   // Persist the audit BEFORE answering, so the decision survives even a slow
   // or dropped response (Stripe's Autopilot may then approve/decline on our
   // behalf, but request_history.reason records that — see the docs).
-  await deps.db.issuingAuthorization.create({
-    data: {
-      stripeAuthorizationId: auth.id,
-      stripeCardId,
-      userId,
-      amountUsd,
-      merchantCategory,
-      merchantCategoryCode,
-      merchantName: auth.merchant_data?.name ?? null,
-      approved: decision.approve,
-      decision: decision.reason,
-      status: "pending",
-    },
-  });
+  const row = {
+    stripeAuthorizationId: auth.id,
+    stripeCardId,
+    userId,
+    amountUsd,
+    merchantCategory,
+    merchantCategoryCode,
+    merchantName: auth.merchant_data?.name ?? null,
+    approved: decision.approve,
+    decision: decision.reason,
+    status: "pending",
+  };
+  if (existing) {
+    await deps.db.issuingAuthorization.update({
+      where: { stripeAuthorizationId: auth.id },
+      data: {
+        approved: decision.approve,
+        decision: decision.reason,
+        status: "pending",
+        amountUsd,
+      },
+    });
+  } else {
+    await deps.db.issuingAuthorization.create({ data: row });
+  }
   await deps.db.decision.create({
     data: {
       kind: "issuing_authorization",

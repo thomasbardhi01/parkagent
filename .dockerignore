@@ -1,0 +1,23 @@
+# Without this file, `fly deploy` tars the ENTIRE repo root — .env with
+# every live secret, provider session cookies, and 10 MB of recorded
+# HAR/trace fixtures — and ships it to Fly's remote builder; the build
+# stage's `COPY executor executor` would also layer the cookies into the
+# builder cache. The Dockerfile's runtime stage copies an explicit
+# allowlist, but the context and build stage must be clean too.
+
+.env
+.env.*
+!.env.example
+.git
+node_modules
+**/node_modules
+executor/storageState*.json
+executor/fixtures
+executor/captures
+**/dist
+data
+docs
+ios
+*.log
+.DS_Store
+.claude

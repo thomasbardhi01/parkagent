@@ -18,7 +18,7 @@ const bodySchema = z.object({
 });
 
 export function registerLocation(app: FastifyInstance, deps: AppDeps): void {
-  app.post("/location", { preHandler: deps.authenticate }, async (req, reply) => {
+  app.post("/location", async (req, reply) => {
     const parsed = bodySchema.safeParse(req.body);
     if (!parsed.success) {
       return reply.code(400).send({ error: z.treeifyError(parsed.error) });

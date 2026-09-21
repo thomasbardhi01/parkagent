@@ -14,6 +14,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 
 import type { AppDeps } from "../app.js";
+import { makeRateLimiter } from "../services/rateLimit.js";
 import { allProviders, cookieDomainAllowed, providerById } from "../providers/registry.js";
 import type { ProviderInfo } from "../providers/registry.js";
 import {
@@ -50,6 +51,10 @@ const linkStatusSchema = z.object({
 });
 
 export function registerProviders(app: FastifyInstance, deps: AppDeps): void {
+  // Writes spawn a headless Chromium on a 512 MB VM — cap them hard.
+  // Reads (status, link-status) are polled by the app's link flow.
+  const limitWrites = makeRateLimiter({ max: 10, windowMs: 60_000 });
+  const limitReads = makeRateLimiter({ max: 60, windowMs: 60_000 });
   const now = () => deps.now?.() ?? new Date();
   const jobs = new LinkJobStore();
 
@@ -64,7 +69,7 @@ export function registerProviders(app: FastifyInstance, deps: AppDeps): void {
     return info;
   }
 
-  app.get("/providers/status", { preHandler: deps.authenticate }, async (req) => {
+  app.get("/providers/status", { preHandler: limitReads }, async (req) => {
     const user = req.authedUser!;
     const accounts = await deps.db.providerAccount.findMany({ where: { userId: user.id } });
     return {
@@ -89,7 +94,7 @@ export function registerProviders(app: FastifyInstance, deps: AppDeps): void {
     };
   });
 
-  app.post("/providers/:provider/link", { preHandler: deps.authenticate }, async (req, reply) => {
+  app.post("/providers/:provider/link", { preHandler: limitWrites }, async (req, reply) => {
     const provider = requireProvider(req, reply);
     if (!provider) return;
     const parsed = linkSchema.safeParse(req.body);
@@ -227,7 +232,7 @@ export function registerProviders(app: FastifyInstance, deps: AppDeps): void {
 
   app.get(
     "/providers/:provider/link-status",
-    { preHandler: deps.authenticate },
+    { preHandler: limitReads },
     async (req, reply) => {
       const provider = requireProvider(req, reply);
       if (!provider) return;
@@ -251,7 +256,7 @@ export function registerProviders(app: FastifyInstance, deps: AppDeps): void {
 
   app.post(
     "/providers/:provider/setup-card",
-    { preHandler: deps.authenticate },
+    { preHandler: limitWrites },
     async (req, reply) => {
       const provider = requireProvider(req, reply);
       if (!provider) return;
@@ -276,7 +281,7 @@ export function registerProviders(app: FastifyInstance, deps: AppDeps): void {
     },
   );
 
-  app.post("/providers/:provider/unlink", { preHandler: deps.authenticate }, async (req, reply) => {
+  app.post("/providers/:provider/unlink", { preHandler: limitWrites }, async (req, reply) => {
     const provider = requireProvider(req, reply);
     if (!provider) return;
     const user = req.authedUser!;
@@ -349,7 +354,7 @@ export function registerProviders(app: FastifyInstance, deps: AppDeps): void {
     return { ok: true, cardRemoval, cardFrozen };
   });
 
-  app.post("/providers/:provider/topup", { preHandler: deps.authenticate }, async (req, reply) => {
+  app.post("/providers/:provider/topup", { preHandler: limitWrites }, async (req, reply) => {
     const provider = requireProvider(req, reply);
     if (!provider) return;
     const parsed = topupSchema.safeParse(req.body);

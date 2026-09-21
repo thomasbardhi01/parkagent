@@ -17,7 +17,7 @@ const bodySchema = z.object({
 });
 
 export function registerDevice(app: FastifyInstance, deps: AppDeps): void {
-  app.post("/device", { preHandler: deps.authenticate }, async (req, reply) => {
+  app.post("/device", async (req, reply) => {
     const parsed = bodySchema.safeParse(req.body);
     if (!parsed.success) {
       return reply.code(400).send({ error: z.treeifyError(parsed.error) });

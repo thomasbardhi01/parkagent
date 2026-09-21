@@ -77,7 +77,7 @@ export function registerCard(app: FastifyInstance, deps: AppDeps): void {
     return Math.round(sum * 100) / 100;
   }
 
-  app.get("/card", { preHandler: deps.authenticate }, async (req, reply) => {
+  app.get("/card", async (req, reply) => {
     const user = req.authedUser!;
     const at = now();
 
@@ -153,7 +153,7 @@ export function registerCard(app: FastifyInstance, deps: AppDeps): void {
    * card itself is active); setup-card graduates it, and the janitor
    * cancels it after 7 abandoned days.
    */
-  app.post("/card/prepare", { preHandler: deps.authenticate }, async (req, reply) => {
+  app.post("/card/prepare", async (req, reply) => {
     const user = req.authedUser!;
     const stripe = requireStripe(reply);
     if (!stripe) return;
@@ -217,7 +217,7 @@ export function registerCard(app: FastifyInstance, deps: AppDeps): void {
    * which moves the settled money onto the financial account. Under dry
    * run this returns a fake client secret and Stripe is never called.
    */
-  app.post("/card/funding/topup-intent", { preHandler: deps.authenticate }, async (req, reply) => {
+  app.post("/card/funding/topup-intent", async (req, reply) => {
     const parsed = fundingSchema.safeParse(req.body);
     if (!parsed.success) {
       return reply.code(400).send({ error: z.treeifyError(parsed.error) });
@@ -284,7 +284,7 @@ export function registerCard(app: FastifyInstance, deps: AppDeps): void {
     };
   });
 
-  app.get("/card/transactions", { preHandler: deps.authenticate }, async (req, reply) => {
+  app.get("/card/transactions", async (req, reply) => {
     const parsed = transactionsSchema.safeParse(req.query);
     if (!parsed.success) {
       return reply.code(400).send({ error: z.treeifyError(parsed.error) });
@@ -415,10 +415,10 @@ export function registerCard(app: FastifyInstance, deps: AppDeps): void {
     };
   }
 
-  app.post("/card/funding/topup", { preHandler: deps.authenticate }, fundingRoute("topup"));
-  app.post("/card/funding/withdraw", { preHandler: deps.authenticate }, fundingRoute("withdraw"));
+  app.post("/card/funding/topup", fundingRoute("topup"));
+  app.post("/card/funding/withdraw", fundingRoute("withdraw"));
 
-  app.get("/card/reveal", { preHandler: deps.authenticate }, async (req, reply) => {
+  app.get("/card/reveal", async (req, reply) => {
     const parsed = revealSchema.safeParse(req.query);
     if (!parsed.success) {
       return reply.code(400).send({ error: z.treeifyError(parsed.error) });
@@ -478,10 +478,6 @@ export function registerCard(app: FastifyInstance, deps: AppDeps): void {
     };
   }
 
-  app.post("/card/freeze", { preHandler: deps.authenticate }, statusRoute("inactive", "freeze_ok"));
-  app.post(
-    "/card/unfreeze",
-    { preHandler: deps.authenticate },
-    statusRoute("active", "unfreeze_ok"),
-  );
+  app.post("/card/freeze", statusRoute("inactive", "freeze_ok"));
+  app.post("/card/unfreeze", statusRoute("active", "unfreeze_ok"));
 }

@@ -62,7 +62,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
     return session;
   }
 
-  app.post("/session/start", { preHandler: deps.authenticate }, async (req, reply) => {
+  app.post("/session/start", async (req, reply) => {
     const parsed = startSchema.safeParse(req.body);
     if (!parsed.success) {
       return reply.code(400).send({ error: z.treeifyError(parsed.error) });
@@ -368,7 +368,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
     return { sessionId: session.id, expiresAt: result.expiresAt, amountUsd: price.totalUsd };
   });
 
-  app.post("/session/extend", { preHandler: deps.authenticate }, async (req, reply) => {
+  app.post("/session/extend", async (req, reply) => {
     const parsed = extendSchema.safeParse(req.body);
     if (!parsed.success) {
       return reply.code(400).send({ error: z.treeifyError(parsed.error) });
@@ -447,7 +447,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
     return { sessionId: session.id, expiresAt: outcome.expiresAt, amountUsd: price.totalUsd };
   });
 
-  app.post("/session/stop", { preHandler: deps.authenticate }, async (req, reply) => {
+  app.post("/session/stop", async (req, reply) => {
     const parsed = stopSchema.safeParse(req.body);
     if (!parsed.success) {
       return reply.code(400).send({ error: z.treeifyError(parsed.error) });

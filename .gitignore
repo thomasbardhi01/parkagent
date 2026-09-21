@@ -7,7 +7,9 @@ __pycache__/
 dist/
 data/raw/
 data/out/
-executor/storageState.json
+# Glob, not a single filename: login writes storageState.json (parknyc)
+# AND storageState.passport.json — both are live session cookies.
+executor/storageState*.json
 # Recording-harness output (HARs, traces, raw page snapshots) and runtime
 # unexpected-screen captures — real account data, never committed.
 executor/fixtures/

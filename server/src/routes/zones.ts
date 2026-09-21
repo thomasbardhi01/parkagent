@@ -14,6 +14,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
 import type { AppDeps } from "../app.js";
+import { makeRateLimiter } from "../services/rateLimit.js";
 
 const bodySchema = z.object({
   // Loose on purpose: Passport zone numbers are short digit strings.
@@ -22,9 +23,12 @@ const bodySchema = z.object({
 });
 
 export function registerZones(app: FastifyInstance, deps: AppDeps): void {
+  // Number reports change what the executor types at the provider; nobody
+  // legitimately reports more than a few blocks a minute.
+  const limit = makeRateLimiter({ max: 12, windowMs: 60_000 });
   app.post(
     "/zones/:zoneId/provider-number",
-    { preHandler: deps.authenticate },
+    { preHandler: limit },
     async (req, reply) => {
       const parsed = bodySchema.safeParse(req.body);
       if (!parsed.success) {

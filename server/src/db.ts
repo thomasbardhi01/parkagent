@@ -163,7 +163,12 @@ export interface IssuingAuthorizationRow {
 
 export interface AppDb {
   user: {
-    findUnique(args: { where: { apiKey: string } }): Promise<{ id: string; name: string } | null>;
+    findUnique(args: {
+      where: { apiKey: string };
+      /** Always pass this: without it the runtime row carries api_key,
+       * masked by this type, one spread away from a response body. */
+      select?: { id: true; name: true };
+    }): Promise<{ id: string; name: string } | null>;
   };
   zone: {
     findUnique(args: { where: { zoneId: string } }): Promise<ZoneTermsRow | null>;

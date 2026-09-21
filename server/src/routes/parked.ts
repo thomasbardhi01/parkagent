@@ -8,6 +8,7 @@ import { spentToday } from "../services/sessions.js";
 import { quoteZone } from "../services/quote.js";
 import type { Candidate } from "../services/zoneLookup.js";
 import { lookupRadiusM, resolveCandidates } from "../services/zoneLookup.js";
+import { makeRateLimiter } from "../services/rateLimit.js";
 
 const bodySchema = z.object({
   lat: z.number().gte(-90).lte(90),
@@ -35,7 +36,10 @@ function candidatePayload(candidate: Candidate, quote: Quote) {
 }
 
 export function registerParked(app: FastifyInstance, deps: AppDeps): void {
-  app.post("/parked", { preHandler: deps.authenticate }, async (req, reply) => {
+  // A phone parks a handful of times a day; a runaway detector loop (or a
+  // stolen key probing the zone map) should not hammer PostGIS.
+  const limit = makeRateLimiter({ max: 30, windowMs: 60_000 });
+  app.post("/parked", { preHandler: limit }, async (req, reply) => {
     const parsed = bodySchema.safeParse(req.body);
     if (!parsed.success) {
       return reply.code(400).send({ error: z.treeifyError(parsed.error) });

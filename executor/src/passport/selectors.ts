@@ -165,12 +165,16 @@ export const selectors = {
   },
 
   // ----------------- Duration + confirm (duration-picker.js; TODO-verify)
+  // Duration picker (#durationPickerPage, real ids from the 2026-09-21
+  // recording): day/hour/minute steppers + #pickerNext to continue.
   duration: {
-    addTimeButton: (page: Page): Locator =>
-      page.getByRole("button", { name: /add|\+|increase/i }).first(),
-    display: (page: Page): Locator => page.getByText(/\d+\s*(hr|hour|min)/i).first(),
-    continueButton: (page: Page): Locator =>
-      page.getByRole("button", { name: /continue|next|review|park/i }),
+    hourPlus: (page: Page): Locator => page.locator("#hourPlus"),
+    hourText: (page: Page): Locator => page.locator("#hourTimeText"),
+    minPlus: (page: Page): Locator => page.locator("#minPlus"),
+    minText: (page: Page): Locator => page.locator("#minTimeText"),
+    /** The picker page itself, to confirm we're on it. */
+    pickerPage: (page: Page): Locator => page.locator("#durationPickerPage"),
+    continueButton: (page: Page): Locator => page.locator("#pickerNext"),
   },
   confirm: {
     total: (page: Page): Locator => page.getByText(/total.*\$\s*\d+\.\d{2}/i),

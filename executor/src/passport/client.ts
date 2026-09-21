@@ -26,7 +26,7 @@
 
 import { existsSync } from "node:fs";
 
-import type { Browser, BrowserContext, Page } from "playwright";
+import type { Browser, BrowserContext, Locator, Page } from "playwright";
 import { chromium } from "playwright";
 
 import { warmBrowser } from "../browser.js";
@@ -61,6 +61,8 @@ export interface PassportClientOptions {
   captureDir?: string;
   timeoutMs?: number;
   onStep?: (name: string, page: Page) => Promise<void>;
+  /** Diagnostic sink for the stable-click layer (which path it took). */
+  log?: (message: string) => void;
   recordHarPath?: string;
   tracePath?: string;
 }
@@ -122,6 +124,71 @@ export class PassportClient {
 
   private async step(name: string, page: Page): Promise<void> {
     await this.options.onStep?.(name, page);
+  }
+
+  /**
+   * Click that survives jQuery Mobile page transitions. The app animates
+   * pages in/out (slide/pop/fade), so a target's box keeps moving and
+   * Playwright's actionability check never settles → timeout. Before every
+   * click we wait for the active page's transition to finish (no in/out/
+   * transition-type classes on any .ui-page) AND the target's bounding box
+   * to hold still across two animation frames, scroll it into view, then
+   * click. On a stability timeout we retry once with a forced click. The
+   * path taken is logged.
+   */
+  private async stableClick(page: Page, locator: Locator, name: string): Promise<void> {
+    const settleMs = Math.min(this.timeoutMs, 8_000);
+    // 1. Page transition settled: an active page exists and no .ui-page
+    //    carries a jQM transition token.
+    await page
+      .waitForFunction(
+        () => {
+          const doc = (globalThis as { document?: unknown }).document as {
+            querySelector(s: string): unknown;
+            querySelectorAll(s: string): ArrayLike<{ classList: { contains(t: string): boolean } }>;
+          };
+          const TOKENS = ["in", "out", "slide", "slideup", "slidedown", "fade", "pop", "flip", "turn"];
+          if (!doc.querySelector(".ui-page-active")) return false;
+          const pages = Array.from(doc.querySelectorAll(".ui-page"));
+          return !pages.some((p) => TOKENS.some((t) => p.classList.contains(t)));
+        },
+        { timeout: settleMs },
+      )
+      .catch(() => {});
+    // 2. Target box stable across two animation frames.
+    const handle = await locator.elementHandle({ timeout: settleMs }).catch(() => null);
+    let stable = false;
+    if (handle) {
+      stable = await page
+        .waitForFunction(
+          (el: { getBoundingClientRect(): { top: number; left: number; width: number; height: number } }) =>
+            new Promise<boolean>((resolve) => {
+              const raf = (globalThis as unknown as { requestAnimationFrame: (cb: () => void) => void })
+                .requestAnimationFrame;
+              const a = el.getBoundingClientRect();
+              raf(() =>
+                raf(() => {
+                  const b = el.getBoundingClientRect();
+                  resolve(a.top === b.top && a.left === b.left && a.width === b.width && a.height === b.height);
+                }),
+              );
+            }),
+          handle,
+          { timeout: settleMs },
+        )
+        .then(() => true)
+        .catch(() => false);
+      await handle.dispose();
+    }
+    await locator.scrollIntoViewIfNeeded({ timeout: settleMs }).catch(() => {});
+    try {
+      await locator.click({ timeout: settleMs });
+      this.options.log?.(`stableClick ${name}: normal${stable ? "" : " (box never settled)"}`);
+    } catch {
+      // Actionability never settled — force through the moving overlay.
+      await locator.click({ force: true });
+      this.options.log?.(`stableClick ${name}: forced (actionability timeout)`);
+    }
   }
 
   /**
@@ -291,9 +358,7 @@ export class PassportClient {
           .waitFor({ state: "hidden", timeout: 3_000 })
           .catch(() => {});
       }
-      const next = selectors.zone.nextButton(page);
-      await next.scrollIntoViewIfNeeded().catch(() => {});
-      await next.click();
+      await this.stableClick(page, selectors.zone.nextButton(page), "zone-continue");
       await this.step("zone-submitted", page);
       if (
         await selectors.zone
@@ -309,7 +374,7 @@ export class PassportClient {
       // it's absent.
       const signageContinue = selectors.zone.signageContinue(page);
       if (await signageContinue.isVisible({ timeout: 3_000 }).catch(() => false)) {
-        await signageContinue.click();
+        await this.stableClick(page, signageContinue, "signage-continue");
         await this.step("signage-dismissed", page);
       }
 
@@ -318,7 +383,7 @@ export class PassportClient {
       // shipped view source, TODO-verify on the first paid recording.
       const selectZone = selectors.zoneInfo.selectZoneButton(page);
       if (await selectZone.isVisible({ timeout: 5_000 }).catch(() => false)) {
-        await selectZone.click();
+        await this.stableClick(page, selectZone, "select-zone");
         await this.step("zone-selected", page);
       }
 
@@ -327,21 +392,33 @@ export class PassportClient {
         ? selectors.vehicle.plateOption(page, plate)
         : selectors.vehicle.firstOption(page);
       if (await vehicle.isVisible({ timeout: 3_000 }).catch(() => false)) {
-        await vehicle.click();
-        await selectors.vehicle.continueButton(page).click();
+        await this.stableClick(page, vehicle, "vehicle-select");
+        await this.stableClick(page, selectors.vehicle.continueButton(page), "vehicle-continue");
         await this.step("vehicle-selected", page);
       }
 
-      // Duration: stepper increments assumed 15 min (TODO-verify).
-      const clicks = Math.max(0, Math.round(minutes / DURATION_STEP_MINUTES) - 1);
-      for (let i = 0; i < clicks; i += 1) {
-        await selectors.duration.addTimeButton(page).click();
+      // Duration picker (#durationPickerPage, VERIFIED ids 2026-09-21):
+      // day/hour/minute steppers. Reach the requested minutes with hour
+      // and minute (#minPlus) increments; the minute stepper's step is
+      // assumed 15 (TODO-verify against a paid run's #minTimeText).
+      if (await selectors.duration.pickerPage(page).isVisible({ timeout: 5_000 }).catch(() => false)) {
+        const hours = Math.floor(minutes / 60);
+        const mins = minutes % 60;
+        for (let i = 0; i < hours; i += 1) {
+          await this.stableClick(page, selectors.duration.hourPlus(page), "hour-plus");
+        }
+        for (let i = 0; i < Math.round(mins / DURATION_STEP_MINUTES); i += 1) {
+          await this.stableClick(page, selectors.duration.minPlus(page), "min-plus");
+        }
       }
-      await selectors.duration.continueButton(page).click();
+      await this.stableClick(page, selectors.duration.continueButton(page), "duration-continue");
       await this.step("duration-selected", page);
+      // TODO-verify: after #pickerNext the app either charges the default
+      // card straight to confirmation (use_default_card) or shows the
+      // payment-method page — not yet walked with a paid run.
 
       await selectors.confirm.total(page).waitFor();
-      await selectors.confirm.payButton(page).click();
+      await this.stableClick(page, selectors.confirm.payButton(page), "pay");
       await this.step("payment-submitted", page);
 
       // No saved payment method → the app routes to "Add Payment Details"
@@ -391,16 +468,23 @@ export class PassportClient {
       if (await this.atGatedEntry(page)) {
         return this.fail(page, "auth_expired", "Passport asked to sign in; state is stale");
       }
-      await selectors.sessions.extendButton(page).click();
+      await this.stableClick(page, selectors.sessions.extendButton(page), "extend-open");
       await this.step("extend-opened", page);
 
-      const clicks = Math.max(1, Math.round(minutes / DURATION_STEP_MINUTES));
-      for (let i = 0; i < clicks - 1; i += 1) {
-        await selectors.duration.addTimeButton(page).click();
+      // Same duration picker as start (TODO-verify for the extend entry).
+      if (await selectors.duration.pickerPage(page).isVisible({ timeout: 5_000 }).catch(() => false)) {
+        const hours = Math.floor(minutes / 60);
+        const mins = minutes % 60;
+        for (let i = 0; i < hours; i += 1) {
+          await this.stableClick(page, selectors.duration.hourPlus(page), "extend-hour-plus");
+        }
+        for (let i = 0; i < Math.round(mins / DURATION_STEP_MINUTES); i += 1) {
+          await this.stableClick(page, selectors.duration.minPlus(page), "extend-min-plus");
+        }
       }
-      await selectors.duration.continueButton(page).click();
+      await this.stableClick(page, selectors.duration.continueButton(page), "extend-duration-continue");
       await selectors.confirm.total(page).waitFor();
-      await selectors.confirm.payButton(page).click();
+      await this.stableClick(page, selectors.confirm.payButton(page), "extend-pay");
       await this.step("extend-payment-submitted", page);
 
       await selectors.confirmation
@@ -445,8 +529,8 @@ export class PassportClient {
       if (await this.atGatedEntry(page)) {
         return this.fail(page, "auth_expired", "Passport asked to sign in; state is stale");
       }
-      await selectors.sessions.stopButton(page).click();
-      await selectors.sessions.stopConfirmButton(page).click();
+      await this.stableClick(page, selectors.sessions.stopButton(page), "stop");
+      await this.stableClick(page, selectors.sessions.stopConfirmButton(page), "stop-confirm");
       await this.step("stop-confirmed", page);
       await selectors.sessions.stopButton(page).waitFor({ state: "hidden" });
       return { ok: true, providerSessionId, expiresAt: new Date(), amountUsd: 0 };

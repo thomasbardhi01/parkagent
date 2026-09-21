@@ -22,6 +22,7 @@ import {
   isAddPaymentScreen,
   recentZonesState,
   isSignageModal,
+  activePageSettled,
 } from "../src/passport/parse.js";
 
 const pagesDir = fileURLToPath(new URL("./fixtures/pages/passport", import.meta.url));
@@ -216,5 +217,31 @@ describe("Review Signage interstitial (optional, after Enter Zone)", () => {
       expect(isSignageModal(read(other))).toBe(false);
     }
     expect(isSignageModal("<html><body>nothing here</body></html>")).toBe(false);
+  });
+})
+
+describe("duration picker + jQM transition settle", () => {
+  const dir = fileURLToPath(new URL("./fixtures/pages/passport", import.meta.url));
+  const read = (name: string) => readFileSync(join(dir, name), "utf8");
+
+  test("the duration-picker fixture carries the real stepper + continue ids", () => {
+    const html = read("duration-picker.html");
+    for (const id of ["dayPlus", "hourPlus", "hourTimeText", "minPlus", "minTimeText", "pickerNext"]) {
+      expect(html).toContain(`id="${id}"`);
+    }
+  });
+
+  test("activePageSettled is true for a settled page, false mid-transition", () => {
+    expect(activePageSettled(read("page-settled.html"))).toBe(true);
+    expect(activePageSettled(read("page-transitioning.html"))).toBe(false);
+  });
+
+  test("activePageSettled needs an active page and tolerates none", () => {
+    expect(activePageSettled('<div class="ui-page" id="x"></div>')).toBe(false); // no active
+    expect(activePageSettled("<html><body>no jqm here</body></html>")).toBe(false);
+    // a settled active page with unrelated classes stays true
+    expect(
+      activePageSettled('<div class="ui-page ui-page-theme-a ui-page-active ui-corner-all"></div>'),
+    ).toBe(true);
   });
 })

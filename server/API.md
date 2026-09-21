@@ -14,12 +14,18 @@ Every endpoint except `GET /health` requires the header:
     x-api-key: <users.api_key>
 
 Unknown or missing key → `401 {"error": "unauthorized"}`. Keys are created
-with `pnpm -C server create:user -- --name <name>` and live only in the
-`users` table.
+with `pnpm -C server create:user -- --name <name>`, printed exactly once;
+at rest the `users` table holds only `SHA-256(API_KEY_PEPPER:key)` plus an
+8-char identification prefix (the pepper is a server env secret, so a DB
+dump alone can't validate keys). Existing plaintext rows are converted by
+`pnpm -C server migrate:api-keys`.
 
 Auth is an app-level hook with a public allowlist (`/health`,
 `/webhooks/stripe` — the Stripe signature is that route's auth), so
-unknown paths 401 too. Abuse-prone routes are rate-limited per user
+unknown paths 401 too. Authorization on top: `users.is_admin` gates
+`PUT /policy` and everything under `/admin/` — any other valid key gets
+`403 {"error": "forbidden"}` (`create:user -- --admin`, or flip the
+column in SQL for an existing user). Abuse-prone routes are rate-limited per user
 (429 + `Retry-After`): `/parked` 30/min, provider writes 10/min, provider
 reads 60/min, `/zones/:zoneId/provider-number` 12/min. Unhandled errors
 answer `500 {"error": "internal"}` — details go to the server log only.
@@ -242,7 +248,9 @@ browser context on one warm shared Chromium process. No linked account, no
 state key, or an unparseable state → the call fails typed
 (`auth_expired`/`unknown`), it never falls back to someone else's session.
 Executor error codes: `auth_expired`, `zone_not_found`,
-`payment_declined`, `ui_changed`, `network`, `unknown`.
+`payment_declined`, `ui_changed`, `network`, `browser_crashed` (Chromium
+died mid-call; the executor already retried once on a fresh context),
+`unknown`.
 
 **Zone numbers.** Every start types a zone number at the provider, so a
 provider-covered zone whose `provider_zone_number` is still `""` (a Boston
@@ -332,10 +340,19 @@ is nothing to attach the fix to (the app treats that as "stop reporting").
 ## POST /device
 
 `{token, platform: "ios", environment: "development" | "production"}` →
-`{ok: true}`. Upserts the APNs token by its value, so the app re-sending
-on every launch is idempotent; `environment` picks the sandbox or
-production APNs host per device. A token Apple reports dead (410) is
-deleted.
+`{ok: true}`. Registering is idempotent (the app re-sends on every
+launch; `environment` picks the sandbox or production APNs host), but the
+token is **bound to the first registering user**: another account
+presenting it gets `409 {"error": "token_bound_elsewhere"}` instead of
+silently taking over the push channel. A token Apple reports dead (410)
+is deleted.
+
+## DELETE /device
+
+`{token}` → `{ok: true}`. Releases the caller's own binding (sign-out, or
+handing the handset to the other tester — who can then register it).
+`404 token_not_found` when the token isn't bound to the caller. Deleting
+a user cascades their bindings at the database level.
 
 ### Push notification types
 
@@ -599,9 +616,10 @@ confirms client-side with the Apple Pay sheet.
 Step 2 is the webhook: on `payment_intent.succeeded` for a tagged intent,
 the server moves the settled amount onto the financial account backing the
 cards (test mode: the sandbox ACH-credit helper) and writes a `decisions`
-row (kind `card_topup_funded`). Stripe may redeliver events; a redelivered
-intent would move test funds twice — visible in the decisions trail,
-accepted for the prototype.
+row (kind `card_topup_funded`). Idempotent against Stripe redelivery: a
+processed intent is recorded in `processed_topups`, so a second delivery
+is acknowledged (decision rule `replayed`) without moving funds again; a
+FAILED move records nothing, so redelivery retries it.
 
 **Apple Pay setup (one-time, Stripe dashboard + Apple):** native in-app
 Apple Pay needs (1) an Apple **merchant ID** (e.g.
@@ -703,9 +721,7 @@ request itself). On failure it carries a typed `reason`
 (executor code, `unsupported_card_brand`, or `no_card`) and `retrySafe`:
 whether re-running `POST /providers/:provider/setup-card` as-is is worth
 it (transient failure) or something needs fixing first (re-link, different
-card). `dryRun: true` marks a job that "completed" by dry-run skip. The
-store is in-memory — a lost job id just means checking
-`GET /providers/status` instead. `404 unknown_job` for ids that aren't
+card). `dryRun: true` marks a job that "completed" by dry-run skip. Jobs live in the link_jobs table (deploy-safe); a janitor times out rows stuck past 15 minutes. `404 unknown_job` for ids that aren't
 yours.
 
 ### GET /providers/status
@@ -776,6 +792,10 @@ Returns the active policy plus bookkeeping:
 
 ## PUT /policy
 
+**Admin only** (`403 forbidden` otherwise): the policy is the shared
+spending contract — caps, dry_run, the rate ceiling — so changing it is
+the owner's call; `GET /policy` stays open to every user (the app renders
+it, and onboarding's budget step simply reports "couldn't save" on 403).
 Full replacement of the policy document. Body is the entire policy object
 (same schema as `policy.json`; unknown keys rejected). On success the file
 is rewritten, a `policy_snapshots` row is recorded (`source: "put"`), and
@@ -845,7 +865,8 @@ No auth. `{ok, dryRun, commit, builtAt}`.
 
 ## GET /admin/summary
 
-Auth-gated like everything else (`x-api-key`). The field-test dashboard:
+Auth-gated like everything else (`x-api-key`) and **admin only**
+(`403 forbidden` for non-admin keys). The field-test dashboard:
 today's activity (NYC calendar day) aggregated from the
 decisions/parked_events/sessions tables, per city. Read-only.
 

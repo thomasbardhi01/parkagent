@@ -30,8 +30,27 @@ exported variable wins over `.env`:
     pnpm -C server create:user -- --name Thomas [--plate ABC1234 --state NY]
 
 Creates a user (and optionally a vehicle) and prints the api key **once**;
-the app sends it as the `x-api-key` header. Run it with the prod URL
-exported to mint a prod key.
+the app sends it as the `x-api-key` header. Only
+`SHA-256(API_KEY_PEPPER:key)` and an 8-char identification prefix are
+stored — losing the printed key means minting a new one. Run it with the
+prod URL exported to mint a prod key (the pepper must match the server's
+`API_KEY_PEPPER` Fly secret).
+
+### migrate:api-keys
+
+    pnpm -C server migrate:api-keys
+
+One-time conversion of pre-hashing rows: computes `api_key_hash` +
+`api_key_prefix` from each plaintext `users.api_key` and NULLs the
+plaintext. Idempotent. Needs `API_KEY_PEPPER` set; a plaintext row that
+hasn't been migrated **cannot authenticate**, so run this right after
+deploying the hashing change. Against prod: fly proxy + exported
+`DATABASE_URL` (see above) **and the same pepper the server has**:
+
+    API_KEY_PEPPER="<the value in fly secrets>" DATABASE_URL="postgres://…@localhost:15432/…" \
+      pnpm -C server migrate:api-keys
+
+The phones keep their existing keys — nothing changes client-side.
 
 ### load:zones
 

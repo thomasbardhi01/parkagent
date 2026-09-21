@@ -30,6 +30,11 @@ const ZONE_TEXT =
 const PAYMENT_TEXT =
   /((payment|card).{0,40}(declined|failed|unsuccessful|expired|could not be processed)|declined.{0,30}(payment|card)|insufficient funds)/i;
 
+// The shared Chromium (or this call's context/page) died under us — not a
+// provider failure at all. The executor retries once on a fresh context
+// (see retry.ts) before surfacing this.
+const BROWSER_CRASH_ERROR =
+  /(Target (page, context or browser|closed)|browser has been (closed|disconnected)|Browser closed|Context closed|Connection closed|browserContext\.newPage: .*closed)/i;
 const NETWORK_ERROR =
   /(net::ERR_|ECONNREFUSED|ECONNRESET|ENOTFOUND|ETIMEDOUT|EAI_AGAIN|ERR_INTERNET_DISCONNECTED|ERR_NAME_NOT_RESOLVED|socket hang up|Navigation timeout|page\.goto)/i;
 const TIMEOUT_ERROR = /Timeout \d+m?s exceeded/i;
@@ -57,6 +62,7 @@ export function classifyPageText(
  */
 export function classifyFailure(err: unknown, pageText: string | null): ExecutorErrorCode {
   const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+  if (BROWSER_CRASH_ERROR.test(message)) return "browser_crashed";
   if (NETWORK_ERROR.test(message)) return "network";
   if (pageText && CAPTCHA_TEXT.test(pageText)) return "ui_changed";
   if (pageText) {
@@ -74,6 +80,12 @@ export function classifyFailure(err: unknown, pageText: string | null): Executor
  * pages into classifyPageText in unit tests. At runtime the real page text
  * comes from Playwright's innerText, not from this.
  */
+/** Is this thrown error the browser dying (vs a provider-side failure)? */
+export function isBrowserCrash(err: unknown): boolean {
+  const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+  return BROWSER_CRASH_ERROR.test(message);
+}
+
 export function visibleTextFromHtml(html: string): string {
   return html
     .replace(/<(script|style|noscript|template)[\s\S]*?<\/\1>/gi, " ")

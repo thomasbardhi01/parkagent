@@ -12,6 +12,7 @@ import type { FastifyInstance } from "fastify";
 
 import type { AppDeps } from "../src/app.js";
 import { buildApp, makeAuthenticate } from "../src/app.js";
+import { hashApiKey } from "../src/services/apiKeys.js";
 import type {
   AppDb,
   ProviderAccountRow,
@@ -31,6 +32,10 @@ import type { StripeGateway } from "../src/services/stripeGateway.js";
 import type { Candidate } from "../src/services/zoneLookup.js";
 
 export const API_KEY = "test-key";
+/** A second, non-admin user's key — for authorization (403) tests. */
+export const NONADMIN_API_KEY = "test-key-two";
+/** The pepper every test app hashes keys with (see makeAuthenticate). */
+export const TEST_PEPPER = "test-pepper-16-chars-min";
 
 // Monday 2026-01-05, 14:00 EST — mid-afternoon, meters running.
 export const MONDAY_2PM = "2026-01-05T14:00:00-05:00";
@@ -243,6 +248,17 @@ export interface FakeDbState {
   issuingAuthorizations: FakeIssuingAuthorizationRow[];
   providerAccounts: ProviderAccountRow[];
   zoneNumberReports: ZoneNumberReportRow[];
+  processedTopups: { paymentIntentId: string; amountUsd: number; userId: string | null }[];
+  linkJobs: {
+    id: string;
+    userId: string;
+    provider: string;
+    phase: string;
+    reason: string | null;
+    retrySafe: boolean | null;
+    dryRun: boolean | null;
+    createdAt: Date;
+  }[];
 }
 
 function emptySession(id: string): SessionRow {
@@ -316,6 +332,8 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
     issuingAuthorizations: [],
     providerAccounts: [],
     zoneNumberReports: [],
+    processedTopups: [],
+    linkJobs: [],
   };
   const cardholderFor = (userId: string) => {
     const explicit = state.issuingCardholders.find((c) => c.userId === userId);
@@ -342,8 +360,17 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
     state.providerAccounts.find((a) => a.userId === userId && a.provider === provider);
   const db: AppDb = {
     user: {
-      findUnique: async ({ where }) =>
-        where.apiKey === API_KEY ? { id: "u1", name: "Thomas" } : null,
+      // Auth looks up by hash now — mirror prod: only the peppered hashes
+      // match. u1 is the owner/admin; u2 exercises the 403 paths.
+      findUnique: async ({ where }) => {
+        if (where.apiKeyHash === hashApiKey(TEST_PEPPER, API_KEY)) {
+          return { id: "u1", name: "Thomas", isAdmin: true };
+        }
+        if (where.apiKeyHash === hashApiKey(TEST_PEPPER, NONADMIN_API_KEY)) {
+          return { id: "u2", name: "Ana", isAdmin: false };
+        }
+        return null;
+      },
     },
     zone: {
       findUnique: async ({ where }) => state.zones.find((z) => z.zoneId === where.zoneId) ?? null,
@@ -387,6 +414,49 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
       },
       findUnique: async ({ where }) => state.parkedEvents.find((p) => p.id === where.id) ?? null,
       findMany: async ({ where }) => state.parkedEvents.filter((p) => p.ts >= where.ts.gte),
+    },
+    processedTopup: {
+      findUnique: async ({ where }) =>
+        state.processedTopups.find((t) => t.paymentIntentId === where.paymentIntentId)
+          ? { paymentIntentId: where.paymentIntentId }
+          : null,
+      create: async ({ data }) => {
+        if (state.processedTopups.some((t) => t.paymentIntentId === data.paymentIntentId)) {
+          throw Object.assign(new Error("Unique constraint failed: processed_topups_pkey"), {
+            code: "P2002",
+          });
+        }
+        state.processedTopups.push({ userId: null, ...data });
+        return {};
+      },
+    },
+    linkJob: {
+      create: async ({ data }) => {
+        state.linkJobs.push({
+          reason: null,
+          retrySafe: null,
+          dryRun: null,
+          createdAt: new Date(MONDAY_2PM),
+          ...data,
+        } as FakeDbState["linkJobs"][number]);
+        return { id: data.id };
+      },
+      update: async ({ where, data }) => {
+        const row = state.linkJobs.find((j) => j.id === where.id);
+        if (row) Object.assign(row, data);
+        return row ?? {};
+      },
+      findUnique: async ({ where }) => state.linkJobs.find((j) => j.id === where.id) ?? null,
+      updateMany: async ({ where, data }) => {
+        let count = 0;
+        for (const job of state.linkJobs) {
+          if (where.phase.in.includes(job.phase) && job.createdAt < where.createdAt.lt) {
+            Object.assign(job, data);
+            count += 1;
+          }
+        }
+        return { count };
+      },
     },
     decision: {
       create: async ({ data }) => {
@@ -460,6 +530,10 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
           .slice(0, take),
     },
     deviceToken: {
+      findUnique: async ({ where }) => {
+        const row = state.deviceTokens.find((t) => t.token === where.token);
+        return row ? { id: row.id, userId: row.userId } : null;
+      },
       upsert: async ({ where, create, update }) => {
         const existing = state.deviceTokens.find((t) => t.token === where.token);
         if (existing) {
@@ -793,7 +867,7 @@ export function makeTestApp(options: {
     db,
     policy: makePolicyService(options.policy, options.envDryRun ?? true),
     findCandidates: async () => options.candidates ?? [],
-    authenticate: makeAuthenticate(db),
+    authenticate: makeAuthenticate(db, TEST_PEPPER),
     executorFor: () => options.executor ?? dryRunExecutor,
     sendPush: async (userId, push) => {
       pushes.push({ userId, push });

@@ -8,6 +8,7 @@
 import type { FastifyInstance } from "fastify";
 
 import type { AppDeps } from "../app.js";
+import { requireAdmin } from "../app.js";
 import { cityForZone } from "../providers/registry.js";
 import { nycStartOfDay } from "../services/hours.js";
 
@@ -54,7 +55,8 @@ interface DecisionOutcome {
 }
 
 export function registerAdmin(app: FastifyInstance, deps: AppDeps): void {
-  app.get("/admin/summary", async () => {
+  app.get("/admin/summary", async (req, reply) => {
+    if (!requireAdmin(req, reply)) return;
     const at = deps.now?.() ?? new Date();
     const since = nycStartOfDay(at);
 

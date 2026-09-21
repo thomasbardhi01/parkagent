@@ -12,7 +12,8 @@
     "create:user": "tsx src/scripts/create-user.ts",
     "decisions:recent": "tsx src/scripts/recent-decisions.ts",
     "issuing:setup": "tsx src/scripts/issuing-setup.ts",
-    "stripe:trigger": "tsx src/scripts/stripe-trigger.ts"
+    "stripe:trigger": "tsx src/scripts/stripe-trigger.ts",
+    "migrate:api-keys": "tsx src/scripts/migrate-api-keys.ts"
   },
   "license": "UNLICENSED",
   "type": "module",

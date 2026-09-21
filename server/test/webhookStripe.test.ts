@@ -20,6 +20,7 @@ import {
   makePolicyService,
   MONDAY_2PM,
   seedSession,
+  TEST_PEPPER,
 } from "./helpers.js";
 
 const VALID_SIG = "test-signature";
@@ -59,7 +60,7 @@ function makeWebhookApp(options: {
     db,
     policy: makePolicyService(options.policy, options.envDryRun ?? true),
     findCandidates: async () => [],
-    authenticate: makeAuthenticate(db),
+    authenticate: makeAuthenticate(db, TEST_PEPPER),
     executorFor: () => new DryRunExecutor(() => {}),
     sendPush: async () => {},
     stripe: stripe.gateway,
@@ -228,7 +229,7 @@ describe("POST /webhooks/stripe: plumbing", () => {
       db,
       policy: makePolicyService(),
       findCandidates: async () => [],
-      authenticate: makeAuthenticate(db),
+      authenticate: makeAuthenticate(db, TEST_PEPPER),
       executorFor: () => new DryRunExecutor(() => {}),
       sendPush: async () => {},
     });

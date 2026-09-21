@@ -9,6 +9,7 @@ import type {
 
 import type { AppDb } from "./db.js";
 import { registerAdmin } from "./routes/admin.js";
+import { hashApiKey } from "./services/apiKeys.js";
 import { registerCard } from "./routes/card.js";
 import { registerCity } from "./routes/city.js";
 import { registerDevice } from "./routes/device.js";
@@ -30,7 +31,7 @@ import type { CandidateFetcher } from "./services/zoneLookup.js";
 
 declare module "fastify" {
   interface FastifyRequest {
-    authedUser?: { id: string; name: string };
+    authedUser?: { id: string; name: string; isAdmin: boolean };
   }
 }
 
@@ -56,19 +57,22 @@ export interface AppDeps {
   now?: () => Date;
 }
 
-/** x-api-key → users.api_key. Everything but /health and /webhooks/stripe
- * sits behind this — enforced app-wide by an onRequest hook in buildApp,
- * so a route forgotten from an allowlist fails closed, never open. */
-export function makeAuthenticate(db: AppDb): preHandlerHookHandler {
+/** x-api-key → SHA-256(pepper:key) → users.api_key_hash. Everything but
+ * /health and /webhooks/stripe sits behind this — enforced app-wide by an
+ * onRequest hook in buildApp, so a route forgotten from an allowlist
+ * fails closed, never open. Rows still carrying a plaintext api_key (the
+ * pre-migration state) do NOT authenticate — run
+ * `pnpm -C server migrate:api-keys` first. */
+export function makeAuthenticate(db: AppDb, pepper: string): preHandlerHookHandler {
   return async (req: FastifyRequest, reply: FastifyReply) => {
     const key = req.headers["x-api-key"];
-    // select is load-bearing: without it the runtime row includes the
-    // caller's api_key, one careless spread away from a response body.
+    // select is load-bearing: nothing beyond id/name should ride on the
+    // request, one careless spread away from a response body.
     const user =
       typeof key === "string" && key.length > 0
         ? await db.user.findUnique({
-            where: { apiKey: key },
-            select: { id: true, name: true },
+            where: { apiKeyHash: hashApiKey(pepper, key) },
+            select: { id: true, name: true, isAdmin: true },
           })
         : null;
     if (!user) {
@@ -81,6 +85,15 @@ export function makeAuthenticate(db: AppDb): preHandlerHookHandler {
 /** Reachable without an api key: health probes, and the Stripe webhook
  * (its signature is the auth). Everything else 401s by default. */
 const PUBLIC_PATHS = new Set(["/health", "/webhooks/stripe"]);
+
+/** 403 unless the authenticated user is an admin. Guards mutations of the
+ * shared policy and everything under /admin/ — authorization on top of
+ * the app-wide authentication hook. */
+export function requireAdmin(req: FastifyRequest, reply: FastifyReply): boolean {
+  if (req.authedUser?.isAdmin === true) return true;
+  void reply.code(403).send({ error: "forbidden" });
+  return false;
+}
 
 /**
  * Build the Fastify app. Without deps only /health exists — enough for the

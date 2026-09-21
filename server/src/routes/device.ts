@@ -1,8 +1,11 @@
 /**
  * APNs device registration. The app re-sends its token on every launch, so
- * the row is upserted by token — re-registering is idempotent, and a token
- * that moves between users (fresh install, second tester) follows the most
- * recent registration.
+ * registering is idempotent — but a token is BOUND to the user who first
+ * registered it: another account presenting the same token is refused
+ * (409) instead of silently stealing the push channel (audit finding
+ * #74). Moving a handset between testers is explicit now: the old account
+ * unbinds (DELETE /device) — or is deleted; the FK cascades — then the
+ * new one registers.
  */
 
 import type { FastifyInstance } from "fastify";
@@ -16,6 +19,10 @@ const bodySchema = z.object({
   environment: z.enum(["development", "production"]),
 });
 
+const unbindSchema = z.object({
+  token: z.string().min(1).max(200),
+});
+
 export function registerDevice(app: FastifyInstance, deps: AppDeps): void {
   app.post("/device", async (req, reply) => {
     const parsed = bodySchema.safeParse(req.body);
@@ -24,6 +31,10 @@ export function registerDevice(app: FastifyInstance, deps: AppDeps): void {
     }
     const body = parsed.data;
     const user = req.authedUser!;
+    const existing = await deps.db.deviceToken.findUnique({ where: { token: body.token } });
+    if (existing && existing.userId !== user.id) {
+      return reply.code(409).send({ error: "token_bound_elsewhere" });
+    }
     await deps.db.deviceToken.upsert({
       where: { token: body.token },
       create: {
@@ -32,12 +43,30 @@ export function registerDevice(app: FastifyInstance, deps: AppDeps): void {
         platform: body.platform,
         environment: body.environment,
       },
+      // userId deliberately absent: the binding never moves on update.
       update: {
-        userId: user.id,
         platform: body.platform,
         environment: body.environment,
       },
     });
+    return { ok: true };
+  });
+
+  // Unbind: sign-out/reset, or handing the phone to the other tester.
+  // Only the owning user can release their token.
+  app.delete("/device", async (req, reply) => {
+    const parsed = unbindSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: z.treeifyError(parsed.error) });
+    }
+    const user = req.authedUser!;
+    const existing = await deps.db.deviceToken.findUnique({
+      where: { token: parsed.data.token },
+    });
+    if (!existing || existing.userId !== user.id) {
+      return reply.code(404).send({ error: "token_not_found" });
+    }
+    await deps.db.deviceToken.delete({ where: { id: existing.id } });
     return { ok: true };
   });
 }

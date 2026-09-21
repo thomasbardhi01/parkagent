@@ -281,6 +281,42 @@ describe("webhook payment_intent.succeeded", () => {
     });
   });
 
+  it("a redelivered intent is acknowledged without moving funds again", async () => {
+    const { t, moves } = webhookApp();
+    await deliver(t, intentEvent({ parkagent: "card_topup", userId: "u1" }));
+    expect(moves).toEqual([25]);
+
+    const replay = await deliver(t, intentEvent({ parkagent: "card_topup", userId: "u1" }));
+    expect(replay.statusCode).toBe(200); // Stripe still gets its ack
+    expect(moves).toEqual([25]); // and the money moved exactly once
+    expect(t.state.processedTopups).toHaveLength(1);
+    expect(t.state.decisions.at(-1)).toMatchObject({
+      kind: "card_topup_funded",
+      rule: "replayed",
+      outcome: { ok: true, skipped: true },
+    });
+  });
+
+  it("a FAILED move records no idempotency row, so the redelivery retries it", async () => {
+    let attempts = 0;
+    const { t, moves } = webhookApp({
+      moveToFinancialAccount: async (amountUsd) => {
+        attempts += 1;
+        if (attempts === 1) throw new Error("financial account not ready");
+        moves.push(amountUsd);
+      },
+    });
+    await deliver(t, intentEvent({ parkagent: "card_topup", userId: "u1" }));
+    expect(t.state.processedTopups).toHaveLength(0);
+    expect(t.state.decisions.at(-1)).toMatchObject({ rule: "funding_move_failed" });
+
+    // Stripe redelivers; this time the account is ready.
+    await deliver(t, intentEvent({ parkagent: "card_topup", userId: "u1" }));
+    expect(moves).toEqual([25]);
+    expect(t.state.processedTopups).toHaveLength(1);
+    expect(t.state.decisions.at(-1)).toMatchObject({ rule: "funded" });
+  });
+
   it("ignores intents that aren't ours and records a failed move", async () => {
     const { t, moves } = webhookApp();
     await deliver(t, intentEvent({ someone: "else" }));

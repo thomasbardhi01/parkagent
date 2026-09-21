@@ -76,13 +76,24 @@ model ZoneNumberReport {
 model User {
   id        String   @id @default(cuid())
   name      String
-  apiKey    String   @unique @map("api_key")
+  // Legacy plaintext key: only on rows migrate:api-keys hasn't processed
+  // yet; nulled by that script and never written for new users.
+  apiKey    String?  @unique @map("api_key")
+  // SHA-256(pepper:key) hex — the auth lookup key. Pepper is the
+  // API_KEY_PEPPER env secret, so a DB dump alone can't validate keys.
+  apiKeyHash String? @unique @map("api_key_hash")
+  // First 8 chars of the key, for identification in logs/support only.
+  apiKeyPrefix String? @map("api_key_prefix")
+  // Gates PUT /policy and /admin/* (403 otherwise). Set at create:user
+  // --admin, or by hand in SQL for an existing user.
+  isAdmin   Boolean  @default(false) @map("is_admin")
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   vehicles     Vehicle[]
   parkedEvents ParkedEvent[]
   sessions     Session[]
   decisions    Decision[]
+  deviceTokens DeviceToken[]
 
   @@map("users")
 }
@@ -228,6 +239,8 @@ model LocationFix {
 model DeviceToken {
   id          String   @id @default(cuid())
   userId      String   @map("user_id")
+  // Bound to its user (409 on cross-user rebind); cascades on deletion.
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   token       String   @unique
   platform    String
   // "development" (sandbox APNs host) | "production"
@@ -237,6 +250,40 @@ model DeviceToken {
 
   @@index([userId])
   @@map("device_tokens")
+}
+
+// A chained link → setup-card job the app polls (GET
+// /providers/:provider/link-status). Durable so a deploy or machine stop
+// mid-job doesn't lose the answer; a janitor times out rows stuck
+// in-progress past 15 minutes.
+model LinkJob {
+  id        String   @id
+  userId    String   @map("user_id")
+  provider  String
+  // linking | adding_card | done | failed
+  phase     String
+  // Typed failure reason (executor code, "no_card", or "timeout").
+  reason    String?
+  retrySafe Boolean? @map("retry_safe")
+  dryRun    Boolean? @map("dry_run")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([phase, createdAt])
+  @@map("link_jobs")
+}
+
+// Idempotency ledger for Apple Pay top-ups: one row per
+// payment_intent.succeeded whose amount was moved onto the financial
+// account. Stripe redelivers events; a second delivery finds the row and
+// skips the move instead of doubling it.
+model ProcessedTopup {
+  paymentIntentId String   @id @map("payment_intent_id")
+  amountUsd       Decimal  @map("amount_usd") @db.Decimal(8, 2)
+  userId          String?  @map("user_id")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("processed_topups")
 }
 
 // Non-negotiable: every automated decision writes a row here with its inputs.

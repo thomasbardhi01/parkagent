@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
 import type { AppDeps } from "../app.js";
+import { requireAdmin } from "../app.js";
 import { snapshotPolicy } from "../services/policy.js";
 
 function policyResponse(deps: AppDeps) {
@@ -16,6 +17,10 @@ export function registerPolicy(app: FastifyInstance, deps: AppDeps): void {
   app.get("/policy", async () => policyResponse(deps));
 
   app.put("/policy", async (req, reply) => {
+    // The policy is the shared spending contract: caps, dry_run, the rate
+    // ceiling. Reading it is for everyone (the app renders it); changing
+    // it is the owner's call alone.
+    if (!requireAdmin(req, reply)) return;
     try {
       deps.policy.update(req.body);
     } catch (error) {

@@ -27,6 +27,7 @@ import {
   parkedBody,
   seedProviderAccount,
   seedSession,
+  TEST_PEPPER,
 } from "./helpers.js";
 
 const HEADERS = { "x-api-key": API_KEY, "content-type": "application/json" };
@@ -337,7 +338,7 @@ function makeWebhookApp() {
     db,
     policy: makePolicyService({ dry_run: false }, false),
     findCandidates: async () => [],
-    authenticate: makeAuthenticate(db),
+    authenticate: makeAuthenticate(db, TEST_PEPPER),
     executorFor: () => new DryRunExecutor(() => {}),
     sendPush: async () => {},
     stripe: gateway,

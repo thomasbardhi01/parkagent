@@ -8,6 +8,10 @@ const schema = z
   .object({
     DATABASE_URL: z.string().min(1),
     DRY_RUN: z.enum(["true", "false"]),
+    // Server-side pepper for api-key hashing (users.api_key_hash =
+    // SHA-256(pepper:key)). Any string ≥ 16 chars; generate with
+    // `openssl rand -base64 32`. Changing it invalidates every key.
+    API_KEY_PEPPER: z.string().min(16),
     SOCRATA_APP_TOKEN: z.string().min(1),
     STRIPE_SECRET_KEY: z.string().min(1).optional(),
     STRIPE_WEBHOOK_SECRET: z.string().min(1).optional(),

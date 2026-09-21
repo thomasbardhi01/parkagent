@@ -164,11 +164,11 @@ export interface IssuingAuthorizationRow {
 export interface AppDb {
   user: {
     findUnique(args: {
-      where: { apiKey: string };
-      /** Always pass this: without it the runtime row carries api_key,
-       * masked by this type, one spread away from a response body. */
-      select?: { id: true; name: true };
-    }): Promise<{ id: string; name: string } | null>;
+      where: { apiKeyHash: string };
+      /** Always pass this: without it the runtime row carries the key
+       * hash and prefix, one spread away from a response body. */
+      select?: { id: true; name: true; isAdmin: true };
+    }): Promise<{ id: string; name: string; isAdmin: boolean } | null>;
   };
   zone: {
     findUnique(args: { where: { zoneId: string } }): Promise<ZoneTermsRow | null>;
@@ -203,6 +203,46 @@ export interface AppDb {
     findMany(args: {
       where: { ts: { gte: Date } };
     }): Promise<{ id: string; userId: string; signals: unknown; ts: Date }[]>;
+  };
+  processedTopup: {
+    findUnique(args: {
+      where: { paymentIntentId: string };
+    }): Promise<{ paymentIntentId: string } | null>;
+    create(args: {
+      data: { paymentIntentId: string; amountUsd: number; userId?: string | null };
+    }): Promise<unknown>;
+  };
+  linkJob: {
+    create(args: {
+      data: {
+        id: string;
+        userId: string;
+        provider: string;
+        phase: string;
+        reason?: string;
+        retrySafe?: boolean;
+        dryRun?: boolean;
+      };
+    }): Promise<{ id: string }>;
+    update(args: {
+      where: { id: string };
+      data: { phase?: string; reason?: string; retrySafe?: boolean; dryRun?: boolean };
+    }): Promise<unknown>;
+    findUnique(args: { where: { id: string } }): Promise<{
+      id: string;
+      userId: string;
+      provider: string;
+      phase: string;
+      reason: string | null;
+      retrySafe: boolean | null;
+      dryRun: boolean | null;
+      createdAt: Date;
+    } | null>;
+    /** The janitor's timeout sweep. */
+    updateMany(args: {
+      where: { phase: { in: string[] }; createdAt: { lt: Date } };
+      data: { phase: string; reason: string; retrySafe: boolean };
+    }): Promise<{ count: number }>;
   };
   decision: {
     create(args: {
@@ -377,10 +417,14 @@ export interface AppDb {
     }): Promise<{ lat: number; lng: number; accuracyM: number; ts: Date }[]>;
   };
   deviceToken: {
+    findUnique(args: {
+      where: { token: string };
+    }): Promise<{ id: string; userId: string } | null>;
     upsert(args: {
       where: { token: string };
       create: { userId: string; token: string; platform: string; environment: string };
-      update: { userId: string; platform: string; environment: string };
+      // userId deliberately absent: a binding never moves on update.
+      update: { platform: string; environment: string };
     }): Promise<unknown>;
     findMany(args: {
       where: { userId: string };

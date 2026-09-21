@@ -474,6 +474,10 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
           .slice(0, take),
     },
     deviceToken: {
+      findUnique: async ({ where }) => {
+        const row = state.deviceTokens.find((t) => t.token === where.token);
+        return row ? { id: row.id, userId: row.userId } : null;
+      },
       upsert: async ({ where, create, update }) => {
         const existing = state.deviceTokens.find((t) => t.token === where.token);
         if (existing) {

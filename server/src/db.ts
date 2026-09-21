@@ -377,10 +377,14 @@ export interface AppDb {
     }): Promise<{ lat: number; lng: number; accuracyM: number; ts: Date }[]>;
   };
   deviceToken: {
+    findUnique(args: {
+      where: { token: string };
+    }): Promise<{ id: string; userId: string } | null>;
     upsert(args: {
       where: { token: string };
       create: { userId: string; token: string; platform: string; environment: string };
-      update: { userId: string; platform: string; environment: string };
+      // userId deliberately absent: a binding never moves on update.
+      update: { platform: string; environment: string };
     }): Promise<unknown>;
     findMany(args: {
       where: { userId: string };

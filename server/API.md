@@ -338,10 +338,19 @@ is nothing to attach the fix to (the app treats that as "stop reporting").
 ## POST /device
 
 `{token, platform: "ios", environment: "development" | "production"}` →
-`{ok: true}`. Upserts the APNs token by its value, so the app re-sending
-on every launch is idempotent; `environment` picks the sandbox or
-production APNs host per device. A token Apple reports dead (410) is
-deleted.
+`{ok: true}`. Registering is idempotent (the app re-sends on every
+launch; `environment` picks the sandbox or production APNs host), but the
+token is **bound to the first registering user**: another account
+presenting it gets `409 {"error": "token_bound_elsewhere"}` instead of
+silently taking over the push channel. A token Apple reports dead (410)
+is deleted.
+
+## DELETE /device
+
+`{token}` → `{ok: true}`. Releases the caller's own binding (sign-out, or
+handing the handset to the other tester — who can then register it).
+`404 token_not_found` when the token isn't bound to the caller. Deleting
+a user cascades their bindings at the database level.
 
 ### Push notification types
 

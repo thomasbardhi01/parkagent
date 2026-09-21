@@ -93,6 +93,7 @@ model User {
   parkedEvents ParkedEvent[]
   sessions     Session[]
   decisions    Decision[]
+  deviceTokens DeviceToken[]
 
   @@map("users")
 }
@@ -238,6 +239,8 @@ model LocationFix {
 model DeviceToken {
   id          String   @id @default(cuid())
   userId      String   @map("user_id")
+  // Bound to its user (409 on cross-user rebind); cascades on deletion.
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   token       String   @unique
   platform    String
   // "development" (sandbox APNs host) | "production"

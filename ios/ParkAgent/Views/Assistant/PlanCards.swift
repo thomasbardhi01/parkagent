@@ -66,10 +66,24 @@ private struct OptionCard: View {
             .font(.captionText)
             .foregroundStyle(Color.textSecondary)
 
-            Button(confirmLabel) { onConfirm() }
-                .buttonStyle(.primary)
-                .disabled(confirming)
-                .accessibilityIdentifier("assistant.confirm.\(option.id)")
+            if option.payOnArrival == true {
+                // A future street meter: nothing to confirm now — the
+                // detector pays at the curb when the car parks there.
+                HStack(spacing: Spacing.half) {
+                    Image(systemName: "checkmark.seal")
+                        .foregroundStyle(Color.success)
+                    Text("We'll pay automatically when you park here.")
+                        .font(.secondaryText)
+                        .foregroundStyle(Color.textSecondary)
+                }
+                .padding(.vertical, Spacing.quarter)
+                .accessibilityIdentifier("assistant.autoPayNote.\(option.id)")
+            } else {
+                Button(confirmLabel) { onConfirm() }
+                    .buttonStyle(.primary)
+                    .disabled(confirming)
+                    .accessibilityIdentifier("assistant.confirm.\(option.id)")
+            }
 
             if option.type == "garage" {
                 Text("Checkout finishes in SpotHero — the pass will live in your SpotHero account.")

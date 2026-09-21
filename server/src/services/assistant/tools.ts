@@ -386,6 +386,19 @@ export class AssistantTools {
           options: plan.options.map((o, i) => ({ ...o, recommended: i === 0 })),
         };
       }
+      // payOnArrival is OURS to decide, never the model's: a street
+      // option starting more than 15 minutes out cannot be confirmed
+      // now (meters run from payment) — the detector pays on arrival.
+      const at = this.now().getTime();
+      plan = {
+        ...plan,
+        options: plan.options.map((o) => {
+          if (o.type !== "street") return { ...o, payOnArrival: false };
+          const starts = o.startsAt ? new Date(o.startsAt).getTime() : Number.NaN;
+          const future = Number.isFinite(starts) && starts - at > 15 * 60_000;
+          return { ...o, payOnArrival: future };
+        }),
+      };
     }
     const planId = randomUUID();
     await this.deps.db.assistantPlan.create({

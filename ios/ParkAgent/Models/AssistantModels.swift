@@ -60,6 +60,11 @@ struct SingleSpotOption: Decodable, Identifiable, Sendable {
     let garageOptionId: String?
     let deepLink: String?
     let recommended: Bool
+    /// ISO start of the stay, when the plan is for later.
+    let startsAt: String?
+    /// Server-computed: a future street meter can't be started now — the
+    /// detector pays on arrival, so the card shows that instead of Confirm.
+    let payOnArrival: Bool?
 }
 
 struct ItineraryPlan: Decodable, Sendable {

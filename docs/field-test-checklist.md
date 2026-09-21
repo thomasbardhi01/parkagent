@@ -10,7 +10,7 @@ and decides, but no money moves and you pay the meter by hand as usual.
 1. **Server**: `curl https://parkagent-api.fly.dev/health` → `ok: true`
    and `dryRun: true`. If `dryRun` is false, STOP and fix the env before
    driving anywhere.
-2. **Zones loaded**: in the app, Settings → Debug → "Simulate park here"
+2. **Zones loaded**: in the app, Settings → Developer → Debug menu → "Simulate park here"
    at a fixture point should return a quote (NYC), and the Home chip
    should name your city when you're in one.
 3. **Phone setup** (per phone, both users):
@@ -18,8 +18,8 @@ and decides, but no money moves and you pay the meter by hand as usual.
    - Motion & Fitness: on. Notifications: on.
    - If either is off, Home shows a banner with an Open Settings button —
      clear the banners before the drive.
-4. **Turn on the signal log**: Settings → Debug → **Log raw detector
-   signals**. This writes every motion, car-audio, and location event
+4. **Turn on the signal log**: Settings → Developer → Debug menu →
+   **Log raw detector signals**. This writes every motion, car-audio, and location event
    with a timestamp to a file on the phone; it is the only way to debug
    a missed or false park after the fact.
 5. **Provider link** (needed even in dry run — session start refuses
@@ -55,7 +55,7 @@ and decides, but no money moves and you pay the meter by hand as usual.
 
 ## What "working" looks like per signal (in the exported log)
 
-Export: Settings → Debug → **Export signal log** (share sheet → AirDrop /
+Export: Settings → Developer → Debug menu → **Export signal log** (share sheet → AirDrop /
 Files / mail to yourself). One line per event:
 `2026-09-27T14:03:22.512Z motion_stop`.
 

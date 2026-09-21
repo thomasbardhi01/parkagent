@@ -7,15 +7,18 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 
-import { ASSISTANT_MODEL } from "./loop.js";
+import { DEFAULT_ASSISTANT_MODEL } from "./loop.js";
 import type { ModelClient, ModelContentBlock } from "./loop.js";
 
-export function makeAnthropicModelClient(apiKey: string): ModelClient {
+export function makeAnthropicModelClient(
+  apiKey: string,
+  model: string = DEFAULT_ASSISTANT_MODEL,
+): ModelClient {
   const client = new Anthropic({ apiKey });
   return {
     async create(args, onText) {
       const stream = client.messages.stream({
-        model: ASSISTANT_MODEL,
+        model,
         max_tokens: args.maxTokens,
         system: args.system,
         tools: args.tools as Anthropic.Tool[],

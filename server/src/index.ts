@@ -110,7 +110,7 @@ const linkClient =
     : undefined;
 const linkWallet = new LinkWallet({ db, stateCrypto, linkClient });
 const assistantModel = env.ANTHROPIC_API_KEY
-  ? makeAnthropicModelClient(env.ANTHROPIC_API_KEY)
+  ? makeAnthropicModelClient(env.ANTHROPIC_API_KEY, env.ANTHROPIC_MODEL)
   : undefined;
 const findCandidates = makeCandidateFetcher(prisma);
 const assistantTools = new AssistantTools({ db, policy, findCandidates, garage, linkWallet });

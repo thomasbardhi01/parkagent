@@ -10,7 +10,8 @@ import type { AssistantPlanBody } from "./plans.js";
 import { TOOL_DEFINITIONS } from "./tools.js";
 import type { AssistantTools, ToolContext } from "./tools.js";
 
-export const ASSISTANT_MODEL = "claude-sonnet-4-6";
+/** Overridden by the ANTHROPIC_MODEL env var (see env.ts). */
+export const DEFAULT_ASSISTANT_MODEL = "claude-haiku-4-5-20251001";
 const MAX_LOOP_ITERATIONS = 8;
 const MAX_STORED_TURNS = 20;
 const MAX_TOKENS = 1024;

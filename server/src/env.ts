@@ -33,6 +33,9 @@ const schema = z
     PARKNYC_PLATE: z.string().min(1).optional(),
     // The assistant's model access; without it /assistant/* answers 503.
     ANTHROPIC_API_KEY: z.string().min(1).optional(),
+    // Which Claude model the assistant loop (and so every Anthropic call,
+    // explain_decision phrasing included) runs on.
+    ANTHROPIC_MODEL: z.string().min(1).default("claude-haiku-4-5-20251001"),
     // Link wallet for agents (Stripe agentic commerce) — optional as a
     // set: all four present → /link/* live; any missing → 503.
     LINK_CLIENT_ID: z.string().min(1).optional(),

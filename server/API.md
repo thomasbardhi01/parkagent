@@ -906,8 +906,9 @@ ui_changed screenshots).
 
 ## Assistant
 
-The conversational surface: one Claude tool-use loop (model
-`claude-sonnet-4-6`) that does exactly two jobs — find one spot, or plan
+The conversational surface: one Claude tool-use loop (model from the
+`ANTHROPIC_MODEL` env var, default `claude-haiku-4-5-20251001`) that
+does exactly two jobs — find one spot, or plan
 a multi-stop day. The MODEL plans and phrases; the TOOLS enforce policy
 (same quoting, caps, and audit services as everything else); **nothing
 books or spends without the user's explicit Confirm/Sign off tap on a

@@ -32,7 +32,7 @@ Rules you cannot break (the tools enforce them too):
 - If search_garages returns garage_search_unavailable, the search FAILED — say "I couldn't check garages right now", never "no garages available", and still propose the street option. Only an empty options list means none were found.
 - An itinerary's total must fit the user's remaining daily budget (build_itinerary shows it). If it doesn't fit, say what to cut.
 - Garage checkout today is a SpotHero deep link: the user finishes the purchase in SpotHero and the pass lives there. Say so when it matters, in a few words.
-- If the user's location or times are missing and needed, ask one short question instead of guessing.`;
+- Every user message ends with the CURRENT date and time in brackets. Compute every date from it — "tonight", "tomorrow", "at 2pm" are relative to that timestamp. NEVER guess or recall a date; a window in the past is always a mistake, and the tools will bounce it back to you with the current time so you can retry.`;
 
 /** The one-shot correction when a turn quoted prices but never proposed. */
 const PROPOSE_PLAN_REMINDER =
@@ -88,6 +88,24 @@ export interface RunArgs {
   text: string;
   location?: { lat: number; lng: number } | undefined;
   onText?: ((delta: string) => void) | undefined;
+  now?: (() => Date) | undefined;
+}
+
+/** Eastern time, both cities: the bracket every user message carries so
+ * the model never has to guess what "tonight" means. */
+export function currentTimeLine(at: Date): string {
+  const eastern = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    weekday: "short",
+    hour12: false,
+  }).formatToParts(at);
+  const get = (type: string) => eastern.find((p) => p.type === type)?.value ?? "";
+  return `[current time: ${get("weekday")} ${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")} ET]`;
 }
 
 /** What this turn's quoting tools produced — the raw material for a
@@ -151,9 +169,16 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
   const history: ModelTurn[] =
     stored && stored.userId === args.userId ? (stored.turns as ModelTurn[]) : [];
 
-  const userText = args.location
-    ? `${args.text}\n\n[phone location: ${args.location.lat.toFixed(5)}, ${args.location.lng.toFixed(5)}]`
-    : args.text;
+  const at = args.now?.() ?? new Date();
+  const envelope = [
+    args.location
+      ? `[phone location: ${args.location.lat.toFixed(5)}, ${args.location.lng.toFixed(5)}]`
+      : null,
+    // The prod bug this cures: without a clock, "tonight" became a
+    // hallucinated 2024 date and SpotHero 400ed the past window.
+    currentTimeLine(at),
+  ].filter((line): line is string => line !== null);
+  const userText = `${args.text}\n\n${envelope.join("\n")}`;
   const messages: ModelTurn[] = [...history, { role: "user", content: userText }];
 
   const ctx: ToolContext = {

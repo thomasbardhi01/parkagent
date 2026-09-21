@@ -16,6 +16,7 @@ import {
   scrubVerbalConfirm,
 } from "../src/services/assistant/loop.js";
 import type { SingleSpotPlan } from "../src/services/assistant/plans.js";
+import type { GarageOption, GarageProvider } from "../src/services/garage/garageProvider.js";
 import { API_KEY, BOYLSTON_BOS, MONDAY_2PM, makeTestApp } from "./helpers.js";
 
 const HEADERS = { "x-api-key": API_KEY, "content-type": "application/json" };
@@ -73,6 +74,35 @@ function buggyModelResponses(): ModelResponse[] {
 }
 
 const REPORTED_ZONE = { ...BOYLSTON_BOS, providerZoneNumber: "81234" };
+
+const GARAGE: GarageOption = {
+  id: "g1",
+  provider: "spothero",
+  name: "Seaport Deck",
+  address: "1 Seaport Ln",
+  priceUsd: 27.13,
+  distanceM: 240,
+  walkMinutes: 3,
+  entryType: "self",
+  deepLink: "https://spothero.com/search?latitude=42.3503",
+};
+
+const SINGLE_SPOT_PLAN = {
+  kind: "single_spot",
+  options: [
+    {
+      id: "opt-garage",
+      type: "garage",
+      label: "Seaport Deck",
+      detail: "Self park",
+      priceUsd: 27.13,
+      durationMinutes: 240,
+      garageOptionId: "g1",
+      deepLink: GARAGE.deepLink,
+      recommended: true,
+    },
+  ],
+};
 
 describe("the prod request", () => {
   test("a quoting turn always ends in a plan: reminder ignored → synthesized street option, payOnArrival, no token, no verbal confirm, no duplicate opener", async () => {
@@ -314,5 +344,117 @@ describe("reply hygiene units", () => {
     // Clean replies pass through untouched.
     const clean = "Here are your options.";
     expect(scrubVerbalConfirm(clean, true)).toBe(clean);
+  });
+});
+
+describe("the model can't time-travel (Seaport prod bug #2)", () => {
+  test("every user turn carries the current time line", async () => {
+    const model = scriptedModel([
+      { content: [{ type: "text", text: "Which neighborhood?" }], stopReason: "end_turn" },
+    ]);
+    const t = makeTestApp({ assistantModel: model, now: () => NOW });
+    await t.app.inject({
+      method: "POST",
+      url: "/assistant/message",
+      headers: HEADERS,
+      payload: { text: "garage tonight" },
+    });
+    const turns = JSON.stringify(t.state.conversations[0]!.turns);
+    // Monday 2026-01-05 14:00 ET — the fixture clock, injected verbatim.
+    expect(turns).toContain("[current time: Mon 2026-01-05 14:00 ET]");
+  });
+
+  test("a hallucinated past window bounces with the current time and the model self-corrects", async () => {
+    const goodGarage: GarageProvider = {
+      id: "spothero",
+      canReserve: false,
+      search: async (q) =>
+        q.startsAt.startsWith("2026")
+          ? { ok: true, options: [GARAGE], fromCache: false }
+          : { ok: false, error: "parse_failed", detail: "HTTP 400" },
+      book: async () => {
+        throw new Error("unreachable");
+      },
+    };
+    const model = scriptedModel([
+      // The prod transcript: "tonight" rendered as a 2024 date.
+      {
+        content: [
+          {
+            type: "tool_use",
+            id: "t1",
+            name: "search_garages",
+            input: {
+              lat: 42.3503,
+              lng: -71.04,
+              starts_at: "2024-01-09T18:00:00",
+              ends_at: "2024-01-09T22:00:00",
+              budget_usd: 50,
+            },
+          },
+        ],
+        stopReason: "tool_use",
+      },
+      // The corrective tool error names the current time; retry right.
+      {
+        content: [
+          {
+            type: "tool_use",
+            id: "t2",
+            name: "search_garages",
+            input: {
+              lat: 42.3503,
+              lng: -71.04,
+              starts_at: "2026-01-05T18:00:00",
+              ends_at: "2026-01-05T22:00:00",
+              budget_usd: 50,
+            },
+          },
+        ],
+        stopReason: "tool_use",
+      },
+      {
+        content: [
+          { type: "tool_use", id: "t3", name: "propose_plan", input: { plan: SINGLE_SPOT_PLAN } },
+        ],
+        stopReason: "tool_use",
+      },
+    ]);
+    const t = makeTestApp({ assistantModel: model, garage: goodGarage, now: () => NOW });
+    const res = await t.app.inject({
+      method: "POST",
+      url: "/assistant/message",
+      headers: HEADERS,
+      payload: { text: "I need a garage near the Seaport from 6 to 10 tonight" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().plan).not.toBeNull();
+
+    // The bounce was audited and never reached the provider…
+    expect(t.state.decisions.some((d) => d.rule === "past_window")).toBe(true);
+    expect(t.state.decisions.some((d) => d.rule === "garage_search_error")).toBe(false);
+    // …the model saw the corrective error with the real clock…
+    const turns = JSON.stringify(t.state.conversations[0]!.turns);
+    expect(turns).toContain("window_in_the_past");
+    expect(turns).toContain("2026-01-05 14:00 ET");
+    // …and the retry succeeded.
+    expect(t.state.decisions.some((d) => d.kind === "assistant_tool" && d.rule === "ok")).toBe(true);
+  });
+
+  test("quote_street gets the same guard", async () => {
+    const t = makeTestApp({ candidates: [REPORTED_ZONE], now: () => NOW });
+    const outcome = await t.deps.assistantTools!.execute(
+      { userId: "u1", conversationId: "c1" },
+      "quote_street",
+      { lat: 42.3495, lng: -71.0798, duration_minutes: 60, when: "2024-01-09T18:00:00" },
+    );
+    expect((outcome.result as { error: string }).error).toBe("window_in_the_past");
+    // A slightly-stale "now" (within the hour) still quotes.
+    const fresh = await t.deps.assistantTools!.execute(
+      { userId: "u1", conversationId: "c1" },
+      "quote_street",
+      { lat: 42.3495, lng: -71.0798, duration_minutes: 60, when: new Date(NOW.getTime() - 30 * 60_000).toISOString() },
+    );
+    expect((fresh.result as { found: boolean }).found).toBe(true);
   });
 });

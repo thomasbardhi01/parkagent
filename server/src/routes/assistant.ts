@@ -91,6 +91,7 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
           text,
           location: body.location,
           onText: (delta) => sseWrite(reply, "text", { delta }),
+          now: deps.now,
         });
         sseWrite(reply, "done", {
           conversationId: result.conversationId,
@@ -116,6 +117,7 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
       conversationId,
       text,
       location: body.location,
+      now: deps.now,
     });
     return {
       conversationId: result.conversationId,

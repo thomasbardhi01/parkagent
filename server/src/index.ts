@@ -17,6 +17,12 @@ import {
 } from "./services/parknycExecutor.js";
 import { makePendingSessionCheck } from "./services/pendingSession.js";
 import { PolicyService, snapshotPolicy } from "./services/policy.js";
+import { makeAnthropicModelClient } from "./services/assistant/anthropicClient.js";
+import { AssistantTools } from "./services/assistant/tools.js";
+import { makeSpotHeroProvider } from "./services/garage/spotheroDeepLink.js";
+import { makeLinkHttpClient } from "./services/link/linkClient.js";
+import { LinkWallet } from "./services/link/linkWallet.js";
+import { makeItineraryWorker } from "./jobs/itineraryTick.js";
 import { makeStripeGateway } from "./services/stripeGateway.js";
 import { makeCandidateFetcher } from "./services/zoneLookup.js";
 
@@ -89,11 +95,34 @@ const stripe =
       })
     : undefined;
 
+// Assistant: the model transport (503 without the key), the SpotHero
+// deep-link garage provider, and the Link wallet.
+const garage = makeSpotHeroProvider();
+const linkClient =
+  env.LINK_CLIENT_ID && env.LINK_CLIENT_SECRET && env.LINK_PUBLISHABLE_KEY && env.LINK_REDIRECT_URI
+    ? makeLinkHttpClient({
+        clientId: env.LINK_CLIENT_ID,
+        clientSecret: env.LINK_CLIENT_SECRET,
+        publishableKey: env.LINK_PUBLISHABLE_KEY,
+        redirectUri: env.LINK_REDIRECT_URI,
+        testMode: env.LINK_TEST_MODE === "true",
+      })
+    : undefined;
+const linkWallet = new LinkWallet({ db, stateCrypto, linkClient });
+const assistantModel = env.ANTHROPIC_API_KEY
+  ? makeAnthropicModelClient(env.ANTHROPIC_API_KEY)
+  : undefined;
+const findCandidates = makeCandidateFetcher(prisma);
+const assistantTools = new AssistantTools({ db, policy, findCandidates, garage, linkWallet });
+
 const app = buildApp({
   db,
   policy,
-  findCandidates: makeCandidateFetcher(prisma),
+  findCandidates,
   authenticate: makeAuthenticate(db, env.API_KEY_PEPPER),
+  ...(assistantModel ? { assistantModel } : {}),
+  assistantTools,
+  linkWallet,
   executorFor,
   sendPush,
   ...(stripe ? { stripe } : {}),
@@ -113,11 +142,13 @@ const extender = makeExtender({
 });
 const cardJanitor = makeCardJanitor({ db, stripe, log });
 const linkJobJanitor = makeLinkJobJanitor({ db, log });
+const itineraryWorker = makeItineraryWorker({ db, sendPush, log });
 
 app.listen({ port: env.PORT, host: "0.0.0.0" });
 extender.start();
 cardJanitor.start();
 linkJobJanitor.start();
+itineraryWorker.start();
 
 // Graceful shutdown: stop the jobs and close the executor's warm Chromium
 // (otherwise every Fly restart leaks the browser process to container
@@ -128,6 +159,7 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
     extender.stop();
     cardJanitor.stop();
     linkJobJanitor.stop();
+    itineraryWorker.stop();
     void closeExecutorBrowser()
       .catch(() => {})
       .finally(() => {

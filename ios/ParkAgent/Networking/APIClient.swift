@@ -44,6 +44,25 @@ protocol APIClient: Sendable {
     func revealCardDetails() async throws -> RevealedCardDetails
     func freezeCard() async throws -> CardStatusResponse
     func unfreezeCard() async throws -> CardStatusResponse
+
+    // Assistant (server/API.md "Assistant"). The reply streams: .delta
+    // events carry text as the model produces it, .done the final reply
+    // with any proposed plan.
+    func assistantMessage(
+        text: String,
+        conversationId: String?,
+        location: (lat: Double, lng: Double)?
+    ) -> AsyncThrowingStream<AssistantEvent, Error>
+    /// The user's tap on a plan card — the only path that books or pays.
+    func confirmPlan(planId: String, optionId: String?) async throws -> AssistantConfirmResponse
+    func itineraries() async throws -> ItinerariesResponse
+    func patchItinerary(id: String, stops: [ItineraryStop]) async throws -> ItineraryPatchResponse
+
+    // Link wallet for agents.
+    func linkWalletStatus() async throws -> LinkWalletStatus
+    func linkWalletConnect() async throws -> LinkConnectResponse
+    func linkWalletDisconnect() async throws
+    func syncLinkSpendRequest(id: String) async throws -> LinkSpendSyncResponse
 }
 
 enum APIError: Error, LocalizedError {

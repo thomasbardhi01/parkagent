@@ -134,6 +134,10 @@ struct ActiveSessionView: View {
                 tint: expired ? .danger : expiring ? .warningGold : .actionCoral
             )
             StatusPill(status: expired ? .failed : expiring ? .expiring : .active)
+            TagPill(
+                label: session.paymentSource == "link_wallet" ? "Link wallet" : "ParkAgent card",
+                color: session.paymentSource == "link_wallet" ? .actionCoralLink : .textSecondary
+            )
         }
         .padding(Spacing.unitAndHalf)
         .frame(maxWidth: .infinity)

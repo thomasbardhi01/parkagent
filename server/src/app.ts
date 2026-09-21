@@ -20,7 +20,12 @@ import { registerProviders } from "./routes/providers.js";
 import { registerSession } from "./routes/session.js";
 import { registerStripeWebhook } from "./routes/webhooksStripe.js";
 import { registerZones } from "./routes/zones.js";
+import { registerAssistant } from "./routes/assistant.js";
+import { registerLink } from "./routes/link.js";
 import type { PushSender } from "./services/apns.js";
+import type { ModelClient } from "./services/assistant/loop.js";
+import type { AssistantTools } from "./services/assistant/tools.js";
+import type { LinkWallet } from "./services/link/linkWallet.js";
 import type { StateCrypto } from "./services/crypto.js";
 import type { ExecutorProvider } from "./services/executor.js";
 import type { PendingSessionCheck } from "./services/pendingSession.js";
@@ -53,6 +58,13 @@ export interface AppDeps {
   /** Real Playwright-backed account ops (parknycExecutor.ts) or test fakes;
    * absent → provider linking answers 503. */
   providerOps?: ProviderOpsFactory;
+  /** The assistant's Anthropic transport; absent (no ANTHROPIC_API_KEY)
+   * → /assistant/* answers 503. Tests inject a scripted fake. */
+  assistantModel?: ModelClient;
+  /** Tool implementations (policy enforcement lives in them). */
+  assistantTools?: AssistantTools;
+  /** Link wallet for agents; absent/unconfigured → /link/* answers 503. */
+  linkWallet?: LinkWallet;
   /** Injectable clock for tests; routes fall back to `new Date()`. */
   now?: () => Date;
 }
@@ -84,7 +96,7 @@ export function makeAuthenticate(db: AppDb, pepper: string): preHandlerHookHandl
 
 /** Reachable without an api key: health probes, and the Stripe webhook
  * (its signature is the auth). Everything else 401s by default. */
-const PUBLIC_PATHS = new Set(["/health", "/webhooks/stripe"]);
+const PUBLIC_PATHS = new Set(["/health", "/webhooks/stripe", "/link/callback"]);
 
 /** 403 unless the authenticated user is an admin. Guards mutations of the
  * shared policy and everything under /admin/ — authorization on top of
@@ -164,6 +176,8 @@ export function buildApp(deps?: AppDeps): FastifyInstance {
     registerCard(app, deps);
     registerProviders(app, deps);
     registerAdmin(app, deps);
+    registerAssistant(app, deps);
+    registerLink(app, deps);
     registerStripeWebhook(app, deps);
   }
   return app;

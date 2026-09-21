@@ -31,6 +31,17 @@ const schema = z
     PROVIDER_STATE_KEY: z.string().min(1).optional(),
     // Plate of the vehicle to park when a session doesn't name one.
     PARKNYC_PLATE: z.string().min(1).optional(),
+    // The assistant's model access; without it /assistant/* answers 503.
+    ANTHROPIC_API_KEY: z.string().min(1).optional(),
+    // Link wallet for agents (Stripe agentic commerce) — optional as a
+    // set: all four present → /link/* live; any missing → 503.
+    LINK_CLIENT_ID: z.string().min(1).optional(),
+    LINK_CLIENT_SECRET: z.string().min(1).optional(),
+    LINK_PUBLISHABLE_KEY: z.string().min(1).optional(),
+    LINK_REDIRECT_URI: z.string().url().optional(),
+    // Sandbox rehearsal: spend requests carry test:true, credentials are
+    // test cards, nothing charges.
+    LINK_TEST_MODE: z.enum(["true", "false"]).optional(),
     PORT: z.coerce.number().int().positive().default(3000),
   })
   .superRefine((env, ctx) => {
@@ -41,6 +52,16 @@ const schema = z
         code: "custom",
         path: ["STRIPE_WEBHOOK_SECRET"],
         message: "required when STRIPE_SECRET_KEY is set (webhook signature verification)",
+      });
+    }
+    const linkKeys = [env.LINK_CLIENT_ID, env.LINK_CLIENT_SECRET, env.LINK_PUBLISHABLE_KEY, env.LINK_REDIRECT_URI];
+    const linkSet = linkKeys.filter((k) => k !== undefined).length;
+    if (linkSet > 0 && linkSet < linkKeys.length) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["LINK_CLIENT_ID"],
+        message:
+          "LINK_CLIENT_ID, LINK_CLIENT_SECRET, LINK_PUBLISHABLE_KEY, and LINK_REDIRECT_URI are a set — set all four or none",
       });
     }
     // A malformed key must refuse boot, not fail the first link.

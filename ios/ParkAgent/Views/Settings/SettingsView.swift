@@ -31,6 +31,8 @@ struct SettingsView: View {
 
                 linkedAccountsSection
 
+                linkWalletSection
+
                 policySection
 
                 Section("Permissions") {
@@ -219,6 +221,39 @@ struct SettingsView: View {
     private func unlink(_ account: ProviderAccountStatus) async {
         _ = try? await model.api.unlinkProvider(account.id)
         await loadProviders()
+    }
+
+    @ViewBuilder
+    private var linkWalletSection: some View {
+        Section {
+            if model.linkWalletConnected {
+                LabeledContent("Link wallet", value: "Connected")
+                Button("Disconnect", role: .destructive) {
+                    Task {
+                        try? await model.api.linkWalletDisconnect()
+                        await model.refreshLinkWalletStatus()
+                    }
+                }
+                .accessibilityIdentifier("settings.linkDisconnectButton")
+            } else {
+                Button("Connect Link wallet") {
+                    Task {
+                        if let response = try? await model.api.linkWalletConnect(),
+                           let url = URL(string: response.url), !model.useMockAPI {
+                            await UIApplication.shared.open(url)
+                        }
+                        await model.refreshLinkWalletStatus()
+                    }
+                }
+                .foregroundStyle(Color.actionCoralLink)
+                .accessibilityIdentifier("settings.linkConnectButton")
+            }
+        } header: {
+            Text("Link wallet")
+        } footer: {
+            Text("Pay assistant plans from your Stripe Link wallet: you approve each paid stop in Link. Automatic street parking stays on the ParkAgent card.")
+        }
+        .task { await model.refreshLinkWalletStatus() }
     }
 
     @ViewBuilder

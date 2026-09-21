@@ -15,6 +15,15 @@ number once and the executor types it in.
 
 Heading out to test? Follow [docs/field-test-checklist.md](docs/field-test-checklist.md).
 
+The conversational assistant (Ask ParkAgent) finds single spots and
+plans multi-stop days; garages come from SpotHero via prefilled deep
+links (checkout stays in SpotHero), and plans can pay from a connected
+Stripe Link wallet — the user approves each paid stop in Link.
+**Autonomous street parking stays on the Issuing card** until Link ships
+pre-approved spending limits: today every Link spend needs a per-request
+human approval with a 10-minute window and a 12-hour card validity,
+which suits planned days but not a detector firing at an arbitrary curb.
+
 ## Account ownership
 
 One person owns each external account and adds the other as a team member, so

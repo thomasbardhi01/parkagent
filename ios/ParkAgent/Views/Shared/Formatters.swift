@@ -43,3 +43,22 @@ enum Format {
         meters < 1000 ? "\(Int(meters.rounded())) m" : String(format: "%.1f km", meters / 1000)
     }
 }
+
+extension Format {
+    private static let arrivalPlain = Date.ISO8601FormatStyle()
+    private static let arrivalFractional = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
+
+    /// Itinerary stops carry ISO arrival strings; render as clock time.
+    static func arrivalTime(_ iso: String) -> String {
+        guard let date = parseArrival(iso) else { return iso }
+        return clockTime(date)
+    }
+
+    static func parseArrival(_ iso: String) -> Date? {
+        (try? arrivalFractional.parse(iso)) ?? (try? arrivalPlain.parse(iso))
+    }
+
+    static func arrivalISO(_ date: Date) -> String {
+        date.formatted(arrivalPlain)
+    }
+}

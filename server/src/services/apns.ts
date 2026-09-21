@@ -19,7 +19,8 @@ export type PushType =
   | "session_extended"
   | "session_expiring"
   | "payment_failed"
-  | "provider_relink";
+  | "provider_relink"
+  | "itinerary_garage_link";
 
 export interface Push {
   type: PushType;
@@ -106,6 +107,21 @@ export function paymentFailedPush(args: {
       // prefilled (and copies the zone number for the ParkNYC app).
       deepLink: `parkagent://pay?zone=${encodeURIComponent(args.zoneNumber)}`,
     },
+  };
+}
+
+/** 15 minutes before a garage stop: the prepaid/deep link, one tap away. */
+export function itineraryGaragePush(args: {
+  stopLabel: string;
+  itineraryId: string;
+  stopId: string;
+  deepLink: string;
+}): Push {
+  return {
+    type: "itinerary_garage_link",
+    title: `Garage for "${args.stopLabel}"`,
+    body: "Your garage link is ready — open it at the entrance.",
+    extra: { itineraryId: args.itineraryId, stopId: args.stopId, deepLink: args.deepLink },
   };
 }
 

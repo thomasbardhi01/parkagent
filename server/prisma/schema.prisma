@@ -159,6 +159,11 @@ model Session {
   amountUsd            Decimal?  @map("amount_usd") @db.Decimal(6, 2)
   feeUsd               Decimal?  @map("fee_usd") @db.Decimal(6, 2)
   parknycConfirmation  String?   @map("parknyc_confirmation")
+  // "issuing_card" (default) | "link_wallet" — which source pays this
+  // session. link_wallet requires a valid (unexpired, unused) one-time
+  // card from an approved Link spend request; expiry falls back to
+  // issuing_card and tells the user.
+  paymentSource        String    @default("issuing_card") @map("payment_source")
   // The parked_events row this session came from (plain string, no FK churn).
   parkedEventId        String?   @map("parked_event_id")
   // Where the car is: the parked event's fix, the anchor for distance-to-car.
@@ -284,6 +289,118 @@ model ProcessedTopup {
   createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   @@map("processed_topups")
+}
+
+// One assistant conversation per (user, conversation id): the model's
+// message history (last 20 turns, JSON in the Messages-API shape) so the
+// dialogue survives app restarts. Old conversations are just rows — no
+// janitor needed at two users.
+model Conversation {
+  id        String   @id
+  userId    String   @map("user_id")
+  // [{role, content}] — Anthropic Messages shape, trimmed to 20 turns.
+  turns     Json
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([userId, updatedAt])
+  @@map("conversations")
+}
+
+// A plan the assistant proposed and the client rendered. Confirmation
+// tokens are minted ONLY when the user taps Confirm/Sign off on one of
+// these — the token is single-use, short-lived, and bound to this plan.
+model AssistantPlan {
+  id        String    @id
+  userId    String    @map("user_id")
+  conversationId String @map("conversation_id")
+  // "single_spot" | "itinerary"
+  kind      String
+  // The structured plan exactly as proposed (options / stops / totals).
+  plan      Json
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([userId, createdAt])
+  @@map("assistant_plans")
+}
+
+// Single-use sign-off token: minted by POST /assistant/confirm (the
+// user's tap), consumed by the booking/session tool it authorizes.
+// Nothing books or spends without one — tools enforce it.
+model AssistantConfirmation {
+  token     String   @id
+  userId    String   @map("user_id")
+  planId    String   @map("plan_id")
+  // Which option/stop of the plan this tap authorized (null = whole plan).
+  optionId  String?  @map("option_id")
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(6)
+  usedAt    DateTime? @map("used_at") @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([userId, createdAt])
+  @@map("assistant_confirmations")
+}
+
+// A signed-off multi-stop day. Stops are a JSON array (address, arrival,
+// duration, choice street|garage, costs, linkage to sessions / garage
+// deep links); totals are checked against the daily cap at sign-off and
+// on every PATCH.
+model Itinerary {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  planId    String?  @map("plan_id")
+  // draft | signed_off | done | canceled
+  status    String
+  date      DateTime @db.Timestamptz(6)
+  stops     Json
+  totalUsd  Decimal  @map("total_usd") @db.Decimal(8, 2)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([userId, date])
+  @@map("itineraries")
+}
+
+// The user's connected Link wallet (Stripe agentic commerce). Tokens are
+// sealed with the same AES-256-GCM StateCrypto as provider cookies;
+// access token 1 h, refresh token 1 y rotated on every use.
+model LinkAccount {
+  userId       String   @id @map("user_id")
+  // connected | disconnected
+  status       String
+  // Sealed JSON {accessToken, refreshToken, expiresAt, scope}.
+  tokensEncrypted String? @map("tokens_encrypted")
+  connectedAt  DateTime? @map("connected_at") @db.Timestamptz(6)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("link_accounts")
+}
+
+// One Link spend request per paid stop (verified: the Link API has no
+// batch approval — each request carries one amount + one merchant).
+// The one-time virtual card is sealed once approved; valid_until is 12 h
+// from creation, after which pay time falls back to the Issuing card.
+model LinkSpendRequest {
+  id           String   @id            // lsrq_…
+  userId       String   @map("user_id")
+  itineraryId  String?  @map("itinerary_id")
+  stopId       String?  @map("stop_id")
+  planId       String?  @map("plan_id")
+  amountUsd    Decimal  @map("amount_usd") @db.Decimal(8, 2)
+  // created | pending_approval | requires_action | approved | denied |
+  // expired | canceled | succeeded | failed  (Link's own vocabulary)
+  status       String
+  approvalUrl  String?  @map("approval_url")
+  // Sealed one-time card {number, cvc, expMonth, expYear, brand}.
+  cardEncrypted String? @map("card_encrypted")
+  validUntil   DateTime? @map("valid_until") @db.Timestamptz(6)
+  cardUsedAt   DateTime? @map("card_used_at") @db.Timestamptz(6)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([userId, createdAt])
+  @@map("link_spend_requests")
 }
 
 // Non-negotiable: every automated decision writes a row here with its inputs.

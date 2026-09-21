@@ -10,6 +10,8 @@ import Foundation
 ///   -cardScenario <name>   preset the mock Card tab state (see CardMockScenario)
 ///   -providerScenario <name>  preset the mock provider-account state
 ///   -cityScenario <name>   preset the mock GET /city answer (nyc|bos|none)
+///   -assistantScenario <name>  preset the mock assistant (auto|singleSpot|itinerary|refuse|error)
+///   -linkScenario <name>   preset the mock Link wallet (disconnected|connected|denies)
 ///   -onboardingStep <n>    resume onboarding at step n (OnboardingStep raw)
 ///   -selectedCity <key>    preset onboarding's chosen city (nyc|bos|other)
 ///   -fixedNow <epoch>      freeze AppClock (see AppClock.swift)
@@ -42,6 +44,10 @@ enum LaunchOverrides {
             ? defaults.string(forKey: ProviderMockScenario.defaultsKey) : nil
         let cityScenario = argued[CityMockScenario.defaultsKey] != nil
             ? defaults.string(forKey: CityMockScenario.defaultsKey) : nil
+        let assistantScenario = argued[AssistantMockScenario.defaultsKey] != nil
+            ? defaults.string(forKey: AssistantMockScenario.defaultsKey) : nil
+        let linkScenario = argued[LinkMockScenario.defaultsKey] != nil
+            ? defaults.string(forKey: LinkMockScenario.defaultsKey) : nil
         let onboardingStep = argued[OnboardingStep.defaultsKey] != nil
             ? defaults.integer(forKey: OnboardingStep.defaultsKey) : nil
         let selectedCity = argued["selectedCity"] != nil
@@ -61,6 +67,10 @@ enum LaunchOverrides {
             defaults.set(providerScenario, forKey: ProviderMockScenario.defaultsKey)
         }
         if let cityScenario { defaults.set(cityScenario, forKey: CityMockScenario.defaultsKey) }
+        if let assistantScenario {
+            defaults.set(assistantScenario, forKey: AssistantMockScenario.defaultsKey)
+        }
+        if let linkScenario { defaults.set(linkScenario, forKey: LinkMockScenario.defaultsKey) }
         if let onboardingStep { defaults.set(onboardingStep, forKey: OnboardingStep.defaultsKey) }
         if let selectedCity { defaults.set(selectedCity, forKey: "selectedCity") }
     }

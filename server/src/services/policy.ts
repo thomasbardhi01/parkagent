@@ -25,6 +25,11 @@ export const policySchema = z.strictObject({
   // bypasses them; the shadow authorization itself is test-mode money.
   // Optional so pre-shadow policy documents stay valid (absent = false).
   shadow_mode: z.boolean().optional(),
+  // Plans pay through the user's Link wallet when it's connected (each
+  // paid stop gets a Link spend request the user approves); false keeps
+  // plans on the Issuing card even when Link is connected. The daily cap
+  // applies across BOTH sources.
+  link_wallet_for_plans: z.boolean().optional(),
   session_cap_usd: z.number().positive(),
   daily_cap_usd: z.number().positive(),
   auto_pay_max_rate_per_hour: z.number().nonnegative(),

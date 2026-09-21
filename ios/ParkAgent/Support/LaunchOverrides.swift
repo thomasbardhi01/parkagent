@@ -8,6 +8,10 @@ import Foundation
 ///   -resetState YES        wipe UserDefaults before anything reads it
 ///   -mockScenario <name>   preset the mock /parked scenario
 ///   -cardScenario <name>   preset the mock Card tab state (see CardMockScenario)
+///   -providerScenario <name>  preset the mock provider-account state
+///   -cityScenario <name>   preset the mock GET /city answer (nyc|bos|none)
+///   -onboardingStep <n>    resume onboarding at step n (OnboardingStep raw)
+///   -selectedCity <key>    preset onboarding's chosen city (nyc|bos|other)
 ///   -fixedNow <epoch>      freeze AppClock (see AppClock.swift)
 ///   -uiTesting YES         suppress detector/push side effects and expose
 ///                          the color-scheme probe label
@@ -34,6 +38,14 @@ enum LaunchOverrides {
             ? defaults.string(forKey: MockScenario.defaultsKey) : nil
         let cardScenario = argued[CardMockScenario.defaultsKey] != nil
             ? defaults.string(forKey: CardMockScenario.defaultsKey) : nil
+        let providerScenario = argued[ProviderMockScenario.defaultsKey] != nil
+            ? defaults.string(forKey: ProviderMockScenario.defaultsKey) : nil
+        let cityScenario = argued[CityMockScenario.defaultsKey] != nil
+            ? defaults.string(forKey: CityMockScenario.defaultsKey) : nil
+        let onboardingStep = argued[OnboardingStep.defaultsKey] != nil
+            ? defaults.integer(forKey: OnboardingStep.defaultsKey) : nil
+        let selectedCity = argued["selectedCity"] != nil
+            ? defaults.string(forKey: "selectedCity") : nil
 
         defaults.setVolatileDomain([:], forName: UserDefaults.argumentDomain)
 
@@ -45,6 +57,12 @@ enum LaunchOverrides {
         if let appearance { defaults.set(appearance, forKey: AppearanceSetting.defaultsKey) }
         if let scenario { defaults.set(scenario, forKey: MockScenario.defaultsKey) }
         if let cardScenario { defaults.set(cardScenario, forKey: CardMockScenario.defaultsKey) }
+        if let providerScenario {
+            defaults.set(providerScenario, forKey: ProviderMockScenario.defaultsKey)
+        }
+        if let cityScenario { defaults.set(cityScenario, forKey: CityMockScenario.defaultsKey) }
+        if let onboardingStep { defaults.set(onboardingStep, forKey: OnboardingStep.defaultsKey) }
+        if let selectedCity { defaults.set(selectedCity, forKey: "selectedCity") }
     }
 
     private static func flagValue(_ flag: String) -> String? {

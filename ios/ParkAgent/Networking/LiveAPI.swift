@@ -45,7 +45,62 @@ struct LiveAPI: APIClient {
         let _: Ignored = try await send("device", method: "POST", body: registration)
     }
 
+    func updatePolicy(_ policy: Policy) async throws -> PolicyResponse {
+        try await send("policy", method: "PUT", body: policy)
+    }
+
+    // MARK: - City & providers
+
+    func detectCity(lat: Double, lng: Double) async throws -> CityDetectResponse {
+        try await send("city?lat=\(lat)&lng=\(lng)")
+    }
+
+    func providersStatus() async throws -> ProvidersStatusResponse {
+        try await send("providers/status")
+    }
+
+    func linkProvider(
+        _ providerId: String,
+        cookies: [ProviderCookie],
+        setUpCard: Bool,
+        consent: Bool
+    ) async throws -> ProviderLinkResponse {
+        try await send(
+            "providers/\(providerId)/link",
+            method: "POST",
+            body: ProviderLinkRequest(
+                cookies: cookies,
+                setUpCard: setUpCard,
+                consentReplacePaymentMethod: setUpCard ? consent : nil
+            )
+        )
+    }
+
+    func linkStatus(providerId: String, jobId: String) async throws -> LinkStatusResponse {
+        let escaped = jobId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? jobId
+        return try await send("providers/\(providerId)/link-status?jobId=\(escaped)")
+    }
+
+    func setupCard(providerId: String) async throws -> SetupCardResponse {
+        struct Empty: Encodable {}
+        return try await send("providers/\(providerId)/setup-card", method: "POST", body: Empty())
+    }
+
+    func unlinkProvider(_ providerId: String) async throws -> UnlinkResponse {
+        struct Empty: Encodable {}
+        return try await send("providers/\(providerId)/unlink", method: "POST", body: Empty())
+    }
+
     // MARK: - Card
+
+    func prepareCard() async throws -> CardPrepareResponse {
+        struct Empty: Encodable {}
+        return try await send("card/prepare", method: "POST", body: Empty())
+    }
+
+    func topupIntent(amountUsd: Double) async throws -> TopupIntentResponse {
+        try await send("card/funding/topup-intent", method: "POST", body: ["amountUsd": amountUsd])
+    }
 
     func card() async throws -> CardResponse {
         try await send("card")

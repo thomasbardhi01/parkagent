@@ -14,6 +14,10 @@ class ParkAgentUITestCase: XCTestCase {
     func launchApp(
         scenario: String = "singleQuote",
         cardScenario: String? = nil,
+        providerScenario: String? = nil,
+        cityScenario: String? = nil,
+        onboardingStep: Int? = nil,
+        selectedCity: String? = nil,
         skipOnboarding: Bool = true,
         appearance: String? = nil
     ) -> XCUIApplication {
@@ -28,6 +32,10 @@ class ParkAgentUITestCase: XCTestCase {
         if skipOnboarding { args += ["-skipOnboarding", "YES"] }
         if let appearance { args += ["-appearance", appearance] }
         if let cardScenario { args += ["-cardScenario", cardScenario] }
+        if let providerScenario { args += ["-providerScenario", providerScenario] }
+        if let cityScenario { args += ["-cityScenario", cityScenario] }
+        if let onboardingStep { args += ["-onboardingStep", String(onboardingStep)] }
+        if let selectedCity { args += ["-selectedCity", selectedCity] }
         app.launchArguments = args
         app.launch()
         return app

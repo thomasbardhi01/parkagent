@@ -11,8 +11,28 @@ protocol APIClient: Sendable {
     func extendSession(sessionId: String, minutes: Int) async throws -> SessionExtendResponse
     func reportLocation(_ report: LocationReport) async throws
     func registerDevice(_ registration: DeviceRegistration) async throws
+    /// PUT /policy — full replacement; the onboarding budget step saves
+    /// the caps and default stay through this.
+    func updatePolicy(_ policy: Policy) async throws -> PolicyResponse
+
+    // City & provider accounts (server/API.md "GET /city", "Provider accounts").
+    func detectCity(lat: Double, lng: Double) async throws -> CityDetectResponse
+    func providersStatus() async throws -> ProvidersStatusResponse
+    func linkProvider(
+        _ providerId: String,
+        cookies: [ProviderCookie],
+        setUpCard: Bool,
+        consent: Bool
+    ) async throws -> ProviderLinkResponse
+    func linkStatus(providerId: String, jobId: String) async throws -> LinkStatusResponse
+    func setupCard(providerId: String) async throws -> SetupCardResponse
+    func unlinkProvider(_ providerId: String) async throws -> UnlinkResponse
 
     // Card tab (server/API.md "Card endpoints").
+    /// Lazy card creation; onboarding calls it before the link web view opens.
+    func prepareCard() async throws -> CardPrepareResponse
+    /// Apple Pay top-up, step 1 — the app confirms the intent client-side.
+    func topupIntent(amountUsd: Double) async throws -> TopupIntentResponse
     func card() async throws -> CardResponse
     func cardTransactions(cursor: String?) async throws -> CardTransactionsResponse
     func cardTopup(amountUsd: Double) async throws -> CardFundingResponse
@@ -59,6 +79,11 @@ enum APIError: Error, LocalizedError {
         case "insufficient_funds": "Not enough balance for that withdrawal."
         case "funding_unavailable": "The card's funding account is not ready yet."
         case "no_card": "No card is set up yet."
+        case "provider_not_linked": "This city's parking account is not linked yet."
+        case "verification_failed": "The sign-in did not stick. Try signing in again."
+        case "no_session_cookies": "No sign-in was captured. Try signing in again."
+        case "consent_required": "Card setup needs your consent first."
+        case "provider_linking_not_configured": "The server is not set up for account linking yet."
         default: "The server refused the request (\(code))."
         }
     }

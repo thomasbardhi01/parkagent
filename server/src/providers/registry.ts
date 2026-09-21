@@ -18,6 +18,8 @@ export interface ProviderInfo {
   id: ProviderId;
   /** City key, the zoneId prefix ("nyc-…"). */
   city: string;
+  /** What the app calls the city ("New York City"). */
+  cityDisplayName: string;
   displayName: string;
   /** Where the app's link web view starts the user. */
   loginUrl: string;
@@ -32,6 +34,7 @@ const PROVIDERS: ProviderInfo[] = [
   {
     id: "parknyc",
     city: "nyc",
+    cityDisplayName: "New York City",
     displayName: "ParkNYC",
     // Flowbird's SPA — parknyc.org is only the marketing site (see
     // executor/src/parknyc/selectors.ts).
@@ -41,6 +44,7 @@ const PROVIDERS: ProviderInfo[] = [
   {
     id: "passport",
     city: "bos",
+    cityDisplayName: "Boston",
     displayName: "ParkBoston",
     // Passport's white-label web app, ParkBoston instance (verified
     // headlessly 2026-09-20: renders Sign In / Register / Continue as

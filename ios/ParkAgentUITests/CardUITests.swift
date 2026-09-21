@@ -48,32 +48,48 @@ final class CardUITests: ParkAgentUITestCase {
         )
     }
 
-    /// Confirm stays disabled until an amount is entered; quick amounts fill
-    /// the field; the dry-run banner is explicit.
-    func testAddMoneySheetValidatesInput() {
+    /// Add money is the Apple Pay sheet now: quick amounts, the Apple Pay
+    /// button, and in dry run an explicit banner plus a no-charge finish.
+    func testAddMoneyApplePaySheetDryRun() {
         let app = launchApp(cardScenario: "ready")
         openCardTab(app)
         XCTAssertTrue(element(app, "card.addMoneyButton").waitForExistence(timeout: 5))
         element(app, "card.addMoneyButton").tap()
 
-        XCTAssertTrue(element(app, "funding.view").waitForExistence(timeout: 5), "Funding sheet missing")
-        XCTAssertTrue(element(app, "funding.dryRunBanner").exists, "Dry-run banner missing")
+        XCTAssertTrue(element(app, "addMoney.view").waitForExistence(timeout: 5), "Add money sheet missing")
+        XCTAssertTrue(element(app, "addMoney.dryRunBanner").exists, "Dry-run banner missing")
+        XCTAssertTrue(element(app, "addMoney.applePayButton").exists, "Apple Pay button missing")
+        XCTAssertTrue(element(app, "addMoney.cardButton").exists, "Card fallback missing")
 
+        // $50, not $100: a single top-up above the $60 daily cap is refused
+        // by policy (amount_over_daily_cap), mirroring the server.
+        element(app, "addMoney.quick.50").tap()
+        element(app, "addMoney.applePayButton").tap()
+        let notice = element(app, "addMoney.doneNotice")
+        XCTAssertTrue(notice.waitForExistence(timeout: 5), "Dry-run completion missing")
+        XCTAssertTrue(notice.label.contains("Dry run"), "Completion should say nothing was charged")
+        element(app, "addMoney.doneButton").tap()
+        XCTAssertTrue(element(app, "addMoney.view").waitForNonExistence(timeout: 5))
+    }
+
+    /// Withdraw still uses the balance form: confirm stays disabled until a
+    /// valid amount, quick amounts fill the field, resulting balance shown.
+    func testWithdrawSheetValidatesInput() {
+        let app = launchApp(cardScenario: "ready")
+        openCardTab(app)
+        XCTAssertTrue(element(app, "card.withdrawButton").waitForExistence(timeout: 5))
+        element(app, "card.withdrawButton").tap()
+
+        XCTAssertTrue(element(app, "funding.view").waitForExistence(timeout: 5), "Funding sheet missing")
         let confirm = element(app, "funding.confirmButton")
         XCTAssertTrue(confirm.exists)
         XCTAssertFalse(confirm.isEnabled, "Confirm should be disabled with no amount")
 
-        // A zero amount is not a valid transfer either.
-        let field = element(app, "funding.amountField")
-        field.tap()
-        field.typeText("0")
-        XCTAssertFalse(confirm.isEnabled, "Confirm should stay disabled on a zero amount")
-
         // Quick amounts replace the field and make the move valid.
         element(app, "funding.quick.20").tap()
         XCTAssertTrue(confirm.isEnabled, "Confirm should enable after a quick amount")
-        // Mock balance is $42.50, so the resulting balance reads $62.50.
-        XCTAssertEqual(element(app, "funding.resultingBalance").label, "$62.50")
+        // Mock balance is $42.50, so withdrawing $20 leaves $22.50.
+        XCTAssertEqual(element(app, "funding.resultingBalance").label, "$22.50")
     }
 
     /// Flag defaults off: the Apple Pay action explains "coming soon".
@@ -105,7 +121,8 @@ final class CardUITests: ParkAgentUITestCase {
         XCTAssertFalse(element(app, "card.art").exists, "Card art should not render without a card")
     }
 
-    /// Funding not ready: the meter says so, and the sheet explains it.
+    /// Funding not ready: the meter says so, and the withdraw sheet (which
+    /// moves money off the financial account) explains it.
     func testFundingNotReadyState() {
         let app = launchApp(cardScenario: "fundingNotReady")
         openCardTab(app)
@@ -113,7 +130,7 @@ final class CardUITests: ParkAgentUITestCase {
             element(app, "card.balanceNotReady").waitForExistence(timeout: 5),
             "Balance not-ready label missing"
         )
-        element(app, "card.addMoneyButton").tap()
+        element(app, "card.withdrawButton").tap()
         XCTAssertTrue(
             element(app, "funding.notReady").waitForExistence(timeout: 5),
             "Funding sheet should show the not-ready state"

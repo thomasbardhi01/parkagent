@@ -46,6 +46,11 @@ struct MainTabView: View {
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.hidden)
         }
+        // Settings re-link and the provider_relink push land here; the
+        // parked sheet presents its own copy (a sheet can't stack on it).
+        .fullScreenCover(item: $model.providerLinkPrompt) { prompt in
+            ProviderLinkFlowView(providerId: prompt.providerId)
+        }
         .overlay(alignment: .bottomLeading) {
             if LaunchOverrides.uiTesting {
                 // UI tests read this to assert the appearance setting took.

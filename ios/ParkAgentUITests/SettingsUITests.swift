@@ -20,4 +20,23 @@ final class SettingsUITests: ParkAgentUITestCase {
         app.buttons["Light"].tap()
         waitForLabel(of: probe, toBe: "light")
     }
+
+    /// The city override pins the Home chip's city, no detection needed.
+    func testCityOverrideUpdatesHomeChip() {
+        let app = launchApp()
+
+        let chip = element(app, "home.statusChip")
+        XCTAssertTrue(chip.waitForExistence(timeout: 5))
+        XCTAssertFalse(chip.label.contains("Boston"), "No city should show before the override")
+
+        app.tabBars.buttons["Settings"].tap()
+        let picker = element(app, "settings.cityPicker")
+        XCTAssertTrue(picker.waitForExistence(timeout: 5), "City picker missing")
+        picker.tap()
+        app.buttons["Boston"].firstMatch.tap()
+
+        app.tabBars.buttons["Home"].tap()
+        XCTAssertTrue(chip.waitForExistence(timeout: 5))
+        XCTAssertTrue(chip.label.contains("Boston"), "Chip should show the override: \(chip.label)")
+    }
 }

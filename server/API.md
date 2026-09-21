@@ -901,3 +901,148 @@ zone's id prefix, or the first candidate; unattributable rows land under
 (`{"decision": {id, kind, rule, userId, sessionId, parkedEventId}}`) —
 identifiers and the rule only, never inputs/outcome (those can carry
 ui_changed screenshots).
+
+---
+
+## Assistant
+
+The conversational surface: one Claude tool-use loop (model
+`claude-sonnet-4-6`) that does exactly two jobs — find one spot, or plan
+a multi-stop day. The MODEL plans and phrases; the TOOLS enforce policy
+(same quoting, caps, and audit services as everything else); **nothing
+books or spends without the user's explicit Confirm/Sign off tap on a
+plan card**, which is the only thing that mints the single-use
+confirmation token the consequential tools demand. Requires
+`ANTHROPIC_API_KEY` (else 503). Every tool call, plan, and confirmation
+writes a decisions row (kinds `assistant_tool`, `assistant_plan`,
+`assistant_confirm`).
+
+### POST /assistant/message
+
+`{text | transcript, conversation_id?, location?{lat,lng}}` → one
+assistant turn. With `Accept: text/event-stream` the reply streams as SSE
+(`text` events carry `{delta}`, one final `done` event carries the full
+payload); otherwise plain JSON:
+
+```json
+{
+  "conversationId": "conv_…",
+  "reply": "Street is cheapest — here are your options.",
+  "plan": { "planId": "…", "plan": { "kind": "single_spot", "options": [ … ] } } | null
+}
+```
+
+Conversation state persists per user (last 20 turns) keyed by
+`conversation_id`. Rate-limited 20/min — each turn is a paid model call.
+
+The model's tools: `search_garages(area, window, budget)`,
+`quote_street(lat, lng, duration, when)`, `build_itinerary(stops[])`,
+`propose_plan(plan)` (ends the turn with the structured plan),
+`book_garage(option_id, confirmation_token)` and
+`start_session(zone, duration, confirmation_token)` (REFUSED without a
+live token), `get_history(days)`, `explain_decision(id)` (plain-language
+rendering of a decisions row via `services/explanations.ts`).
+
+Plan shapes (zod-validated at the tool boundary — see
+`services/assistant/plans.ts`): `single_spot` is ≤3 options (street or
+garage; price, walk minutes, entry type, exactly one `recommended`);
+`itinerary` is 1–12 stops (address, arrival, duration, street|garage
+choice, cost) with `totalUsd` recomputed server-side and refused when it
+busts the remaining daily budget.
+
+### POST /assistant/confirm
+
+`{planId, optionId?}` — the tap. Mints the single-use token
+(10-minute TTL) and executes the confirmed option through the same
+token-gated tools the model faces:
+
+- garage option → `{kind: "garage_handoff", deepLink, paymentSource,
+  linkApproval?, note}` — the app opens the SpotHero deep link in
+  SFSafariViewController; the pass lives in SpotHero. We NEVER automate
+  SpotHero login or checkout.
+- street option → `{kind: "street_confirmed", zoneId, durationMinutes,
+  paymentSource, linkApproval?}` — the session itself starts through the
+  existing detector → /parked → /session/start flow at the curb.
+- itinerary (no optionId) → `{kind: "itinerary_signed_off", itineraryId,
+  totalUsd, capUsd, paymentSource, linkApprovals[]}` — the day total is
+  re-checked against `daily_cap_usd` at the moment of sign-off.
+
+### GET /assistant/itineraries · PATCH /assistant/itineraries/:id
+
+Signed-off days (last 10) and stop editing/reordering. A PATCH re-checks
+the cap and preserves per-stop linkage (attached session ids, pushed
+garage links, payment source) across the edit. The itinerary worker
+(60 s) pushes each garage stop's deep link 15 minutes before arrival
+(`itinerary_garage_link` push), attaches street sessions that start
+inside a stop's window, and marks the day `done` when the last window
+passes.
+
+### SpotHero (garage provider)
+
+`services/garage/` — a provider-agnostic `GarageProvider` interface with
+one implementation today: **SpotHeroDeepLinkProvider** (read-only search
+over the public search endpoint, 10-minute cache, ≤8 options; checkout
+is a prefilled deep link the user finishes in SpotHero). **Partner
+status: no API key.** When SpotHero Partner API access arrives, a
+`PartnerApiProvider` implements the same interface and exactly three
+things change: `canReserve` flips true, `book()` returns
+`{kind: "reserved", confirmationId}` instead of a deep-link handoff, and
+the confirm response stops saying "the pass lives in SpotHero". The
+adapter also carries the documented **Shared Payment Token seam**
+(`garageProvider.ts`): if a garage provider ever accepts Stripe SPTs, the
+reserved-booking path is where an SPT checkout would go — no parking
+provider accepts them today (2026-09), so it stays a comment, not code.
+
+## Link wallet for agents
+
+Stripe's Link CLI/agentic-commerce surface
+(docs.stripe.com/agentic-commerce/link-cli) as a second payment source
+for assistant plans. `PaymentSource` on sessions and bookings:
+`issuing_card` (default — autonomous street parking STAYS here) |
+`link_wallet`.
+
+**Verified against the docs (2026-09-21):**
+
+- OAuth (hosted agent, confidential client — registered through Stripe
+  sales): authorize `https://login.link.com/auth` with PKCE S256 +
+  `state`, scopes `payment_methods.agentic userinfo:read`, `key` = the
+  Stripe publishable key; token exchange/refresh/revoke at
+  `login.link.com/auth/token` / `/auth/revoke`. Access token 1 h;
+  refresh token 1 year, ROTATED on every use (the wallet persists the
+  new one each refresh).
+- **No batch approval exists.** A spend request carries ONE amount and
+  ONE merchant; a multi-stop plan therefore creates one request (and one
+  customer approval at its `approval_url`) per paid stop. Limits per
+  agent integration: $500/request, $500/day, 30 concurrent active, 10
+  concurrent approved, 50 creations/hour, 10-minute approval window.
+- The approved credential is a **one-time-use virtual card**, valid
+  until `valid_until` = **12 hours from spend-request creation**, and it
+  is **not merchant-locked** ("works at any seller that accepts cards
+  online") — so nothing blocks it at ParkNYC, Passport, or SpotHero card
+  forms. `context` must be ≥100 characters and is shown on the approval
+  screen.
+- Test mode: spend requests carry `test: true` (`LINK_TEST_MODE`), Link
+  returns test credentials (e.g. `4000009990001984`) and nothing
+  charges.
+
+**Unverified — needs the registered OAuth client + sandbox:** the raw
+REST paths under `api.link.com` that `link-cli spend-request …` wraps are
+not publicly documented; `services/link/linkClient.ts` mirrors the CLI
+contract behind `LINK_API_BASE` and is marked VERIFY-IN-SANDBOX.
+
+Endpoints: `GET /link/status`, `POST /link/connect` (returns the
+authorization URL), `GET /link/callback` (public — the OAuth redirect;
+`state` binds it to the user), `POST /link/disconnect`,
+`POST /link/spend-requests/:id/sync` (the app polls after an approval;
+on approval the one-time card is SEALED server-side with
+PROVIDER_STATE_KEY crypto and never returned).
+
+Flow: policy `link_wallet_for_plans` (default true) + a connected wallet
+→ plan confirmation creates the spend request(s) and the Confirm tap
+deep-links into the Link approval; at pay time the executor seam asks
+`usableCardForStop` — an approved, unexpired, unused card pays as
+`link_wallet`; an expired (12 h) or missing card **falls back to the
+Issuing card and the user is told**. The daily cap applies across BOTH
+sources (plans count into the same `daily_cap_usd` check). Env:
+`LINK_CLIENT_ID`, `LINK_CLIENT_SECRET`, `LINK_PUBLISHABLE_KEY`,
+`LINK_REDIRECT_URI` (all four or none), optional `LINK_TEST_MODE`.

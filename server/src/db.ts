@@ -27,6 +27,8 @@ export interface SessionRow {
   amountUsd: unknown;
   feeUsd: unknown;
   parknycConfirmation: string | null;
+  /** "issuing_card" | "link_wallet"; pre-assistant fakes may omit it. */
+  paymentSource?: string;
   parkedEventId: string | null;
   carLat: number | null;
   carLng: number | null;
@@ -161,6 +163,32 @@ export interface IssuingAuthorizationRow {
   createdAt: Date;
 }
 
+export interface ItineraryRow {
+  id: string;
+  userId: string;
+  planId: string | null;
+  status: string;
+  date: Date;
+  stops: unknown;
+  totalUsd: unknown;
+  createdAt: Date;
+}
+
+export interface LinkSpendRequestRow {
+  id: string;
+  userId: string;
+  itineraryId: string | null;
+  stopId: string | null;
+  planId: string | null;
+  amountUsd: unknown;
+  status: string;
+  approvalUrl: string | null;
+  cardEncrypted: string | null;
+  validUntil: Date | null;
+  cardUsedAt: Date | null;
+  createdAt: Date;
+}
+
 export interface AppDb {
   user: {
     findUnique(args: {
@@ -203,6 +231,111 @@ export interface AppDb {
     findMany(args: {
       where: { ts: { gte: Date } };
     }): Promise<{ id: string; userId: string; signals: unknown; ts: Date }[]>;
+  };
+  conversation: {
+    findUnique(args: {
+      where: { id: string };
+    }): Promise<{ id: string; userId: string; turns: unknown } | null>;
+    upsert(args: {
+      where: { id: string };
+      create: { id: string; userId: string; turns: unknown };
+      update: { turns: unknown };
+    }): Promise<unknown>;
+  };
+  assistantPlan: {
+    create(args: {
+      data: { id: string; userId: string; conversationId: string; kind: string; plan: unknown };
+    }): Promise<{ id: string }>;
+    findUnique(args: { where: { id: string } }): Promise<{
+      id: string;
+      userId: string;
+      conversationId: string;
+      kind: string;
+      plan: unknown;
+    } | null>;
+  };
+  assistantConfirmation: {
+    create(args: {
+      data: {
+        token: string;
+        userId: string;
+        planId: string;
+        optionId: string | null;
+        expiresAt: Date;
+      };
+    }): Promise<unknown>;
+    findUnique(args: { where: { token: string } }): Promise<{
+      token: string;
+      userId: string;
+      planId: string;
+      optionId: string | null;
+      expiresAt: Date;
+      usedAt: Date | null;
+    } | null>;
+    update(args: { where: { token: string }; data: { usedAt: Date } }): Promise<unknown>;
+  };
+  itinerary: {
+    create(args: {
+      data: {
+        id: string;
+        userId: string;
+        planId: string | null;
+        status: string;
+        date: Date;
+        stops: unknown;
+        totalUsd: number;
+      };
+    }): Promise<{ id: string }>;
+    findUnique(args: { where: { id: string } }): Promise<ItineraryRow | null>;
+    findMany(args: { where: { userId?: string; status?: string } }): Promise<ItineraryRow[]>;
+    update(args: {
+      where: { id: string };
+      data: { stops?: unknown; totalUsd?: number; status?: string };
+    }): Promise<unknown>;
+  };
+  linkAccount: {
+    findUnique(args: { where: { userId: string } }): Promise<{
+      userId: string;
+      status: string;
+      tokensEncrypted: string | null;
+      connectedAt: Date | null;
+    } | null>;
+    upsert(args: {
+      where: { userId: string };
+      create: {
+        userId: string;
+        status: string;
+        tokensEncrypted?: string | null;
+        connectedAt?: Date;
+      };
+      update: { status: string; tokensEncrypted?: string | null; connectedAt?: Date };
+    }): Promise<unknown>;
+  };
+  linkSpendRequest: {
+    create(args: {
+      data: {
+        id: string;
+        userId: string;
+        planId?: string;
+        itineraryId?: string;
+        stopId?: string;
+        amountUsd: number;
+        status: string;
+        approvalUrl: string | null;
+        validUntil: Date | null;
+      };
+    }): Promise<unknown>;
+    findUnique(args: { where: { id: string } }): Promise<LinkSpendRequestRow | null>;
+    findMany(args: { where: { userId: string } }): Promise<LinkSpendRequestRow[]>;
+    update(args: {
+      where: { id: string };
+      data: {
+        status?: string;
+        cardEncrypted?: string;
+        validUntil?: Date;
+        cardUsedAt?: Date;
+      };
+    }): Promise<unknown>;
   };
   processedTopup: {
     findUnique(args: {
@@ -257,6 +390,16 @@ export interface AppDb {
         sessionId?: string;
       };
     }): Promise<{ id: string }>;
+    /** explain_decision's read: one row by id (ownership checked above). */
+    findUnique(args: { where: { id: string } }): Promise<{
+      id: string;
+      kind: string;
+      rule: string;
+      inputs: unknown;
+      outcome: unknown;
+      userId: string | null;
+      createdAt: Date;
+    } | null>;
     /** The /admin/summary read: today's decisions, oldest first. */
     findMany(args: { where: { createdAt: { gte: Date } } }): Promise<
       {

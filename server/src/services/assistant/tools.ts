@@ -1,0 +1,534 @@
+/**
+ * The assistant's tools. The MODEL plans and phrases; THESE enforce
+ * policy: caps and quotes come from the same services the rest of the
+ * server uses, and the two consequential tools (book_garage,
+ * start_session) refuse without a live confirmation token — which only
+ * POST /assistant/confirm (the user's tap on a plan card) can mint.
+ * Every call writes a decisions row (kind "assistant_tool").
+ */
+
+import { randomUUID } from "node:crypto";
+
+import type { AppDb } from "../../db.js";
+import { explainDecision } from "../explanations.js";
+import type { GarageProvider } from "../garage/garageProvider.js";
+import type { HoursInterval } from "../hours.js";
+import type { LinkWallet } from "../link/linkWallet.js";
+import type { PolicyService } from "../policy.js";
+import { priceStay } from "../quote.js";
+import { spentToday } from "../sessions.js";
+import type { CandidateFetcher } from "../zoneLookup.js";
+import { lookupRadiusM, resolveCandidates } from "../zoneLookup.js";
+import { itineraryTotalUsd, planSchema } from "./plans.js";
+import type { AssistantPlanBody } from "./plans.js";
+
+export interface AssistantDeps {
+  db: AppDb;
+  policy: PolicyService;
+  findCandidates: CandidateFetcher;
+  garage: GarageProvider;
+  linkWallet?: LinkWallet | undefined;
+  now?: (() => Date) | undefined;
+}
+
+export interface ToolContext {
+  userId: string;
+  conversationId: string;
+  /** The phone's location when the message was sent, if it sent one. */
+  location?: { lat: number; lng: number } | undefined;
+}
+
+/** What a tool hands back to the loop. `endTurn` is propose_plan's exit. */
+export interface ToolOutcome {
+  result: unknown;
+  endTurn?: { planId: string; plan: AssistantPlanBody };
+}
+
+export const CONFIRMATION_TTL_MS = 10 * 60_000;
+
+/** Anthropic tool definitions (Messages API shape). Kept in one place so
+ * the schema tests pin exactly what the model sees. */
+export const TOOL_DEFINITIONS = [
+  {
+    name: "search_garages",
+    description:
+      "Search off-street garages near a point for a time window. Returns up to 8 options with price, walk time, entry type, and a checkout deep link. Provider today: SpotHero (deep-link checkout — the user finishes the purchase there).",
+    input_schema: {
+      type: "object" as const,
+      additionalProperties: false,
+      required: ["lat", "lng", "starts_at", "ends_at"],
+      properties: {
+        lat: { type: "number", description: "Latitude of the destination" },
+        lng: { type: "number", description: "Longitude of the destination" },
+        starts_at: { type: "string", description: "ISO start of the parking window" },
+        ends_at: { type: "string", description: "ISO end of the parking window" },
+        budget_usd: { type: "number", description: "Optional price ceiling; pricier options are dropped" },
+      },
+    },
+  },
+  {
+    name: "quote_street",
+    description:
+      "Quote metered street parking at a point: nearest zone terms and the cost of a stay of the given duration starting at the given time. Uses the same zone data and pricing as automatic payments.",
+    input_schema: {
+      type: "object" as const,
+      additionalProperties: false,
+      required: ["lat", "lng", "duration_minutes", "when"],
+      properties: {
+        lat: { type: "number" },
+        lng: { type: "number" },
+        duration_minutes: { type: "integer", minimum: 1, maximum: 720 },
+        when: { type: "string", description: "ISO start time of the stay" },
+      },
+    },
+  },
+  {
+    name: "build_itinerary",
+    description:
+      "Price a multi-stop day: for each stop, quote street parking AND the best garage, and check the day total against the user's daily cap. Use the result to decide street vs garage per stop before proposing the plan.",
+    input_schema: {
+      type: "object" as const,
+      additionalProperties: false,
+      required: ["stops"],
+      properties: {
+        stops: {
+          type: "array",
+          minItems: 1,
+          maxItems: 12,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["label", "lat", "lng", "arrival", "duration_minutes"],
+            properties: {
+              label: { type: "string" },
+              address: { type: "string" },
+              lat: { type: "number" },
+              lng: { type: "number" },
+              arrival: { type: "string", description: "ISO arrival time" },
+              duration_minutes: { type: "integer", minimum: 1, maximum: 720 },
+            },
+          },
+        },
+      },
+    },
+  },
+  {
+    name: "propose_plan",
+    description:
+      "Present the final plan to the user as cards and END your turn. Single-spot: up to 3 options, exactly one recommended. Itinerary: the per-stop choices with costs and the day total. Nothing is booked or paid by this tool — the user must tap Confirm/Sign off.",
+    input_schema: {
+      type: "object" as const,
+      additionalProperties: false,
+      required: ["plan"],
+      properties: {
+        plan: { type: "object", description: "The plan object (single_spot or itinerary shape)" },
+      },
+    },
+  },
+  {
+    name: "book_garage",
+    description:
+      "Book (or hand off) a garage option. REQUIRES a confirmation_token minted by the user's explicit Confirm tap on a proposed plan — calls without one are refused. Propose a plan instead if you have no token.",
+    input_schema: {
+      type: "object" as const,
+      additionalProperties: false,
+      required: ["option_id"],
+      properties: {
+        option_id: { type: "string" },
+        confirmation_token: { type: "string" },
+      },
+    },
+  },
+  {
+    name: "start_session",
+    description:
+      "Start a paid street-meter session. REQUIRES a confirmation_token minted by the user's explicit Confirm tap — calls without one are refused. Propose a plan instead if you have no token.",
+    input_schema: {
+      type: "object" as const,
+      additionalProperties: false,
+      required: ["zone", "duration_minutes"],
+      properties: {
+        zone: { type: "string", description: "Zone id, e.g. nyc-110436" },
+        duration_minutes: { type: "integer", minimum: 1, maximum: 720 },
+        confirmation_token: { type: "string" },
+      },
+    },
+  },
+  {
+    name: "get_history",
+    description: "The user's recent parking sessions (zone, city, cost, when), newest first.",
+    input_schema: {
+      type: "object" as const,
+      additionalProperties: false,
+      properties: {
+        days: { type: "integer", minimum: 1, maximum: 90, description: "Look-back window, default 14" },
+      },
+    },
+  },
+  {
+    name: "explain_decision",
+    description: "Plain-language explanation of one recorded decision by its id.",
+    input_schema: {
+      type: "object" as const,
+      additionalProperties: false,
+      required: ["decision_id"],
+      properties: { decision_id: { type: "string" } },
+    },
+  },
+];
+
+function num(v: unknown): number {
+  return typeof v === "number" ? v : Number(v);
+}
+
+export class AssistantTools {
+  constructor(private readonly deps: AssistantDeps) {}
+
+  private now(): Date {
+    return this.deps.now?.() ?? new Date();
+  }
+
+  private async audit(
+    ctx: ToolContext,
+    tool: string,
+    input: unknown,
+    rule: string,
+    outcome: Record<string, unknown>,
+  ): Promise<string> {
+    const { id } = await this.deps.db.decision.create({
+      data: {
+        kind: "assistant_tool",
+        inputs: { tool, input, conversationId: ctx.conversationId },
+        rule,
+        outcome,
+        userId: ctx.userId,
+      },
+    });
+    return id;
+  }
+
+  /** Dispatch one model tool call. Unknown tools come back as errors the
+   * model can read, never as throws that kill the turn. */
+  async execute(ctx: ToolContext, name: string, input: unknown): Promise<ToolOutcome> {
+    try {
+      switch (name) {
+        case "search_garages":
+          return await this.searchGarages(ctx, input as Record<string, unknown>);
+        case "quote_street":
+          return await this.quoteStreet(ctx, input as Record<string, unknown>);
+        case "build_itinerary":
+          return await this.buildItinerary(ctx, input as Record<string, unknown>);
+        case "propose_plan":
+          return await this.proposePlan(ctx, input as Record<string, unknown>);
+        case "book_garage":
+          return await this.bookGarage(ctx, input as Record<string, unknown>);
+        case "start_session":
+          return await this.startSession(ctx, input as Record<string, unknown>);
+        case "get_history":
+          return await this.getHistory(ctx, input as Record<string, unknown>);
+        case "explain_decision":
+          return await this.explain(ctx, input as Record<string, unknown>);
+        default:
+          return { result: { error: `unknown tool ${name}` } };
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message.split("\n")[0] : String(err);
+      await this.audit(ctx, name, input, "tool_error", { error: message });
+      return { result: { error: message } };
+    }
+  }
+
+  private async searchGarages(ctx: ToolContext, input: Record<string, unknown>): Promise<ToolOutcome> {
+    const options = await this.deps.garage.search({
+      lat: num(input["lat"]),
+      lng: num(input["lng"]),
+      startsAt: String(input["starts_at"]),
+      endsAt: String(input["ends_at"]),
+      ...(input["budget_usd"] !== undefined ? { budgetUsd: num(input["budget_usd"]) } : {}),
+    });
+    await this.audit(ctx, "search_garages", input, "ok", {
+      provider: this.deps.garage.id,
+      count: options.length,
+    });
+    return { result: { provider: this.deps.garage.id, options } };
+  }
+
+  private async quoteStreet(ctx: ToolContext, input: Record<string, unknown>): Promise<ToolOutcome> {
+    const lat = num(input["lat"]);
+    const lng = num(input["lng"]);
+    const minutes = num(input["duration_minutes"]);
+    const when = new Date(String(input["when"]));
+    const policy = this.deps.policy.get();
+    const found = await this.deps.findCandidates({ lat, lng, radiusM: lookupRadiusM(25) });
+    const resolution = resolveCandidates(found, when, policy.respect_enforcement_hours);
+    if (resolution.kind === "unknown") {
+      await this.audit(ctx, "quote_street", input, "unknown_zone", {});
+      return { result: { found: false, reason: "no metered zone within 25 m of that point" } };
+    }
+    const zone = resolution.nearest;
+    const price = priceStay(
+      {
+        city: zone.city,
+        rateFirstHourUsd: zone.rateFirstHourUsd,
+        rateAdditionalHourUsd: zone.rateAdditionalHourUsd,
+        hours: zone.hours as HoursInterval[],
+      },
+      policy,
+      when,
+      Math.min(minutes, zone.maxStayMinutes ?? minutes),
+    );
+    const result = {
+      found: true,
+      zoneId: zone.zoneId,
+      city: zone.city,
+      zoneNumber: zone.providerZoneNumber || null,
+      maxStayMinutes: zone.maxStayMinutes,
+      ambiguousWithOtherSide: resolution.kind === "disagree",
+      clampedMinutes: Math.min(minutes, zone.maxStayMinutes ?? minutes),
+      costUsd: price.totalUsd,
+      chargedMinutes: price.chargedMinutes,
+      freePeriod: price.totalUsd === 0,
+    };
+    await this.audit(ctx, "quote_street", input, "ok", {
+      zoneId: zone.zoneId,
+      costUsd: price.totalUsd,
+    });
+    return { result };
+  }
+
+  private async buildItinerary(ctx: ToolContext, input: Record<string, unknown>): Promise<ToolOutcome> {
+    const stops = input["stops"] as Record<string, unknown>[];
+    const policy = this.deps.policy.get();
+    const at = this.now();
+    const out = [];
+    for (const stop of stops) {
+      const arrival = String(stop["arrival"]);
+      const minutes = num(stop["duration_minutes"]);
+      const street = await this.quoteStreet(ctx, {
+        lat: stop["lat"],
+        lng: stop["lng"],
+        duration_minutes: minutes,
+        when: arrival,
+      });
+      const endsAt = new Date(new Date(arrival).getTime() + minutes * 60_000).toISOString();
+      const garages = await this.deps.garage.search({
+        lat: num(stop["lat"]),
+        lng: num(stop["lng"]),
+        startsAt: arrival,
+        endsAt,
+      });
+      const bestGarage = garages[0] ?? null;
+      out.push({
+        label: stop["label"],
+        address: stop["address"] ?? "",
+        arrival,
+        durationMinutes: minutes,
+        street: street.result,
+        garage: bestGarage,
+      });
+    }
+    const spentTodayUsd = await spentToday(this.deps.db, ctx.userId, at);
+    const summary = {
+      stops: out,
+      dailyCapUsd: policy.daily_cap_usd,
+      spentTodayUsd,
+      remainingBudgetUsd: Math.max(0, policy.daily_cap_usd - spentTodayUsd),
+    };
+    await this.audit(ctx, "build_itinerary", { stopCount: stops.length }, "ok", {
+      stops: out.length,
+    });
+    return { result: summary };
+  }
+
+  private async proposePlan(ctx: ToolContext, input: Record<string, unknown>): Promise<ToolOutcome> {
+    const parsed = planSchema.safeParse(input["plan"]);
+    if (!parsed.success) {
+      await this.audit(ctx, "propose_plan", input, "invalid_plan", {
+        issues: parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).slice(0, 8),
+      });
+      return {
+        result: {
+          error: "invalid plan shape",
+          issues: parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).slice(0, 8),
+        },
+      };
+    }
+    let plan = parsed.data;
+    const policy = this.deps.policy.get();
+    if (plan.kind === "itinerary") {
+      // Never trust model arithmetic: recompute the total, pin the cap,
+      // and refuse a plan that busts the day's remaining budget.
+      const totalUsd = itineraryTotalUsd(plan.stops);
+      const spentTodayUsd = await spentToday(this.deps.db, ctx.userId, this.now());
+      if (spentTodayUsd + totalUsd > policy.daily_cap_usd) {
+        await this.audit(ctx, "propose_plan", { kind: plan.kind, totalUsd }, "over_daily_cap", {
+          totalUsd,
+          spentTodayUsd,
+          capUsd: policy.daily_cap_usd,
+        });
+        return {
+          result: {
+            error: "plan_over_daily_cap",
+            totalUsd,
+            spentTodayUsd,
+            capUsd: policy.daily_cap_usd,
+            hint: "drop or shorten stops until the total fits the remaining budget",
+          },
+        };
+      }
+      plan = { ...plan, totalUsd, capUsd: policy.daily_cap_usd };
+    } else {
+      const badges = plan.options.filter((o) => o.recommended).length;
+      if (badges !== 1) {
+        // Normalize instead of bouncing: first option wins the badge.
+        plan = {
+          ...plan,
+          options: plan.options.map((o, i) => ({ ...o, recommended: i === 0 })),
+        };
+      }
+    }
+    const planId = randomUUID();
+    await this.deps.db.assistantPlan.create({
+      data: {
+        id: planId,
+        userId: ctx.userId,
+        conversationId: ctx.conversationId,
+        kind: plan.kind,
+        plan,
+      },
+    });
+    await this.deps.db.decision.create({
+      data: {
+        kind: "assistant_plan",
+        inputs: { conversationId: ctx.conversationId, kind: plan.kind },
+        rule: "proposed",
+        outcome: { planId, plan },
+        userId: ctx.userId,
+      },
+    });
+    return { result: { planId, presented: true }, endTurn: { planId, plan } };
+  }
+
+  /** Shared gate for the two consequential tools: a token minted by the
+   * user's tap, unused, unexpired, owned by this user — or a refusal the
+   * model can read. Marks the token used on success (single-use). */
+  private async consumeConfirmation(
+    ctx: ToolContext,
+    token: unknown,
+    tool: string,
+    input: unknown,
+  ): Promise<{ ok: true; planId: string; optionId: string | null } | { ok: false; result: unknown }> {
+    const refusal = async (why: string) => {
+      await this.audit(ctx, tool, input, "needs_confirmation", { refused: why });
+      return {
+        ok: false as const,
+        result: {
+          error: "needs_confirmation",
+          message:
+            `${why}. Nothing books or spends without the user's explicit Confirm tap on a proposed `,
+        },
+      };
+    };
+    if (typeof token !== "string" || token.length === 0) {
+      return refusal("no confirmation_token was provided");
+    }
+    const row = await this.deps.db.assistantConfirmation.findUnique({ where: { token } });
+    if (!row || row.userId !== ctx.userId) return refusal("the confirmation token is not valid");
+    if (row.usedAt !== null) return refusal("the confirmation token was already used");
+    if (row.expiresAt.getTime() <= this.now().getTime()) {
+      return refusal("the confirmation token expired — propose the plan again");
+    }
+    await this.deps.db.assistantConfirmation.update({
+      where: { token },
+      data: { usedAt: this.now() },
+    });
+    return { ok: true, planId: row.planId, optionId: row.optionId };
+  }
+
+  private async bookGarage(ctx: ToolContext, input: Record<string, unknown>): Promise<ToolOutcome> {
+    const gate = await this.consumeConfirmation(ctx, input["confirmation_token"], "book_garage", {
+      option_id: input["option_id"],
+    });
+    if (!gate.ok) return { result: gate.result };
+    const booking = await this.deps.garage.book(String(input["option_id"]));
+    await this.audit(
+      ctx,
+      "book_garage",
+      { option_id: input["option_id"], planId: gate.planId },
+      "booked",
+      { kind: booking.kind, provider: booking.option.provider, priceUsd: booking.option.priceUsd },
+    );
+    return {
+      result: {
+        kind: booking.kind,
+        deepLink: booking.deepLink ?? null,
+        option: booking.option,
+        note:
+          booking.kind === "deeplink_handoff"
+            ? "The user completes checkout at the provider; the pass lives in the provider's app."
+            : "Reserved.",
+      },
+    };
+  }
+
+  private async startSession(ctx: ToolContext, input: Record<string, unknown>): Promise<ToolOutcome> {
+    const gate = await this.consumeConfirmation(ctx, input["confirmation_token"], "start_session", {
+      zone: input["zone"],
+      duration_minutes: input["duration_minutes"],
+    });
+    if (!gate.ok) return { result: gate.result };
+    // The meter session itself starts through the app's existing paid
+    // flow (detector → /parked → /session/start): a meter runs from the
+    // moment it's paid, so the confirmed choice is handed to the client
+    // to execute at the curb rather than paid from here early.
+    await this.audit(
+      ctx,
+      "start_session",
+      { zone: input["zone"], minutes: input["duration_minutes"], planId: gate.planId },
+      "confirmed",
+      { directive: "start_via_app" },
+    );
+    return {
+      result: {
+        confirmed: true,
+        directive: "start_via_app",
+        zoneId: String(input["zone"]),
+        durationMinutes: num(input["duration_minutes"]),
+      },
+    };
+  }
+
+  private async getHistory(ctx: ToolContext, input: Record<string, unknown>): Promise<ToolOutcome> {
+    const days = input["days"] !== undefined ? num(input["days"]) : 14;
+    const since = new Date(this.now().getTime() - days * 24 * 60 * 60_000);
+    const sessions = await this.deps.db.session.findMany({
+      where: { userId: ctx.userId, createdAt: { gte: since } },
+    });
+    const rows = sessions
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .slice(0, 30)
+      .map((s) => ({
+        when: s.createdAt.toISOString(),
+        city: s.city,
+        zoneId: s.zoneId,
+        status: s.status,
+        totalUsd: Math.round((Number(s.amountUsd ?? 0) + Number(s.feeUsd ?? 0)) * 100) / 100,
+        minutes: s.purchasedMinutes,
+        paymentSource: s.paymentSource ?? "issuing_card",
+      }));
+    await this.audit(ctx, "get_history", { days }, "ok", { count: rows.length });
+    return { result: { sessions: rows } };
+  }
+
+  private async explain(ctx: ToolContext, input: Record<string, unknown>): Promise<ToolOutcome> {
+    const id = String(input["decision_id"]);
+    const row = await this.deps.db.decision.findUnique({ where: { id } });
+    if (!row || (row.userId !== null && row.userId !== ctx.userId)) {
+      await this.audit(ctx, "explain_decision", input, "not_found", {});
+      return { result: { error: "no such decision (or it belongs to another user)" } };
+    }
+    const text = explainDecision(row);
+    await this.audit(ctx, "explain_decision", input, "ok", {});
+    return { result: { explanation: text } };
+  }
+}

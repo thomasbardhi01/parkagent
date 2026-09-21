@@ -15,6 +15,8 @@ import { buildApp, makeAuthenticate } from "../src/app.js";
 import { hashApiKey } from "../src/services/apiKeys.js";
 import type {
   AppDb,
+  ItineraryRow,
+  LinkSpendRequestRow,
   ProviderAccountRow,
   SessionRow,
   SessionWhere,
@@ -22,6 +24,11 @@ import type {
   ZoneTermsRow,
 } from "../src/db.js";
 import { makeStateCrypto } from "../src/services/crypto.js";
+import type { ModelClient } from "../src/services/assistant/loop.js";
+import { AssistantTools } from "../src/services/assistant/tools.js";
+import type { GarageProvider } from "../src/services/garage/garageProvider.js";
+import type { LinkClient } from "../src/services/link/linkClient.js";
+import { LinkWallet } from "../src/services/link/linkWallet.js";
 import type { ProviderAccountOps, ProviderOpsFactory } from "../src/services/providerOps.js";
 import type { Push } from "../src/services/apns.js";
 import type { Executor } from "../src/services/executor.js";
@@ -249,6 +256,19 @@ export interface FakeDbState {
   providerAccounts: ProviderAccountRow[];
   zoneNumberReports: ZoneNumberReportRow[];
   processedTopups: { paymentIntentId: string; amountUsd: number; userId: string | null }[];
+  conversations: { id: string; userId: string; turns: unknown }[];
+  assistantPlans: { id: string; userId: string; conversationId: string; kind: string; plan: unknown }[];
+  assistantConfirmations: {
+    token: string;
+    userId: string;
+    planId: string;
+    optionId: string | null;
+    expiresAt: Date;
+    usedAt: Date | null;
+  }[];
+  itineraries: ItineraryRow[];
+  linkAccounts: { userId: string; status: string; tokensEncrypted: string | null; connectedAt: Date | null }[];
+  linkSpendRequests: LinkSpendRequestRow[];
   linkJobs: {
     id: string;
     userId: string;
@@ -334,6 +354,12 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
     zoneNumberReports: [],
     processedTopups: [],
     linkJobs: [],
+    conversations: [],
+    assistantPlans: [],
+    assistantConfirmations: [],
+    itineraries: [],
+    linkAccounts: [],
+    linkSpendRequests: [],
   };
   const cardholderFor = (userId: string) => {
     const explicit = state.issuingCardholders.find((c) => c.userId === userId);
@@ -415,6 +441,93 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
       findUnique: async ({ where }) => state.parkedEvents.find((p) => p.id === where.id) ?? null,
       findMany: async ({ where }) => state.parkedEvents.filter((p) => p.ts >= where.ts.gte),
     },
+    conversation: {
+      findUnique: async ({ where }) => state.conversations.find((c) => c.id === where.id) ?? null,
+      upsert: async ({ where, create, update }) => {
+        const existing = state.conversations.find((c) => c.id === where.id);
+        if (existing) Object.assign(existing, update);
+        else state.conversations.push({ ...create });
+        return {};
+      },
+    },
+    assistantPlan: {
+      create: async ({ data }) => {
+        state.assistantPlans.push({ ...data });
+        return { id: data.id };
+      },
+      findUnique: async ({ where }) => state.assistantPlans.find((r) => r.id === where.id) ?? null,
+    },
+    assistantConfirmation: {
+      create: async ({ data }) => {
+        state.assistantConfirmations.push({ usedAt: null, ...data });
+        return {};
+      },
+      findUnique: async ({ where }) =>
+        state.assistantConfirmations.find((r) => r.token === where.token) ?? null,
+      update: async ({ where, data }) => {
+        const row = state.assistantConfirmations.find((r) => r.token === where.token);
+        if (row) Object.assign(row, data);
+        return {};
+      },
+    },
+    itinerary: {
+      create: async ({ data }) => {
+        state.itineraries.push({ createdAt: new Date(MONDAY_2PM), ...data } as ItineraryRow);
+        return { id: data.id };
+      },
+      findUnique: async ({ where }) => state.itineraries.find((r) => r.id === where.id) ?? null,
+      findMany: async ({ where }) =>
+        state.itineraries.filter(
+          (r) =>
+            (where.userId === undefined || r.userId === where.userId) &&
+            (where.status === undefined || r.status === where.status),
+        ),
+      update: async ({ where, data }) => {
+        const row = state.itineraries.find((r) => r.id === where.id);
+        if (row) Object.assign(row, data);
+        return {};
+      },
+    },
+    linkAccount: {
+      findUnique: async ({ where }) =>
+        state.linkAccounts.find((r) => r.userId === where.userId) ?? null,
+      upsert: async ({ where, create, update }) => {
+        const existing = state.linkAccounts.find((r) => r.userId === where.userId);
+        if (existing) Object.assign(existing, update);
+        else {
+          state.linkAccounts.push({
+            tokensEncrypted: null,
+            connectedAt: null,
+            ...create,
+          } as FakeDbState["linkAccounts"][number]);
+        }
+        return {};
+      },
+    },
+    linkSpendRequest: {
+      create: async ({ data }) => {
+        state.linkSpendRequests.push({
+          itineraryId: null,
+          stopId: null,
+          planId: null,
+          cardEncrypted: null,
+          validUntil: null,
+          cardUsedAt: null,
+          createdAt: new Date(MONDAY_2PM),
+          ...data,
+        } as LinkSpendRequestRow);
+        return {};
+      },
+      findUnique: async ({ where }) =>
+        state.linkSpendRequests.find((r) => r.id === where.id) ?? null,
+      findMany: async ({ where }) =>
+        state.linkSpendRequests.filter((r) => r.userId === where.userId),
+      update: async ({ where, data }) => {
+        const row = state.linkSpendRequests.find((r) => r.id === where.id);
+        if (row) Object.assign(row, data);
+        return {};
+      },
+    },
     processedTopup: {
       findUnique: async ({ where }) =>
         state.processedTopups.find((t) => t.paymentIntentId === where.paymentIntentId)
@@ -465,6 +578,20 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
           ...(data as FakeDbState["decisions"][number]),
         });
         return { id: `d${state.decisions.length}` };
+      },
+      findUnique: async ({ where }) => {
+        const index = Number(where.id.replace(/^d/, "")) - 1;
+        const d = state.decisions[index];
+        if (!d) return null;
+        return {
+          id: where.id,
+          kind: d.kind,
+          rule: d.rule,
+          inputs: d.inputs,
+          outcome: d.outcome,
+          userId: d.userId ?? null,
+          createdAt: d.createdAt ?? new Date(MONDAY_2PM),
+        };
       },
       findMany: async ({ where }) =>
         state.decisions
@@ -851,6 +978,12 @@ export function makeTestApp(options: {
   /** Session start requires a linked provider account; u1 gets one unless
    * a test opts out to exercise provider_not_linked. */
   seedLinkedProvider?: boolean;
+  /** Scripted assistant transport; absent → /assistant/message 503s. */
+  assistantModel?: ModelClient;
+  /** Garage search fake; default returns no results and hits no network. */
+  garage?: GarageProvider;
+  /** Faked Link client; wires the LinkWallet as configured. */
+  linkClient?: LinkClient;
 }): TestApp {
   const { db, state } = makeFakeDb();
   state.zones.push(...(options.zones ?? []));
@@ -863,10 +996,35 @@ export function makeTestApp(options: {
   // wall-clock-dependent. Tests that care pass their own `now`.
   const now = options.now ?? (() => new Date(MONDAY_2PM));
   const dryRunExecutor = new DryRunExecutor(() => {}, now);
+  const garage: GarageProvider =
+    options.garage ?? {
+      id: "fake-garage",
+      canReserve: false,
+      search: async () => [],
+      book: async () => {
+        throw new Error("no garage options in this test");
+      },
+    };
+  const findCandidates = async () => options.candidates ?? [];
+  const policyService = makePolicyService(options.policy, options.envDryRun ?? true);
+  const linkWallet = new LinkWallet({
+    db,
+    stateCrypto: testStateCrypto(),
+    linkClient: options.linkClient,
+    now,
+  });
+  const assistantTools = new AssistantTools({
+    db,
+    policy: policyService,
+    findCandidates,
+    garage,
+    linkWallet,
+    now,
+  });
   const deps: AppDeps = {
     db,
-    policy: makePolicyService(options.policy, options.envDryRun ?? true),
-    findCandidates: async () => options.candidates ?? [],
+    policy: policyService,
+    findCandidates,
     authenticate: makeAuthenticate(db, TEST_PEPPER),
     executorFor: () => options.executor ?? dryRunExecutor,
     sendPush: async (userId, push) => {
@@ -875,6 +1033,9 @@ export function makeTestApp(options: {
     stateCrypto: testStateCrypto(),
     ...(options.providerOps ? { providerOps: options.providerOps } : {}),
     ...(options.stripe ? { stripe: options.stripe } : {}),
+    ...(options.assistantModel ? { assistantModel: options.assistantModel } : {}),
+    assistantTools,
+    linkWallet,
     now,
   };
   return { app: buildApp(deps), state, deps, pushes };

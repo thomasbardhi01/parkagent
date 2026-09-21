@@ -372,6 +372,7 @@ describe("the model can't time-travel (Seaport prod bug #2)", () => {
         q.startsAt.startsWith("2026")
           ? { ok: true, options: [GARAGE], fromCache: false }
           : { ok: false, error: "parse_failed", detail: "HTTP 400" },
+      optionById: (id) => (id === "g1" ? GARAGE : null),
       book: async () => {
         throw new Error("unreachable");
       },

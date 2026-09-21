@@ -51,6 +51,7 @@ function fakeGarage(): GarageProvider {
     id: "spothero",
     canReserve: false,
     search: async () => ({ ok: true, options: [GARAGE], fromCache: false }),
+    optionById: (id) => (id === "g1" ? GARAGE : null),
     book: async (id) => {
       if (id !== "g1") throw new Error("unknown option");
       return { kind: "deeplink_handoff", option: GARAGE, deepLink: GARAGE.deepLink };
@@ -442,5 +443,130 @@ describe("garage search failure vs empty (Seaport prod bug)", () => {
     const turns = JSON.stringify(t.state.conversations[0]!.turns);
     expect(turns).toContain('\\"options\\":[]');
     expect(turns).not.toContain("garage_search_unavailable");
+  });
+});
+
+describe("garage deepLink delivery", () => {
+  test("propose_plan re-attaches the cached deepLink when the model dropped it", async () => {
+    const t = makeTestApp({ garage: fakeGarage() });
+    const outcome = await t.deps.assistantTools!.execute(
+      { userId: "u1", conversationId: "c1" },
+      "propose_plan",
+      {
+        plan: {
+          kind: "single_spot",
+          options: [
+            {
+              id: "opt-garage",
+              type: "garage",
+              label: "Underground Deck",
+              detail: "",
+              priceUsd: 18,
+              durationMinutes: 90,
+              garageOptionId: "g1",
+              // no deepLink — the model omitted it, as seen in prod
+              recommended: true,
+            },
+          ],
+        },
+      },
+    );
+    const plan = outcome.endTurn!.plan as { options: { deepLink?: string }[] };
+    expect(plan.options[0]!.deepLink).toBe(GARAGE.deepLink);
+    // …and the stored row carries it too, so a late confirm never
+    // depends on the 10-minute cache.
+    const stored = t.state.assistantPlans[0]!.plan as { options: { deepLink?: string }[] };
+    expect(stored.options[0]!.deepLink).toBe(GARAGE.deepLink);
+  });
+
+  test("confirm after the provider cache expired still hands off via the stored deepLink", async () => {
+    // book() throws (cache gone), optionById finds nothing — only the
+    // plan's own deepLink can save the confirm.
+    const expired: GarageProvider = {
+      id: "spothero",
+      canReserve: false,
+      search: async () => ({ ok: true, options: [], fromCache: false }),
+      optionById: () => null,
+      book: async () => {
+        throw new Error("unknown garage option g1 (search first — options expire with the cache)");
+      },
+    };
+    const t = makeTestApp({ garage: expired });
+    t.state.assistantPlans.push({
+      id: "plan1",
+      userId: "u1",
+      conversationId: "c1",
+      kind: "single_spot",
+      plan: {
+        kind: "single_spot",
+        options: [
+          {
+            id: "opt-garage",
+            type: "garage",
+            label: "Underground Deck",
+            detail: "",
+            priceUsd: 18,
+            durationMinutes: 90,
+            garageOptionId: "g1",
+            deepLink: GARAGE.deepLink,
+            recommended: true,
+          },
+        ],
+      },
+    });
+    const res = await t.app.inject({
+      method: "POST",
+      url: "/assistant/confirm",
+      headers: HEADERS,
+      payload: { planId: "plan1", optionId: "opt-garage" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ kind: "garage_handoff", deepLink: GARAGE.deepLink });
+    expect(
+      t.state.decisions.some((d) => d.rule === "garage_confirmed" &&
+        (d.outcome as { cacheExpired?: boolean }).cacheExpired === true),
+    ).toBe(true);
+  });
+
+  test("no deepLink anywhere still fails loudly (409), never a silent success", async () => {
+    const expired: GarageProvider = {
+      id: "spothero",
+      canReserve: false,
+      search: async () => ({ ok: true, options: [], fromCache: false }),
+      optionById: () => null,
+      book: async () => {
+        throw new Error("unknown garage option g1");
+      },
+    };
+    const t = makeTestApp({ garage: expired });
+    t.state.assistantPlans.push({
+      id: "plan1",
+      userId: "u1",
+      conversationId: "c1",
+      kind: "single_spot",
+      plan: {
+        kind: "single_spot",
+        options: [
+          {
+            id: "opt-garage",
+            type: "garage",
+            label: "Deck",
+            detail: "",
+            priceUsd: 18,
+            durationMinutes: 90,
+            garageOptionId: "g1",
+            recommended: true,
+          },
+        ],
+      },
+    });
+    const res = await t.app.inject({
+      method: "POST",
+      url: "/assistant/confirm",
+      headers: HEADERS,
+      payload: { planId: "plan1", optionId: "opt-garage" },
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toBe("book_failed");
   });
 });

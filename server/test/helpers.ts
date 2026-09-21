@@ -1001,6 +1001,7 @@ export function makeTestApp(options: {
       id: "fake-garage",
       canReserve: false,
       search: async () => ({ ok: true, options: [], fromCache: false }),
+      optionById: () => null,
       book: async () => {
         throw new Error("no garage options in this test");
       },

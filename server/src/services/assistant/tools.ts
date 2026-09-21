@@ -434,11 +434,19 @@ export class AssistantTools {
       // payOnArrival is OURS to decide, never the model's: a street
       // option starting more than 15 minutes out cannot be confirmed
       // now (meters run from payment) — the detector pays on arrival.
+      // Garage options get their deepLink re-attached from the search
+      // cache when the model dropped it (the schema is optional and
+      // models often omit it) — the card and a late confirm both need
+      // it on the stored plan, not in a 10-minute in-memory cache.
       const at = this.now().getTime();
       plan = {
         ...plan,
         options: plan.options.map((o) => {
-          if (o.type !== "street") return { ...o, payOnArrival: false };
+          if (o.type !== "street") {
+            const cached = this.deps.garage.optionById(o.garageOptionId ?? o.id);
+            const deepLink = o.deepLink ?? cached?.deepLink;
+            return { ...o, payOnArrival: false, ...(deepLink ? { deepLink } : {}) };
+          }
           const starts = o.startsAt ? new Date(o.startsAt).getTime() : Number.NaN;
           const future = Number.isFinite(starts) && starts - at > 15 * 60_000;
           return { ...o, payOnArrival: future };

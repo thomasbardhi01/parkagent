@@ -63,6 +63,9 @@ export interface GarageProvider {
     | { ok: true; options: GarageOption[]; fromCache: boolean }
     | { ok: false; error: "blocked" | "parse_failed" | "network"; detail: string }
   >;
+  /** A recently searched option by id (cache lookup, no side effects);
+   * null once the cache has expired. */
+  optionById(optionId: string): GarageOption | null;
   /** Hand off (deep link) or reserve (Partner API) a searched option. */
   book(optionId: string): Promise<GarageBooking>;
 }

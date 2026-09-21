@@ -234,6 +234,24 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
           confirmation_token: token,
         });
         const booked = outcome.result as { deepLink?: string | null; error?: string };
+        if (booked.error && booked.error !== "needs_confirmation" && option.deepLink) {
+          // The provider's search cache expired (10 min, per process) —
+          // the stored plan's own deepLink still hands the user off.
+          await decide("garage_confirmed", {
+            allowed: true,
+            optionId: option.id,
+            paymentSource,
+            cacheExpired: true,
+            linkSpendRequestId: linkApproval?.spendRequestId ?? null,
+          });
+          return {
+            kind: "garage_handoff",
+            deepLink: option.deepLink,
+            paymentSource,
+            linkApproval,
+            note: "Checkout finishes in SpotHero; the parking pass will live in your SpotHero account.",
+          };
+        }
         if (booked.error) {
           await decide("book_failed", { allowed: true, error: booked.error });
           return reply.code(409).send({ error: "book_failed", detail: booked.error });

@@ -1,0 +1,28 @@
+<!-- Reconstructed from the reported "Review Signage" interstitial
+     (2026-09-21 start run): the modal is operator-configured and
+     runtime-injected, so it wasn't in the page capture. Structure mirrors
+     the app's jQuery-Mobile popup; wording is the reported generic
+     instruction (no account/card data). Test data only. -->
+<!doctype html><html><body>
+<div data-role="page" id="lengthOfStay" data-theme="a">
+  <div data-role="header"><h1>Length of Stay</h1></div>
+  <div data-role="content">
+    <p id="zoneWarningMessage" class="footer_label bold">
+      By continuing you agree you are abiding to all zone signage on restrictions and rules.
+    </p>
+  </div>
+</div>
+<div data-role="popup" id="signageReviewPopup" class="ui-popup ui-body-a ui-overlay-shadow ui-corner-all"
+     role="dialog" aria-labelledby="signageReviewTitle" style="">
+  <div data-role="header" class="ui-header ui-bar-a">
+    <h1 id="signageReviewTitle" class="ui-title">Review Signage</h1>
+  </div>
+  <div data-role="content" class="ui-content">
+    <p id="signageReviewMessage">
+      Please be sure to check the signage around you for parking restrictions and meter hours.
+    </p>
+    <a href="#" id="signageReviewContinue" data-role="button" data-theme="b" class="ui-btn ui-corner-all">Continue</a>
+    <a href="#" id="signageReviewCancel" data-role="button" data-theme="c" class="ui-btn ui-corner-all">Cancel</a>
+  </div>
+</div>
+</body></html>

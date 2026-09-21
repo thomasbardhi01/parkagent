@@ -124,6 +124,19 @@ export const selectors = {
     /** Shown when the zone number is rejected (wording TODO-verify). */
     notFoundMessage: (page: Page): Locator =>
       page.getByText(/zone.*(not.*(found|recognized|valid)|invalid)/i),
+    /** The optional "Review Signage" interstitial that can appear after
+     * Enter Zone: a popup with signage/meter-hours text and
+     * Continue/Cancel. Operator-configured, so matched by structure +
+     * keyword, not exact wording. */
+    signageModal: (page: Page): Locator =>
+      page
+        .locator('[data-role="popup"], .ui-popup, [role="dialog"]')
+        .filter({ hasText: /signage|meter hours|parking restrictions/i }),
+    signageContinue: (page: Page): Locator =>
+      page
+        .locator('[data-role="popup"], .ui-popup, [role="dialog"]')
+        .filter({ hasText: /signage|meter hours|parking restrictions/i })
+        .getByRole("button", { name: /continue|ok|got it|i understand/i }),
     /** Recent-zones panel: pops on input focus, sits right after
      * #zoneNext, and (when non-empty) shifts/overlays it — the
      * 2026-09-21 regression. Dismissed before clicking Continue. */

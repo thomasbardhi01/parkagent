@@ -139,6 +139,13 @@ collapse the panel, waits for it to hide, then clicks Continue
 (`recentZonesState` in `parse.ts` is the pure reading, pinned by the
 zone-entry--recent-zones-{visible,hidden} fixtures).
 
+**Review Signage interstitial (2026-09-21):** an optional operator-
+configured popup ("check the signage around you for parking restrictions
+and meter hours", Continue/Cancel) can appear after Enter Zone. The start
+flow clicks Continue when it's present and proceeds when it's absent —
+never fails on it. Matched by structure + keyword, not exact wording
+(`isSignageModal` in `parse.ts`, pinned by `signage-modal.html`).
+
 **Verification status.** Walked live: the gated entry (Sign In / Register /
 Guest), T&C accept, and e-mail verification screens (2026-09-20, headless)
 and the Enter Zone screen (2026-09-21, signed in). Everything after zone

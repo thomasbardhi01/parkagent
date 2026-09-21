@@ -19,6 +19,7 @@ export type ExecutorErrorCode =
   | "payment_declined" // the provider's payment step refused
   | "ui_changed" // an expected screen/element never appeared
   | "network" // couldn't reach the provider at all
+  | "browser_crashed" // the shared Chromium died mid-call (retried once first)
   | "unknown"; // none of the above matched
 
 /** Evidence captured from an unexpected screen; attached to decisions. */

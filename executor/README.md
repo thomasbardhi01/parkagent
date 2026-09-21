@@ -135,6 +135,7 @@ cheap zone before any real use.
 | `payment_declined` | The payment step refused |
 | `ui_changed` | An expected screen/element never appeared (capture attached) — includes captcha/bot-check walls, which classify.ts deliberately never reads as `auth_expired` (that would wrongly expire the linked account and push a relink) |
 | `network` | Couldn't reach the provider |
+| `browser_crashed` | The shared Chromium died mid-call. The executor retries the call ONCE on a fresh context first (warmBrowser relaunches lazily); this code means the retry failed too |
 | `unknown` | Anything else |
 
 Account ops (`setupCard` — see the card flow) can additionally return

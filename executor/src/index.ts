@@ -13,6 +13,7 @@
  * poison the next session.
  */
 
+import { withBrowserCrashRetry } from "./retry.js";
 import { ParkNycClient } from "./parknyc/client.js";
 import { PassportClient } from "./passport/client.js";
 import type {
@@ -45,6 +46,7 @@ export type {
   VerifyAccountResult,
 } from "./types.js";
 export { closeWarmBrowser, warmBrowser } from "./browser.js";
+export { withBrowserCrashRetry } from "./retry.js";
 export { ParkNycClient } from "./parknyc/client.js";
 export type { ParkNycClientOptions } from "./parknyc/client.js";
 export { PassportClient } from "./passport/client.js";
@@ -84,13 +86,21 @@ function makeClient(options: ParkNycExecutorOptions): ParkNycClient {
 }
 
 export function createParkNycExecutor(options: ParkNycExecutorOptions): Executor {
-  async function withClient(fn: (client: ParkNycClient) => Promise<ExecutorResult>) {
-    const client = makeClient(options);
-    try {
-      return await fn(client);
-    } finally {
-      await client.close();
-    }
+  // Each attempt gets a fresh client/context; withBrowserCrashRetry runs a
+  // second attempt if the shared Chromium died under the first (warmBrowser
+  // relaunches lazily). Caveat, accepted: a crash after the pay click but
+  // before the receipt parse would retry a paid session — that window is
+  // milliseconds against seconds of navigation, and the alternative is
+  // every crash costing an unpaid meter.
+  function withClient(fn: (client: ParkNycClient) => Promise<ExecutorResult>) {
+    return withBrowserCrashRetry(async () => {
+      const client = makeClient(options);
+      try {
+        return await fn(client);
+      } finally {
+        await client.close();
+      }
+    });
   }
 
   return {
@@ -145,13 +155,16 @@ function makePassportClient(options: PassportExecutorOptions): PassportClient {
 }
 
 export function createPassportExecutor(options: PassportExecutorOptions): Executor {
-  async function withClient(fn: (client: PassportClient) => Promise<ExecutorResult>) {
-    const client = makePassportClient(options);
-    try {
-      return await fn(client);
-    } finally {
-      await client.close();
-    }
+  // Same one-retry-on-dead-browser semantics as the ParkNYC executor.
+  function withClient(fn: (client: PassportClient) => Promise<ExecutorResult>) {
+    return withBrowserCrashRetry(async () => {
+      const client = makePassportClient(options);
+      try {
+        return await fn(client);
+      } finally {
+        await client.close();
+      }
+    });
   }
 
   return {

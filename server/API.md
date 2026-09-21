@@ -248,7 +248,9 @@ browser context on one warm shared Chromium process. No linked account, no
 state key, or an unparseable state → the call fails typed
 (`auth_expired`/`unknown`), it never falls back to someone else's session.
 Executor error codes: `auth_expired`, `zone_not_found`,
-`payment_declined`, `ui_changed`, `network`, `unknown`.
+`payment_declined`, `ui_changed`, `network`, `browser_crashed` (Chromium
+died mid-call; the executor already retried once on a fresh context),
+`unknown`.
 
 **Zone numbers.** Every start types a zone number at the provider, so a
 provider-covered zone whose `provider_zone_number` is still `""` (a Boston

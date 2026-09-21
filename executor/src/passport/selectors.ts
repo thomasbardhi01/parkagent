@@ -44,6 +44,8 @@ export const BOSTON_BASE_URL = "https://bostonma.ppprk.com/park/";
 export function passportUrls(base: string = BOSTON_BASE_URL) {
   const root = base.endsWith("/") ? base : `${base}/`;
   return {
+    /** The app's origin, for context permissions/geolocation. */
+    root,
     /** Gated entry: Sign In / Register / Continue as Guest. This is the
      * screen the app's link web view starts on (VERIFIED live). */
     home: root,
@@ -51,8 +53,13 @@ export function passportUrls(base: string = BOSTON_BASE_URL) {
     /** Passwordless login (e-mail/phone + code + PIN). */
     login: `${root}#login`,
     /** Type-a-zone-number entry — where every ParkBoston session starts
-     * (the app has no map; #findParking lands here). */
+     * (fallback; but #findParking is a real map+search page — see below). */
     zoneEntry: `${root}#zoneEntry`,
+    /** Find Parking: map + "Zone, address or landmark" search. Its list
+     * is driven by the getnearzoneswithoccupancy API. VERIFIED to exist
+     * in the shipped shell 2026-09-21 (overrides the earlier "no map"
+     * note); confirm live with `record --flow findParking`. */
+    findParking: `${root}#findParking`,
     /** One zone's panel: name/street, zone number, rates, Select Zone. */
     zoneInfo: `${root}#zoneInfoPage`,
     /** Duration picker after selecting a zone. */
@@ -71,6 +78,17 @@ export function passportUrls(base: string = BOSTON_BASE_URL) {
 }
 
 export type PassportUrls = ReturnType<typeof passportUrls>;
+
+/** The find-parking (map) screen's search + list, from the shell markup. */
+export const findParkingSelectors = {
+  searchField: "#parkingSearchField",
+  autocompleteList: "#parkingAutocompleteListView",
+  nearbyList: "#parkRightZoneList",
+  mapCanvas: "#map-canvas",
+  /** The zones-by-location API the map list calls (POST, encrypted params;
+   * the JSON RESPONSE is readable). */
+  nearbyZonesApi: "getnearzoneswithoccupancy",
+} as const;
 
 export const selectors = {
   // ------------------------------------------------- Gated entry (VERIFIED)

@@ -123,3 +123,43 @@ export function streetsMatch(expectedStreet: string, panelStreet: string): boole
   if (a.length === 0 || b.length === 0) return false;
   return a === b || a.includes(b) || b.includes(a);
 }
+
+
+/** One zone from the Find Parking map feed (getnearzoneswithoccupancy). */
+export interface NearbyZone {
+  /** The pay-by-app zone number a driver enters — what our dataset lacks. */
+  number: string;
+  /** Block description, e.g. "North Boylston between Dartmouth and Clarendon". */
+  name: string;
+  /** Coarse in this feed (~1 km grid) — match by name, not by point. */
+  latitude: number | null;
+  longitude: number | null;
+  distanceFeet: number | null;
+}
+
+/** Extract usable (number, name) rows from a getnearzoneswithoccupancy
+ * response body. Total function: a row without a number/name is skipped. */
+export function parseNearbyZones(body: unknown): NearbyZone[] {
+  const data = (body as { data?: unknown } | null)?.data;
+  if (!Array.isArray(data)) return [];
+  const out: NearbyZone[] = [];
+  for (const raw of data) {
+    if (typeof raw !== "object" || raw === null) continue;
+    const r = raw as Record<string, unknown>;
+    const number = r["number"] === undefined || r["number"] === null ? "" : String(r["number"]).trim();
+    const name = typeof r["name"] === "string" ? r["name"].trim() : "";
+    if (number === "" || name === "") continue;
+    const num = (v: unknown): number | null => {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    };
+    out.push({
+      number,
+      name,
+      latitude: num(r["latitude"]),
+      longitude: num(r["longitude"]),
+      distanceFeet: num(r["distanceinfeet"]),
+    });
+  }
+  return out;
+}

@@ -12,7 +12,11 @@
  * tracing on, saving to executor/fixtures/<provider>-<flow>-<stamp>/
  * (gitignored): har.har, trace.zip, and NN-<step>.html/.png per screen.
  *
- * Flows: start | extend | stop. (`resolve` is retired: the 2026-09-21
+ * Flows: start | extend | stop | findParking. findParking is READ-ONLY
+ * recon of the map/search screen (Passport only) — dumps the
+ * getnearzoneswithoccupancy JSON for a location; pays for nothing. Pass
+ * --query "Boylston St Back Bay" (or --lat/--lng). (`resolve` is retired:
+ * the 2026-09-21
  * recording showed ParkBoston has no map — asking for it just prints an
  * explanation. ParkNYC's map cross-check records inside --flow start when
  * --lat/--lng are given.)
@@ -43,6 +47,7 @@ const { values: flags } = parseArgs({
     lat: { type: "string" }, // resolve / map-resolved start
     lng: { type: "string" },
     street: { type: "string" }, // expected street for the mismatch guard
+    query: { type: "string" }, // findParking: address/landmark to search
     yes: { type: "boolean", default: false },
   },
 });
@@ -54,6 +59,7 @@ function usage(): never {
       "  pnpm -C executor run record -- [--provider parknyc|passport] --flow start --zone <zoneNumber> [--plate <plate>] [--minutes 15] [--lat .. --lng .. [--street ..]]",
       "  pnpm -C executor run record -- [--provider ..] --flow extend --session <providerSessionId> [--minutes 15]",
       "  pnpm -C executor run record -- [--provider ..] --flow stop --session <providerSessionId>",
+      "  pnpm -C executor run record -- --provider passport --flow findParking [--query \"Boylston St Back Bay\"]  (READ-ONLY, no charge)",
     ].join("\n"),
   );
   process.exit(1);
@@ -62,7 +68,19 @@ function usage(): never {
 const provider = flags.provider;
 if (provider !== "parknyc" && provider !== "passport") usage();
 const flow = flags.flow;
-if (flow !== "start" && flow !== "extend" && flow !== "stop" && flow !== "resolve") usage();
+if (
+  flow !== "start" &&
+  flow !== "extend" &&
+  flow !== "stop" &&
+  flow !== "resolve" &&
+  flow !== "findParking"
+) {
+  usage();
+}
+if (flow === "findParking" && provider !== "passport") {
+  console.error("findParking is Passport-only (ParkBoston's map).");
+  process.exit(1);
+}
 const hasCoords = flags.lat !== undefined && flags.lng !== undefined;
 // Every start types a zone number now — Passport included (no map).
 if (flow === "start" && !flags.zone) usage();
@@ -140,6 +158,13 @@ try {
           );
   } else if (flow === "extend") {
     result = await client.extendSession(flags.session!, minutes);
+  } else if (flow === "findParking") {
+    // READ-ONLY: navigate the map/search screen and dump the zones-by-
+    // location API response. Never reaches the pay path.
+    result = await (client as PassportClient).findParking(
+      flags.query,
+      hasCoords ? { lat: Number(flags.lat), lng: Number(flags.lng) } : undefined,
+    );
   } else {
     result = await client.stopSession(flags.session!);
   }

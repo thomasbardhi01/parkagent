@@ -42,7 +42,7 @@ import type {
   TopupWalletResult,
   VerifyAccountResult,
 } from "../types.js";
-import { BOSTON_BASE_URL, passportUrls, selectors } from "./selectors.js";
+import { BOSTON_BASE_URL, findParkingSelectors, passportUrls, selectors } from "./selectors.js";
 import type { PassportUrls } from "./selectors.js";
 
 /** TODO-verify: assumed stepper increment, like the ParkNYC client's. */
@@ -121,6 +121,92 @@ export class PassportClient {
 
   private async step(name: string, page: Page): Promise<void> {
     await this.options.onStep?.(name, page);
+  }
+
+  /**
+   * READ-ONLY recon of the Find Parking (map) screen: navigate there with
+   * the saved session, capture every getnearzoneswithoccupancy JSON
+   * response (the map list's zones-by-location feed), and — when a query
+   * is given — type it into the search field and capture the autocomplete
+   * plus the resulting nearby zones. Pays for NOTHING; never touches the
+   * duration/pay path. Returns what the route actually served so we can
+   * judge it as a zone-number source.
+   */
+  async findParking(query?: string, coords?: { lat: number; lng: number }): Promise<
+    | {
+        ok: true;
+        landedOnFindParking: boolean;
+        hasSearchField: boolean;
+        hasMap: boolean;
+        nearbyResponses: unknown[];
+        autocomplete: string[];
+      }
+    | ExecutorError
+  > {
+    const opened = await this.open();
+    if ("ok" in opened) return opened;
+    const { page } = opened;
+
+    // The map's "near me" load geolocates the browser; headless has none,
+    // so point it at the query location to exercise the real Boston feed.
+    if (coords && this.context) {
+      await this.context.grantPermissions(["geolocation"], { origin: this.urls.root });
+      await this.context.setGeolocation({ latitude: coords.lat, longitude: coords.lng });
+    }
+
+    const nearbyResponses: unknown[] = [];
+    page.on("response", (response) => {
+      if (!response.url().includes(findParkingSelectors.nearbyZonesApi)) return;
+      response
+        .json()
+        .then((body) => nearbyResponses.push(body))
+        .catch(() => {
+          /* non-JSON error body — ignore, the count still tells the story */
+        });
+    });
+
+    try {
+      await page.goto(this.urls.findParking);
+      await this.step("find-parking", page);
+
+      // Did we land on the map, or get bounced to Enter Zone / sign-in?
+      const searchField = page.locator(findParkingSelectors.searchField);
+      // jQuery-Mobile reveals the search field a beat after the page div;
+      // wait for it rather than racing the transition.
+      await searchField.waitFor({ state: "visible", timeout: 8000 }).catch(() => {});
+      const hasSearchField = (await searchField.count()) > 0 && (await searchField.isVisible());
+      const hasMap = (await page.locator(findParkingSelectors.mapCanvas).count()) > 0;
+      const landedOnFindParking = hasSearchField || hasMap;
+
+      const autocomplete: string[] = [];
+      if (query && hasSearchField) {
+        await searchField.click();
+        await searchField.fill(query);
+        // Autocomplete + list are async off the keystroke; give the map
+        // API a moment, then snapshot whatever came back.
+        await page.waitForTimeout(4000);
+        await this.step("find-parking-search", page);
+        const items = page.locator(`${findParkingSelectors.autocompleteList} li`);
+        const n = Math.min(await items.count(), 12);
+        for (let i = 0; i < n; i += 1) {
+          autocomplete.push((await items.nth(i).innerText()).trim());
+        }
+      } else {
+        // No query: the crosshair "near me" load still fires the API.
+        await page.waitForTimeout(3000);
+      }
+
+      return {
+        ok: true as const,
+        landedOnFindParking,
+        hasSearchField,
+        hasMap,
+        nearbyResponses,
+        autocomplete,
+      };
+    } catch (err) {
+      return this.fail(page, classifyFailure(err, null), `find parking recon failed: ${String(err)}`);
+    }
   }
 
   private async fail(

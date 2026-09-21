@@ -63,6 +63,10 @@ pnpm -C executor run record -- --flow extend --session <providerSessionId>
 pnpm -C executor run record -- --flow stop --session <providerSessionId>
 # Passport / ParkBoston (the zone number comes from a user report):
 pnpm -C executor run record -- --provider passport --flow start --zone 81234 --minutes 15
+# Find Parking recon (READ-ONLY, no charge): dump the map's
+# zones-by-location feed near a point — number + block name per zone:
+pnpm -C executor run record -- --provider passport --flow findParking \
+  --query "Boylston St Back Bay" --lat 42.3495 --lng -71.0798
 ```
 
 Drives one flow against the **real** site, headed, with tracing on, and
@@ -103,17 +107,28 @@ is `bostonma.ppprk.com/park/`, other Passport cities live at their own
 Passport city by swapping the base URL (`passportUrls(base)` in
 `src/passport/selectors.ts`; `PassportExecutorOptions.baseUrl`).
 
-**Zone numbers come from users, not a map.** Analyze Boston publishes no
-ParkBoston zone numbers (every `bos-…` zone row starts `""`), and the
-2026-09-21 signed-in recording
-(`fixtures/passport-resolve-2026-09-21T01-17-11-693Z/`) settled that the
-web app has **no map either**: after login it shows a single "Enter Zone"
-screen — input `#zoneNumber`, button `#zoneNext` (mirrored into
-`test/fixtures/pages/passport/zone-entry.html`). So the server collects
-each block's posted number from drivers
+**The Find Parking map IS a zone-number source (corrected 2026-09-21).**
+Analyze Boston publishes no ParkBoston zone numbers (every `bos-…` row
+starts `""`), and an early recording suggested the signed-in app had no
+map. A later signed-in probe (`--flow findParking`) overturned that: the
+**Find Parking** screen (`#findParking`) is a real map + "Zone, address
+or landmark" search whose list is fed by the `getnearzoneswithoccupancy`
+API. With the saved session it returns **every nearby zone's number and
+block name** — a Back Bay probe (42.3495, -71.0798) returned 767 zones,
+all with distinct numbers and names like "North Boylston between
+Dartmouth and Clarendon" (#456). `parseNearbyZones` extracts
+`{number, name, lat, lng, distanceFeet}` (pinned by
+`test/fixtures/passport/nearby-zones--boylston-back-bay.json`).
+
+Caveat: the feed's coordinates are coarse (this capture: 11 distinct
+latitudes / 16 longitudes across 767 zones — a ~1 km grid), so matching
+these numbers onto our meter-derived block polygons must key on the
+block **name**, not the point. Issue TBD tracks building that importer;
+until it lands the server still accepts driver-reported numbers
 (`POST /zones/:zoneId/provider-number`) and `startSession` types the
-stored number into Enter Zone. The ParkNYC client still runs its own
-**non-fatal map cross-check** against its stored zone number; both sides
+stored number into Enter Zone (input `#zoneNumber`, button `#zoneNext`,
+mirrored into `test/fixtures/pages/passport/zone-entry.html`). The
+ParkNYC client runs its own **non-fatal map cross-check**; both sides
 land on the `decisions` row as `zoneResolution`.
 
 **Verification status.** Walked live: the gated entry (Sign In / Register /

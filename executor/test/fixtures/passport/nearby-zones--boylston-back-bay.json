@@ -1,0 +1,11 @@
+{
+  "status": 200,
+  "reason": null,
+  "data": [
+    {"id": "537379", "number": "12", "name": "West Exeter between Newbury and Boylston", "latitude": "42.349998", "longitude": "-71.080002", "distanceinfeet": "190.001", "available_spaces": null, "color": "#FF0000FF"},
+    {"number": "456", "name": "North Boylston between Dartmouth and Clarendon", "latitude": "42.349998", "longitude": "-71.080002", "distanceinfeet": "190.001"},
+    {"number": "519", "name": "West Dartmouth between Boylston and Newbury", "latitude": "42.349998", "longitude": "-71.080002", "distanceinfeet": "190.001"},
+    {"number": null, "name": "Malformed - no number", "latitude": "42.35", "longitude": "-71.08"},
+    {"number": "729", "name": "West Beacon between Ayr and Chestnut Hill", "latitude": "42.340000", "longitude": "-71.150002", "distanceinfeet": "19244.0"}
+  ]
+}

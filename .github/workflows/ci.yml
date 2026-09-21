@@ -15,15 +15,30 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm -C server lint
       - run: pnpm -C server test
-      # Compile-only: the server's tsc needs executor/dist type declarations.
-      # Nothing in executor/ RUNS in CI — no browser install, no tests here;
-      # its unit tests (fixture-driven, never touching ParkNYC) run locally.
+      # Compile-only here: the server's tsc needs executor/dist type
+      # declarations. The executor's own unit tests run in the `executor`
+      # job below (with Chromium for the DOM test).
       - run: pnpm -C executor run build
       # `build` runs `prisma generate` first (src/generated is gitignored).
       # generate never connects, but prisma7.config.ts wants a URL present.
       - run: pnpm -C server build
         env:
           DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
+
+  executor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with: { node-version: lts/*, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      # playwright's browser download is blocked by allowBuilds, so fetch
+      # Chromium (+ its OS deps) explicitly; the signage-modal DOM test
+      # launches it and self-skips where it is absent.
+      - run: pnpm -C executor exec playwright install --with-deps chromium
+      - run: pnpm -C executor lint
+      - run: pnpm -C executor test
 
   ios:
     runs-on: macos-latest

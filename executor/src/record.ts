@@ -116,6 +116,7 @@ const clientOptions = {
   statePath,
   headless: false, // watch it work; this is a debugging tool
   captureDir: outDir,
+  log: (msg: string) => console.log(`  [click] ${msg}`),
   recordHarPath: join(outDir, "har.har"),
   tracePath: join(outDir, "trace.zip"),
   onStep: async (name: string, page: import("playwright").Page) => {

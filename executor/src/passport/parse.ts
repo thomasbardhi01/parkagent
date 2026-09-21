@@ -208,3 +208,17 @@ export function isSignageModal(html: string): boolean {
   const hasCancel = /(cancel|not now|go back)</i.test(scope);
   return isPopupish && mentionsSignage && hasContinue && hasCancel;
 }
+
+
+/** True when the HTML shows a settled jQuery Mobile page: a .ui-page-active
+ * exists and no .ui-page carries a transition token (in/out/slide/…). The
+ * runtime stableClick waits for this AND a stable bounding box; this pure
+ * mirror lets the settle condition be unit-tested. */
+export function activePageSettled(html: string): boolean {
+  const TOKENS = ["in", "out", "slide", "slideup", "slidedown", "fade", "pop", "flip", "turn"];
+  const pages = [...html.matchAll(/<div[^>]*class="([^"]*\bui-page\b[^"]*)"[^>]*>/g)].map(
+    (m) => m[1]!.split(/\s+/),
+  );
+  if (!pages.some((cls) => cls.includes("ui-page-active"))) return false;
+  return !pages.some((cls) => cls.some((c) => TOKENS.includes(c)));
+}

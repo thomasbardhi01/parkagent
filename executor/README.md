@@ -84,6 +84,18 @@ expectation — see the README there. Tests are **unit tests against recorded
 fixtures only**: no test launches a browser or contacts ParkNYC, and nothing
 in this package runs in CI (CI only compiles it for the server's types).
 
+## jQuery Mobile transitions (Passport)
+
+The ParkBoston app animates page transitions (slide/pop/fade), so a
+target's box keeps moving and Playwright's actionability check times out.
+`PassportClient.stableClick` wraps EVERY click in the flow: it waits for
+the active page's transition to finish (no in/out/transition-type classes
+on any `.ui-page`) and the target's bounding box to hold still across two
+animation frames, scrolls into view, then clicks — retrying once with a
+forced click on a stability timeout and logging which path it took
+(`options.log`). `activePageSettled` in `parse.ts` is the pure mirror of
+the transition check (unit-tested; the bbox stability is live-only).
+
 ## When ParkNYC changes its UI
 
 1. Every selector lives in `src/parknyc/selectors.ts`, grouped by screen —
@@ -138,6 +150,14 @@ Continue then times out. The start flow fills the input, blurs to
 collapse the panel, waits for it to hide, then clicks Continue
 (`recentZonesState` in `parse.ts` is the pure reading, pinned by the
 zone-entry--recent-zones-{visible,hidden} fixtures).
+
+**Duration picker (2026-09-21):** after Length of Stay the app shows
+`#durationPickerPage` — day/hour/minute steppers (`#hourPlus`/`#minPlus`,
+values in `#hourTimeText`/`#minTimeText`) and `#pickerNext` to continue.
+The flow drives the steppers to the requested minutes (minute step
+assumed 15, TODO-verify). After `#pickerNext` the app either charges the
+default card straight to confirmation (`use_default_card`) or shows the
+payment-method page — that next screen stays TODO-verify.
 
 **Review Signage interstitial (2026-09-21):** an optional operator-
 configured popup ("check the signage around you for parking restrictions

@@ -1,0 +1,69 @@
+<!-- Sanitized #durationPickerPage slice (2026-09-21 start recording): day/hour/minute steppers + #pickerNext. Runtime template; no account data. -->
+<!doctype html><html><body>
+<div id="durationPickerPage" data-role="page" data-theme="a" data-url="durationPickerPage">
+    <div class="header" data-role="header" data-theme="a">
+        <a href="#" class="backButtonOverride" data-icon="back-header" data-theme="d" data-iconpos="notext" tabindex="0">Back</a>
+        <h1 id="durationPickerHeader"></h1>
+    </div>
+    <div data-role="content">
+        <label class="nonstandard-zone-label nonstandard-zone-label-type centered" style="display: none"></label>
+        <div>
+            <p id="durationPickerMessage" class="toplabelalignment" data-strtemplate="Please select the duration of your stay"></p>
+        </div>
+        <div id="durationDiv">
+            <p id="durationShow" aria-live="assertive" role="alert"></p>
+        </div>
+        <div>
+            <div id="timePicker" data-role="navbar">
+                <div id="dayPicker" class="timePickerDiv">
+                    <a class="activeOnce" id="dayPlus" data-theme="c" href="#" data-corners="false" data-role="button" data-inline="true" data-icon="picker-up" data-iconpos="center">
+                        <span class="visually-hidden">Increment Days</span>
+                    </a>
+                    <span id="dayTimeText">
+                        <span class="timepickerTimeValue">
+                            0
+                        </span>
+                        <span class="timepickerTimeLabel">
+                            days                        </span>
+                    </span>
+                    <a class="activeOnce" id="dayMinus" href="#" data-theme="c" data-corners="false" data-role="button" data-inline="true" data-icon="picker-down" data-iconpos="center">
+                        <span class="visually-hidden">Decrement Days</span>
+                    </a>
+                </div>
+                <div id="hourPicker" class="timePickerDiv">
+                    <a class="activeOnce" id="hourPlus" href="#" data-theme="c" data-corners="false" data-role="button" data-inline="true" data-icon="picker-up" data-iconpos="center">
+                        <span class="visually-hidden">Increment Hours</span>
+                    </a>
+                    <span id="hourTimeText">
+                        <span class="timepickerTimeValue">
+                            0
+                        </span>
+                        <span class="timepickerTimeLabel">
+                            hours                        </span>
+                    </span>
+                    <a class="activeOnce" id="hourMinus" href="#" data-theme="c" data-corners="false" data-role="button" data-inline="true" data-icon="picker-down" data-iconpos="center">
+                        <span class="visually-hidden">Decrement Hours</span>
+                    </a>
+                </div>
+                <div id="minutePicker" class="timePickerDiv">
+                    <a class="activeOnce" id="minPlus" href="#" data-theme="c" data-corners="false" data-role="button" data-inline="true" data-icon="picker-up" data-iconpos="center">
+                        <span class="visually-hidden">Increment Minutes</span>
+                    </a>
+                    <span id="minTimeText">
+                        <span class="timepickerTimeValue">
+                            0
+                        </span>
+                        <span class="timepickerTimeLabel">
+                            minutes                        </span>
+                    </span>
+                        <a class="activeOnce" id="minMinus" href="#" data-theme="c" data-corners="false" data-role="button" data-inline="true" data-icon="picker-down" data-iconpos="center">
+                        <span class="visually-hidden">Decrement Minutes</span>
+                    </a>
+                </div>
+            </div>
+            <button id="pickerNext" data-role="button" data-theme="a" data-icon="chevron-right-white-48" data-iconpos="right" tabindex="0"></button>
+        </div>
+        <div class="bottomlabelalignment" id="convenienceFeeBreakMessageDuration"></div>
+    </div>
+</div>
+</body></html>

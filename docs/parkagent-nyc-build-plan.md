@@ -133,6 +133,12 @@ Every decision writes a `decisions` row: inputs, rule fired, outcome. You'll rea
 
 ## Phase 4 — iOS app (three to four days)
 
+> **Status: complete** (2026-09-21) — design system, screens on a mock API,
+> detection/reporting/push plumbing, appearance + UI tests: PRs #47, #50,
+> #51, #54; onboarding + multi-city surfacing: #63. The detector's
+> three-signal fusion (settling burst, red-light clearing, signal log,
+> unit-test target) landed in the pre-field-test audit PR.
+
 SwiftUI, minimum iOS 17. Three jobs: detect parking, report location, show/approve sessions.
 
 **Capabilities to enable**: Location (Always), Background Modes (location updates, remote notifications), Push Notifications. Add `NSMotionUsageDescription` and location usage strings.
@@ -156,6 +162,14 @@ Run on your own phone via Xcode with your developer account. Walk around your bl
 
 ## Phase 5 — Session executor (two days, and the fragile part)
 
+> **Status: code complete, awaiting paid verification** — ParkNYC
+> (Flowbird) client + fixtures/tests: PRs #56, #59; per-user linked
+> provider accounts replacing the single storage-state secret: #61;
+> ParkBoston (Passport) client + shadow mode: #62; driver-reported Boston
+> zone numbers: #64. Outstanding: the first PAID `record` run against
+> each provider (ParkNYC and ParkBoston) — post-zone screens are drafted
+> TODO-verify until then.
+
 There is no public ParkNYC API. For the prototype, run Playwright in `executor/` against the ParkNYC web experience, logged in with your own account.
 
 1. Manually capture the flow once: sign in → enter zone number → select vehicle → choose duration → confirm. Save selectors.
@@ -174,6 +188,13 @@ Note: automating a consumer app against its terms is fine as a personal experime
 
 ## Phase 6 — Stripe Issuing, test mode (one day)
 
+> **Status: complete in test mode** (2026-09-21) — card setup, real-time
+> authorization webhook, ledger: PR #52; E2E fixes (real-time response
+> shape, card setup): #55; Card tab + card endpoints: #57; card lifecycle
+> + provider-account chaining: #61; Apple Pay top-ups: #63. Outstanding
+> (by hand): live Issuing application, Apple Pay merchant ID + Stripe
+> certificate, Wallet provisioning entitlement.
+
 1. Create an Issuing cardholder (you) and one virtual card.
 2. Set spending controls: `allowed_categories: ["parking_lots_garages"]` (MCC 7523), `spending_limits` matching `policy.json` (per-authorization and daily).
 3. Enable real-time authorization: subscribe to `issuing_authorization.request` at `/webhooks/stripe`, approve only if the amount fits remaining daily budget and a session is pending. Decline otherwise.
@@ -183,6 +204,10 @@ Note: automating a consumer app against its terms is fine as a personal experime
 ---
 
 ## Phase 7 — Extension worker (one day)
+
+> **Status: complete** (2026-09-21) — worker, /location feed, APNs pushes:
+> PR #53; per-city ticket-risk pricing: #62; stale-fix and at-the-car
+> hardening in the audit PR.
 
 `server/src/jobs/extendTick.ts`, run every 60 s for each active session:
 
@@ -207,6 +232,11 @@ Hysteresis: once a decision is made for a session, don't reverse it for 5 minute
 ---
 
 ## Phase 8 — Test on yourself (two weeks)
+
+> **Status: next.** The pre-field-test audit PR (chore/audit) hardened
+> every surface and added `GET /admin/summary` + the detector signal log;
+> docs/field-test-checklist.md is the step-by-step runbook for the Boston
+> and NYC dry-run days.
 
 Week 1, **dry run**: `dry_run: true`. Drive normally. The app detects parks, the server quotes, you get "would have paid $X for zone Y, Z min" notifications, and you pay manually as usual. Each evening, read the `decisions` table. Track:
 - Detection precision (false parks per day) and recall (missed parks).
@@ -235,3 +265,15 @@ Ship milestone: five consecutive days of correct autonomous sessions with zero t
 8. Dry run week → assisted week → autonomous
 
 Roughly three to four weeks of evenings. The data and server pieces are the ones to do first, because they're what you'd reuse if you later pivot the detection or payment layers.
+
+---
+
+## Beyond the plan: Boston (2026-09)
+
+The prototype grew a second city, which the original plan didn't cover:
+Boston zone data with a `city` column and per-city fees (PR #60), per-user
+provider accounts (#61), the Passport/ParkBoston executor with shadow mode
+(#62), onboarding around provider linking + Apple Pay top-ups (#63), and
+driver-reported zone numbers — ParkBoston publishes none and its web app
+has no map (#64). `zones` and `sessions` rows carry `city`; policy has
+`city_overrides` (fee, ticket cost).

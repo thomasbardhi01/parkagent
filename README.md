@@ -1,13 +1,19 @@
 # ParkAgent
 
-ParkAgent is a personal prototype that notices when a car has parked in a NYC
+ParkAgent is a personal prototype that notices when a car has parked in a
 metered zone, quotes what the meter will cost, pays for the session through
-ParkNYC inside a fixed budget, and extends it automatically using a cost-based
-rule. It is a monorepo: `data/` holds the Python scripts that turn NYC Open Data
-into zone geometry, `server/` is a Fastify + TypeScript API on Fly.io backed by
-Postgres/PostGIS, `executor/` holds the isolated Playwright scripts that are the
-only thing allowed to drive ParkNYC, and `ios/` is the SwiftUI app. One city
-(NYC), two users, iOS only.
+the city's pay-by-app provider (ParkNYC in NYC, ParkBoston in Boston)
+inside a fixed budget, and extends it automatically using a cost-based
+rule. It is a monorepo: `data/` holds the Python scripts that turn NYC and
+Boston open data into zone geometry, `server/` is a Fastify + TypeScript
+API on Fly.io backed by Postgres/PostGIS, `executor/` holds the isolated
+Playwright scripts that are the only thing allowed to drive the providers'
+web apps, and `ios/` is the SwiftUI app. Two cities (NYC and Boston), two
+users, iOS only. Boston zone numbers aren't in the open data and the
+ParkBoston web app has no map, so drivers report each block's posted
+number once and the executor types it in.
+
+Heading out to test? Follow [docs/field-test-checklist.md](docs/field-test-checklist.md).
 
 ## Account ownership
 

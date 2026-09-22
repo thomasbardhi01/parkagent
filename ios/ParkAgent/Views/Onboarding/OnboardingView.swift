@@ -577,6 +577,8 @@ private struct OnboardingBudgetStep: View {
             Button(action: decrement) {
                 Image(systemName: "minus.circle")
                     .foregroundStyle(Color.textSecondary)
+                    // 44pt targets: the glyph alone is well under HIG size.
+                    .frame(width: 44, height: 44)
             }
             .accessibilityIdentifier("\(identifier).minus")
             Text(value)
@@ -588,6 +590,7 @@ private struct OnboardingBudgetStep: View {
             Button(action: increment) {
                 Image(systemName: "plus.circle")
                     .foregroundStyle(Color.textSecondary)
+                    .frame(width: 44, height: 44)
             }
             .accessibilityIdentifier("\(identifier).plus")
         }

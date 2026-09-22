@@ -3,6 +3,7 @@ import SwiftUI
 
 struct SessionsView: View {
     @Environment(AppModel.self) private var model
+    @Namespace private var sessionZoom
 
     var body: some View {
         NavigationStack {
@@ -21,6 +22,9 @@ struct SessionsView: View {
             .navigationTitle("Sessions")
             .navigationDestination(for: SessionRecord.self) { record in
                 SessionDetailView(record: record)
+                    // The row grows into its detail (iOS 18+; plain push
+                    // before that and under Reduce Motion).
+                    .zoomDestination(id: record.id, in: sessionZoom)
             }
         }
     }
@@ -47,7 +51,8 @@ struct SessionsView: View {
                             status: record.status
                         )
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.pressable)
+                    .zoomSource(id: record.id, in: sessionZoom)
                     .accessibilityIdentifier("sessions.row.\(record.zoneNumber)")
                 }
             }

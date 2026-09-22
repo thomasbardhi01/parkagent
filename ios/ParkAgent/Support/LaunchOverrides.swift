@@ -12,6 +12,7 @@ import Foundation
 ///   -cityScenario <name>   preset the mock GET /city answer (nyc|bos|none)
 ///   -assistantScenario <name>  preset the mock assistant (auto|singleSpot|itinerary|refuse|error)
 ///   -linkScenario <name>   preset the mock Link wallet (disconnected|connected|denies)
+///   -speechScenario <name> script the assistant's dictation (scripted|denied|unavailable)
 ///   -onboardingStep <n>    resume onboarding at step n (OnboardingStep raw)
 ///   -selectedCity <key>    preset onboarding's chosen city (nyc|bos|other)
 ///   -fixedNow <epoch>      freeze AppClock (see AppClock.swift)
@@ -48,6 +49,8 @@ enum LaunchOverrides {
             ? defaults.string(forKey: AssistantMockScenario.defaultsKey) : nil
         let linkScenario = argued[LinkMockScenario.defaultsKey] != nil
             ? defaults.string(forKey: LinkMockScenario.defaultsKey) : nil
+        let speechScenario = argued[SpeechMockScenario.defaultsKey] != nil
+            ? defaults.string(forKey: SpeechMockScenario.defaultsKey) : nil
         let onboardingStep = argued[OnboardingStep.defaultsKey] != nil
             ? defaults.integer(forKey: OnboardingStep.defaultsKey) : nil
         let selectedCity = argued["selectedCity"] != nil
@@ -71,6 +74,7 @@ enum LaunchOverrides {
             defaults.set(assistantScenario, forKey: AssistantMockScenario.defaultsKey)
         }
         if let linkScenario { defaults.set(linkScenario, forKey: LinkMockScenario.defaultsKey) }
+        if let speechScenario { defaults.set(speechScenario, forKey: SpeechMockScenario.defaultsKey) }
         if let onboardingStep { defaults.set(onboardingStep, forKey: OnboardingStep.defaultsKey) }
         if let selectedCity { defaults.set(selectedCity, forKey: "selectedCity") }
     }

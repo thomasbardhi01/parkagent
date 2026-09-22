@@ -45,9 +45,8 @@ struct CardArtView: View {
                         .monospacedDigit()
                         .accessibilityIdentifier("card.cvc")
                 } else {
-                    Text(card.brand)
-                        .font(.captionTextSemibold)
-                        .foregroundStyle(Color.white.opacity(0.85))
+                    // Whatever network the API says — never assumed.
+                    CardBrandMark(brand: card.brand)
                 }
             }
         }
@@ -117,7 +116,7 @@ struct CardArtView: View {
 #Preview("Revealed") {
     CardArtView(
         card: MockFixtures.cardSummary(frozen: false),
-        revealed: RevealedCardDetails(number: "4242424242424242", cvc: "123", expMonth: 8, expYear: 2030)
+        revealed: RevealedCardDetails(number: "5555555555554444", cvc: "123", expMonth: 8, expYear: 2030)
     )
     .padding(Spacing.unit)
     .background(Color.appBackground)

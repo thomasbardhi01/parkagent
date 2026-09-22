@@ -6,7 +6,10 @@ import SwiftUI
 struct ActiveSessionView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var confirmingStop = false
+    /// Tracks the normal → expiring edge so the warning haptic fires once.
+    @State private var wasExpiring = false
 
     var body: some View {
         Group {
@@ -91,11 +94,18 @@ struct ActiveSessionView: View {
                 )
                 .accessibilityIdentifier("session.autoExtendToggle")
 
-                Button(extendTitle) {
+                Button {
                     Task { await model.extendSession() }
+                } label: {
+                    HStack(spacing: Spacing.half) {
+                        if model.isExtending {
+                            ProgressView().controlSize(.small).tint(.white)
+                        }
+                        Text(model.isExtending ? "Extending…" : extendTitle)
+                    }
                 }
                 .buttonStyle(.primary)
-                .disabled(!session.canExtend)
+                .disabled(!session.canExtend || model.isExtending)
                 .accessibilityIdentifier("session.extendButton")
 
                 Button("Stop session") { confirmingStop = true }
@@ -113,6 +123,13 @@ struct ActiveSessionView: View {
         } message: {
             Text("Paid time is not refunded.")
         }
+        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
+            let expiring = model.activeSession?.isExpiring(at: AppClock.now) ?? false
+            if expiring && !wasExpiring {
+                Haptics.warning()
+            }
+            wasExpiring = expiring
+        }
     }
 
     private func countdown(_ session: ActiveSession, at date: Date) -> some View {
@@ -125,6 +142,11 @@ struct ActiveSessionView: View {
             Text(expired ? "Expired" : Format.countdown(remaining))
                 .font(.numeralLarge)
                 .foregroundStyle(expired ? Color.danger : expiring ? Color.warningGold : Color.textPrimary)
+                // Seconds roll down instead of snapping; color morphs into
+                // the gold expiring state. Both skipped under Reduce Motion.
+                .contentTransition(reduceMotion ? .identity : .numericText(countsDown: true))
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: remaining.rounded())
+                .animation(Motion.morph, value: expiring)
                 .accessibilityIdentifier("session.countdown")
             Text("until \(Format.clockTime(session.expiresAt))")
                 .font(.secondaryText)

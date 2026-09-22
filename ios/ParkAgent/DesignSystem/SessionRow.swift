@@ -21,7 +21,7 @@ struct SessionRow: View {
             }
             Spacer()
             VStack(alignment: .trailing, spacing: Spacing.quarter) {
-                Text(String(format: "$%.2f", amountUsd))
+                Text(Format.money(amountUsd))
                     .font(.bodyTextSemibold)
                     .monospacedDigit()
                     .foregroundStyle(Color.textPrimary)

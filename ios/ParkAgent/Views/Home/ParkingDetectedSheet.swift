@@ -189,7 +189,7 @@ struct ParkingDetectedSheet: View {
                     isSelected: candidate.zoneId == selectedZoneId
                 )
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.pressable)
             .accessibilityIdentifier("parkedSheet.candidate.\(candidate.providerZoneNumber)")
         }
         Spacer(minLength: 0)
@@ -305,8 +305,17 @@ struct ParkingDetectedSheet: View {
             .disabled(!zoneNumberValid || model.isPaying)
             .accessibilityIdentifier("parkedSheet.saveAndPayButton")
         } else {
-            Button("Pay \(Format.money(candidate.quote.totalUsd)) for \(Format.minutes(candidate.quote.stayMinutes))") {
+            Button {
                 Task { await model.pay(candidate: candidate) }
+            } label: {
+                HStack(spacing: Spacing.half) {
+                    if model.isPaying {
+                        ProgressView().controlSize(.small).tint(.white)
+                    }
+                    Text(model.isPaying
+                        ? "Paying…"
+                        : "Pay \(Format.money(candidate.quote.totalUsd)) for \(Format.minutes(candidate.quote.stayMinutes))")
+                }
             }
             .buttonStyle(.primary)
             .disabled(model.isPaying)

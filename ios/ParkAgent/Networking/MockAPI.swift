@@ -302,7 +302,7 @@ struct MockAPI: APIClient {
             created: cardScenario == .noCard,
             card: CardPrepareResponse.PreparedCard(
                 stripeCardId: "ic_mock_1",
-                last4: "4242",
+                last4: "4444",
                 status: "pending_onboarding"
             )
         )
@@ -369,7 +369,8 @@ struct MockAPI: APIClient {
     func revealCardDetails() async throws -> RevealedCardDetails {
         try await pause()
         if cardScenario == .noCard { throw APIError.refused(code: "no_card") }
-        return RevealedCardDetails(number: "4242424242424242", cvc: "123", expMonth: 8, expYear: 2030)
+        // Stripe's Mastercard test PAN, so the last4 match the summary's.
+        return RevealedCardDetails(number: "5555555555554444", cvc: "123", expMonth: 8, expYear: 2030)
     }
 
     func freezeCard() async throws -> CardStatusResponse {
@@ -754,8 +755,11 @@ enum MockFixtures {
     static func cardSummary(frozen: Bool) -> CardSummary {
         CardSummary(
             stripeCardId: "ic_mock_1",
-            last4: "4242",
-            brand: "Visa",
+            // Mirrors the live server: our Issuing cards are Mastercard
+            // (issuing_cards.brand), and the view must render whatever GET
+            // /card says — a Visa here once hid a hardcoded-brand bug.
+            last4: "4444",
+            brand: "Mastercard",
             status: frozen ? "inactive" : "active",
             expMonth: 8,
             expYear: 2030,

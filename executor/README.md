@@ -67,6 +67,9 @@ pnpm -C executor run record -- --provider passport --flow start --zone 81234 --m
 # zones-by-location feed near a point — number + block name per zone:
 pnpm -C executor run record -- --provider passport --flow findParking \
   --query "Boylston St Back Bay" --lat 42.3495 --lng -71.0798
+# Multi-point sweep of the same feed (READ-ONLY, headless, rate-limited);
+# driven by data/import_parkboston_zones.py — see data/README.md:
+pnpm -C executor run sweep -- --points points.json --out zones.json
 ```
 
 Drives one flow against the **real** site, headed, with tracing on, and
@@ -135,8 +138,10 @@ Dartmouth and Clarendon" (#456). `parseNearbyZones` extracts
 Caveat: the feed's coordinates are coarse (this capture: 11 distinct
 latitudes / 16 longitudes across 767 zones — a ~1 km grid), so matching
 these numbers onto our meter-derived block polygons must key on the
-block **name**, not the point. Issue TBD tracks building that importer;
-until it lands the server still accepts driver-reported numbers
+block **name**, not the point. That importer is
+`data/import_parkboston_zones.py` (it drives `run sweep` here and matches
+by parsed block name — see data/README.md "ParkBoston zone numbers");
+the server still accepts driver-reported numbers
 (`POST /zones/:zoneId/provider-number`) and `startSession` types the
 stored number into Enter Zone (input `#zoneNumber`, button `#zoneNext`,
 mirrored into `test/fixtures/pages/passport/zone-entry.html`). The

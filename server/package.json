@@ -13,7 +13,8 @@
     "decisions:recent": "tsx src/scripts/recent-decisions.ts",
     "issuing:setup": "tsx src/scripts/issuing-setup.ts",
     "stripe:trigger": "tsx src/scripts/stripe-trigger.ts",
-    "migrate:api-keys": "tsx src/scripts/migrate-api-keys.ts"
+    "migrate:api-keys": "tsx src/scripts/migrate-api-keys.ts",
+    "load:zone-numbers": "tsx src/scripts/load-zone-numbers.ts"
   },
   "license": "UNLICENSED",
   "type": "module",

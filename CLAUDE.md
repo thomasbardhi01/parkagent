@@ -4,11 +4,12 @@ Personal prototype: detect that a car has parked in a metered zone, quote
 the cost, pay via the city's app (ParkNYC / ParkBoston) within a budget,
 and auto-extend using a cost-based rule. Two cities (NYC and Boston —
 zones and sessions rows carry a `city`); Boston zone numbers aren't in the
-open data AND ParkBoston's web app has no map to resolve them from
-(2026-09-21 recording: after login it shows only an "Enter Zone" number
-field), so drivers report the posted number once per block
-(`POST /zones/:zoneId/provider-number`, verified when two users agree)
-and the executor types it in. Post-zone Passport screens remain drafted
+open data, so they come from the Passport Find Parking feed importer
+(`data/import_parkboston_zones.py` → `pnpm -C server load:zone-numbers`)
+plus driver reports of the posted number
+(`POST /zones/:zoneId/provider-number`, verified when two users agree —
+a verified report beats an import, an import beats a single unverified
+report) and the executor types the stored number in. Post-zone Passport screens remain drafted
 TODO-verify until the first paid recording. Two users, iOS only.
 
 ## Locations

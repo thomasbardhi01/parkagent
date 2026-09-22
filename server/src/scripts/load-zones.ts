@@ -190,23 +190,34 @@ async function main(): Promise<number> {
       console.log(`  deleted ${stale.rowCount} stale ${city} rows (other data_version)`);
     }
 
-    // Rehydrate user-reported numbers onto rows the load re-created empty
-    // (reports survive reloads on purpose — no FK to zones).
+    // Rehydrate zone numbers onto rows the load re-created empty (reports
+    // and imports both survive reloads on purpose — no FK to zones).
+    // Precedence: a verified user report beats an import; an import beats
+    // a single unverified report.
     const rehydrated = await client.query(
       `UPDATE zones z
-       SET provider_zone_number = latest.number,
-           provider_zone_number_verified = latest.verified
+       SET provider_zone_number = pick.number,
+           provider_zone_number_verified = pick.verified
        FROM (
-         SELECT DISTINCT ON (r.zone_id) r.zone_id, r.number,
-           (SELECT COUNT(DISTINCT r2.user_id) FROM zone_number_reports r2
-             WHERE r2.zone_id = r.zone_id AND r2.number = r.number) >= 2 AS verified
-         FROM zone_number_reports r
-         ORDER BY r.zone_id, r.created_at DESC
-       ) latest
-       WHERE z.zone_id = latest.zone_id AND z.provider_zone_number = ''`,
+         SELECT COALESCE(latest.zone_id, i.zone_id) AS zone_id,
+           CASE
+             WHEN COALESCE(latest.verified, false) THEN latest.number
+             ELSE COALESCE(i.number, latest.number)
+           END AS number,
+           COALESCE(latest.verified, false) AS verified
+         FROM (
+           SELECT DISTINCT ON (r.zone_id) r.zone_id, r.number,
+             (SELECT COUNT(DISTINCT r2.user_id) FROM zone_number_reports r2
+               WHERE r2.zone_id = r.zone_id AND r2.number = r.number) >= 2 AS verified
+           FROM zone_number_reports r
+           ORDER BY r.zone_id, r.created_at DESC
+         ) latest
+         FULL OUTER JOIN zone_number_imports i ON i.zone_id = latest.zone_id
+       ) pick
+       WHERE z.zone_id = pick.zone_id AND z.provider_zone_number = ''`,
     );
     if ((rehydrated.rowCount ?? 0) > 0) {
-      console.log(`  rehydrated ${rehydrated.rowCount} user-reported zone numbers`);
+      console.log(`  rehydrated ${rehydrated.rowCount} reported/imported zone numbers`);
     }
 
     await client.query(

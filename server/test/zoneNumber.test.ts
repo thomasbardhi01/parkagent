@@ -148,10 +148,86 @@ test("re-reporting by the same user updates their row, not a second voice", asyn
   expect(state.zoneNumberReports).toHaveLength(1);
 });
 
+// ---------------------------------------------------------------------------
+// Precedence against imported numbers (zone_number_imports, from the
+// ParkBoston Find Parking feed): a verified user report beats an import;
+// an import beats a single unverified report.
+
+function seedImport(state: ReturnType<typeof makeTestApp>["state"], number: string) {
+  state.zoneNumberImports.push({
+    zoneId: BOYLSTON_ZONE.zoneId,
+    number,
+    confidence: 0.9,
+    method: "rule",
+    sourceName: "North Boylston between Dartmouth and Clarendon",
+    importedAt: new Date(MONDAY_2PM),
+  });
+}
+
+test("an import outranks a single unverified report", async () => {
+  const { app, state } = makeApp();
+  seedImport(state, "55555");
+  state.zones[0]!.providerZoneNumber = "55555";
+
+  const res = await report(app, { number: "81234" });
+  expect(res.json()).toMatchObject({
+    number: "55555",
+    appliedSource: "import",
+    verified: false,
+    confirmations: 1,
+  });
+  // The zone keeps the imported number; the report is stored for later.
+  expect(state.zones[0]!.providerZoneNumber).toBe("55555");
+  expect(state.zoneNumberReports).toHaveLength(1);
+  const decision = state.decisions.find((d) => d.kind === "zone_number_report")!;
+  expect(decision.rule).toBe("import_precedence");
+});
+
+test("two users agreeing outranks a conflicting import", async () => {
+  const { app, state } = makeApp();
+  seedImport(state, "55555");
+  state.zones[0]!.providerZoneNumber = "55555";
+  state.zoneNumberReports.push({
+    id: "znr-other",
+    zoneId: BOYLSTON_ZONE.zoneId,
+    userId: "u2",
+    number: "81234",
+    source: "user",
+    createdAt: new Date(MONDAY_2PM),
+  });
+
+  const res = await report(app, { number: "81234" });
+  expect(res.json()).toMatchObject({
+    number: "81234",
+    appliedSource: "report",
+    verified: true,
+    confirmations: 2,
+  });
+  expect(state.zones[0]!.providerZoneNumber).toBe("81234");
+  expect(state.zones[0]!.providerZoneNumberVerified).toBe(true);
+});
+
+test("a report agreeing with the import applies it, still unverified", async () => {
+  const { app, state } = makeApp();
+  seedImport(state, "81234");
+  state.zones[0]!.providerZoneNumber = "81234";
+
+  const res = await report(app, { number: "81234" });
+  expect(res.json()).toMatchObject({
+    number: "81234",
+    appliedSource: "report",
+    verified: false,
+    confirmations: 1,
+  });
+  expect(state.zones[0]!.providerZoneNumber).toBe("81234");
+});
+
 test("rejects a malformed number and an unknown zone", async () => {
   const { app } = makeApp();
   expect((await report(app, { number: "abc" })).statusCode).toBe(400);
-  expect((await report(app, { number: "12" })).statusCode).toBe(400);
+  expect((await report(app, { number: "" })).statusCode).toBe(400);
+  // Short numbers are real: the Find Parking sweep has zones "1" and "12".
+  expect((await report(app, { number: "12" })).statusCode).toBe(200);
   const missing = await app.inject({
     method: "POST",
     url: "/zones/bos-nowhere/provider-number",

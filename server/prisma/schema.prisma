@@ -72,6 +72,28 @@ model ZoneNumberReport {
   @@map("zone_number_reports")
 }
 
+// One imported pay-by-app number per zone, from the ParkBoston Find Parking
+// feed (data/import_parkboston_zones.py -> `pnpm -C server load:zone-numbers`).
+// No FK to zones on purpose (same reason as zone_number_reports): zone rows
+// are deleted and re-created on every load:zones run and imports must
+// survive it. Precedence when a zone has both: a VERIFIED user report beats
+// an import; an import beats a single unverified report.
+model ZoneNumberImport {
+  zoneId     String   @id @map("zone_id")
+  number     String
+  // 0..1 — the importer's matching confidence (rule-parsed unique matches
+  // score highest; LLM-parsed names and split-block assignments lower).
+  confidence Float
+  // "rule" (regex-parsed block name) | "llm" (Claude-parsed fallback).
+  method     String
+  // The provider's block name the number came from, for auditing
+  // (e.g. "North Boylston between Dartmouth and Clarendon").
+  sourceName String   @map("source_name")
+  importedAt DateTime @default(now()) @map("imported_at") @db.Timestamptz(6)
+
+  @@map("zone_number_imports")
+}
+
 // The two humans this prototype serves. api_key is the whole auth story.
 model User {
   id        String   @id @default(cuid())

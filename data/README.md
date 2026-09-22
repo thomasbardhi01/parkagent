@@ -79,16 +79,23 @@ relying on this in anything automated.
 Analyze Boston publishes **no ParkBoston zone layer** (a CKAN search finds
 only this dataset and a 2015 transactions CSV), and the one zone-ish field,
 `G_PASSPORT_ZONES`, is a per-meter id (588 distinct values on 587 meters),
-not the block zone number a driver enters — so **every Boston zone is loaded
-with an empty, flagged-unknown zone number** rather than a guess. And
-ParkBoston's own web app has no map to resolve them from either (2026-09-21
-signed-in recording: after login it shows only an "Enter Zone" number
-field). Numbers come from drivers instead: the app collects the posted
-number on the first park at a block (`POST /zones/:zoneId/provider-number`,
-verified once two users agree), the loader preserves and rehydrates
-reported numbers across reloads, and the Passport executor types the
-stored number into Enter Zone — see executor/README.md
-"Passport / ParkBoston".
+not the block zone number a driver enters — so **every Boston zone is built
+with an empty, flagged-unknown zone number** rather than a guess. Numbers
+come from two places instead:
+
+- **The Passport Find Parking feed** (PR #87): the signed-in web app's map
+  is fed by `getnearzoneswithoccupancy`, which returns every nearby zone's
+  number and block name. `data/import_parkboston_zones.py` sweeps it and
+  matches numbers onto our zones by block name — see "ParkBoston zone
+  numbers (import)" below.
+- **Drivers at the meter**: the app collects the posted number on the first
+  park at a block (`POST /zones/:zoneId/provider-number`, verified once two
+  users agree).
+
+Precedence when both exist: a verified user report beats an import; an
+import beats a single unverified report. The loader preserves and
+rehydrates both across reloads, and the Passport executor types the stored
+number into Enter Zone — see executor/README.md "Passport / ParkBoston".
 
 The dataset's rate fields are stale coin increments ($0.25 almost
 everywhere), so **rates are applied from the City's published schedule**,
@@ -119,6 +126,63 @@ ParkBoston's fee is $0.35 per session/extension
 ([ParkBoston, boston.gov](https://www.boston.gov/departments/parking-clerk/parkboston));
 a "Meter Fee Unpaid" ticket is $40
 ([Parking ticket fines and codes, boston.gov](https://www.boston.gov/departments/parking-clerk/parking-ticket-fines-and-codes)).
+
+## ParkBoston zone numbers (import)
+
+`data/import_parkboston_zones.py` fills the empty Boston zone numbers from
+the Passport Find Parking feed. It needs a saved signed-in Passport session
+(`pnpm -C executor run login -- --provider passport`) and the built
+`data/out/boston_zones.geojson`. What it does:
+
+1. **Sweep** (read-only, pays for nothing): derives ~1 km probe points from
+   our zone centroids and runs `pnpm -C executor run sweep`, which loads the
+   Find Parking screen per point with the saved session and captures every
+   `getnearzoneswithoccupancy` JSON response, deduped by zone number
+   → `data/raw/parkboston_zones.json` (`{number, name, raw}` per zone).
+2. **Parse** each block name ("North Boylston between Dartmouth and
+   Clarendon") into side/street/cross-streets. Names the rules can't handle
+   go to the LLM (`ANTHROPIC_MODEL`, default `claude-opus-5`, strict JSON
+   schema; skipped without credentials) at lower confidence. The feed
+   truncates names at ~45 chars; a truncated cross street resolves by
+   unique prefix.
+3. **Corners** come from the City's own street-segment layer
+   (`boston-street-segments-sam-system`, fetched once to
+   `data/raw/boston_street_segments.geojson`): the two cross-street
+   intersections are computed locally, offline. Remote geocoding is only a
+   fallback — Google when `GOOGLE_MAPS_API_KEY` is set; Nominatim (disk
+   cache, 1 req/s, identifying User-Agent) otherwise, though its free-text
+   search cannot resolve intersections and it self-disables after repeated
+   connection failures.
+4. **Match** the corner-to-corner segment to our zones: same suffix-free
+   street name, ≥35% of the zone's centerline inside the segment's 20 m
+   buffer, and side agreement — the name's side against the zone's
+   `side_of_street` (the meters' DIR majority), compared as **curb
+   normals** so diagonal streets where the two conventions pick different
+   compass axes still agree; geometry alone can't tell curbs apart (meter
+   lines sit within digitizing error of the street centerline). A segment
+   overlapping several of our zones (we split blocks at meter gaps)
+   assigns its number to each. A zone claimed by two different numbers is
+   resolved by dominance (best overlap ≥0.75 with every rival ≤0.45),
+   otherwise **ambiguous** and excluded — a driver report resolves it.
+
+Output: `data/out/parkboston_zone_numbers.json` (matches + a report with
+matched/ambiguous/unmatched/unparseable). Load and refresh:
+
+    # 1. Import (add --skip-sweep to reuse the last raw feed dump)
+    uv run data/import_parkboston_zones.py
+
+    # 2. Load dev (Neon): mirrors zone_number_imports to the file and
+    #    applies numbers to zones (never overwriting a verified report)
+    pnpm -C server load:zone-numbers
+
+    # 3. Load prod — same fly proxy pattern as load:zones step 4:
+    fly proxy 15432:5432 -a parkagent-db            # terminal A
+    fly ssh console -a parkagent-api -C "printenv DATABASE_URL"   # terminal B
+    DATABASE_URL="postgres://<user>:<password>@localhost:15432/<db>?sslmode=disable" \
+      pnpm -C server load:zone-numbers
+
+Tests: `uv run data/test_import_parkboston_zones.py` (parser + matcher, no
+network); the precedence rules are pinned in `server/test/zoneNumber.test.ts`.
 
 ## Output
 

@@ -378,7 +378,11 @@ def main() -> int:
         stats[f"buffered_{mode}"] += 1
         buffered.append(polygon)
     zones["geometry"] = gpd.GeoSeries(buffered, index=zones.index, crs=METRIC_CRS).to_crs(WGS84)
-    zones = zones.drop(columns=["side_of_street"])
+    # side_of_street ("N"/"S"/"E"/"W" from the meters' DIR majority, or None)
+    # stays in the output: the zone-number importer matches it against the
+    # side in Passport's block names ("North Boylston between …") — the two
+    # are City conventions, unlike geometry, which can't tell curbs apart
+    # (meter points sit within digitizing error of the street centerline).
 
     invalid = ~zones.geometry.is_valid
     if invalid.any():
@@ -400,6 +404,10 @@ def main() -> int:
         centerline = mapping(record.pop("centerline"))
         centerline["coordinates"] = round_coords(centerline["coordinates"])
         record["hours_json"] = json.loads(record["hours_json"])
+        # pandas turns the builder's None into NaN, which json.dump would
+        # emit as a bare NaN literal — invalid JSON for the server's loader.
+        side = record.get("side_of_street")
+        record["side_of_street"] = side if isinstance(side, str) else None
         record["centerline"] = centerline
         out_features.append({"type": "Feature", "properties": record, "geometry": geometry})
 

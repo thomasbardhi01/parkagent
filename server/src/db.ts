@@ -107,6 +107,16 @@ export interface ZoneNumberReportRow {
   createdAt: Date;
 }
 
+/** One imported (Find Parking feed) number for a zone — see schema.prisma. */
+export interface ZoneNumberImportRow {
+  zoneId: string;
+  number: string;
+  confidence: number;
+  method: string;
+  sourceName: string;
+  importedAt: Date;
+}
+
 /** One linked provider account (see providers/registry.ts). */
 export interface ProviderAccountRow {
   id: string;
@@ -212,6 +222,9 @@ export interface AppDb {
       create: { zoneId: string; userId: string; number: string; source: string };
       update: { number: string; source: string };
     }): Promise<ZoneNumberReportRow>;
+  };
+  zoneNumberImport: {
+    findUnique(args: { where: { zoneId: string } }): Promise<ZoneNumberImportRow | null>;
   };
   parkedEvent: {
     create(args: {
@@ -560,9 +573,7 @@ export interface AppDb {
     }): Promise<{ lat: number; lng: number; accuracyM: number; ts: Date }[]>;
   };
   deviceToken: {
-    findUnique(args: {
-      where: { token: string };
-    }): Promise<{ id: string; userId: string } | null>;
+    findUnique(args: { where: { token: string } }): Promise<{ id: string; userId: string } | null>;
     upsert(args: {
       where: { token: string };
       create: { userId: string; token: string; platform: string; environment: string };

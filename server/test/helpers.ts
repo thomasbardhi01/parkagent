@@ -20,6 +20,7 @@ import type {
   ProviderAccountRow,
   SessionRow,
   SessionWhere,
+  ZoneNumberImportRow,
   ZoneNumberReportRow,
   ZoneTermsRow,
 } from "../src/db.js";
@@ -255,9 +256,16 @@ export interface FakeDbState {
   issuingAuthorizations: FakeIssuingAuthorizationRow[];
   providerAccounts: ProviderAccountRow[];
   zoneNumberReports: ZoneNumberReportRow[];
+  zoneNumberImports: ZoneNumberImportRow[];
   processedTopups: { paymentIntentId: string; amountUsd: number; userId: string | null }[];
   conversations: { id: string; userId: string; turns: unknown }[];
-  assistantPlans: { id: string; userId: string; conversationId: string; kind: string; plan: unknown }[];
+  assistantPlans: {
+    id: string;
+    userId: string;
+    conversationId: string;
+    kind: string;
+    plan: unknown;
+  }[];
   assistantConfirmations: {
     token: string;
     userId: string;
@@ -267,7 +275,12 @@ export interface FakeDbState {
     usedAt: Date | null;
   }[];
   itineraries: ItineraryRow[];
-  linkAccounts: { userId: string; status: string; tokensEncrypted: string | null; connectedAt: Date | null }[];
+  linkAccounts: {
+    userId: string;
+    status: string;
+    tokensEncrypted: string | null;
+    connectedAt: Date | null;
+  }[];
   linkSpendRequests: LinkSpendRequestRow[];
   linkJobs: {
     id: string;
@@ -352,6 +365,7 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
     issuingAuthorizations: [],
     providerAccounts: [],
     zoneNumberReports: [],
+    zoneNumberImports: [],
     processedTopups: [],
     linkJobs: [],
     conversations: [],
@@ -431,6 +445,10 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
         state.zoneNumberReports.push(row);
         return row;
       },
+    },
+    zoneNumberImport: {
+      findUnique: async ({ where }) =>
+        state.zoneNumberImports.find((r) => r.zoneId === where.zoneId) ?? null,
     },
     parkedEvent: {
       create: async ({ data }) => {
@@ -996,16 +1014,15 @@ export function makeTestApp(options: {
   // wall-clock-dependent. Tests that care pass their own `now`.
   const now = options.now ?? (() => new Date(MONDAY_2PM));
   const dryRunExecutor = new DryRunExecutor(() => {}, now);
-  const garage: GarageProvider =
-    options.garage ?? {
-      id: "fake-garage",
-      canReserve: false,
-      search: async () => ({ ok: true, options: [], fromCache: false }),
-      optionById: () => null,
-      book: async () => {
-        throw new Error("no garage options in this test");
-      },
-    };
+  const garage: GarageProvider = options.garage ?? {
+    id: "fake-garage",
+    canReserve: false,
+    search: async () => ({ ok: true, options: [], fromCache: false }),
+    optionById: () => null,
+    book: async () => {
+      throw new Error("no garage options in this test");
+    },
+  };
   const findCandidates = async () => options.candidates ?? [];
   const policyService = makePolicyService(options.policy, options.envDryRun ?? true);
   const linkWallet = new LinkWallet({

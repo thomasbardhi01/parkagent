@@ -25,6 +25,12 @@ import {
   spentToday,
 } from "../services/sessions.js";
 import { fireShadowAuthorization } from "../services/shadow.js";
+import {
+  effectiveTerms,
+  observedTermsFor,
+  providerTermsMismatch,
+  recordObservedTerms,
+} from "../services/zoneTermsObserved.js";
 
 const startSchema = z.object({
   parkedEventId: z.string().min(1),
@@ -159,23 +165,29 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
       });
     }
 
+    // Terms the provider itself has displayed for this zone number beat
+    // the dataset: Boston's data assumed a 2-hour max everywhere, but the
+    // Vehicles chooser shows the posted terms (e.g. "Max 5 Hr").
+    const observed = await observedTermsFor(deps.db, zone.city ?? "nyc", zone.providerZoneNumber);
+    const effective = effectiveTerms(zone, observed);
     const terms = {
       // The zone's city picks the per-city fee (ParkBoston $0.35 vs
       // ParkNYC $0.15) and rides onto the session row below.
       city: zone.city ?? "nyc",
-      rateFirstHourUsd: Number(zone.rateFirstHour),
-      rateAdditionalHourUsd: Number(zone.rateAdditionalHour),
+      rateFirstHourUsd: effective.rateFirstHourUsd,
+      rateAdditionalHourUsd: effective.rateAdditionalHourUsd,
       hours: zone.hoursJson as HoursInterval[],
     };
+    const maxStayMinutes = effective.maxStayMinutes;
     const minutes =
       body.minutes ??
-      Math.min(policy.default_stay_minutes, zone.maxStayMinutes ?? policy.default_stay_minutes);
+      Math.min(policy.default_stay_minutes, maxStayMinutes ?? policy.default_stay_minutes);
     const price = priceStay(terms, policy, at, minutes);
     const dryRun = deps.policy.effectiveDryRun();
     const spentTodayUsd = await spentToday(deps.db, user.id, at);
 
     let rule: string | null = null;
-    if (zone.maxStayMinutes !== null && minutes > zone.maxStayMinutes) {
+    if (maxStayMinutes !== null && minutes > maxStayMinutes) {
       rule = "max_stay_exceeded";
     } else if (price.totalUsd === 0) {
       // A wholly free window: there is nothing to buy, and typing minutes
@@ -195,6 +207,17 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
       spentTodayUsd,
       dryRun,
       policyHash: deps.policy.hash(),
+      // Which terms priced this: the observed row's values when one
+      // overrode the dataset.
+      ...(effective.observed
+        ? {
+            observedTerms: {
+              ratePerHourUsd:
+                observed?.ratePerHourUsd == null ? null : Number(observed.ratePerHourUsd),
+              maxStayMinutes: observed?.maxStayMinutes ?? null,
+            },
+          }
+        : {}),
     };
     if (rule) {
       const decision = await deps.db.decision.create({
@@ -210,11 +233,20 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
       return reply.code(409).send({ error: "policy_violation", rule, decisionId: decision.id });
     }
 
+    // The session's vehicle: the caller's saved plate, passed through the
+    // executor so the Passport client can pick the matching button on the
+    // Vehicles chooser (a missing plate comes back typed vehicle_missing).
+    const vehicle = await deps.db.vehicle.findFirst({
+      where: { userId: user.id },
+      orderBy: { createdAt: "asc" },
+    });
+
     let session;
     try {
       session = await deps.db.session.create({
         data: {
           userId: user.id,
+          ...(vehicle ? { vehicleId: vehicle.id } : {}),
           zoneId: zone.zoneId,
           city: terms.city,
           providerZoneNumber: zone.providerZoneNumber,
@@ -225,7 +257,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
           carLng: parkedEvent.lng,
           rateFirstHour: terms.rateFirstHourUsd,
           rateAdditionalHour: terms.rateAdditionalHourUsd,
-          maxStayMinutes: zone.maxStayMinutes,
+          maxStayMinutes,
           hoursJson: terms.hours,
           amountUsd: 0,
           feeUsd: 0,
@@ -253,8 +285,27 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
       carLat: parkedEvent.lat,
       carLng: parkedEvent.lng,
       ...(zone.street ? { expectedStreet: zone.street } : {}),
+      ...(vehicle ? { vehicle: { plate: vehicle.plate, state: vehicle.state } } : {}),
     });
     const durationMs = Date.now() - startedAtMs;
+
+    // The provider's own terms line (Passport shows it on the Vehicles
+    // chooser), returned on success AND failure: record it keyed by zone
+    // number so quoting can prefer it next time, and flag disagreement
+    // with our dataset on the decision.
+    const providerTerms = result.providerTerms ?? null;
+    let zoneTermsMismatch = false;
+    if (providerTerms) {
+      zoneTermsMismatch = providerTermsMismatch(zone, providerTerms);
+      await recordObservedTerms(deps.db, {
+        city: terms.city,
+        zoneNumber: zone.providerZoneNumber,
+        zoneId: zone.zoneId,
+        terms: providerTerms,
+        at,
+      });
+    }
+    const providerTermsOutcome = providerTerms ? { providerTerms, zoneTermsMismatch } : {};
 
     if (!result.ok && result.code === "free_period") {
       // The provider says this zone isn't charging now (after hours). Not
@@ -322,6 +373,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
             // ui_changed evidence: screenshot + visible text, straight onto
             // the decision row (non-negotiable: decisions carry the inputs).
             ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}),
+            ...providerTermsOutcome,
           },
           userId: user.id,
           parkedEventId: parkedEvent.id,
@@ -386,6 +438,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
           // Both sides of the map-based zone resolution, when the executor
           // ran one (authoritative for Boston, cross-check for NYC).
           ...(result.zoneResolution ? { zoneResolution: result.zoneResolution } : {}),
+          ...providerTermsOutcome,
           ...(shadow ? { shadow } : {}),
         },
         userId: user.id,

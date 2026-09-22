@@ -17,11 +17,12 @@
  * since Boston's open data carries none. Map-based resolution survives only
  * as the ParkNYC client's non-fatal cross-check.
  *
- * The gated entry / T&C / e-mail verification screens and the Enter Zone
- * screen (#zoneNumber, #zoneNext) are verified against recordings. The
- * screens AFTER zone submit (rates/duration/confirm) are still drafted from
- * the app's shipped view source and MUST be verified against a
- * `pnpm -C executor run record -- --provider passport` run (see README).
+ * The gated entry / T&C / e-mail verification screens, the Enter Zone
+ * screen (#zoneNumber, #zoneNext), the Review Signage popup, and the
+ * Vehicles chooser (#vehicleManagement, 2026-09-22) are verified against
+ * recordings. The screens AFTER the chooser (duration/confirm) are still
+ * drafted from the app's shipped view source and MUST be verified against
+ * a `pnpm -C executor run record -- --provider passport` run (see README).
  */
 
 import { existsSync } from "node:fs";
@@ -34,9 +35,11 @@ import { captureUnexpectedScreen } from "../parknyc/capture.js";
 import { classifyFailure } from "../parknyc/classify.js";
 import { parseAmountUsd, parseConfirmation, parseExpiresAt } from "../parknyc/parse.js";
 import {
+  findVehicleOption,
   isAddPaymentScreen,
   isFreePeriodModal,
   parseProviderHours,
+  parseVehicleChooser,
   recentZonesState,
 } from "./parse.js";
 import { handleSignageModal } from "./signage.js";
@@ -45,9 +48,11 @@ import type {
   ExecutorError,
   ExecutorResult,
   ProviderOpResult,
+  ProviderZoneTerms,
   StorageStateValue,
   TopupWalletResult,
   VerifyAccountResult,
+  ZoneResolution,
 } from "../types.js";
 import { BOSTON_BASE_URL, findParkingSelectors, passportUrls, selectors } from "./selectors.js";
 import type { PassportUrls } from "./selectors.js";
@@ -351,10 +356,15 @@ export class PassportClient {
    * the only entry the ParkBoston web app has (no map; verified on the
    * 2026-09-21 recording). The zone number comes from our zones table,
    * fed by user reports (POST /zones/:zoneId/provider-number).
+   *
+   * `vehicle` is the session's plate from the server's vehicles table; the
+   * Vehicles chooser (the screen after signage, verified 2026-09-22) lists
+   * saved vehicles as "<PLATE> (<STATE>)" buttons and the flow clicks the
+   * matching one — no match is a typed vehicle_missing, never Add Vehicle.
    */
   async startSession(
     zoneNumber: string,
-    plate: string | undefined,
+    vehicle: { plate: string; state?: string } | undefined,
     minutes: number,
   ): Promise<ExecutorResult> {
     if (zoneNumber === "") {
@@ -371,6 +381,11 @@ export class PassportClient {
     const { page } = opened;
 
     const goal = `start ${minutes} min in zone ${zoneNumber}`;
+    // Filled when the flow crosses the Vehicles chooser; merged onto the
+    // final result (success OR failure) after the run, so terms the
+    // provider showed are never lost to a later derailment.
+    let providerTerms: ProviderZoneTerms | undefined;
+    let chooserResolution: ZoneResolution | undefined;
     const result = await this.run(goal, page, async () => {
       // Enter Zone (VERIFIED against the 2026-09-21 recording: input
       // #zoneNumber type=tel "Zone Number", button #zoneNext "Continue").
@@ -489,16 +504,72 @@ export class PassportClient {
       const selectZone = selectors.zoneInfo.selectZoneButton(page);
       if (await selectZone.isVisible({ timeout: 5_000 }).catch(() => false)) {
         await this.stableClick(page, selectZone, "select-zone");
+        // Wait for whichever screen follows before the one-shot visibility
+        // checks below ({ timeout } on isVisible is a no-op).
+        await selectors.vehicle
+          .chooserMarker(page)
+          .or(selectors.duration.pickerPage(page))
+          .first()
+          .waitFor({ state: "visible", timeout: 10_000 })
+          .catch(() => {});
         await this.step("zone-selected", page);
       }
 
-      // Vehicle (skipped by the app when only one is saved — TODO-verify).
-      const vehicle = plate
-        ? selectors.vehicle.plateOption(page, plate)
-        : selectors.vehicle.firstOption(page);
-      if (await vehicle.isVisible({ timeout: 3_000 }).catch(() => false)) {
-        await this.stableClick(page, vehicle, "vehicle-select");
-        await this.stableClick(page, selectors.vehicle.continueButton(page), "vehicle-continue");
+      // Vehicles chooser (#vehicleManagement, VERIFIED live 2026-09-22):
+      // one button per saved vehicle labeled "<PLATE> (<STATE>)", an Add
+      // Vehicle button, and the zone's terms line. Click the button
+      // matching the session's vehicle; a missing plate is a typed
+      // vehicle_missing (the server pushes "add your plate"), and Add
+      // Vehicle is NEVER clicked — the driver manages their own vehicles.
+      // One-shot visibility on purpose: the waits above already gave the
+      // screen time to render.
+      if (
+        await selectors.vehicle
+          .chooserMarker(page)
+          .isVisible()
+          .catch(() => false)
+      ) {
+        const chooser = parseVehicleChooser(await page.content());
+        if (chooser) {
+          // The header echoes the zone the provider resolved — record it
+          // as a non-fatal cross-check against the number we typed, and
+          // keep the Zone Information terms for the server's
+          // zone_terms_observed comparison.
+          if (chooser.terms) providerTerms = chooser.terms;
+          if (chooser.zoneNumber !== null) {
+            chooserResolution = {
+              mapZoneNumber: chooser.zoneNumber,
+              mapStreet: chooser.zoneName ?? "",
+              storedZoneNumber: zoneNumber,
+              expectedStreet: null,
+              matched: chooser.zoneNumber === zoneNumber,
+            };
+          }
+        }
+        const option = vehicle ? findVehicleOption(chooser?.vehicles ?? [], vehicle) : null;
+        if (option === null) {
+          const saved = (chooser?.vehicles ?? []).map((v) => v.description).join(", ") || "none";
+          const wanted = vehicle
+            ? `${vehicle.plate}${vehicle.state ? ` (${vehicle.state})` : ""}`
+            : "(no plate given)";
+          return this.fail(
+            page,
+            "vehicle_missing",
+            `ParkBoston has no saved vehicle matching ${wanted}; saved: ${saved}`,
+          );
+        }
+        await this.stableClick(
+          page,
+          selectors.vehicle.vehicleButton(page, option.description),
+          "vehicle-select",
+        );
+        // Clicking the vehicle button advances the flow — the screen has
+        // no Continue of its own (TODO-verify past this point on the
+        // first paid recording).
+        await selectors.duration
+          .pickerPage(page)
+          .waitFor({ state: "visible", timeout: 10_000 })
+          .catch(() => {});
         await this.step("vehicle-selected", page);
       }
 
@@ -571,7 +642,14 @@ export class PassportClient {
       }
       return { ok: true, ...parsed };
     });
-    return result;
+    if (result.ok) {
+      return {
+        ...result,
+        ...(chooserResolution ? { zoneResolution: chooserResolution } : {}),
+        ...(providerTerms ? { providerTerms } : {}),
+      };
+    }
+    return { ...result, ...(providerTerms ? { providerTerms } : {}) };
   }
 
   async extendSession(providerSessionId: string, minutes: number): Promise<ExecutorResult> {

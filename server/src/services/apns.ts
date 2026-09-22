@@ -97,15 +97,22 @@ export function paymentFailedPush(args: {
   what: "pay" | "extend";
   code: string;
 }): Push {
-  // A card-less provider account is a distinct, actionable failure: the
-  // fix is "add a card to ParkBoston", not "retry".
+  // A card-less account or an unknown plate are distinct, actionable
+  // failures: the fix is doing something in ParkBoston, not "retry".
   const body =
     args.code === "payment_method_missing"
       ? `The meter for zone ${args.zoneNumber} is unpaid — add a card to ParkBoston, then tap to pay.`
-      : `Could not ${args.what} zone ${args.zoneNumber} (${args.code}). The meter is unpaid — tap to pay.`;
+      : args.code === "vehicle_missing"
+        ? `ParkBoston doesn't know your plate — add your vehicle there, then tap to pay zone ${args.zoneNumber}.`
+        : `Could not ${args.what} zone ${args.zoneNumber} (${args.code}). The meter is unpaid — tap to pay.`;
   return {
     type: "payment_failed",
-    title: args.code === "payment_method_missing" ? "Add a card to ParkBoston" : "Payment failed",
+    title:
+      args.code === "payment_method_missing"
+        ? "Add a card to ParkBoston"
+        : args.code === "vehicle_missing"
+          ? "Add your plate to ParkBoston"
+          : "Payment failed",
     body,
     extra: {
       code: args.code,

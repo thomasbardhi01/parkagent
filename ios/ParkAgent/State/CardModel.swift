@@ -138,6 +138,7 @@ final class CardModel {
     /// Runs the move and refreshes the balance; false means it failed and
     /// `actionError` says why (the sheet stays up so the user can adjust).
     func move(_ direction: FundingDirection, amountUsd: Double, api: any APIClient) async -> Bool {
+        Haptics.light()
         do {
             let result: CardFundingResponse
             if direction == .topup {

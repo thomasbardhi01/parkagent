@@ -14,7 +14,7 @@ final class CardUITests: ParkAgentUITestCase {
         XCTAssertTrue(element(app, "card.art").waitForExistence(timeout: 5), "Card art missing")
         let number = element(app, "card.number")
         XCTAssertTrue(number.exists, "Card number line missing")
-        XCTAssertTrue(number.label.hasSuffix("4242"), "Masked number should end in the mock last4")
+        XCTAssertTrue(number.label.hasSuffix("4444"), "Masked number should end in the API's last4")
         XCTAssertTrue(element(app, "card.spendMeter").exists, "Spend meter missing")
         XCTAssertTrue(element(app, "card.balance").exists, "Balance missing on funded scenario")
         XCTAssertTrue(
@@ -22,6 +22,22 @@ final class CardUITests: ParkAgentUITestCase {
             "Transactions did not render"
         )
         attachScreenshot(of: app, named: "card-ready")
+    }
+
+    /// The network mark comes from GET /card (issuing_cards.brand) — the
+    /// mock serves Mastercard like the real cards, and nothing in the view
+    /// may assume a brand (a hardcoded "Visa" once slipped through here).
+    func testCardBrandReflectsAPI() {
+        let app = launchApp(cardScenario: "ready")
+        openCardTab(app)
+
+        let brand = element(app, "card.brand")
+        XCTAssertTrue(brand.waitForExistence(timeout: 5), "Brand mark missing from card art")
+        XCTAssertEqual(brand.label, "Mastercard", "Brand must be what the API served")
+        XCTAssertFalse(
+            app.staticTexts["Visa"].exists,
+            "No Visa anywhere — the API says these cards are Mastercard"
+        )
     }
 
     /// Freeze via the confirmation, frozen pill appears; unfreeze clears it.

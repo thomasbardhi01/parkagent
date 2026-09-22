@@ -18,6 +18,7 @@ struct PrimaryButtonStyle: ButtonStyle {
                     : Color.mist
             )
             .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
+            .pressScale(configuration.isPressed)
     }
 }
 
@@ -36,6 +37,7 @@ struct SecondaryButtonStyle: ButtonStyle {
                 RoundedRectangle(cornerRadius: Radius.button, style: .continuous)
                     .strokeBorder(Color.separator, lineWidth: 1)
             )
+            .pressScale(configuration.isPressed)
     }
 }
 
@@ -54,6 +56,7 @@ struct DestructiveButtonStyle: ButtonStyle {
                 RoundedRectangle(cornerRadius: Radius.button, style: .continuous)
                     .strokeBorder(isEnabled ? Color.danger.opacity(0.4) : Color.separator, lineWidth: 1)
             )
+            .pressScale(configuration.isPressed)
     }
 }
 

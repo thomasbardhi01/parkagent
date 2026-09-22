@@ -31,6 +31,8 @@ final class AppModel {
     var paymentError: APIError?
     /// Extend/stop failures on the Active Session screen.
     var sessionActionError: APIError?
+    /// True while an extend round-trip is in flight (button disables).
+    private(set) var isExtending = false
 
     var activeSession: ActiveSession?
     var history: [SessionRecord] = []
@@ -261,6 +263,7 @@ final class AppModel {
         guard let parked = pendingParked else { return }
         isPaying = true
         paymentError = nil
+        Haptics.light()
         do {
             let response = try await api.startSession(SessionStartRequest(
                 parkedEventId: parked.parkedEventId,
@@ -284,6 +287,7 @@ final class AppModel {
             distanceFromCarMeters = useMockAPI ? 120 : nil
             pendingParked = nil
             reporter.start(api: api, carCoordinate: carCoordinate)
+            Haptics.success()
         } catch {
             paymentError = error as? APIError ?? .transport(error)
         }
@@ -305,8 +309,11 @@ final class AppModel {
     // MARK: - Session actions
 
     func extendSession() async {
-        guard var session = activeSession, session.canExtend else { return }
+        guard var session = activeSession, session.canExtend, !isExtending else { return }
+        isExtending = true
+        defer { isExtending = false }
         let minutes = policyResponse?.policy.autoExtend.maxMinutesEach ?? 60
+        Haptics.light()
         do {
             let response = try await api.extendSession(sessionId: session.sessionId, minutes: minutes)
             session.expiresAt = response.expiresAt

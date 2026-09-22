@@ -10,8 +10,12 @@ struct SettingsView: View {
     @AppStorage(AppearanceSetting.defaultsKey) private var appearanceRaw = AppearanceSetting.system.rawValue
 
     @State private var providerAccounts: [ProviderAccountStatus] = []
+    /// nil until the first load answers, so the failure copy never flashes
+    /// while the request is still in flight.
+    @State private var providersLoadFailed: Bool?
     @State private var relinkProviderId: String?
     @State private var confirmingUnlink: ProviderAccountStatus?
+    @State private var isConnectingLink = false
 
     var body: some View {
         @Bindable var model = model
@@ -163,9 +167,18 @@ struct SettingsView: View {
     private var linkedAccountsSection: some View {
         Section("Linked accounts") {
             if providerAccounts.isEmpty {
-                Text("Couldn't load account status. Pull to retry.")
-                    .font(.secondaryText)
-                    .foregroundStyle(Color.textSecondary)
+                if providersLoadFailed == true {
+                    Text("Couldn't load account status. Pull to retry.")
+                        .font(.secondaryText)
+                        .foregroundStyle(Color.textSecondary)
+                } else {
+                    HStack(spacing: Spacing.half) {
+                        ProgressView()
+                        Text("Checking accounts")
+                            .font(.secondaryText)
+                            .foregroundStyle(Color.textSecondary)
+                    }
+                }
             }
             ForEach(providerAccounts) { account in
                 HStack {
@@ -215,6 +228,9 @@ struct SettingsView: View {
     private func loadProviders() async {
         if let status = try? await model.api.providersStatus() {
             providerAccounts = status.providers
+            providersLoadFailed = false
+        } else {
+            providersLoadFailed = true
         }
     }
 
@@ -236,15 +252,18 @@ struct SettingsView: View {
                 }
                 .accessibilityIdentifier("settings.linkDisconnectButton")
             } else {
-                Button("Connect Link wallet") {
+                Button(isConnectingLink ? "Connecting…" : "Connect Link wallet") {
                     Task {
+                        isConnectingLink = true
                         if let response = try? await model.api.linkWalletConnect(),
                            let url = URL(string: response.url), !model.useMockAPI {
                             await UIApplication.shared.open(url)
                         }
                         await model.refreshLinkWalletStatus()
+                        isConnectingLink = false
                     }
                 }
+                .disabled(isConnectingLink)
                 .foregroundStyle(Color.actionCoralLink)
                 .accessibilityIdentifier("settings.linkConnectButton")
             }

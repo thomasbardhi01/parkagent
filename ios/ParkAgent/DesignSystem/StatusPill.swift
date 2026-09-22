@@ -46,12 +46,17 @@ struct TagPill: View {
         Text(label)
             .font(.captionTextSemibold)
             .foregroundStyle(color)
+            .contentTransition(.opacity)
             .padding(.horizontal, 10)
             .padding(.vertical, Spacing.quarter)
             // 0.10, not 0.14: in dark mode the tint brightens the pill enough
             // to cost the text its 4.5:1.
             .background(color.opacity(0.10))
             .clipShape(Capsule())
+            // Morph, don't snap, when a live status changes under the pill
+            // (Active → Expiring). A crossfade, so fine under Reduce Motion.
+            .animation(Motion.morph, value: color)
+            .animation(Motion.morph, value: label)
     }
 }
 

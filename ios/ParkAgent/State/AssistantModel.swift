@@ -110,6 +110,7 @@ final class AssistantModel {
         guard phase != .confirming else { return }
         phase = .confirming
         errorText = nil
+        Haptics.light()
         do {
             let response = try await api.confirmPlan(planId: planId, optionId: optionId)
             lastPaymentSource = response.paymentSource
@@ -149,7 +150,14 @@ final class AssistantModel {
     }
 
     private func streetNote(_ response: AssistantConfirmResponse) -> String {
-        let zone = response.zoneId.map { "Zone \($0)" } ?? "the zone"
+        // Only a plain meter number reads as a zone to a person; internal
+        // ids like "bos-boylston-st-e-d-819305" stay out of the chat.
+        let zone: String
+        if let id = response.zoneId, !id.isEmpty, id.allSatisfy(\.isNumber) {
+            zone = "Zone \(id)"
+        } else {
+            zone = "Your spot"
+        }
         let pay = response.paymentSource == "link_wallet"
             ? "Paying with your Link wallet."
             : "Paying with your ParkAgent card."

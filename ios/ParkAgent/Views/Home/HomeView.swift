@@ -4,6 +4,7 @@ import SwiftUI
 struct HomeView: View {
     @Environment(AppModel.self) private var model
     @Environment(PermissionsManager.self) private var permissions
+    @Namespace private var sessionZoom
     @State private var camera: MapCameraPosition = .region(MKCoordinateRegion(
         center: AppModel.fixtureCoordinate,
         span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
@@ -39,10 +40,13 @@ struct HomeView: View {
                 .padding(.horizontal, Spacing.unit)
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                BottomSheet { sheetContent }
+                // The living wash lives in the sheet surface — layering it
+                // over the map itself would fight the map.
+                BottomSheet(livingBackdrop: true) { sheetContent }
             }
-            .navigationDestination(for: String.self) { _ in
+            .navigationDestination(for: String.self) { sessionId in
                 ActiveSessionView()
+                    .zoomDestination(id: sessionId, in: sessionZoom)
             }
         }
     }
@@ -108,7 +112,8 @@ struct HomeView: View {
                         status: .active
                     )
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.pressable)
+                .zoomSource(id: session.sessionId, in: sessionZoom)
                 .accessibilityIdentifier("home.activeSessionRow")
             }
 

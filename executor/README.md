@@ -164,6 +164,16 @@ assumed 15, TODO-verify). After `#pickerNext` the app either charges the
 default card straight to confirmation (`use_default_card`) or shows the
 payment-method page — that next screen stays TODO-verify.
 
+**No Meter Parking notice (2026-09-22):** after hours (paid parking is
+8am-8pm EST Mon-Sat) the start flow hits a "No Meter Parking. Please
+Check Signage" popup with an Ok button. The flow reads the message,
+clicks Ok (scoped to the open popup's visible button), and returns typed
+`free_period` with the hours parsed out of the notice
+(`parseProviderHours`). The server logs those hours alongside our zone
+data on the decision — useful because some Boston zones read 8am-6pm in
+our dataset while the city notice says 8-8 — records a free period (no
+session, no charge), and pushes "parking is free here right now".
+
 **Review Signage interstitial (2026-09-21):** an optional operator-
 configured popup ("check the signage around you for parking restrictions
 and meter hours", Continue/Cancel) appears after Enter Zone. Live
@@ -199,6 +209,7 @@ cheap zone before any real use.
 | `zone_not_found` | The provider rejected the zone number |
 | `payment_declined` | The payment step refused |
 | `payment_method_missing` | The provider account has no saved payment method — the start flow hit "Add Payment Details" (ParkBoston). The server pushes an "add a card" prompt, not a retry |
+| `free_period` | The provider says this zone isn't charging now — ParkBoston's "No Meter Parking. Please Check Signage" after-hours notice. Carries `freePeriod: { rawText, hours }`; the server records a free period (no charge) and pushes "parking is free here right now" |
 | `ui_changed` | An expected screen/element never appeared (capture attached) — includes captcha/bot-check walls, which classify.ts deliberately never reads as `auth_expired` (that would wrongly expire the linked account and push a relink) |
 | `network` | Couldn't reach the provider |
 | `browser_crashed` | The shared Chromium died mid-call. The executor retries the call ONCE on a fresh context first (warmBrowser relaunches lazily); this code means the retry failed too |

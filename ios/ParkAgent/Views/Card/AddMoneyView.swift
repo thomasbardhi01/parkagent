@@ -92,13 +92,21 @@ struct AddMoneyView: View {
                 .accessibilityIdentifier("addMoney.amountField")
             HStack(spacing: Spacing.half) {
                 ForEach(Self.quickAmounts, id: \.self) { quick in
-                    Button("$\(quick)") { amountText = String(quick) }
-                        .font(.captionTextSemibold)
-                        .foregroundStyle(Color.textPrimary)
-                        .padding(.horizontal, Spacing.unit)
-                        .padding(.vertical, Spacing.half)
-                        .background(Color.mist.opacity(0.5), in: Capsule())
-                        .accessibilityIdentifier("addMoney.quick.\(quick)")
+                    Button {
+                        amountText = String(quick)
+                    } label: {
+                        Text("$\(quick)")
+                            .font(.captionTextSemibold)
+                            .foregroundStyle(Color.textPrimary)
+                            .padding(.horizontal, Spacing.unit)
+                            .padding(.vertical, Spacing.half)
+                            .background(Color.mist.opacity(0.5), in: Capsule())
+                            // The chip stays compact; the target doesn't.
+                            .frame(minHeight: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.pressable)
+                    .accessibilityIdentifier("addMoney.quick.\(quick)")
                 }
             }
         }

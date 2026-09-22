@@ -51,6 +51,7 @@ export type ExecutorErrorCode =
   | "network" // couldn't reach the provider at all
   | "browser_crashed" // Chromium died mid-call; the executor retried once first
   | "payment_method_missing" // the account has no saved payment method to charge
+  | "free_period" // the provider says this zone isn't charging now (after hours)
   | "unknown"; // none of the above matched
 
 /** Evidence from an unexpected screen; the caller attaches it to decisions. */
@@ -90,11 +91,23 @@ export interface ExecutorOk {
   zoneResolution?: ZoneResolution;
 }
 
+/** Enforcement hours parsed from a provider free-period notice. */
+export interface ParsedProviderHours {
+  startLabel: string;
+  endLabel: string;
+  startMinutes: number;
+  endMinutes: number;
+  days: string[];
+  tz: string | null;
+}
+
 export interface ExecutorError {
   ok: false;
   code: ExecutorErrorCode;
   message: string;
   diagnostics?: ExecutorDiagnostics;
+  /** Set on code "free_period": provider notice text + parsed hours. */
+  freePeriod?: { rawText: string; hours: ParsedProviderHours | null };
 }
 
 export type ExecutorResult = ExecutorOk | ExecutorError;

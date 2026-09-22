@@ -147,6 +147,18 @@ export const selectors = {
     /** The popup-open overlay; it animates in (class "in") over the popup
      * and can intercept the click until it settles. */
     signageOverlay: (page: Page): Locator => page.locator(".ui-popup-screen"),
+    /** "No Meter Parking. Please Check Signage" after-hours notice — the
+     * provider's way of saying this zone isn't charging now. Scoped to the
+     * open popup by text; its Ok is the visible in-popup button. */
+    freePeriodModal: (page: Page): Locator =>
+      // "No Meter Parking" is the app's fixed notice title; a string
+      // hasText (substring, whitespace-normalized) scopes deterministically.
+      page.locator(".ui-popup-container.ui-popup-active", { hasText: "No Meter Parking" }),
+    freePeriodOk: (page: Page): Locator =>
+      page
+        .locator(".ui-popup-container.ui-popup-active", { hasText: "No Meter Parking" })
+        .getByRole("button", { name: /^ok(ay)?$/i })
+        .filter({ visible: true }),
     /** Recent-zones panel: pops on input focus, sits right after
      * #zoneNext, and (when non-empty) shifts/overlays it — the
      * 2026-09-21 regression. Dismissed before clicking Continue. */

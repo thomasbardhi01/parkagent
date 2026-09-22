@@ -6,6 +6,7 @@ import SwiftUI
 struct AssistantSheetView: View {
     @Environment(AppModel.self) private var appModel
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var model: AssistantModel?
     @State private var speech = SpeechRecognizer()
     /// Prefilled question (Siri hands one in).
@@ -56,6 +57,11 @@ struct AssistantSheetView: View {
                             MessageBubble(message: message)
                             if let plan = model.proposedPlan, message.planId == plan.planId {
                                 planCards(model, plan: plan)
+                                    .transition(
+                                        reduceMotion
+                                            ? .opacity
+                                            : .move(edge: .bottom).combined(with: .opacity)
+                                    )
                             }
                         }
                         if let errorText = model.errorText {
@@ -64,14 +70,31 @@ struct AssistantSheetView: View {
                         Color.clear.frame(height: 1).id("bottom")
                     }
                     .padding(Spacing.unit)
+                    // Plan cards slide up and settle under their message; a
+                    // fade under Reduce Motion.
+                    .animation(
+                        reduceMotion ? .easeInOut(duration: 0.2) : Motion.settle,
+                        value: model.proposedPlan?.planId
+                    )
                 }
                 .onChange(of: model.messages) {
                     withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
                 }
             }
+            speechArea
             inputBar(model)
         }
-        .background(Color.appBackground)
+        // The living wash sits behind the whole conversation; the input bar
+        // goes transparent so the depth reads through it.
+        .background(LivingBackground().ignoresSafeArea())
+        .onChange(of: speech.finishedTranscript) { _, transcript in
+            // Dictation ended (tap or silence): the words land in the input
+            // field for editing — sending stays a deliberate tap.
+            if let transcript, !transcript.isEmpty {
+                model.input = transcript
+            }
+            speech.acknowledge()
+        }
         // UI tests can't drive SFSafariViewController; the probe records
         // that the deep link would have opened, and tapping it resolves
         // the approval through the same sync path the real sheet's
@@ -152,6 +175,44 @@ struct AssistantSheetView: View {
         }
     }
 
+    /// The live transcript while listening, or the denied/unavailable
+    /// notice. Settles in above the input bar; a plain crossfade under
+    /// Reduce Motion.
+    @ViewBuilder
+    private var speechArea: some View {
+        Group {
+            switch speech.state {
+            case .listening:
+                LiveTranscriptionPanel(speech: speech)
+                    .transition(
+                        reduceMotion
+                            ? .opacity.animation(.easeInOut(duration: 0.2))
+                            : .move(edge: .bottom).combined(with: .opacity)
+                    )
+            case .denied:
+                SpeechNoticeRow(
+                    icon: "mic.slash.fill",
+                    message: "Dictation is off. Allow the microphone and speech recognition in Settings.",
+                    showsOpenSettings: true,
+                    dismiss: { speech.resetAvailability() }
+                )
+                .accessibilityIdentifier("assistant.speechDeniedNotice")
+            case .unavailable:
+                SpeechNoticeRow(
+                    icon: "waveform.slash",
+                    message: "Dictation isn't available right now. Check the connection, or type instead.",
+                    dismiss: { speech.resetAvailability() }
+                )
+                .accessibilityIdentifier("assistant.speechUnavailableNotice")
+            case .idle:
+                EmptyView()
+            }
+        }
+        .padding(.horizontal, Spacing.unit)
+        .padding(.bottom, Spacing.half)
+        .animation(reduceMotion ? .easeInOut(duration: 0.2) : Motion.settle, value: speech.state)
+    }
+
     private func inputBar(_ model: AssistantModel) -> some View {
         @Bindable var model = model
         return HStack(spacing: Spacing.half) {
@@ -167,23 +228,21 @@ struct AssistantSheetView: View {
 
             Button {
                 if speech.state == .listening {
+                    // Stop only — the transcript lands in the field via
+                    // finishedTranscript, editable before the user sends.
                     speech.stop()
-                    model.input = speech.transcript
-                    if !speech.transcript.isEmpty {
-                        Task { await model.send(speech.transcript) }
-                    }
                 } else {
                     Task { await speech.start() }
                 }
             } label: {
-                Image(systemName: speech.state == .listening ? "waveform.circle.fill" : "mic.fill")
+                Image(systemName: speech.state == .listening ? "stop.circle.fill" : "mic.fill")
                     .font(.system(size: 22))
                     .foregroundStyle(
                         speech.state == .listening ? Color.actionCoralLink : Color.textSecondary
                     )
+                    .frame(width: 44, height: 44)
             }
             .accessibilityIdentifier("assistant.micButton")
-            .disabled(speech.state == .denied)
 
             Button {
                 Task { await model.send() }
@@ -194,12 +253,13 @@ struct AssistantSheetView: View {
                         model.input.isEmpty || model.phase == .streaming
                             ? Color.steel : Color.actionCoral
                     )
+                    .frame(width: 44, height: 44)
             }
             .disabled(model.input.isEmpty || model.phase == .streaming)
             .accessibilityIdentifier("assistant.sendButton")
         }
-        .padding(Spacing.unit)
-        .background(Color.appBackground)
+        .padding(.vertical, Spacing.half)
+        .padding(.horizontal, Spacing.unit)
         .overlay(alignment: .top) { Divider() }
     }
 }
@@ -210,13 +270,20 @@ private struct MessageBubble: View {
     var body: some View {
         HStack {
             if message.role == .user { Spacer(minLength: Spacing.double) }
-            Text(message.text.isEmpty ? "…" : message.text)
-                .font(.bodyText)
-                .foregroundStyle(message.role == .user ? Color.white : Color.textPrimary)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(message.role == .user ? Color.actionCoral : Color.surface)
-                .clipShape(RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+            Group {
+                if message.text.isEmpty && message.role == .assistant {
+                    TypingIndicator()
+                        .padding(.vertical, 5)
+                } else {
+                    Text(message.text.isEmpty ? "…" : message.text)
+                }
+            }
+            .font(.bodyText)
+            .foregroundStyle(message.role == .user ? Color.white : Color.textPrimary)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(message.role == .user ? Color.actionCoral : Color.surface)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
             if message.role == .assistant { Spacer(minLength: Spacing.double) }
         }
         .accessibilityElement(children: .combine)

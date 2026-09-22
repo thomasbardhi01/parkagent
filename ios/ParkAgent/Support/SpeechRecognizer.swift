@@ -3,9 +3,13 @@ import Foundation
 import Observation
 import Speech
 
-/// Push-to-talk dictation for the assistant sheet. On-device recognition
-/// when the device supports it (nothing leaves the phone); Apple's server
-/// recognition otherwise. Stopping hands the transcript back.
+/// Live dictation for the assistant sheet. Partial results stream in as the
+/// user speaks (word list for the per-word fade), the input level drives the
+/// mic pulse, and a silence watchdog auto-stops with a visible countdown.
+/// On-device recognition when the hardware supports it (nothing leaves the
+/// phone); Apple's server recognition otherwise. Stopping — by tap or by
+/// silence — hands the transcript to the input field for editing; nothing
+/// is ever sent on the user's behalf.
 @MainActor
 @Observable
 final class SpeechRecognizer {
@@ -16,20 +20,55 @@ final class SpeechRecognizer {
         case unavailable
     }
 
+    /// One transcribed word. Position-stable ids: earlier words keep theirs
+    /// as partial results grow, so only new words fade in.
+    struct Word: Identifiable, Equatable {
+        let id: Int
+        let text: String
+    }
+
     private(set) var state: State = .idle
     private(set) var transcript = ""
+    private(set) var words: [Word] = []
+    /// Smoothed input level, 0…1 — the mic pulse.
+    private(set) var level: Double = 0
+    /// Seconds left before silence auto-stops (3, 2, 1), nil while speaking.
+    private(set) var silenceCountdown: Int?
+    /// Set when listening ends with words captured; the sheet moves it into
+    /// the input field (editable before send) and calls `acknowledge()`.
+    private(set) var finishedTranscript: String?
+
+    /// Silence this long starts the visible countdown…
+    private static let silenceGrace: TimeInterval = 1.5
+    /// …which runs this many seconds before stopping.
+    private static let countdownSeconds = 3
 
     private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
     private var task: SFSpeechRecognitionTask?
     private let audioEngine = AVAudioEngine()
+    private var lastActivityAt = Date()
+    private var silenceWatchdog: Task<Void, Never>?
+    private var scriptedRun: Task<Void, Never>?
 
-    var available: Bool {
-        recognizer?.isAvailable ?? false
+    func acknowledge() {
+        finishedTranscript = nil
     }
 
     func start() async {
         guard state != .listening else { return }
         transcript = ""
+        words = []
+        level = 0
+        silenceCountdown = nil
+        finishedTranscript = nil
+
+        // UI tests script the whole session — no engine, no permission
+        // prompts, deterministic timing.
+        if let scenario = SpeechMockScenario.fromDefaults() {
+            startScripted(scenario)
+            return
+        }
+
         let speechGranted = await withCheckedContinuation { continuation in
             SFSpeechRecognizer.requestAuthorization { status in
                 continuation.resume(returning: status == .authorized)
@@ -60,6 +99,8 @@ final class SpeechRecognizer {
             let format = input.outputFormat(forBus: 0)
             input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
                 request.append(buffer)
+                let level = Self.normalizedLevel(of: buffer)
+                Task { @MainActor [weak self] in self?.ingest(level: level) }
             }
             audioEngine.prepare()
             try audioEngine.start()
@@ -69,31 +110,158 @@ final class SpeechRecognizer {
         }
 
         state = .listening
+        lastActivityAt = Date()
+        startSilenceWatchdog()
         task = recognizer.recognitionTask(with: request) { [weak self] result, error in
             Task { @MainActor in
                 guard let self else { return }
                 if let result {
-                    self.transcript = result.bestTranscription.formattedString
+                    self.ingest(transcript: result.bestTranscription.formattedString)
                 }
                 if error != nil || (result?.isFinal ?? false) {
-                    self.stopEngine()
+                    self.stop()
                 }
             }
         }
     }
 
-    /// Stop listening; the accumulated transcript stays readable.
+    /// Stop listening (tap or watchdog); the transcript is handed off via
+    /// `finishedTranscript`, never sent.
     func stop() {
+        guard state == .listening else { return }
+        scriptedRun?.cancel()
+        scriptedRun = nil
+        silenceWatchdog?.cancel()
+        silenceWatchdog = nil
         task?.finish()
-        stopEngine()
+        task = nil
+        if audioEngine.isRunning {
+            audioEngine.stop()
+            audioEngine.inputNode.removeTap(onBus: 0)
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        }
+        level = 0
+        silenceCountdown = nil
+        state = .idle
+        if !transcript.isEmpty {
+            finishedTranscript = transcript
+        }
     }
 
-    private func stopEngine() {
+    /// Denied/unavailable notices offer a retry path: clear back to idle.
+    func resetAvailability() {
+        if state == .denied || state == .unavailable {
+            state = .idle
+        }
+    }
+
+    // MARK: - Ingest
+
+    private func ingest(transcript newTranscript: String) {
         guard state == .listening else { return }
-        audioEngine.stop()
-        audioEngine.inputNode.removeTap(onBus: 0)
-        task = nil
-        state = .idle
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        if newTranscript != transcript {
+            lastActivityAt = Date()
+        }
+        transcript = newTranscript
+        words = newTranscript
+            .split(separator: " ", omittingEmptySubsequences: true)
+            .enumerated()
+            .map { Word(id: $0.offset, text: String($0.element)) }
+    }
+
+    private func ingest(level newLevel: Double) {
+        guard state == .listening else { return }
+        // Fast attack, slow release, so the pulse feels tied to the voice.
+        level = newLevel > level ? newLevel : level * 0.82 + newLevel * 0.18
+        if newLevel > 0.35 {
+            lastActivityAt = Date()
+        }
+    }
+
+    /// RMS power → 0…1 against a speaking-voice dB window.
+    private nonisolated static func normalizedLevel(of buffer: AVAudioPCMBuffer) -> Double {
+        guard let data = buffer.floatChannelData?[0], buffer.frameLength > 0 else { return 0 }
+        let frames = Int(buffer.frameLength)
+        var sum: Float = 0
+        for i in 0..<frames {
+            sum += data[i] * data[i]
+        }
+        let rms = sqrt(sum / Float(frames))
+        let db = 20 * log10(max(rms, .leastNormalMagnitude))
+        // -50 dB (room tone) … -10 dB (speaking close to the mic).
+        return Double(min(max((db + 50) / 40, 0), 1))
+    }
+
+    // MARK: - Silence watchdog
+
+    private func startSilenceWatchdog() {
+        silenceWatchdog?.cancel()
+        silenceWatchdog = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(200))
+                guard let self, self.state == .listening else { return }
+                self.tickSilence()
+            }
+        }
+    }
+
+    private func tickSilence() {
+        let silence = Date().timeIntervalSince(lastActivityAt)
+        guard silence >= Self.silenceGrace else {
+            silenceCountdown = nil
+            return
+        }
+        let remaining = Double(Self.countdownSeconds) - (silence - Self.silenceGrace)
+        if remaining <= 0 {
+            stop()
+        } else {
+            silenceCountdown = Int(remaining.rounded(.up))
+        }
+    }
+
+    // MARK: - Scripted sessions (UI tests)
+
+    private func startScripted(_ scenario: SpeechMockScenario) {
+        switch scenario {
+        case .denied:
+            state = .denied
+        case .unavailable:
+            state = .unavailable
+        case .scripted:
+            state = .listening
+            scriptedRun = Task { [weak self] in
+                let script = "Park me near the MFA at 2 for two hours"
+                for (index, word) in script.split(separator: " ").enumerated() {
+                    try? await Task.sleep(for: .milliseconds(140))
+                    guard let self, !Task.isCancelled else { return }
+                    self.level = index.isMultiple(of: 2) ? 0.7 : 0.4
+                    self.ingest(transcript: self.transcript.isEmpty ? String(word) : self.transcript + " " + word)
+                }
+                // Silence: near-real countdown pacing, slow enough that the
+                // test runner reliably sees each state.
+                for remaining in stride(from: SpeechRecognizer.countdownSeconds, through: 1, by: -1) {
+                    guard let self, !Task.isCancelled else { return }
+                    self.level = 0.05
+                    self.silenceCountdown = remaining
+                    try? await Task.sleep(for: .milliseconds(900))
+                }
+                guard let self, !Task.isCancelled else { return }
+                self.stop()
+            }
+        }
+    }
+}
+
+/// `-speechScenario <name>` launch override (see LaunchOverrides).
+enum SpeechMockScenario: String {
+    case scripted
+    case denied
+    case unavailable
+
+    static let defaultsKey = "speechScenario"
+
+    static func fromDefaults() -> SpeechMockScenario? {
+        guard let raw = UserDefaults.standard.string(forKey: defaultsKey) else { return nil }
+        return SpeechMockScenario(rawValue: raw)
     }
 }

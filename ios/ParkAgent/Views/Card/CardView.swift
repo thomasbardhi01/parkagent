@@ -253,7 +253,7 @@ struct CardActionButton: View {
             .background(Color.surface)
             .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pressable)
         .accessibilityIdentifier(identifier)
     }
 }

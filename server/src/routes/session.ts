@@ -15,7 +15,7 @@ import { z } from "zod";
 import type { AppDeps } from "../app.js";
 import type { SessionRow } from "../db.js";
 import { cityForZone, providerForCity } from "../providers/registry.js";
-import { paymentFailedPush, sessionStartedPush } from "../services/apns.js";
+import { freePeriodPush, paymentFailedPush, sessionStartedPush } from "../services/apns.js";
 import type { HoursInterval } from "../services/hours.js";
 import { priceStay } from "../services/quote.js";
 import {
@@ -255,6 +255,44 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
       ...(zone.street ? { expectedStreet: zone.street } : {}),
     });
     const durationMs = Date.now() - startedAtMs;
+
+    if (!result.ok && result.code === "free_period") {
+      // The provider says this zone isn't charging now (after hours). Not
+      // a failure: mark the session free (no active/paid row), log the
+      // provider's hours alongside our zone data so the two can be
+      // compared, and tell the user parking is free — no tap-to-pay.
+      await deps.db.session.update({ where: { id: session.id }, data: { status: "free_period" } });
+      const providerHours = result.freePeriod?.hours ?? null;
+      const decision = await deps.db.decision.create({
+        data: {
+          kind: "session_start",
+          inputs: {
+            ...decisionInputs,
+            providerNotice: result.freePeriod?.rawText ?? result.message,
+            providerHours,
+            // Our stored terms for this zone, for the comparison (some
+            // Boston zones read 8am-6pm in our data; the city says 8-8).
+            zoneHours: zone.hoursJson,
+          },
+          rule: "free_period",
+          outcome: { allowed: false, freePeriod: true, providerHours, durationMs },
+          userId: user.id,
+          parkedEventId: parkedEvent.id,
+          sessionId: session.id,
+        },
+      });
+      await deps.sendPush(
+        user.id,
+        freePeriodPush({ zoneNumber: zone.providerZoneNumber, notice: result.message }),
+      );
+      return {
+        status: "free_period",
+        zoneId: zone.zoneId,
+        providerHours,
+        notice: result.message,
+        decisionId: decision.id,
+      };
+    }
 
     if (!result.ok) {
       // The session stays unpaid (status "failed"); the push below carries

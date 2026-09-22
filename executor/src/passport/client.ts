@@ -39,6 +39,7 @@ import {
   parseProviderHours,
   recentZonesState,
 } from "./parse.js";
+import { handleSignageModal } from "./signage.js";
 import type {
   CardFormDetails,
   ExecutorError,
@@ -70,6 +71,10 @@ export interface PassportClientOptions {
   log?: (message: string) => void;
   recordHarPath?: string;
   tracePath?: string;
+  /** Recon walks only (record --abort-after): stop the flow right before
+   * the duration Continue — the earliest click that could charge
+   * (post-#pickerNext behavior is use_default_card, TODO-verify). */
+  stopBeforePay?: boolean;
 }
 
 export class PassportClient {
@@ -393,10 +398,30 @@ export class PassportClient {
       }
       await this.stableClick(page, selectors.zone.nextButton(page), "zone-continue");
       await this.step("zone-submitted", page);
+
+      // After submit the app renders ONE of: a rejection message, the "No
+      // Meter Parking" notice, the Review Signage interstitial, the zone
+      // info panel, or the duration picker — all a beat after the POST
+      // returns. isVisible({ timeout }) does NOT wait (Playwright ignores
+      // the option), so wait here, once, for whichever appears first
+      // before branching. Racing past a late popup was the 2026-09-22
+      // regression: the flow clicked into the hidden duration page while
+      // Review Signage sat on top ("Element is not visible" on
+      // #pickerNext; fixture passport-start-2026-09-22T15-09-13-438Z).
+      await selectors.zone
+        .notFoundMessage(page)
+        .or(selectors.zone.anyActivePopup(page))
+        .or(selectors.zoneInfo.selectZoneButton(page))
+        .or(selectors.vehicle.chooserMarker(page))
+        .or(selectors.duration.pickerPage(page))
+        .first()
+        .waitFor({ state: "visible", timeout: 10_000 })
+        .catch(() => {});
+
       if (
         await selectors.zone
           .notFoundMessage(page)
-          .isVisible({ timeout: 3_000 })
+          .isVisible()
           .catch(() => false)
       ) {
         return this.fail(page, "zone_not_found", `Passport rejected zone ${zoneNumber}`);
@@ -411,7 +436,9 @@ export class PassportClient {
       // requires the Ok button we are about to click.
       const freeModal = selectors.zone.freePeriodModal(page);
       if (
-        (await freeModal.isVisible({ timeout: 3_000 }).catch(() => false)) &&
+        // One-shot on purpose: the combined wait above already gave the
+        // screen time to render ({ timeout } on isVisible is a no-op).
+        (await freeModal.isVisible().catch(() => false)) &&
         isFreePeriodModal(await page.content())
       ) {
         const rawText = (
@@ -433,41 +460,26 @@ export class PassportClient {
       }
 
       // Optional "Review Signage" interstitial (operator-configured; may
-      // or may not appear). Its popup keeps hidden Continue duplicates and
-      // opens under an animating .ui-popup-screen overlay, so: scope to
-      // the open popup's VISIBLE Continue, let the overlay settle, click —
-      // and if the modal is still up, dispatch the click straight on the
-      // button (bypasses overlay pointer interception). Never fail when
-      // the modal is absent.
-      const signageModal = selectors.zone.signageModal(page);
-      if (await signageModal.isVisible({ timeout: 3_000 }).catch(() => false)) {
-        const signageContinue = selectors.zone.signageContinue(page);
-        // Overlay opens with class "in"; wait for it to stop animating
-        // before clicking (it intercepts pointer events until then).
-        await page
-          .waitForFunction(
-            () => {
-              const doc = (
-                globalThis as unknown as {
-                  document: {
-                    querySelector(
-                      s: string,
-                    ): { classList: { contains(t: string): boolean } } | null;
-                  };
-                }
-              ).document;
-              const screen = doc.querySelector(".ui-popup-screen");
-              return !screen || !screen.classList.contains("in");
-            },
-            { timeout: 5_000 },
-          )
+      // or may not appear). handleSignageModal waits for the popup or the
+      // screen after it, lets the fade finish (ui-popup-active + computed
+      // opacity 1 + no transition running), clicks the visible Continue,
+      // and falls back to dispatching the click event if the modal
+      // survives. Never fails when the modal is absent.
+      const signageHandled = await handleSignageModal(page, {
+        click: (locator, name) => this.stableClick(page, locator, name),
+        log: this.options.log,
+      });
+      if (signageHandled) {
+        // Prove the flow moved on before stepping: the next screen (zone
+        // info, the Vehicles chooser — the live 2026-09-22 path — or the
+        // duration picker) is up, not just the modal gone.
+        await selectors.zoneInfo
+          .selectZoneButton(page)
+          .or(selectors.vehicle.chooserMarker(page))
+          .or(selectors.duration.pickerPage(page))
+          .first()
+          .waitFor({ state: "visible", timeout: 10_000 })
           .catch(() => {});
-        await this.stableClick(page, signageContinue, "signage-continue");
-        if (await signageModal.isVisible({ timeout: 2_000 }).catch(() => false)) {
-          this.options.log?.("signage: still open after click; dispatching click event");
-          await signageContinue.dispatchEvent("click").catch(() => {});
-          await signageModal.waitFor({ state: "hidden", timeout: 5_000 }).catch(() => {});
-        }
         await this.step("signage-dismissed", page);
       }
 
@@ -508,6 +520,14 @@ export class PassportClient {
         for (let i = 0; i < Math.round(mins / DURATION_STEP_MINUTES); i += 1) {
           await this.stableClick(page, selectors.duration.minPlus(page), "min-plus");
         }
+      }
+      if (this.options.stopBeforePay) {
+        await this.step("stopped-before-pay", page);
+        return {
+          ok: false,
+          code: "unknown",
+          message: "stopped before the duration Continue (stopBeforePay recon walk); nothing paid",
+        };
       }
       await this.stableClick(page, selectors.duration.continueButton(page), "duration-continue");
       await this.step("duration-selected", page);
@@ -584,6 +604,14 @@ export class PassportClient {
         for (let i = 0; i < Math.round(mins / DURATION_STEP_MINUTES); i += 1) {
           await this.stableClick(page, selectors.duration.minPlus(page), "extend-min-plus");
         }
+      }
+      if (this.options.stopBeforePay) {
+        await this.step("stopped-before-pay", page);
+        return {
+          ok: false,
+          code: "unknown",
+          message: "stopped before the extend Continue (stopBeforePay recon walk); nothing paid",
+        };
       }
       await this.stableClick(
         page,

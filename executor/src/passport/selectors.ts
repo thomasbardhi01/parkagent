@@ -147,6 +147,9 @@ export const selectors = {
     /** The popup-open overlay; it animates in (class "in") over the popup
      * and can intercept the click until it settles. */
     signageOverlay: (page: Page): Locator => page.locator(".ui-popup-screen"),
+    /** ANY open popup container — the post-submit wait's "a modal showed
+     * up" witness, before we know which one it is. */
+    anyActivePopup: (page: Page): Locator => page.locator(".ui-popup-container.ui-popup-active"),
     /** "No Meter Parking. Please Check Signage" after-hours notice — the
      * provider's way of saying this zone isn't charging now. Scoped to the
      * open popup by text; its Ok is the visible in-popup button. */
@@ -165,7 +168,9 @@ export const selectors = {
     recentZonesPanel: (page: Page): Locator => page.locator("#recentZones"),
     /** A recent-zone chip for a specific number, if the account has one. */
     recentZoneChip: (page: Page, zoneNumber: string): Locator =>
-      page.locator("#recentZonesList button", { hasText: new RegExp(`^\\s*${escapeForRegex(zoneNumber)}\\s*$`) }),
+      page.locator("#recentZonesList button", {
+        hasText: new RegExp(`^\\s*${escapeForRegex(zoneNumber)}\\s*$`),
+      }),
   },
 
   // ------------------- Zone info panel (zone-info.js ids; TODO-verify text)
@@ -180,6 +185,10 @@ export const selectors = {
 
   // ---------------------------------------------------- Vehicle selection
   vehicle: {
+    /** The Vehicles chooser's prompt — the post-signage "next screen"
+     * witness (VERIFIED live 2026-09-22: zone submit → signage → Vehicles,
+     * "Please choose the vehicle you would like to park in Zone …"). */
+    chooserMarker: (page: Page): Locator => page.getByText(/choose the vehicle/i),
     plateOption: (page: Page, plate: string): Locator =>
       page.getByText(new RegExp(escapeForRegex(plate), "i")).first(),
     firstOption: (page: Page): Locator => page.getByRole("radio").first(),

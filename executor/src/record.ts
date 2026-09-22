@@ -49,8 +49,37 @@ const { values: flags } = parseArgs({
     street: { type: "string" }, // expected street for the mismatch guard
     query: { type: "string" }, // findParking: address/landmark to search
     yes: { type: "boolean", default: false },
+    // Stop the flow right after this onStep name fires (screens up to and
+    // including it are still captured). Only pre-payment steps are
+    // allowed, so an aborted walk can NEVER charge — #pickerNext and
+    // everything after it are off-limits.
+    "abort-after": { type: "string" },
   },
 });
+
+/** Steps that are provably before any click that could charge. */
+const SAFE_ABORT_STEPS = new Set([
+  "zone-entry",
+  "zone-submitted",
+  "free-period",
+  "signage-dismissed",
+  "zone-selected",
+  "vehicle-selected",
+]);
+const abortAfter = flags["abort-after"];
+if (abortAfter !== undefined && !SAFE_ABORT_STEPS.has(abortAfter)) {
+  console.error(
+    `--abort-after ${abortAfter} is not a pre-payment step; allowed: ${[...SAFE_ABORT_STEPS].join(", ")}`,
+  );
+  process.exit(1);
+}
+
+/** Thrown from onStep to stop a walk before the payment path. */
+class AbortedAfterStep extends Error {
+  constructor(step: string) {
+    super(`aborted after step "${step}" (--abort-after); nothing was paid`);
+  }
+}
 
 function usage(): never {
   console.error(
@@ -59,7 +88,8 @@ function usage(): never {
       "  pnpm -C executor run record -- [--provider parknyc|passport] --flow start --zone <zoneNumber> [--plate <plate>] [--minutes 15] [--lat .. --lng .. [--street ..]]",
       "  pnpm -C executor run record -- [--provider ..] --flow extend --session <providerSessionId> [--minutes 15]",
       "  pnpm -C executor run record -- [--provider ..] --flow stop --session <providerSessionId>",
-      "  pnpm -C executor run record -- --provider passport --flow findParking [--query \"Boylston St Back Bay\"]  (READ-ONLY, no charge)",
+      '  pnpm -C executor run record -- --provider passport --flow findParking [--query "Boylston St Back Bay"]  (READ-ONLY, no charge)',
+      '  Add --abort-after <step> (e.g. signage-dismissed) to stop a start walk at a pre-payment step — no charge, no "pay" prompt.',
     ].join("\n"),
   );
   process.exit(1);
@@ -87,7 +117,8 @@ if (flow === "start" && !flags.zone) usage();
 if ((flow === "extend" || flow === "stop") && !flags.session) usage();
 const minutes = Number(flags.minutes);
 
-if (!flags.yes && (flow === "start" || flow === "extend")) {
+// An --abort-after walk stops before any paying click, so no "pay" gate.
+if (!flags.yes && abortAfter === undefined && (flow === "start" || flow === "extend")) {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   const answer = await rl.question(
     `This drives the real ${provider} site and WILL charge your payment method (${flow}, ${minutes} min). Type "pay" to continue: `,
@@ -124,10 +155,25 @@ const clientOptions = {
     const prefix = join(outDir, `${String(stepIndex).padStart(2, "0")}-${name}`);
     writeFileSync(`${prefix}.html`, await page.content());
     await page.screenshot({ path: `${prefix}.png`, fullPage: true });
+    if (name === abortAfter) {
+      throw new AbortedAfterStep(name);
+    }
   },
 };
 const client =
-  provider === "passport" ? new PassportClient(clientOptions) : new ParkNycClient(clientOptions);
+  provider === "passport"
+    ? new PassportClient({
+        ...clientOptions,
+        // Belt to the onStep abort's suspender: even if the requested step
+        // never fires (e.g. the operator didn't show the modal), the
+        // client stops itself before the first click that could charge.
+        ...(abortAfter !== undefined ? { stopBeforePay: true } : {}),
+      })
+    : new ParkNycClient(clientOptions);
+if (abortAfter !== undefined && provider !== "passport") {
+  console.error("--abort-after is only wired for the Passport client so far.");
+  process.exit(1);
+}
 
 const resolveArgs = hasCoords
   ? {

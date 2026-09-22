@@ -33,7 +33,12 @@ import { warmBrowser } from "../browser.js";
 import { captureUnexpectedScreen } from "../parknyc/capture.js";
 import { classifyFailure } from "../parknyc/classify.js";
 import { parseAmountUsd, parseConfirmation, parseExpiresAt } from "../parknyc/parse.js";
-import { isAddPaymentScreen, isFreePeriodModal, parseProviderHours, recentZonesState } from "./parse.js";
+import {
+  isAddPaymentScreen,
+  isFreePeriodModal,
+  parseProviderHours,
+  recentZonesState,
+} from "./parse.js";
 import type {
   CardFormDetails,
   ExecutorError,
@@ -147,7 +152,17 @@ export class PassportClient {
             querySelector(s: string): unknown;
             querySelectorAll(s: string): ArrayLike<{ classList: { contains(t: string): boolean } }>;
           };
-          const TOKENS = ["in", "out", "slide", "slideup", "slidedown", "fade", "pop", "flip", "turn"];
+          const TOKENS = [
+            "in",
+            "out",
+            "slide",
+            "slideup",
+            "slidedown",
+            "fade",
+            "pop",
+            "flip",
+            "turn",
+          ];
           if (!doc.querySelector(".ui-page-active")) return false;
           const pages = Array.from(doc.querySelectorAll(".ui-page"));
           return !pages.some((p) => TOKENS.some((t) => p.classList.contains(t)));
@@ -161,15 +176,23 @@ export class PassportClient {
     if (handle) {
       stable = await page
         .waitForFunction(
-          (el: { getBoundingClientRect(): { top: number; left: number; width: number; height: number } }) =>
+          (el: {
+            getBoundingClientRect(): { top: number; left: number; width: number; height: number };
+          }) =>
             new Promise<boolean>((resolve) => {
-              const raf = (globalThis as unknown as { requestAnimationFrame: (cb: () => void) => void })
-                .requestAnimationFrame;
+              const raf = (
+                globalThis as unknown as { requestAnimationFrame: (cb: () => void) => void }
+              ).requestAnimationFrame;
               const a = el.getBoundingClientRect();
               raf(() =>
                 raf(() => {
                   const b = el.getBoundingClientRect();
-                  resolve(a.top === b.top && a.left === b.left && a.width === b.width && a.height === b.height);
+                  resolve(
+                    a.top === b.top &&
+                      a.left === b.left &&
+                      a.width === b.width &&
+                      a.height === b.height,
+                  );
                 }),
               );
             }),
@@ -200,7 +223,10 @@ export class PassportClient {
    * duration/pay path. Returns what the route actually served so we can
    * judge it as a zone-number source.
    */
-  async findParking(query?: string, coords?: { lat: number; lng: number }): Promise<
+  async findParking(
+    query?: string,
+    coords?: { lat: number; lng: number },
+  ): Promise<
     | {
         ok: true;
         landedOnFindParking: boolean;
@@ -273,7 +299,11 @@ export class PassportClient {
         autocomplete,
       };
     } catch (err) {
-      return this.fail(page, classifyFailure(err, null), `find parking recon failed: ${String(err)}`);
+      return this.fail(
+        page,
+        classifyFailure(err, null),
+        `find parking recon failed: ${String(err)}`,
+      );
     }
   }
 
@@ -350,7 +380,10 @@ export class PassportClient {
       // overlays it — clicking Continue then times out on actionability
       // (2026-09-21 regression). Blur to collapse the panel, wait for it
       // to go away, then click Continue once it's actionable.
-      await selectors.zone.zoneNumberInput(page).blur().catch(() => {});
+      await selectors.zone
+        .zoneNumberInput(page)
+        .blur()
+        .catch(() => {});
       if (recentZonesState(await page.content()).visible) {
         await page.keyboard.press("Escape").catch(() => {});
         await selectors.zone
@@ -373,9 +406,22 @@ export class PassportClient {
       // zone isn't charging now (e.g. after 8pm). Read the message, click
       // Ok, and return a typed free_period so the server records a free
       // period rather than a payment failure — nothing is charged.
+      // The locator waits for the popup; the pure detector (pinned by the
+      // free-period fixture) confirms the classification — it additionally
+      // requires the Ok button we are about to click.
       const freeModal = selectors.zone.freePeriodModal(page);
-      if (await freeModal.isVisible({ timeout: 3_000 }).catch(() => false)) {
-        const rawText = (await freeModal.first().innerText().catch(() => "")).replace(/\s+/g, " ").trim();
+      if (
+        (await freeModal.isVisible({ timeout: 3_000 }).catch(() => false)) &&
+        isFreePeriodModal(await page.content())
+      ) {
+        const rawText = (
+          await freeModal
+            .first()
+            .innerText()
+            .catch(() => "")
+        )
+          .replace(/\s+/g, " ")
+          .trim();
         await this.stableClick(page, selectors.zone.freePeriodOk(page), "free-period-ok");
         await this.step("free-period", page);
         return {
@@ -401,7 +447,15 @@ export class PassportClient {
         await page
           .waitForFunction(
             () => {
-              const doc = (globalThis as unknown as { document: { querySelector(s: string): { classList: { contains(t: string): boolean } } | null } }).document;
+              const doc = (
+                globalThis as unknown as {
+                  document: {
+                    querySelector(
+                      s: string,
+                    ): { classList: { contains(t: string): boolean } } | null;
+                  };
+                }
+              ).document;
               const screen = doc.querySelector(".ui-popup-screen");
               return !screen || !screen.classList.contains("in");
             },
@@ -440,7 +494,12 @@ export class PassportClient {
       // day/hour/minute steppers. Reach the requested minutes with hour
       // and minute (#minPlus) increments; the minute stepper's step is
       // assumed 15 (TODO-verify against a paid run's #minTimeText).
-      if (await selectors.duration.pickerPage(page).isVisible({ timeout: 5_000 }).catch(() => false)) {
+      if (
+        await selectors.duration
+          .pickerPage(page)
+          .isVisible({ timeout: 5_000 })
+          .catch(() => false)
+      ) {
         const hours = Math.floor(minutes / 60);
         const mins = minutes % 60;
         for (let i = 0; i < hours; i += 1) {
@@ -511,7 +570,12 @@ export class PassportClient {
       await this.step("extend-opened", page);
 
       // Same duration picker as start (TODO-verify for the extend entry).
-      if (await selectors.duration.pickerPage(page).isVisible({ timeout: 5_000 }).catch(() => false)) {
+      if (
+        await selectors.duration
+          .pickerPage(page)
+          .isVisible({ timeout: 5_000 })
+          .catch(() => false)
+      ) {
         const hours = Math.floor(minutes / 60);
         const mins = minutes % 60;
         for (let i = 0; i < hours; i += 1) {
@@ -521,7 +585,11 @@ export class PassportClient {
           await this.stableClick(page, selectors.duration.minPlus(page), "extend-min-plus");
         }
       }
-      await this.stableClick(page, selectors.duration.continueButton(page), "extend-duration-continue");
+      await this.stableClick(
+        page,
+        selectors.duration.continueButton(page),
+        "extend-duration-continue",
+      );
       await selectors.confirm.total(page).waitFor();
       await this.stableClick(page, selectors.confirm.payButton(page), "extend-pay");
       await this.step("extend-payment-submitted", page);
@@ -626,7 +694,9 @@ export class PassportClient {
       // Field ids verified against the recording; the SUBMIT (saveButton
       // → successMarker) is TODO-verify — not yet walked with a real card.
       await selectors.payment.cardNumberInput(page).fill(card.number);
-      await selectors.payment.expiryMonthSelect(page).selectOption(String(card.expMonth).padStart(2, "0"));
+      await selectors.payment
+        .expiryMonthSelect(page)
+        .selectOption(String(card.expMonth).padStart(2, "0"));
       await selectors.payment.expiryYearSelect(page).selectOption(String(card.expYear));
       await selectors.payment.cvcInput(page).fill(card.cvc);
       await selectors.payment.saveButton(page).click(); // TODO-verify: submit + success

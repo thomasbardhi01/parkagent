@@ -40,6 +40,10 @@ struct AssistantSheetView: View {
                 }
             }
         }
+        // Dismissing the sheet mid-dictation must release the mic: stop()
+        // tears down the tap, the recognition task, and the .record audio
+        // session (which otherwise keeps other apps' audio ducked).
+        .onDisappear { speech.stop() }
         .accessibilityIdentifier("assistant.sheet")
     }
 

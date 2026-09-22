@@ -177,7 +177,11 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
       deps.db.decision.create({
         data: {
           kind: "assistant_confirm",
-          inputs: { planId: planRow.id, optionId: parsed.data.optionId ?? null, kind: planRow.kind },
+          inputs: {
+            planId: planRow.id,
+            optionId: parsed.data.optionId ?? null,
+            kind: planRow.kind,
+          },
           rule,
           outcome,
           userId: user.id,
@@ -288,9 +292,16 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
         paymentSource,
         linkSpendRequestId: linkApproval?.spendRequestId ?? null,
       });
+      // The pay-by-app number, so the client can show something the user
+      // can verify against the posted sign — zoneId is an internal slug
+      // and must never surface in chat copy.
+      const zoneRow = option.zoneId
+        ? await deps.db.zone.findUnique({ where: { zoneId: option.zoneId } })
+        : null;
       return {
         kind: "street_confirmed",
         zoneId: option.zoneId,
+        providerZoneNumber: zoneRow?.providerZoneNumber || null,
         durationMinutes: option.durationMinutes,
         paymentSource,
         linkApproval,

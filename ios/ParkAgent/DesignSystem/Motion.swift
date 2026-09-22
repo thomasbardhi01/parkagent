@@ -73,22 +73,43 @@ enum Haptics {
 
 // Matched-geometry zoom from a session row into its detail. The API is
 // iOS 18+, so earlier systems (and Reduce Motion) keep the plain push.
-extension View {
-    @ViewBuilder
-    func zoomSource(id: some Hashable, in namespace: Namespace.ID) -> some View {
-        if #available(iOS 18.0, *), !UIAccessibility.isReduceMotionEnabled {
-            matchedTransitionSource(id: id, in: namespace)
+// ViewModifiers reading the environment, not the UIAccessibility global:
+// the global is non-reactive, so a mid-session Reduce Motion toggle would
+// never invalidate the view.
+private struct ZoomSourceModifier<ID: Hashable>: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let id: ID
+    let namespace: Namespace.ID
+
+    func body(content: Content) -> some View {
+        if #available(iOS 18.0, *), !reduceMotion {
+            content.matchedTransitionSource(id: id, in: namespace)
         } else {
-            self
+            content
         }
     }
+}
 
-    @ViewBuilder
-    func zoomDestination(id: some Hashable, in namespace: Namespace.ID) -> some View {
-        if #available(iOS 18.0, *), !UIAccessibility.isReduceMotionEnabled {
-            navigationTransition(.zoom(sourceID: id, in: namespace))
+private struct ZoomDestinationModifier<ID: Hashable>: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let id: ID
+    let namespace: Namespace.ID
+
+    func body(content: Content) -> some View {
+        if #available(iOS 18.0, *), !reduceMotion {
+            content.navigationTransition(.zoom(sourceID: id, in: namespace))
         } else {
-            self
+            content
         }
+    }
+}
+
+extension View {
+    func zoomSource(id: some Hashable, in namespace: Namespace.ID) -> some View {
+        modifier(ZoomSourceModifier(id: id, namespace: namespace))
+    }
+
+    func zoomDestination(id: some Hashable, in namespace: Namespace.ID) -> some View {
+        modifier(ZoomDestinationModifier(id: id, namespace: namespace))
     }
 }

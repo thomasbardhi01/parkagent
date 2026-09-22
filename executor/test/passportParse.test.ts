@@ -23,6 +23,8 @@ import {
   recentZonesState,
   isSignageModal,
   activePageSettled,
+  isFreePeriodModal,
+  parseProviderHours,
 } from "../src/passport/parse.js";
 
 const pagesDir = fileURLToPath(new URL("./fixtures/pages/passport", import.meta.url));
@@ -255,5 +257,41 @@ describe("screen after Review Signage (confirmed live 2026-09-21)", () => {
     expect(html).toContain('id="addVehicleButton"');
     // Sanity: the next screen is not itself the signage modal.
     expect(isSignageModal(html)).toBe(false);
+  });
+})
+
+describe("No Meter Parking after-hours notice (free period)", () => {
+  const dir = fileURLToPath(new URL("./fixtures/pages/passport", import.meta.url));
+  const modal = readFileSync(join(dir, "no-meter-parking-modal.html"), "utf8");
+
+  test("isFreePeriodModal fires on the notice, not on the other screens", () => {
+    expect(isFreePeriodModal(modal)).toBe(true);
+    expect(isFreePeriodModal(readFileSync(join(dir, "signage-modal.html"), "utf8"))).toBe(false);
+    expect(isFreePeriodModal(readFileSync(join(dir, "zone-entry--recent-zones-visible.html"), "utf8"))).toBe(false);
+  });
+
+  test("parseProviderHours reads 8am-8pm EST Mon-Sat off the message", () => {
+    const text =
+      "No Meter Parking. Please Check Signage Paid parking is between 8am-8pm EST Mon-Sat.; " +
+      "Outside of those hours, please see on street signage.";
+    const h = parseProviderHours(text);
+    expect(h).toEqual({
+      startLabel: "8am",
+      endLabel: "8pm",
+      startMinutes: 480, // 08:00
+      endMinutes: 1200, // 20:00
+      days: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
+      tz: "EST",
+    });
+  });
+
+  test("parseProviderHours handles 12am/12pm and a wrap-free single-day, returns null without a range", () => {
+    expect(parseProviderHours("between 12pm-6pm Mon-Fri")).toMatchObject({
+      startMinutes: 720,
+      endMinutes: 1080,
+      days: ["Mon", "Tue", "Wed", "Thu", "Fri"],
+    });
+    expect(parseProviderHours("between 9am-5pm")).toMatchObject({ days: [] });
+    expect(parseProviderHours("no hours mentioned here")).toBeNull();
   });
 })

@@ -248,7 +248,10 @@ browser context on one warm shared Chromium process. No linked account, no
 state key, or an unparseable state → the call fails typed
 (`auth_expired`/`unknown`), it never falls back to someone else's session.
 Executor error codes: `auth_expired`, `zone_not_found`,
-`payment_declined`, `payment_method_missing` (the provider account has no
+`payment_declined`, `free_period` (the provider says the zone isn't
+charging now — after-hours; the server records a free period with the
+notice's parsed hours and pushes "parking is free", no session, no
+charge), `payment_method_missing` (the provider account has no
 saved payment method — the `payment_failed` push says "add a card to
 ParkBoston" instead of offering a retry), `ui_changed`, `network`,
 `browser_crashed` (Chromium died mid-call; the executor already retried

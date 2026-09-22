@@ -16,6 +16,11 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
 import { selectors } from "../src/passport/selectors.js";
 
+const noMeter = readFileSync(
+  fileURLToPath(new URL("./fixtures/pages/passport/no-meter-parking-modal.html", import.meta.url)),
+  "utf8",
+);
+
 const html = readFileSync(
   fileURLToPath(new URL("./fixtures/pages/passport/signage-modal.html", import.meta.url)),
   "utf8",
@@ -50,6 +55,19 @@ describe.skipIf(process.env["SKIP_BROWSER_TESTS"] === "1")("signage Continue sel
     expect(box?.width ?? 0).toBeGreaterThan(0);
     expect(box?.height ?? 0).toBeGreaterThan(0);
 
+    await page.close();
+  });
+
+  test("free-period Ok resolves to exactly one visible button in the notice popup", async () => {
+    if (!browser) return;
+    const page = await browser.newPage();
+    await page.setContent(noMeter);
+    expect(await selectors.zone.freePeriodModal(page).count()).toBe(1);
+    const ok = selectors.zone.freePeriodOk(page);
+    expect(await ok.count()).toBe(1);
+    expect(await ok.isVisible()).toBe(true);
+    const box = await ok.boundingBox();
+    expect(box?.width ?? 0).toBeGreaterThan(0);
     await page.close();
   });
 });

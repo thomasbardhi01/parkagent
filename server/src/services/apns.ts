@@ -20,7 +20,8 @@ export type PushType =
   | "session_expiring"
   | "payment_failed"
   | "provider_relink"
-  | "itinerary_garage_link";
+  | "itinerary_garage_link"
+  | "free_period";
 
 export interface Push {
   type: PushType;
@@ -113,6 +114,17 @@ export function paymentFailedPush(args: {
       // prefilled (and copies the zone number for the ParkNYC app).
       deepLink: `parkagent://pay?zone=${encodeURIComponent(args.zoneNumber)}`,
     },
+  };
+}
+
+/** The provider says this zone isn't charging now (after hours) — parking
+ * is free; nothing was paid and there's nothing to tap. */
+export function freePeriodPush(args: { zoneNumber: string; notice: string }): Push {
+  return {
+    type: "free_period",
+    title: "Parking is free here right now",
+    body: `No need to pay in zone ${args.zoneNumber} — ${args.notice}`,
+    extra: { zoneNumber: args.zoneNumber },
   };
 }
 

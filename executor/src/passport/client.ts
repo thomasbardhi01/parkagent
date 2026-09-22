@@ -33,7 +33,7 @@ import { warmBrowser } from "../browser.js";
 import { captureUnexpectedScreen } from "../parknyc/capture.js";
 import { classifyFailure } from "../parknyc/classify.js";
 import { parseAmountUsd, parseConfirmation, parseExpiresAt } from "../parknyc/parse.js";
-import { isAddPaymentScreen, recentZonesState } from "./parse.js";
+import { isAddPaymentScreen, isFreePeriodModal, parseProviderHours, recentZonesState } from "./parse.js";
 import type {
   CardFormDetails,
   ExecutorError,
@@ -367,6 +367,23 @@ export class PassportClient {
           .catch(() => false)
       ) {
         return this.fail(page, "zone_not_found", `Passport rejected zone ${zoneNumber}`);
+      }
+
+      // "No Meter Parking" after-hours notice: the provider says this
+      // zone isn't charging now (e.g. after 8pm). Read the message, click
+      // Ok, and return a typed free_period so the server records a free
+      // period rather than a payment failure — nothing is charged.
+      const freeModal = selectors.zone.freePeriodModal(page);
+      if (await freeModal.isVisible({ timeout: 3_000 }).catch(() => false)) {
+        const rawText = (await freeModal.first().innerText().catch(() => "")).replace(/\s+/g, " ").trim();
+        await this.stableClick(page, selectors.zone.freePeriodOk(page), "free-period-ok");
+        await this.step("free-period", page);
+        return {
+          ok: false,
+          code: "free_period",
+          message: rawText || "No Meter Parking — this zone is not charging now",
+          freePeriod: { rawText, hours: parseProviderHours(rawText) },
+        };
       }
 
       // Optional "Review Signage" interstitial (operator-configured; may

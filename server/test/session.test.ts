@@ -187,6 +187,47 @@ test("executor failure fails the session and pushes payment_failed", async () =>
   });
 });
 
+test("free_period: no charge, no active session, hours logged, 'parking is free' push", async () => {
+  const freeResult: ExecutorResult = {
+    ok: false,
+    code: "free_period",
+    message: "No Meter Parking. Please Check Signage Paid parking is between 8am-8pm EST Mon-Sat.",
+    freePeriod: {
+      rawText: "No Meter Parking. ... Paid parking is between 8am-8pm EST Mon-Sat.",
+      hours: {
+        startLabel: "8am",
+        endLabel: "8pm",
+        startMinutes: 480,
+        endMinutes: 1200,
+        days: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
+        tz: "EST",
+      },
+    },
+  };
+  const { app, state, pushes } = makeApp({
+    executor: {
+      startSession: async () => freeResult,
+      extendSession: async () => freeResult,
+      stopSession: async () => freeResult,
+    },
+  });
+  const res = await post(app, "/session/start", START);
+  expect(res.statusCode).toBe(200);
+  expect(res.json()).toMatchObject({ status: "free_period", zoneId: "nyc-417371" });
+  // No active/paid session.
+  expect(state.sessions.every((s) => s.status !== "active")).toBe(true);
+  expect(state.sessions.at(-1)!.status).toBe("free_period");
+  // Decision logs the provider hours AND our zone hours for comparison.
+  const decision = state.decisions.at(-1)!;
+  expect(decision.rule).toBe("free_period");
+  expect(decision.inputs["providerHours"]).toMatchObject({ startMinutes: 480, endMinutes: 1200 });
+  expect(decision.inputs).toHaveProperty("zoneHours");
+  // The push says it's free — not a payment failure.
+  const push = pushes.at(-1)!.push;
+  expect(push.type).toBe("free_period");
+  expect(push.title).toContain("free");
+});
+
 test("payment_method_missing pushes an 'add a card to ParkBoston' failure, not a retry", async () => {
   const failure: ExecutorResult = {
     ok: false,

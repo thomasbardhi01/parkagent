@@ -1,3 +1,4 @@
+import type { ParsedProviderHours } from "../types.js";
 /**
  * PERSONAL-USE PROTOTYPE — see ../types.ts header and issue #37.
  *
@@ -223,4 +224,61 @@ export function activePageSettled(html: string): boolean {
   );
   if (!pages.some((cls) => cls.includes("ui-page-active"))) return false;
   return !pages.some((cls) => cls.some((c) => TOKENS.includes(c)));
+}
+
+/** True when the HTML shows the "No Meter Parking" free-period notice —
+ * a popup with the after-hours wording and an Ok button. Pure. */
+export function isFreePeriodModal(html: string): boolean {
+  const isPopupish = /data-role="popup"|ui-popup|role="dialog"/i.test(html);
+  const mentions = /no meter parking|paid parking is between/i.test(html);
+  const hasOk = /(>\s*ok\s*<|>\s*okay\s*<)/i.test(html);
+  return isPopupish && mentions && hasOk;
+}
+
+const DAY_ORDER = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+/** Parse a provider free-period notice like "Paid parking is between
+ * 8am-8pm EST Mon-Sat." into structured hours, so we can compare them
+ * against our zone data. Null when the "between …-…" clause is absent. */
+export function parseProviderHours(text: string): ParsedProviderHours | null {
+  const t = text.replace(/\s+/g, " ");
+  const m = /between\s*(\d{1,2})\s*(am|pm)\s*[-–—]\s*(\d{1,2})\s*(am|pm)/i.exec(t);
+  if (!m) return null;
+  const to24 = (h: number, ap: string) => {
+    const hour = h % 12;
+    return (ap.toLowerCase() === "pm" ? hour + 12 : hour) * 60;
+  };
+  const startMinutes = to24(Number(m[1]), m[2]!);
+  const endMinutes = to24(Number(m[3]), m[4]!);
+  const tzMatch = /\b([A-Z]{2,4}T)\b/.exec(t); // EST/EDT/etc.
+  const days = parseDays(t);
+  return {
+    startLabel: `${m[1]}${m[2]!.toLowerCase()}`,
+    endLabel: `${m[3]}${m[4]!.toLowerCase()}`,
+    startMinutes,
+    endMinutes,
+    days,
+    tz: tzMatch ? tzMatch[1]! : null,
+  };
+}
+
+/** "Mon-Sat" → the inclusive run; a comma/space list is also accepted. */
+function parseDays(text: string): string[] {
+  const range = /\b(Sun|Mon|Tue|Wed|Thu|Fri|Sat)\w*\s*[-–—]\s*(Sun|Mon|Tue|Wed|Thu|Fri|Sat)\w*/i.exec(
+    text,
+  );
+  if (range) {
+    const norm = (d: string) => d.slice(0, 3).replace(/^\w/, (c) => c.toUpperCase());
+    const a = DAY_ORDER.indexOf(norm(range[1]!));
+    const b = DAY_ORDER.indexOf(norm(range[2]!));
+    if (a >= 0 && b >= 0) {
+      const out: string[] = [];
+      for (let i = a; ; i = (i + 1) % 7) {
+        out.push(DAY_ORDER[i]!);
+        if (i === b) break;
+      }
+      return out;
+    }
+  }
+  return [];
 }

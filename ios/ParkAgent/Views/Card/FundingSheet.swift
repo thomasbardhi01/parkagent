@@ -57,13 +57,21 @@ struct FundingSheet: View {
                     .accessibilityIdentifier("funding.amountField")
                 HStack(spacing: Spacing.half) {
                     ForEach(Self.quickAmounts, id: \.self) { amount in
-                        Button("$\(Int(amount))") { amountText = String(Int(amount)) }
-                            .font(.captionTextSemibold)
-                            .foregroundStyle(Color.textPrimary)
-                            .padding(.horizontal, Spacing.unit)
-                            .padding(.vertical, Spacing.half)
-                            .background(Color.mist.opacity(0.5), in: Capsule())
-                            .accessibilityIdentifier("funding.quick.\(Int(amount))")
+                        Button {
+                            amountText = String(Int(amount))
+                        } label: {
+                            Text("$\(Int(amount))")
+                                .font(.captionTextSemibold)
+                                .foregroundStyle(Color.textPrimary)
+                                .padding(.horizontal, Spacing.unit)
+                                .padding(.vertical, Spacing.half)
+                                .background(Color.mist.opacity(0.5), in: Capsule())
+                                // The chip stays compact; the target doesn't.
+                                .frame(minHeight: 44)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.pressable)
+                        .accessibilityIdentifier("funding.quick.\(Int(amount))")
                     }
                 }
             }

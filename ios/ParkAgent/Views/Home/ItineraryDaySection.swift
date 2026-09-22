@@ -30,6 +30,8 @@ struct ItineraryDaySection: View {
                 }
                 .font(.captionTextSemibold)
                 .foregroundStyle(Color.actionCoralLink)
+                // 44pt target for a caption-sized label.
+                .frame(minWidth: 44, minHeight: 44)
                 .accessibilityIdentifier("home.dayEditButton")
             }
 
@@ -99,6 +101,7 @@ struct ItineraryDaySection: View {
             Button("Edit") { editingStop = stop }
                 .font(.captionTextSemibold)
                 .foregroundStyle(Color.actionCoralLink)
+                .frame(minWidth: 44, minHeight: 44)
                 .accessibilityIdentifier("home.stopEdit.\(stop.id)")
         }
         .padding(.vertical, Spacing.half)

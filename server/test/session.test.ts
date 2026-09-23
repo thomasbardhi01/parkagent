@@ -228,6 +228,48 @@ test("free_period: no charge, no active session, hours logged, 'parking is free'
   expect(push.title).toContain("free");
 });
 
+test("free_period on extend is a hold: no failure, 'parking is free' push, 409", async () => {
+  const okStart: ExecutorResult = {
+    ok: true,
+    providerSessionId: "p1",
+    expiresAt: new Date(NOW.getTime() + 90 * 60_000),
+    amountUsd: 4.5,
+  };
+  const freeResult: ExecutorResult = {
+    ok: false,
+    code: "free_period",
+    message: "No Meter Parking. Please Check Signage Paid parking is between 8am-8pm EST Mon-Sat.",
+  };
+  const { app, state, pushes } = makeApp({
+    executor: {
+      startSession: async () => okStart,
+      extendSession: async () => freeResult,
+      stopSession: async () => okStart,
+    },
+  });
+  const started = await post(app, "/session/start", START);
+  expect(started.statusCode).toBe(200);
+  const sessionId = started.json().sessionId;
+  const expiresBefore = state.sessions[0]!.expiresAt!.getTime();
+
+  const res = await post(app, "/session/extend", { sessionId, minutes: 30 });
+  // Not an executor failure: nothing to extend because nothing charges now.
+  expect(res.statusCode).toBe(409);
+  expect(res.json()).toMatchObject({ error: "free_period" });
+
+  // A hold: the session keeps its time and is never marked failed.
+  expect(state.sessions[0]!.extendCount).toBe(0);
+  expect(state.sessions[0]!.expiresAt!.getTime()).toBe(expiresBefore);
+  expect(state.sessionEvents.map((e) => e.kind)).toEqual(["started", "free_period"]);
+
+  // The push says parking is free — never a tap-to-pay payment failure.
+  expect(pushes.some((p) => p.push.type === "payment_failed")).toBe(false);
+  expect(pushes.at(-1)!.push.type).toBe("free_period");
+
+  const decision = state.decisions.at(-1)!;
+  expect(decision).toMatchObject({ kind: "session_extend", rule: "free_period" });
+});
+
 test("payment_method_missing pushes an 'add a card to ParkBoston' failure, not a retry", async () => {
   const failure: ExecutorResult = {
     ok: false,

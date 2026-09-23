@@ -29,6 +29,10 @@ final class AppModel {
     var pendingParked: ParkedResponse?
     var isPaying = false
     var paymentError: APIError?
+    /// Set when session/start answered free_period: the provider says the
+    /// zone isn't charging right now. The parked sheet shows it; nothing
+    /// was paid and no session exists.
+    var freePeriodNotice: String?
     /// Extend/stop failures on the Active Session screen.
     var sessionActionError: APIError?
     /// True while an extend round-trip is in flight (button disables).
@@ -265,11 +269,20 @@ final class AppModel {
         paymentError = nil
         Haptics.light()
         do {
-            let response = try await api.startSession(SessionStartRequest(
+            let outcome = try await api.startSession(SessionStartRequest(
                 parkedEventId: parked.parkedEventId,
                 zoneId: candidate.zoneId,
                 minutes: candidate.quote.stayMinutes
             ))
+            guard case .started(let response) = outcome else {
+                if case .freePeriod(let notice) = outcome {
+                    // Free, not failed: the sheet says so; no session, no
+                    // charge, no retry invitation.
+                    freePeriodNotice = notice ?? "Meters here are free right now."
+                }
+                isPaying = false
+                return
+            }
             let autoExtendPolicy = policyResponse?.policy.autoExtend
             activeSession = ActiveSession(
                 sessionId: response.sessionId,
@@ -297,13 +310,18 @@ final class AppModel {
     func dismissParkedSheet() {
         pendingParked = nil
         paymentError = nil
+        freePeriodNotice = nil
     }
 
     /// The needsZoneNumber flow: store the number the driver read off the
     /// meter so this block (and everyone's next park here) is automatic.
-    /// False → the report didn't reach the server; nothing was charged.
-    func reportZoneNumber(zoneId: String, number: String) async -> Bool {
-        (try? await api.reportZoneNumber(zoneId: zoneId, number: number))?.ok == true
+    /// nil → the report didn't reach the server; nothing was charged. The
+    /// response's `number` is what the server APPLIED (import/verified
+    /// precedence can outrank the report) — pay with that, not the input.
+    func reportZoneNumber(zoneId: String, number: String) async -> ZoneNumberReportResponse? {
+        guard let response = try? await api.reportZoneNumber(zoneId: zoneId, number: number),
+              response.ok else { return nil }
+        return response
     }
 
     // MARK: - Session actions

@@ -8,9 +8,11 @@
  *   pnpm -C server load:zone-numbers -- --file data/out/parkboston_zone_numbers.json
  *
  * Semantics:
- *   - zone_number_imports mirrors the file (stale rows deleted) — like
- *     zone_number_reports it has no FK to zones, so imports survive
- *     load:zones reloads and are rehydrated by that loader.
+ *   - zone_number_imports mirrors the file (stale rows deleted, and a
+ *     withdrawn claim's number is taken back off the zone, reverting to
+ *     the zone's reports) — like zone_number_reports it has no FK to
+ *     zones, so imports survive load:zones reloads and are rehydrated by
+ *     that loader.
  *   - Precedence on the zones table: a VERIFIED user report (two users
  *     agree — the zone row's provider_zone_number_verified) is never
  *     overwritten; an import beats an empty number AND a single
@@ -23,6 +25,8 @@ import { parseArgs } from "node:util";
 
 import { config } from "dotenv";
 import pg from "pg";
+
+import { planWithdrawnReverts } from "../services/zoneNumberReverts.js";
 
 // Secrets live in the repo-root .env (see .env.example), not in server/.
 const repoRoot = new URL("../../..", import.meta.url).pathname;
@@ -109,13 +113,59 @@ async function main(): Promise<number> {
     }
 
     // The table mirrors the file: an import run that no longer claims a
-    // zone withdraws its earlier claim.
-    const stale = await client.query(
-      "DELETE FROM zone_number_imports WHERE zone_id <> ALL($1::text[])",
+    // zone withdraws its earlier claim — AND takes its number back off the
+    // zone (falling back to the zone's reports) so nothing keeps paying a
+    // number the importer explicitly withdrew.
+    const stale = await client.query<{ zone_id: string; number: string }>(
+      "DELETE FROM zone_number_imports WHERE zone_id <> ALL($1::text[]) RETURNING zone_id, number",
       [matches.map((m) => m.zone_id)],
     );
     if ((stale.rowCount ?? 0) > 0) {
       console.log(`  deleted ${stale.rowCount} stale import rows`);
+      const withdrawnIds = stale.rows.map((r) => r.zone_id);
+      const zoneRows = await client.query<{
+        zone_id: string;
+        provider_zone_number: string;
+        provider_zone_number_verified: boolean;
+      }>(
+        `SELECT zone_id, provider_zone_number, provider_zone_number_verified
+         FROM zones WHERE zone_id = ANY($1::text[])`,
+        [withdrawnIds],
+      );
+      const reportRows = await client.query<{
+        zone_id: string;
+        user_id: string;
+        number: string;
+        created_at: Date;
+      }>(
+        `SELECT zone_id, user_id, number, created_at
+         FROM zone_number_reports WHERE zone_id = ANY($1::text[])`,
+        [withdrawnIds],
+      );
+      const reverts = planWithdrawnReverts(
+        stale.rows.map((r) => ({ zoneId: r.zone_id, number: r.number })),
+        zoneRows.rows.map((r) => ({
+          zoneId: r.zone_id,
+          providerZoneNumber: r.provider_zone_number,
+          providerZoneNumberVerified: r.provider_zone_number_verified,
+        })),
+        reportRows.rows.map((r) => ({
+          zoneId: r.zone_id,
+          userId: r.user_id,
+          number: r.number,
+          createdAt: r.created_at,
+        })),
+      );
+      for (const revert of reverts) {
+        await client.query(
+          `UPDATE zones SET provider_zone_number = $2, provider_zone_number_verified = $3
+           WHERE zone_id = $1`,
+          [revert.zoneId, revert.number, revert.verified],
+        );
+      }
+      if (reverts.length > 0) {
+        console.log(`  reverted ${reverts.length} zones whose number came from a withdrawn import`);
+      }
     }
 
     // Apply to zones with precedence: never touch a verified number; an

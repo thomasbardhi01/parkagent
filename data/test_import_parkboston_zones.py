@@ -220,6 +220,66 @@ def test_confidence() -> None:
     assert confidence_for("llm", None, 2) >= 0.3
 
 
+def test_geocoder_google_caches_only_completed_lookups() -> None:
+    """Transient Google statuses (OVER_QUERY_LIMIT etc., delivered as HTTP
+    200 + non-OK status) must NOT be cached as "no such corner" — only OK
+    and ZERO_RESULTS are completed answers."""
+    import tempfile
+    from pathlib import Path
+
+    import requests
+
+    from import_parkboston_zones import Geocoder
+
+    class FakeResponse:
+        def __init__(self, body: dict) -> None:
+            self._body = body
+
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict:
+            return self._body
+
+    calls: list[str] = []
+    next_body: dict = {}
+    real_get = requests.get
+
+    def fake_get(url: str, **kwargs) -> FakeResponse:  # noqa: ANN003
+        calls.append(str(kwargs.get("params", {}).get("address", "")))
+        return FakeResponse(next_body)
+
+    requests.get = fake_get  # type: ignore[assignment]
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            geocoder = Geocoder(cache_path=Path(tmp) / "cache.json")
+            geocoder.google_key = "test-key"
+
+            # Transient quota error: no answer, and NOTHING cached.
+            next_body = {"status": "OVER_QUERY_LIMIT", "results": []}
+            assert geocoder.intersection("Boylston", "Dartmouth") is None
+            assert geocoder.cache == {}
+
+            # Quota back: the very same corner resolves and caches now.
+            next_body = {
+                "status": "OK",
+                "results": [{"geometry": {"location": {"lat": 42.35, "lng": -71.07}}}],
+            }
+            assert geocoder.intersection("Boylston", "Dartmouth") == (42.35, -71.07)
+            assert len(geocoder.cache) == 1
+
+            # A true negative (ZERO_RESULTS) caches and short-circuits.
+            next_body = {"status": "ZERO_RESULTS", "results": []}
+            assert geocoder.intersection("Boylston", "Nowhere") is None
+            negative_keys = [k for k in geocoder.cache if "nowhere" in k.lower()]
+            assert negative_keys and geocoder.cache[negative_keys[0]] is None
+            before = len(calls)
+            assert geocoder.intersection("Boylston", "Nowhere") is None
+            assert len(calls) == before
+    finally:
+        requests.get = real_get  # type: ignore[assignment]
+
+
 def main() -> int:
     tests = [v for k, v in globals().items() if k.startswith("test_") and callable(v)]
     for test in tests:

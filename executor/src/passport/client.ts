@@ -589,6 +589,39 @@ export class PassportClient {
       await this.stableClick(page, selectors.sessions.extendButton(page), "extend-open");
       await this.step("extend-opened", page);
 
+      // "No Meter Parking" can meet an extension at the enforcement
+      // boundary too (auto-extend firing near 8pm). A real waitFor, not
+      // isVisible({timeout}) — Playwright ignores that timeout and the
+      // popup is injected a beat after the click (the #106 lesson). The
+      // typed free_period lets the server hold and say "parking is free
+      // now" instead of pushing a payment failure. (Placement drafted,
+      // TODO-verify: no extend recording crosses the boundary yet.)
+      const extendFreeModal = selectors.zone.freePeriodModal(page);
+      if (
+        (await extendFreeModal
+          .waitFor({ state: "visible", timeout: 3_000 })
+          .then(() => true)
+          .catch(() => false)) &&
+        isFreePeriodModal(await page.content())
+      ) {
+        const rawText = (
+          await extendFreeModal
+            .first()
+            .innerText()
+            .catch(() => "")
+        )
+          .replace(/\s+/g, " ")
+          .trim();
+        await this.stableClick(page, selectors.zone.freePeriodOk(page), "extend-free-period-ok");
+        await this.step("extend-free-period", page);
+        return {
+          ok: false,
+          code: "free_period",
+          message: rawText || "No Meter Parking — this zone is not charging now",
+          freePeriod: { rawText, hours: parseProviderHours(rawText) },
+        };
+      }
+
       // Same duration picker as start (TODO-verify for the extend entry).
       if (
         await selectors.duration

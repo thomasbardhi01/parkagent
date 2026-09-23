@@ -108,6 +108,41 @@ test("driver walking back with time to spare: hold, no push", async () => {
   expect(pushes).toHaveLength(0);
 });
 
+test("auto-extend meeting a provider free period holds and says parking is free", async () => {
+  const { state, extender, pushes } = makeTickApp({
+    executor: {
+      startSession: async () => ({
+        ok: false as const,
+        code: "unknown" as const,
+        message: "unused",
+      }),
+      extendSession: async () => ({
+        ok: false as const,
+        code: "free_period" as const,
+        message: "No Meter Parking. Please Check Signage.",
+      }),
+      stopSession: async () => ({
+        ok: false as const,
+        code: "unknown" as const,
+        message: "unused",
+      }),
+    },
+  });
+  const session = activeSession(state);
+  addFixes(state, session.id, [100, 300, 600]); // away → the worker WOULD extend
+
+  await extender.tick();
+
+  const decision = lastTick(state);
+  // A hold, not extend_failed: the provider says the meter is free now.
+  expect(decision.rule).toBe("free_period");
+  expect(decision.outcome).toMatchObject({ action: "hold", code: "free_period" });
+  expect(session.extendCount).toBe(0);
+  expect(state.sessionEvents.some((e) => e.kind === "failed")).toBe(false);
+  expect(pushes.some((p) => p.push.type === "payment_failed")).toBe(false);
+  expect(pushes.map((p) => p.push.type)).toContain("free_period");
+});
+
 test("at the zone max stay: warn to move the car, once", async () => {
   const { state, extender, pushes } = makeTickApp();
   const session = activeSession(state, { purchasedMinutes: 120, chargedMinutes: 120 });

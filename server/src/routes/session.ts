@@ -453,11 +453,13 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
     }
 
     const outcome = await applyExtension(deps, session, body.minutes, price, "manual");
+    const failRule =
+      !outcome.ok && outcome.code === "free_period" ? "free_period" : "executor_failed";
     await deps.db.decision.create({
       data: {
         kind: "session_extend",
         inputs: decisionInputs,
-        rule: outcome.ok ? "extend_ok" : "executor_failed",
+        rule: outcome.ok ? "extend_ok" : failRule,
         outcome: outcome.ok
           ? {
               allowed: true,
@@ -480,6 +482,11 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
       },
     });
     if (!outcome.ok) {
+      if (outcome.code === "free_period") {
+        // Not an executor failure: the provider says this zone is free
+        // right now, so there is nothing to extend (and nothing charged).
+        return reply.code(409).send({ error: "free_period", notice: outcome.message });
+      }
       return reply.code(502).send({ error: "executor_failed", code: outcome.code });
     }
     return { sessionId: session.id, expiresAt: outcome.expiresAt, amountUsd: price.totalUsd };

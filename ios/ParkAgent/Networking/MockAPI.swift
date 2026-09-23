@@ -11,6 +11,13 @@ enum MockScenario: String, CaseIterable, Identifiable, Sendable {
     /// Boston block with no known ParkBoston number: the sheet collects it
     /// from the meter, and later parks at the block are automatic.
     case bostonNeedsZone
+    /// /parked quotes normally, but session/start answers free_period —
+    /// the provider says the zone isn't charging right now.
+    case freePeriodAtStart
+    /// Boston capture flow where an import already claims the block with
+    /// a DIFFERENT number: the report is outranked (import precedence)
+    /// and the session pays the import's number.
+    case bostonImportConflict
 
     static let defaultsKey = "mockScenario"
 
@@ -24,6 +31,8 @@ enum MockScenario: String, CaseIterable, Identifiable, Sendable {
         case .unknownZone: "Unknown zone"
         case .paymentFailed: "Payment failed"
         case .bostonNeedsZone: "Boston — zone number needed"
+        case .freePeriodAtStart: "Free period at start"
+        case .bostonImportConflict: "Boston — import conflicts with report"
         }
     }
 }
@@ -133,7 +142,7 @@ struct MockAPI: APIClient {
         try await pause()
         let provider = await parknycProvider()
         switch scenario {
-        case .singleQuote, .paymentFailed:
+        case .singleQuote, .paymentFailed, .freePeriodAtStart:
             return MockFixtures.singleQuote(provider: provider)
         case .twoCandidates:
             return MockFixtures.twoCandidates(provider: provider)
@@ -141,7 +150,7 @@ struct MockAPI: APIClient {
             return MockFixtures.freePeriod(provider: provider)
         case .unknownZone:
             return MockFixtures.unknownZone()
-        case .bostonNeedsZone:
+        case .bostonNeedsZone, .bostonImportConflict:
             // Once someone reported the block's number, parking there is
             // automatic — like the real zones table.
             let passportStatus = await providerStore.status(of: "passport", scenario: providerScenario)
@@ -155,11 +164,16 @@ struct MockAPI: APIClient {
 
     func reportZoneNumber(zoneId: String, number: String) async throws -> ZoneNumberReportResponse {
         try await pause()
-        await zoneStore.report(number, for: zoneId)
+        // Import precedence, like the real route: a single unverified
+        // report loses to an existing import's number.
+        let importNumber = scenario == .bostonImportConflict ? MockFixtures.importedZoneNumber : nil
+        let applied = importNumber ?? number
+        await zoneStore.report(applied, for: zoneId)
         return ZoneNumberReportResponse(
             ok: true,
             zoneId: zoneId,
-            number: number,
+            number: applied,
+            appliedSource: importNumber != nil ? "import" : "report",
             verified: false,
             confirmations: 1
         )
@@ -180,20 +194,25 @@ struct MockAPI: APIClient {
         return await policyStore.replace(policy)
     }
 
-    func startSession(_ request: SessionStartRequest) async throws -> SessionStartResponse {
+    func startSession(_ request: SessionStartRequest) async throws -> SessionStartOutcome {
         try await pause()
         if scenario == .paymentFailed { throw APIError.paymentFailed }
+        if scenario == .freePeriodAtStart {
+            // Mirrors the server's 200 {status: "free_period"}: quoted as
+            // payable, but the provider said no charge at start time.
+            return .freePeriod(notice: "No Meter Parking. Please Check Signage. Mon-Sat 8am-8pm")
+        }
         // The zone's city names its provider, like the real server.
         let providerId = request.zoneId.hasPrefix("bos-") ? "passport" : "parknyc"
         if await providerStore.status(of: providerId, scenario: providerScenario) != "linked" {
             throw APIError.refused(code: "provider_not_linked")
         }
         let expiresAt = await store.start(minutes: request.minutes)
-        return SessionStartResponse(
+        return .started(SessionStartResponse(
             sessionId: "mock-\(UUID().uuidString.prefix(8))",
             expiresAt: expiresAt,
             amountUsd: MockFixtures.price(minutes: request.minutes)
-        )
+        ))
     }
 
     func stopSession(sessionId: String) async throws -> SessionStopResponse {
@@ -619,6 +638,11 @@ enum MockFixtures {
     /// The Boylston St Back Bay block from server/test fixtures: flat
     /// $3.75/hr, 120 min max, $0.35 ParkBoston fee.
     static let bostonZoneId = "bos-boylston-st-e-d-819305"
+
+    /// What the Find Parking importer claims for that block in the
+    /// bostonImportConflict scenario — deliberately not what a driver at
+    /// the meter would type.
+    static let importedZoneNumber = "55555"
 
     /// Boston quote; `zoneNumber` nil means nobody has reported the block's
     /// ParkBoston number yet (action confirm + needsZoneNumber).

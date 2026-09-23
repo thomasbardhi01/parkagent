@@ -43,7 +43,11 @@ struct ParkedResponse: Codable, Sendable, Identifiable {
 struct ZoneNumberReportResponse: Codable, Sendable {
     var ok: Bool
     var zoneId: String
+    /// The number now ON the zone — what the executor will type. Under
+    /// import/verified precedence this can differ from what was reported.
     var number: String
+    /// "report" | "import" | "verified" — which source won.
+    var appliedSource: String?
     var verified: Bool
     var confirmations: Int
 }
@@ -166,6 +170,39 @@ struct SessionStartResponse: Codable, Sendable {
     var sessionId: String
     var expiresAt: Date
     var amountUsd: Double
+}
+
+/// POST /session/start answers 200 with one of two shapes: a started
+/// session, or `{status: "free_period", notice, …}` when the provider
+/// says the zone isn't charging right now (after hours). Decoding the
+/// started shape alone turned free parking into a payment error.
+enum SessionStartOutcome: Sendable {
+    case started(SessionStartResponse)
+    case freePeriod(notice: String?)
+}
+
+/// The dual-shape wire form; `outcome()` is the single decode point.
+struct SessionStartWire: Decodable, Sendable {
+    var status: String?
+    var notice: String?
+    var sessionId: String?
+    var expiresAt: Date?
+    var amountUsd: Double?
+
+    func outcome() throws -> SessionStartOutcome {
+        if status == "free_period" {
+            return .freePeriod(notice: notice)
+        }
+        guard let sessionId, let expiresAt, let amountUsd else {
+            throw DecodingError.dataCorrupted(DecodingError.Context(
+                codingPath: [],
+                debugDescription: "session/start response is neither a started session nor a free period"
+            ))
+        }
+        return .started(SessionStartResponse(
+            sessionId: sessionId, expiresAt: expiresAt, amountUsd: amountUsd
+        ))
+    }
 }
 
 struct SessionStopResponse: Codable, Sendable {

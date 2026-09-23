@@ -407,10 +407,19 @@ class Geocoder:
             print(f"  google geocode error for {street} & {cross}: {error}", file=sys.stderr)
             return False, None
         results = body.get("results") or []
-        if body.get("status") != "OK" or not results:
+        status = body.get("status")
+        if status == "OK" and results:
+            location = results[0]["geometry"]["location"]
+            return True, (float(location["lat"]), float(location["lng"]))
+        if status in ("ZERO_RESULTS", "OK"):
+            # A real "no such corner" — the only negative worth caching.
             return True, None
-        location = results[0]["geometry"]["location"]
-        return True, (float(location["lat"]), float(location["lng"]))
+        # OVER_QUERY_LIMIT / REQUEST_DENIED / UNKNOWN_ERROR arrive as HTTP
+        # 200 with a non-OK status. They are transient (quota, key config);
+        # caching them would poison geocode_cache.json with permanent
+        # "corner doesn't exist" answers.
+        print(f"  google geocode {status} for {street} & {cross}; not cached", file=sys.stderr)
+        return False, None
 
 
 # ---------------------------------------------------------------------------

@@ -336,9 +336,11 @@ export function makeExtender(deps: ExtenderDeps): Extender {
           ...(result.shadow ? { shadow: result.shadow } : {}),
         };
       } else {
-        rule = "extend_failed";
+        // free_period is a HOLD, not a failure: applyExtension already
+        // pushed "parking is free now" and nothing was charged.
+        rule = result.code === "free_period" ? "free_period" : "extend_failed";
         outcome = {
-          action: "extend",
+          action: result.code === "free_period" ? "hold" : "extend",
           minutes,
           ok: false,
           code: result.code,

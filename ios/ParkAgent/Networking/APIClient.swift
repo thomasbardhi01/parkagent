@@ -8,7 +8,9 @@ protocol APIClient: Sendable {
     /// The zone number the driver read off the meter (needsZoneNumber flow).
     func reportZoneNumber(zoneId: String, number: String) async throws -> ZoneNumberReportResponse
     func policy() async throws -> PolicyResponse
-    func startSession(_ request: SessionStartRequest) async throws -> SessionStartResponse
+    /// 200 is either a started session or a typed free period (the
+    /// provider says the zone is not charging right now).
+    func startSession(_ request: SessionStartRequest) async throws -> SessionStartOutcome
     func stopSession(sessionId: String) async throws -> SessionStopResponse
     func extendSession(sessionId: String, minutes: Int) async throws -> SessionExtendResponse
     func reportLocation(_ report: LocationReport) async throws
@@ -102,6 +104,7 @@ enum APIError: Error, LocalizedError {
         case "no_card": "No card is set up yet."
         case "provider_not_linked": "This city's parking account is not linked yet."
         case "needs_zone_number": "This block's zone number is not known yet — read it off the meter."
+        case "free_period": "Parking is free here right now — no payment needed."
         case "verification_failed": "The sign-in did not stick. Try signing in again."
         case "no_session_cookies": "No sign-in was captured. Try signing in again."
         case "consent_required": "Card setup needs your consent first."

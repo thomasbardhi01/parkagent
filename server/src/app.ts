@@ -23,7 +23,7 @@ import { registerStripeWebhook } from "./routes/webhooksStripe.js";
 import { registerZones } from "./routes/zones.js";
 import { registerAssistant } from "./routes/assistant.js";
 import { registerLink } from "./routes/link.js";
-import type { PushSender } from "./services/apns.js";
+import type { ApnsSendReport, Push, PushSender } from "./services/apns.js";
 import type { ModelClient } from "./services/assistant/loop.js";
 import type { AssistantTools } from "./services/assistant/tools.js";
 import type { LinkWallet } from "./services/link/linkWallet.js";
@@ -49,6 +49,9 @@ export interface AppDeps {
   /** Picks the dry-run or real executor per call (dry_run can flip at runtime). */
   executorFor: ExecutorProvider;
   sendPush: PushSender;
+  /** Reporting APNs delivery for the admin push-test endpoint; absent →
+   * that endpoint answers 503. The money path uses sendPush, not this. */
+  apnsDelivery?: (userId: string, push: Push) => Promise<ApnsSendReport>;
   /** Absent when STRIPE_SECRET_KEY isn't set; /webhooks/stripe then 503s. */
   stripe?: StripeGateway;
   /** The issuing webhook's "is a session awaiting payment?" check. */

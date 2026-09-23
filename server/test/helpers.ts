@@ -1086,6 +1086,9 @@ export function makeTestApp(options: {
   paymentSource?: string;
   /** ISSUING_LIVE: whether "issuing_card" may be chosen (default false). */
   issuingLive?: boolean;
+  /** Reporting APNs delivery for the admin push-test endpoint; absent →
+   * that endpoint answers 503. */
+  apnsDelivery?: AppDeps["apnsDelivery"];
 }): TestApp {
   const { db, state } = makeFakeDb();
   if (options.paymentSource) {
@@ -1143,6 +1146,7 @@ export function makeTestApp(options: {
     assistantTools,
     linkWallet,
     ...(options.issuingLive !== undefined ? { issuingLive: options.issuingLive } : {}),
+    ...(options.apnsDelivery ? { apnsDelivery: options.apnsDelivery } : {}),
     now,
   };
   return { app: buildApp(deps), state, deps, pushes };

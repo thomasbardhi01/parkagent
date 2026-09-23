@@ -904,6 +904,44 @@ No auth. `{ok, dryRun, commit, builtAt}`.
 
 ---
 
+## POST /admin/push-test
+
+Auth-gated and **admin only**. Sends a representative sample of each push
+type to the caller's own registered devices and reports the APNs response
+per device — the field-test "did notifications actually arrive?" check.
+Moves no money and writes no decisions.
+
+Body (optional): `{"types": ["session_started", …]}` to send a subset;
+omitted → all five documented user-facing types (`session_started`,
+`session_extended`, `session_expiring`, `payment_failed`,
+`provider_relink`). `503 {"error": "apns_not_configured"}` when the APNs
+credential set is incomplete.
+
+```json
+{
+  "configured": true,
+  "anyDevices": true,
+  "allAccepted": true,          // every delivery returned APNs 200
+  "sent": [
+    {
+      "type": "session_started",
+      "configured": true,
+      "deviceCount": 1,
+      "results": [
+        { "tokenPrefix": "a1b2c3d4", "environment": "development",
+          "status": 200, "reason": null, "deleted": false }
+      ]
+    }
+  ]
+}
+```
+
+`status` is the APNs HTTP status (200 = accepted); `reason` carries APNs's
+`reason` string on a non-200 (e.g. `"BadDeviceToken"`, `"Unregistered"`),
+and a 410/BadDeviceToken deletes the dead token (`deleted: true`) exactly
+as the live sender does. Only the token's 8-char prefix is returned — a
+device token is a credential.
+
 ## GET /admin/summary
 
 Auth-gated like everything else (`x-api-key`) and **admin only**

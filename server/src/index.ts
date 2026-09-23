@@ -6,7 +6,7 @@ import { asAppDb, createPrisma } from "./db.js";
 import { makeCardJanitor } from "./jobs/cardJanitor.js";
 import { makeLinkJobJanitor } from "./jobs/linkJobJanitor.js";
 import { makeExtender } from "./jobs/extendTick.js";
-import { makeApnsSender } from "./services/apns.js";
+import { makeApnsDelivery, makeApnsSender } from "./services/apns.js";
 import { makeStateCrypto } from "./services/crypto.js";
 import { withDecisionLogging } from "./services/decisionLog.js";
 import { DryRunExecutor } from "./services/executor.js";
@@ -65,6 +65,9 @@ const log = {
   warn: (msg: string) => app.log.warn(msg),
 };
 const sendPush = makeApnsSender(apnsConfig, db, log);
+// Same delivery, but reporting per-device APNs status — the admin
+// push-test endpoint's transport (money path stays on sendPush).
+const apnsDelivery = makeApnsDelivery(apnsConfig, db, log);
 
 // Executor auth is per user now: linked provider accounts, sealed under
 // PROVIDER_STATE_KEY (env.ts validated its shape). No key → linking is off
@@ -140,6 +143,7 @@ const app = buildApp({
   linkWallet,
   executorFor,
   sendPush,
+  apnsDelivery,
   ...(stripe ? { stripe } : {}),
   hasPendingSession: makePendingSessionCheck(db),
   ...(stateCrypto ? { stateCrypto } : {}),

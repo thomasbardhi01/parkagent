@@ -1,9 +1,10 @@
 import SwiftUI
 
 /// Onboarding, rebuilt around linking the local parking provider:
-/// welcome → permissions → vehicle → your city → link provider →
-/// add money → budget → done. One coral action per screen; abandoning
-/// mid-way resumes at the last incomplete step on next launch.
+/// welcome → permissions → vehicle → your city → how you pay →
+/// link provider → (add money, ParkAgent card only) → budget → done.
+/// One coral action per screen; abandoning mid-way resumes at the last
+/// incomplete step on next launch.
 enum OnboardingStep: Int, CaseIterable {
     case welcome
     case permissions
@@ -11,6 +12,9 @@ enum OnboardingStep: Int, CaseIterable {
     case city
     /// "Somewhere else" — we're not there yet; finishes without a provider.
     case elsewhere
+    /// "How do you want to pay": the card on the provider account
+    /// (default), or the ParkAgent card when the server says it's live.
+    case payment
     case linkProvider
     case addMoney
     case budget
@@ -55,23 +59,27 @@ struct OnboardingView: View {
         case .city:
             OnboardingCityStep { city in
                 selectedCity = city
-                advance(to: city == "other" ? .elsewhere : .linkProvider)
+                advance(to: city == "other" ? .elsewhere : .payment)
             }
         case .elsewhere:
             OnboardingElsewhereStep { complete() }
+        case .payment:
+            OnboardingPaymentStep(selectedCity: selectedCity) { advance(to: .linkProvider) }
         case .linkProvider:
             if let providerId = CityCatalog.providerId(for: selectedCity) {
                 OnboardingLinkStep(
                     providerId: providerId,
-                    onDone: { advance(to: .addMoney) },
-                    onSkip: { advance(to: .addMoney) }
+                    // provider_card users have nothing to fund — the card
+                    // on their provider account already pays; skip Add money.
+                    onDone: { advance(to: afterLinkStep) },
+                    onSkip: { advance(to: afterLinkStep) }
                 )
                 .id(providerId)
             } else {
                 // Resume landed here without a stored city — re-ask.
                 OnboardingCityStep { city in
                     selectedCity = city
-                    advance(to: city == "other" ? .elsewhere : .linkProvider)
+                    advance(to: city == "other" ? .elsewhere : .payment)
                 }
             }
         case .addMoney:
@@ -85,6 +93,11 @@ struct OnboardingView: View {
 
     private func advance(to next: OnboardingStep) {
         withAnimation { step = next }
+    }
+
+    /// Where linking leads: funding only matters for the ParkAgent card.
+    private var afterLinkStep: OnboardingStep {
+        PaymentSource.stored == .issuingCard ? .addMoney : .budget
     }
 
     private func complete() {
@@ -410,7 +423,137 @@ private struct OnboardingElsewhereStep: View {
     }
 }
 
-// MARK: - Step 5: Link provider
+// MARK: - Step 5: How do you want to pay
+
+private struct OnboardingPaymentStep: View {
+    @Environment(AppModel.self) private var model
+    @AppStorage(PaymentSource.defaultsKey) private var storedSource = PaymentSource.providerCard.rawValue
+    let selectedCity: String
+    let onContinue: () -> Void
+
+    @State private var choice: PaymentSource = .providerCard
+    @State private var issuingLive = false
+    @State private var isSaving = false
+    @State private var saveFailed = false
+
+    private var providerName: String {
+        CityCatalog.providerDisplayName(for: selectedCity) ?? "your parking account"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.unit) {
+            Spacer()
+            Text("How do you want to pay")
+                .font(.numeral)
+                .foregroundStyle(Color.textPrimary)
+            Text("Meters are charged to one of these. Your limits apply either way.")
+                .font(.bodyText)
+                .foregroundStyle(Color.textSecondary)
+
+            option(
+                .providerCard,
+                label: "My card on \(providerName)",
+                detail: "The card already saved in your \(providerName) account pays. Nothing to set up."
+            )
+            if issuingLive {
+                option(
+                    .issuingCard,
+                    label: "ParkAgent card",
+                    detail: "A virtual card we manage, added to \(providerName) for you."
+                )
+            } else {
+                comingSoonRow
+            }
+
+            if saveFailed {
+                Text("Couldn't save your choice to the server. Try again.")
+                    .font(.captionTextSemibold)
+                    .foregroundStyle(Color.warningGold)
+                    .accessibilityIdentifier("onboarding.paymentSaveFailed")
+            }
+
+            Spacer()
+            Button(isSaving ? "Saving…" : "Continue") {
+                Task { await save() }
+            }
+            .buttonStyle(.primary)
+            .disabled(isSaving)
+            .accessibilityIdentifier("onboarding.continueButton")
+        }
+        .padding(Spacing.unitAndHalf)
+        .task {
+            if let current = try? await model.api.paymentSource() {
+                issuingLive = current.issuingLive
+                choice = current.paymentSource
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("onboarding.payment")
+    }
+
+    private func save() async {
+        isSaving = true
+        saveFailed = false
+        do {
+            let saved = try await model.api.updatePaymentSource(choice)
+            storedSource = saved.paymentSource.rawValue
+            isSaving = false
+            onContinue()
+        } catch {
+            isSaving = false
+            saveFailed = true
+        }
+    }
+
+    private func option(_ source: PaymentSource, label: String, detail: String) -> some View {
+        Button {
+            choice = source
+        } label: {
+            HStack {
+                VStack(alignment: .leading, spacing: Spacing.quarter) {
+                    Text(label)
+                        .font(.bodyText)
+                        .foregroundStyle(Color.textPrimary)
+                    Text(detail)
+                        .font(.captionText)
+                        .foregroundStyle(Color.textSecondary)
+                }
+                Spacer()
+                Image(systemName: choice == source ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(choice == source ? Color.actionCoralLink : Color.separator)
+            }
+            .padding(Spacing.unit)
+            .background(Color.surface)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
+            // Chrome and shape live inside the label: with them outside, a
+            // tap over the Spacer falls through the plain button style.
+            .contentShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("onboarding.payment.\(source.rawValue)")
+    }
+
+    private var comingSoonRow: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: Spacing.quarter) {
+                Text("ParkAgent card")
+                    .font(.bodyText)
+                    .foregroundStyle(Color.textSecondary)
+                Text("Coming soon — a virtual card we manage, with your caps built in.")
+                    .font(.captionText)
+                    .foregroundStyle(Color.textSecondary)
+            }
+            Spacer()
+            TagPill(label: "Coming soon", color: .textSecondary)
+        }
+        .padding(Spacing.unit)
+        .background(Color.surface.opacity(0.6))
+        .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
+        .accessibilityIdentifier("onboarding.payment.comingSoon")
+    }
+}
+
+// MARK: - Step 6: Link provider
 
 private struct OnboardingLinkStep: View {
     @State private var link: ProviderLinkModel

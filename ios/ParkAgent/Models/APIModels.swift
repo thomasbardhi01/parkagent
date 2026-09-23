@@ -388,6 +388,33 @@ struct UnlinkResponse: Codable, Sendable {
     var cardFrozen: Bool
 }
 
+/// Which source pays the user's sessions (server/API.md "/me/payment-source").
+enum PaymentSource: String, Codable, Sendable, CaseIterable {
+    /// The card already saved on the user's own ParkNYC/ParkBoston account
+    /// (the default) — onboarding skips card setup and funding entirely.
+    case providerCard = "provider_card"
+    /// The ParkAgent Issuing card; selectable only while the server says
+    /// issuing is live.
+    case issuingCard = "issuing_card"
+
+    /// Persisted app-side so onboarding routing and the link flow can read
+    /// it without a fetch; the server row is the source of truth.
+    static let defaultsKey = "paymentSource"
+
+    /// The stored choice, defaulting like the server does.
+    static var stored: PaymentSource {
+        PaymentSource(
+            rawValue: UserDefaults.standard.string(forKey: defaultsKey) ?? ""
+        ) ?? .providerCard
+    }
+}
+
+struct PaymentSourceResponse: Codable, Sendable {
+    var paymentSource: PaymentSource
+    /// ISSUING_LIVE on the server: whether the ParkAgent card may be chosen.
+    var issuingLive: Bool
+}
+
 struct CardPrepareResponse: Codable, Sendable {
     var created: Bool
     var card: PreparedCard

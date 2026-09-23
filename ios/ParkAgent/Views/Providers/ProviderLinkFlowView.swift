@@ -144,7 +144,11 @@ private struct LinkIntroView: View {
                 .font(.bodyText)
                 .foregroundStyle(Color.textSecondary)
 
-            consentRow
+            if link.usesParkAgentCard {
+                consentRow
+            } else {
+                providerCardNote
+            }
 
             Spacer()
             Button("Continue") { onContinue() }
@@ -181,6 +185,24 @@ private struct LinkIntroView: View {
         .buttonStyle(.plain)
         .accessibilityIdentifier("link.consentToggle")
         .accessibilityValue(link.consentCardSetup ? "checked" : "unchecked")
+    }
+
+    /// provider_card users: nothing on the account changes — say so instead
+    /// of asking for card-replacement consent.
+    private var providerCardNote: some View {
+        HStack(alignment: .top, spacing: Spacing.unit) {
+            Image(systemName: "creditcard")
+                .font(.system(size: 22))
+                .foregroundStyle(Color.textSecondary)
+            Text("The card already saved on your \(providerName) account keeps paying. We never change it.")
+                .font(.secondaryText)
+                .foregroundStyle(Color.textPrimary)
+                .multilineTextAlignment(.leading)
+        }
+        .padding(Spacing.unit)
+        .background(Color.surface)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
+        .accessibilityIdentifier("link.providerCardNote")
     }
 }
 

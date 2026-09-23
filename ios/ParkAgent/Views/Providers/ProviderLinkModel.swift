@@ -33,9 +33,14 @@ final class ProviderLinkModel {
     let providerId: String
     private(set) var stage: Stage = .loading
     private(set) var provider: ProviderAccountStatus?
-    /// "Use my ParkAgent card for parking" — default checked; unchecking
-    /// links the account without touching its payment method.
-    var consentCardSetup = true
+    /// Whether the user pays with the ParkAgent card at all. provider_card
+    /// users (the default) link without touching the account's payment
+    /// method, so no consent question arises and no card is prepared.
+    let usesParkAgentCard = PaymentSource.stored == .issuingCard
+    /// "Use my ParkAgent card for parking" — default checked for
+    /// issuing_card users; unchecking links the account without touching
+    /// its payment method. Always false for provider_card users.
+    var consentCardSetup = PaymentSource.stored == .issuingCard
 
     /// The web view resubmits whenever the cookie set changes; this stops
     /// the same cookies from hammering the server after a failed verify.
@@ -60,12 +65,15 @@ final class ProviderLinkModel {
         }
     }
 
-    /// Continue from the intro: make sure the card exists (lazy creation,
-    /// idempotent — a failure surfaces later as a typed no_card with retry),
-    /// then open the provider's login page.
+    /// Continue from the intro: for ParkAgent-card users, make sure the
+    /// card exists (lazy creation, idempotent — a failure surfaces later as
+    /// a typed no_card with retry), then open the provider's login page.
+    /// provider_card users never need a card prepared.
     func startSignIn(api: any APIClient) {
         stage = .signIn
-        Task { _ = try? await api.prepareCard() }
+        if consentCardSetup {
+            Task { _ = try? await api.prepareCard() }
+        }
     }
 
     /// The web view saw session cookies (or the mock sign-in button fired).

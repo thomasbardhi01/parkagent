@@ -19,6 +19,10 @@ protocol APIClient: Sendable {
     /// the caps and default stay through this.
     func updatePolicy(_ policy: Policy) async throws -> PolicyResponse
 
+    // Payment source (server/API.md "/me/payment-source").
+    func paymentSource() async throws -> PaymentSourceResponse
+    func updatePaymentSource(_ source: PaymentSource) async throws -> PaymentSourceResponse
+
     // City & provider accounts (server/API.md "GET /city", "Provider accounts").
     func detectCity(lat: Double, lng: Double) async throws -> CityDetectResponse
     func providersStatus() async throws -> ProvidersStatusResponse
@@ -109,6 +113,7 @@ enum APIError: Error, LocalizedError {
         case "no_session_cookies": "No sign-in was captured. Try signing in again."
         case "consent_required": "Card setup needs your consent first."
         case "provider_linking_not_configured": "The server is not set up for account linking yet."
+        case "issuing_not_live": "The ParkAgent card isn't available yet — coming soon."
         default: "The server refused the request (\(code))."
         }
     }

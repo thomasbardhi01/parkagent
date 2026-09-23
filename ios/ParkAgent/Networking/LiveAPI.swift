@@ -59,6 +59,20 @@ struct LiveAPI: APIClient {
         try await send("policy", method: "PUT", body: policy)
     }
 
+    // MARK: - Payment source
+
+    func paymentSource() async throws -> PaymentSourceResponse {
+        try await send("me/payment-source")
+    }
+
+    func updatePaymentSource(_ source: PaymentSource) async throws -> PaymentSourceResponse {
+        try await send(
+            "me/payment-source",
+            method: "PUT",
+            body: ["paymentSource": source.rawValue]
+        )
+    }
+
     // MARK: - City & providers
 
     func detectCity(lat: Double, lng: Double) async throws -> CityDetectResponse {

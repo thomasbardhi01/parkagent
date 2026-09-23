@@ -31,6 +31,15 @@ enum CityCatalog {
         default: nil
         }
     }
+
+    /// The provider's user-facing name ("My card on ParkBoston").
+    static func providerDisplayName(for city: String?) -> String? {
+        switch city {
+        case "nyc": "ParkNYC"
+        case "bos": "ParkBoston"
+        default: nil
+        }
+    }
 }
 
 /// The session the user is currently paying for.

@@ -150,18 +150,31 @@ final class AssistantModel {
     }
 
     private func streetNote(_ response: AssistantConfirmResponse) -> String {
-        // Only a plain meter number reads as a zone to a person; internal
-        // ids like "bos-boylston-st-e-d-819305" stay out of the chat.
+        Self.streetNote(
+            providerZoneNumber: response.providerZoneNumber,
+            durationMinutes: response.durationMinutes ?? 0,
+            paymentSource: response.paymentSource
+        )
+    }
+
+    /// Static so the wording is unit-testable. The server sends the
+    /// pay-by-app number explicitly; the internal zone slug never
+    /// reaches chat copy.
+    static func streetNote(
+        providerZoneNumber: String?,
+        durationMinutes: Int,
+        paymentSource: String?
+    ) -> String {
         let zone: String
-        if let id = response.zoneId, !id.isEmpty, id.allSatisfy(\.isNumber) {
-            zone = "Zone \(id)"
+        if let number = providerZoneNumber, !number.isEmpty {
+            zone = "Zone \(number)"
         } else {
             zone = "Your spot"
         }
-        let pay = response.paymentSource == "link_wallet"
+        let pay = paymentSource == "link_wallet"
             ? "Paying with your Link wallet."
             : "Paying with your ParkAgent card."
-        return "\(zone) is set for \(response.durationMinutes ?? 0) min — the session starts when you park there. \(pay)"
+        return "\(zone) is set for \(durationMinutes) min — the session starts when you park there. \(pay)"
     }
 
     private func appendNote(_ text: String) {

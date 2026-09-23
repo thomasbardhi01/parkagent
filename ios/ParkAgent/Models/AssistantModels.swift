@@ -101,6 +101,10 @@ struct AssistantConfirmResponse: Decodable, Sendable {
     let kind: String
     let deepLink: String?
     let zoneId: String?
+    /// The pay-by-app number the user can verify against the posted sign
+    /// (street_confirmed; nil when the zone has none yet). `zoneId` is an
+    /// internal slug and is never shown.
+    let providerZoneNumber: String?
     let durationMinutes: Int?
     /// "issuing_card" | "link_wallet"
     let paymentSource: String?

@@ -304,6 +304,7 @@ struct SettingsView: View {
                                 .foregroundStyle(Color.textSecondary)
                         }
                         .accessibilityIdentifier("settings.providerMenu.\(account.id)")
+                        .accessibilityLabel("\(account.displayName) account actions")
                     } else {
                         Button(account.status == "expired" ? "Re-link" : "Link") {
                             relinkProviderId = account.id

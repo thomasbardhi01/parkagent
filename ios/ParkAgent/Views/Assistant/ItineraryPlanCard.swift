@@ -174,6 +174,7 @@ struct ItineraryStopRow: View {
                         .foregroundStyle(Color.textSecondary)
                 }
                 .accessibilityIdentifier("assistant.stopMenu.\(stop.id)")
+                .accessibilityLabel("\(stop.label) stop actions")
             }
         }
         .padding(Spacing.unit)

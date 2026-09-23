@@ -724,18 +724,22 @@ private struct OnboardingBudgetStep: View {
                     .frame(width: 44, height: 44)
             }
             .accessibilityIdentifier("\(identifier).minus")
+            .accessibilityLabel("Decrease \(label)")
             Text(value)
                 .font(.bodyTextSemibold)
                 .monospacedDigit()
                 .foregroundStyle(Color.textPrimary)
                 .frame(minWidth: 90)
                 .accessibilityIdentifier(identifier)
+                // VoiceOver reads the field with its value ("Per stop, $45").
+                .accessibilityLabel("\(label), \(value)")
             Button(action: increment) {
                 Image(systemName: "plus.circle")
                     .foregroundStyle(Color.textSecondary)
                     .frame(width: 44, height: 44)
             }
             .accessibilityIdentifier("\(identifier).plus")
+            .accessibilityLabel("Increase \(label)")
         }
         .padding(Spacing.unit)
         .background(Color.surface)

@@ -13,9 +13,13 @@
  * poison the next session.
  */
 
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { withBrowserCrashRetry } from "./retry.js";
 import { ParkNycClient } from "./parknyc/client.js";
 import { PassportClient } from "./passport/client.js";
+import type { PassportClientOptions } from "./passport/client.js";
 import type {
   AccountOps,
   Executor,
@@ -148,10 +152,30 @@ export interface PassportExecutorOptions {
   /** Passport city base URL; defaults to ParkBoston (see passport/selectors.ts). */
   baseUrl?: string;
   captureDir?: string;
+  /** When set, EVERY step of every flow is saved as NN-<step>.html/.png
+   * under a per-call subdirectory here (like `run record` does) — how a
+   * server-driven real run captures fixture screens. Off by default. */
+  stepCaptureDir?: string;
   headless?: boolean;
 }
 
 function makePassportClient(options: PassportExecutorOptions): PassportClient {
+  let stepCapture: Pick<PassportClientOptions, "onStep" | "tracePath"> = {};
+  if (options.stepCaptureDir) {
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const outDir = join(options.stepCaptureDir, `passport-${stamp}`);
+    mkdirSync(outDir, { recursive: true });
+    let stepIndex = 0;
+    stepCapture = {
+      tracePath: join(outDir, "trace.zip"),
+      onStep: async (name, page) => {
+        stepIndex += 1;
+        const prefix = join(outDir, `${String(stepIndex).padStart(2, "0")}-${name}`);
+        writeFileSync(`${prefix}.html`, await page.content());
+        await page.screenshot({ path: `${prefix}.png`, fullPage: true }).catch(() => {});
+      },
+    };
+  }
   return new PassportClient({
     ...(options.statePath ? { statePath: options.statePath } : {}),
     ...(options.storageState ? { storageState: options.storageState } : {}),
@@ -159,6 +183,7 @@ function makePassportClient(options: PassportExecutorOptions): PassportClient {
     sharedBrowser: true,
     headless: options.headless ?? true,
     ...(options.captureDir ? { captureDir: options.captureDir } : {}),
+    ...stepCapture,
   });
 }
 

@@ -74,6 +74,10 @@ const executorOptions = {
   ...(process.env["EXECUTOR_CAPTURE_DIR"]
     ? { captureDir: process.env["EXECUTOR_CAPTURE_DIR"] }
     : {}),
+  // Verification runs: save every real Passport step as fixture screens.
+  ...(process.env["EXECUTOR_STEP_CAPTURE_DIR"]
+    ? { stepCaptureDir: process.env["EXECUTOR_STEP_CAPTURE_DIR"] }
+    : {}),
 };
 const dryRunExecutor = new DryRunExecutor((msg) => app.log.info(msg));
 const executorFor = makeUserExecutorProvider({

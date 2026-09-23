@@ -13,6 +13,10 @@ struct ParkingDetectedSheet: View {
     @State private var zoneNumberEntry = ""
     @State private var zoneNumberSaved = false
     @State private var zoneNumberSaveFailed = false
+    /// Set when the server applied a different number than the one typed
+    /// (import or verified precedence) — shown so the user knows what is
+    /// actually being paid.
+    @State private var appliedNumberNotice: String?
     /// Presents the link flow from inside this sheet; set by the "Link
     /// <provider>" primary action or a provider_not_linked refusal.
     @State private var linkingProviderId: String?
@@ -22,7 +26,9 @@ struct ParkingDetectedSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.unit) {
-            if let error = model.paymentError {
+            if let notice = model.freePeriodNotice {
+                FreePeriodResultView(notice: notice) { model.dismissParkedSheet() }
+            } else if let error = model.paymentError {
                 if case .notImplemented = error {
                     SessionsNotBuiltView(dismiss: { model.dismissParkedSheet() })
                 } else if case .refused(let code) = error, code == "provider_not_linked" {
@@ -128,6 +134,12 @@ struct ParkingDetectedSheet: View {
                 .font(.captionTextSemibold)
                 .foregroundStyle(Color.success)
                 .accessibilityIdentifier("parkedSheet.zoneSavedNotice")
+            if let appliedNumberNotice {
+                Text(appliedNumberNotice)
+                    .font(.captionText)
+                    .foregroundStyle(Color.textSecondary)
+                    .accessibilityIdentifier("parkedSheet.appliedNumberNotice")
+            }
         } else {
             TextField("Zone number from the meter", text: $zoneNumberEntry)
                 .keyboardType(.numberPad)
@@ -156,18 +168,25 @@ struct ParkingDetectedSheet: View {
         (1...5).contains(trimmedZoneNumber.count) && trimmedZoneNumber.allSatisfy(\.isNumber)
     }
 
-    /// One tap: store the number, then pay with it.
+    /// One tap: store the number, then pay with whatever number the
+    /// server actually APPLIED — under import/verified precedence that can
+    /// differ from what the driver typed, and paying the typed number
+    /// while the executor types another would lie to the user.
     private func saveNumberAndPay(_ candidate: Candidate) async {
         zoneNumberSaveFailed = false
         let number = trimmedZoneNumber
-        guard await model.reportZoneNumber(zoneId: candidate.zoneId, number: number) else {
+        guard let applied = await model.reportZoneNumber(zoneId: candidate.zoneId, number: number) else {
             zoneNumberSaveFailed = true
             return
         }
         zoneNumberSaved = true
+        if applied.number != number {
+            appliedNumberNotice =
+                "This block is registered as Zone \(applied.number) — paying that number."
+        }
         var updated = candidate
-        updated.providerZoneNumber = number
-        updated.quote.providerZoneNumber = number
+        updated.providerZoneNumber = applied.number
+        updated.quote.providerZoneNumber = applied.number
         await model.pay(candidate: updated)
     }
 
@@ -426,6 +445,37 @@ struct ProviderNotLinkedView: View {
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("parkedSheet.notLinked")
+    }
+}
+
+/// session/start answered free_period: the provider says the zone isn't
+/// charging right now. Nothing was paid; there is no session to show.
+struct FreePeriodResultView: View {
+    let notice: String
+    let dismiss: () -> Void
+
+    var body: some View {
+        VStack(spacing: Spacing.unit) {
+            Spacer(minLength: Spacing.unit)
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 44))
+                .foregroundStyle(Color.success)
+            Text("No payment needed")
+                .font(.bodyTextSemibold)
+                .foregroundStyle(Color.textPrimary)
+            Text(notice)
+                .font(.secondaryText)
+                .foregroundStyle(Color.textSecondary)
+                .multilineTextAlignment(.center)
+            Spacer(minLength: 0)
+            Button("Done", action: dismiss)
+                .buttonStyle(.secondary)
+                .accessibilityIdentifier("parkedSheet.freePeriodDoneButton")
+        }
+        .frame(maxWidth: .infinity)
+        // No container identifier: nested .contain containers flatten
+        // inside parkedSheet.view — tests pin the leaves (the Done button
+        // and the "No payment needed" text) instead.
     }
 }
 

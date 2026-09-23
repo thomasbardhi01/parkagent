@@ -28,8 +28,9 @@ struct LiveAPI: APIClient {
         try await send("policy")
     }
 
-    func startSession(_ request: SessionStartRequest) async throws -> SessionStartResponse {
-        try await send("session/start", method: "POST", body: request)
+    func startSession(_ request: SessionStartRequest) async throws -> SessionStartOutcome {
+        let wire: SessionStartWire = try await send("session/start", method: "POST", body: request)
+        return try wire.outcome()
     }
 
     func stopSession(sessionId: String) async throws -> SessionStopResponse {

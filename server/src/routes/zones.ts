@@ -6,8 +6,9 @@
  *
  * One report per (zone, user); the zone's stored number is the latest
  * report, and it flips to verified once two different users agree on it.
- * A conflicting later report replaces the number and drops verified until
- * a second user confirms the new one.
+ * A number that is already verified stays until a NEW two-user consensus
+ * replaces it — a single dissenting report (a typo at the meter) is
+ * recorded but changes nothing.
  */
 
 import type { FastifyInstance } from "fastify";
@@ -56,14 +57,32 @@ export function registerZones(app: FastifyInstance, deps: AppDeps): void {
     ).size;
     const verified = confirmations >= 2;
 
-    // Precedence: a verified report beats an import; an import beats a
-    // single unverified report. The report is stored either way — a
-    // second voice agreeing with it later still flips the zone.
+    // Precedence: an ALREADY-verified number on the zone is never
+    // displaced by a single dissenting report (or by the import that
+    // report would otherwise let win) — only a NEW two-user consensus
+    // replaces it. Below verified: a verified report beats an import; an
+    // import beats a single unverified report. The report is stored
+    // either way — a second voice agreeing later still flips the zone.
     const imported = await deps.db.zoneNumberImport.findUnique({ where: { zoneId } });
-    const importWins = !verified && imported !== null && imported.number !== body.number;
-    const applied = importWins
-      ? { number: imported.number, verified: false, source: "import" as const }
-      : { number: body.number, verified, source: "report" as const };
+    const storedVerified = zone.providerZoneNumberVerified && zone.providerZoneNumber !== "";
+    // The stored verified number survives anything short of a NEW two-user
+    // consensus on a different number. That covers both the dissenting
+    // typo and the agreeing report whose recount happens to fall under 2
+    // (a rebuilt reports table must not hand the zone to an import).
+    const storedVerifiedStands =
+      storedVerified && !(zone.providerZoneNumber !== body.number && verified);
+    const importWins =
+      !storedVerifiedStands && !verified && imported !== null && imported.number !== body.number;
+    const applied = storedVerifiedStands
+      ? {
+          number: zone.providerZoneNumber,
+          verified: true,
+          source:
+            zone.providerZoneNumber === body.number ? ("report" as const) : ("verified" as const),
+        }
+      : importWins
+        ? { number: imported!.number, verified: false, source: "import" as const }
+        : { number: body.number, verified, source: "report" as const };
 
     await deps.db.zone.update({
       where: { zoneId },
@@ -76,7 +95,11 @@ export function registerZones(app: FastifyInstance, deps: AppDeps): void {
       data: {
         kind: "zone_number_report",
         inputs: { zoneId, number: body.number, source: body.source },
-        rule: importWins ? "import_precedence" : "report_ok",
+        rule: storedVerifiedStands
+          ? "verified_precedence"
+          : importWins
+            ? "import_precedence"
+            : "report_ok",
         outcome: {
           number: applied.number,
           appliedSource: applied.source,

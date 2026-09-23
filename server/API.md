@@ -222,15 +222,21 @@ a future sticker scan; `number` is 3–10 digits).
 
 One report per (zone, user) — re-reporting replaces yours. The zone's
 stored number becomes the latest report; it turns **verified** once two
-different users agree on it, and a conflicting later report replaces the
-number and drops verified until someone confirms the new one. Reports
-survive `load:zones` reloads (no FK; the loader keeps non-empty numbers
-and rehydrates re-created rows).
+different users agree on it. A number that is already verified stands
+until a NEW two-user consensus replaces it — a single dissenting report
+(a typo at the meter) is recorded but changes nothing, and cannot hand
+the zone to a conflicting import either. Reports survive `load:zones`
+reloads (no FK; the loader keeps non-empty numbers and rehydrates
+re-created rows).
 
-`200 {"ok": true, "zoneId": …, "number": "81234", "verified": false,
-"confirmations": 1, "decisionId": …}` — audited with a decisions row
-(kind `zone_number_report`) since it changes what the executor will type
-at the provider. `400` bad number, `404` unknown zone.
+`200 {"ok": true, "zoneId": …, "number": "81234", "appliedSource":
+"report" | "import" | "verified", "verified": false, "confirmations": 1,
+"decisionId": …}` — `number` is what is now ON the zone (what the
+executor will type), which under import/verified precedence can differ
+from the reported one; clients must pay and display `number`, not their
+input. Audited with a decisions row (kind `zone_number_report`) since it
+changes what the executor will type at the provider. `400` bad number,
+`404` unknown zone.
 
 ---
 
@@ -327,6 +333,11 @@ extension past the first hour is all second-hour rate). Same hard cap
 rules as start, where `max_stay_exceeded` compares total purchased minutes
 against the zone's max stay. Decisions kind `session_extend`; session
 event `extended` (details.source `"manual"` — the worker's are `"auto"`).
+When the provider answers with its "No Meter Parking" notice, the reply is
+`409 {"error": "free_period", "notice"}` — a hold, not a failure: the
+session keeps its time, the event/decision are `free_period`, and the push
+says parking is free (never a tap-to-pay). The auto-extend worker records
+the same as `rule: "free_period"`, `action: "hold"`.
 
 ## POST /session/stop
 

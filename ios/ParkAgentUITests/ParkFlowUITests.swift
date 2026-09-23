@@ -92,6 +92,61 @@ final class ParkFlowUITests: ParkAgentUITestCase {
         XCTAssertTrue(app.staticTexts["Zone 81234"].exists, "Stored number should show on the card")
     }
 
+    /// The provider said the zone isn't charging at start time (200
+    /// free_period): "No payment needed" instead of a payment error, no
+    /// session, and Done closes the sheet.
+    func testFreePeriodAtStartShowsNoPaymentNeeded() {
+        let app = launchApp(scenario: "freePeriodAtStart")
+        simulateParkFromHome(app)
+
+        element(app, "parkedSheet.payButton").tap()
+        // Leaf identifiers: the result view's container flattens inside
+        // parkedSheet.view (the nested-.contain pitfall).
+        XCTAssertTrue(
+            element(app, "parkedSheet.freePeriodDoneButton").waitForExistence(timeout: 10),
+            "Free-period result missing"
+        )
+        XCTAssertTrue(
+            app.staticTexts["No payment needed"].exists,
+            "Free parking must not read as a failure"
+        )
+        element(app, "parkedSheet.freePeriodDoneButton").tap()
+        XCTAssertTrue(element(app, "parkedSheet.view").waitForNonExistence(timeout: 5))
+        XCTAssertFalse(
+            element(app, "home.activeSessionRow").exists,
+            "No session exists for a free period"
+        )
+    }
+
+    /// Import precedence on save-and-pay: the server keeps the import's
+    /// number, and the app pays and displays THAT number, with a notice —
+    /// never showing one number while the executor types another.
+    func testSaveAndPayHonorsImportPrecedence() {
+        let app = launchApp(scenario: "bostonImportConflict")
+        simulateParkFromHome(app)
+
+        let field = element(app, "parkedSheet.zoneNumberField")
+        XCTAssertTrue(field.waitForExistence(timeout: 5), "Zone-number capture missing")
+        field.tap()
+        field.typeText("81234")
+        element(app, "parkedSheet.saveAndPayButton").tap()
+
+        let notice = element(app, "parkedSheet.appliedNumberNotice")
+        XCTAssertTrue(notice.waitForExistence(timeout: 5), "Applied-number notice missing")
+        XCTAssertTrue(notice.label.contains("55555"), "Notice must name the applied number")
+
+        XCTAssertTrue(
+            element(app, "parkedSheet.view").waitForNonExistence(timeout: 10),
+            "Sheet did not close after paying"
+        )
+        XCTAssertTrue(element(app, "home.activeSessionRow").waitForExistence(timeout: 5))
+        XCTAssertTrue(
+            app.staticTexts["Zone 55555"].exists,
+            "The session must carry the number the executor actually types"
+        )
+        XCTAssertFalse(app.staticTexts["Zone 81234"].exists, "The outranked typed number must not show")
+    }
+
     /// Unknown-zone fixture: the manual zone-number input appears and
     /// resubmits for a quote.
     func testUnknownZoneManualEntryResubmits() {

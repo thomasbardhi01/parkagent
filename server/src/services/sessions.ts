@@ -9,7 +9,7 @@
 import type { AppDb, SessionRow } from "../db.js";
 import { cityForZone } from "../providers/registry.js";
 import type { PushSender } from "./apns.js";
-import { paymentFailedPush, sessionExtendedPush } from "./apns.js";
+import { freePeriodPush, paymentFailedPush, sessionExtendedPush } from "./apns.js";
 import type { ExecutorDiagnostics, ExecutorErrorCode, ExecutorProvider } from "./executor.js";
 import type { HoursInterval } from "./hours.js";
 import { nycStartOfDay } from "./hours.js";
@@ -151,6 +151,35 @@ export async function applyExtension(
     feeUsd: price.feeUsd,
   });
   const durationMs = Date.now() - startedAtMs;
+
+  if (!result.ok && result.code === "free_period") {
+    // The provider says the zone isn't charging now (after hours) — a
+    // hold, never a payment failure: the session keeps its current time,
+    // nothing is marked failed, and the push says parking is free rather
+    // than "tap to pay".
+    await deps.db.sessionEvent.create({
+      data: {
+        sessionId: session.id,
+        kind: "free_period",
+        at: now,
+        minutes,
+        dryRun,
+        details: { source, op: "extend", message: result.message, durationMs },
+      },
+    });
+    await deps.sendPush(
+      session.userId,
+      freePeriodPush({ zoneNumber: session.providerZoneNumber, notice: result.message }),
+    );
+    return {
+      ok: false,
+      code: result.code,
+      message: result.message,
+      price,
+      durationMs,
+      ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}),
+    };
+  }
 
   if (!result.ok) {
     await deps.db.sessionEvent.create({

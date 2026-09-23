@@ -121,7 +121,7 @@ test("a second user agreeing marks the number verified", async () => {
   expect(state.zones[0]!.providerZoneNumberVerified).toBe(true);
 });
 
-test("a conflicting report replaces the number and drops verified", async () => {
+test("a single dissenting report cannot displace a verified number", async () => {
   const { app, state } = makeApp();
   state.zones[0]!.providerZoneNumber = "81234";
   state.zones[0]!.providerZoneNumberVerified = true;
@@ -134,10 +134,52 @@ test("a conflicting report replaces the number and drops verified", async () => 
     createdAt: new Date(MONDAY_2PM),
   });
 
+  // A typo at the meter: recorded, but the human-verified number stands.
   const res = await report(app, { number: "99999" });
-  expect(res.json()).toMatchObject({ number: "99999", verified: false, confirmations: 1 });
+  expect(res.json()).toMatchObject({
+    number: "81234",
+    appliedSource: "verified",
+    verified: true,
+    confirmations: 1,
+  });
+  expect(state.zones[0]!.providerZoneNumber).toBe("81234");
+  expect(state.zones[0]!.providerZoneNumberVerified).toBe(true);
+  const decision = state.decisions.find((d) => d.kind === "zone_number_report")!;
+  expect(decision.rule).toBe("verified_precedence");
+});
+
+test("a dissenting report cannot let a conflicting import displace a verified number", async () => {
+  const { app, state } = makeApp();
+  state.zones[0]!.providerZoneNumber = "81234";
+  state.zones[0]!.providerZoneNumberVerified = true;
+  seedImport(state, "55555");
+
+  // Before the guard, the dissent recomputed verified=false for its own
+  // number and the import silently won — replacing the human consensus.
+  const res = await report(app, { number: "99999" });
+  expect(res.json()).toMatchObject({ number: "81234", appliedSource: "verified" });
+  expect(state.zones[0]!.providerZoneNumber).toBe("81234");
+  expect(state.zones[0]!.providerZoneNumberVerified).toBe(true);
+});
+
+test("a new two-user consensus replaces a verified number", async () => {
+  const { app, state } = makeApp();
+  state.zones[0]!.providerZoneNumber = "81234";
+  state.zones[0]!.providerZoneNumberVerified = true;
+  // The sign was re-posted: two users now read the new number.
+  state.zoneNumberReports.push({
+    id: "znr-other",
+    zoneId: BOYLSTON_ZONE.zoneId,
+    userId: "u2",
+    number: "99999",
+    source: "user",
+    createdAt: new Date(MONDAY_2PM),
+  });
+
+  const res = await report(app, { number: "99999" });
+  expect(res.json()).toMatchObject({ number: "99999", verified: true, confirmations: 2 });
   expect(state.zones[0]!.providerZoneNumber).toBe("99999");
-  expect(state.zones[0]!.providerZoneNumberVerified).toBe(false);
+  expect(state.zones[0]!.providerZoneNumberVerified).toBe(true);
 });
 
 test("re-reporting by the same user updates their row, not a second voice", async () => {

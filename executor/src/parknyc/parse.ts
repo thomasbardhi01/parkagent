@@ -20,13 +20,22 @@ export interface ParsedConfirmation {
   amountUsd: number;
 }
 
-// "Confirmation #ABC123", "Session number: 987654", "Receipt no. X-42".
+// "Confirmation #ABC123", "Session number: 987654", "Receipt no. X-42",
+// and Passport's session screen: "Transaction Number: 123456789",
+// "Auth Number: 054321" (verified live 2026-09-23).
 const SESSION_ID =
-  /(?:confirmation|session|receipt)\s*(?:number|no\.?|#|id)?\s*[:#]?\s*([A-Z0-9][A-Z0-9-]{4,})/i;
+  /(?:confirmation|session|receipt|transaction|auth)\s*(?:number|no\.?|#|id)?\s*[:#]?\s*([A-Z0-9][A-Z0-9-]{4,})/i;
 
 // "Expires at 5:30 PM", "Valid until 17:05", "Ends 11:59 PM".
 const EXPIRY_TIME =
   /(?:expires?(?:\s+at)?|valid\s+(?:until|through)|ends?(?:\s+at)?)\s*:?\s*(\d{1,2}):(\d{2})\s*(am|pm)?/i;
+
+// Passport labels the end with a full date first: "End: Wed, Sep 23,
+// 11:52 AM" / "New End Time: …" (verified live 2026-09-23). The lazy gap
+// skips the weekday/date; the meridiem is required so "Sep 23," can never
+// half-match.
+const PASSPORT_END =
+  /(?:new\s+end(?:\s+time)?|ends?)\s*:?\s*.{0,40}?(\d{1,2}):(\d{2})\s*(am|pm)\b/i;
 
 // Prefer the labeled total; fall back to the last dollar amount on the page.
 const LABELED_TOTAL = /total[^$\n]{0,40}\$\s*(\d+(?:\.\d{2})?)/i;
@@ -60,7 +69,7 @@ export function nycWallTime(base: Date, hours: number, minutes: number): Date {
  * (a session never expires in the past).
  */
 export function parseExpiresAt(text: string, now: Date): Date | null {
-  const m = EXPIRY_TIME.exec(text);
+  const m = EXPIRY_TIME.exec(text) ?? PASSPORT_END.exec(text);
   if (!m) return null;
   let hours = Number(m[1]);
   const minutes = Number(m[2]);

@@ -13,7 +13,7 @@
  * poison the next session.
  */
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { withBrowserCrashRetry } from "./retry.js";
@@ -160,7 +160,7 @@ export interface PassportExecutorOptions {
 }
 
 function makePassportClient(options: PassportExecutorOptions): PassportClient {
-  let stepCapture: Pick<PassportClientOptions, "onStep" | "tracePath"> = {};
+  let stepCapture: Pick<PassportClientOptions, "onStep" | "tracePath" | "log"> = {};
   if (options.stepCaptureDir) {
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     const outDir = join(options.stepCaptureDir, `passport-${stamp}`);
@@ -168,6 +168,9 @@ function makePassportClient(options: PassportExecutorOptions): PassportClient {
     let stepIndex = 0;
     stepCapture = {
       tracePath: join(outDir, "trace.zip"),
+      log: (message) => {
+        appendFileSync(join(outDir, "clicks.log"), `${message}\n`);
+      },
       onStep: async (name, page) => {
         stepIndex += 1;
         const prefix = join(outDir, `${String(stepIndex).padStart(2, "0")}-${name}`);

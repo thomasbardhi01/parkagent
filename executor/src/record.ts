@@ -42,6 +42,8 @@ const { values: flags } = parseArgs({
     flow: { type: "string" }, // start | extend | stop | resolve
     zone: { type: "string" },
     plate: { type: "string" },
+    // Passport's Vehicles chooser matches on "<PLATE> (<STATE>)".
+    "plate-state": { type: "string" },
     minutes: { type: "string", default: "15" },
     session: { type: "string" }, // providerSessionId for extend/stop
     lat: { type: "string" }, // resolve / map-resolved start
@@ -85,7 +87,7 @@ function usage(): never {
   console.error(
     [
       "Usage:",
-      "  pnpm -C executor run record -- [--provider parknyc|passport] --flow start --zone <zoneNumber> [--plate <plate>] [--minutes 15] [--lat .. --lng .. [--street ..]]",
+      "  pnpm -C executor run record -- [--provider parknyc|passport] --flow start --zone <zoneNumber> [--plate <plate> [--plate-state MA]] [--minutes 15] [--lat .. --lng .. [--street ..]]",
       "  pnpm -C executor run record -- [--provider ..] --flow extend --session <providerSessionId> [--minutes 15]",
       "  pnpm -C executor run record -- [--provider ..] --flow stop --session <providerSessionId>",
       '  pnpm -C executor run record -- --provider passport --flow findParking [--query "Boylston St Back Bay"]  (READ-ONLY, no charge)',
@@ -194,9 +196,23 @@ try {
       "resolve is gone: ParkBoston has no map (2026-09-21 recording). " +
       "Record --flow start with --zone; for parknyc add --lat/--lng and read zoneResolution.";
   } else if (flow === "start") {
+    // The server passes the session's vehicle from its vehicles table; the
+    // record script (server-less) falls back to PASSPORT_PLATE /
+    // PASSPORT_PLATE_STATE env, PARKNYC_PLATE-style.
+    const passportPlate = flags.plate ?? process.env.PASSPORT_PLATE;
+    const passportState = flags["plate-state"] ?? process.env.PASSPORT_PLATE_STATE;
     result =
       client instanceof PassportClient
-        ? await client.startSession(flags.zone ?? "", flags.plate, minutes)
+        ? await client.startSession(
+            flags.zone ?? "",
+            passportPlate !== undefined
+              ? {
+                  plate: passportPlate,
+                  ...(passportState !== undefined ? { state: passportState } : {}),
+                }
+              : undefined,
+            minutes,
+          )
         : await client.startSession(
             flags.zone!,
             flags.plate,

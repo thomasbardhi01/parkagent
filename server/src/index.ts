@@ -129,6 +129,7 @@ const app = buildApp({
   hasPendingSession: makePendingSessionCheck(db),
   ...(stateCrypto ? { stateCrypto } : {}),
   providerOps,
+  issuingLive: env.ISSUING_LIVE === "true",
 });
 
 const extender = makeExtender({

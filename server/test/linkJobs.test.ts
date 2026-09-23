@@ -8,12 +8,7 @@ import { expect, test } from "vitest";
 
 import { buildApp } from "../src/app.js";
 import { makeLinkJobJanitor } from "../src/jobs/linkJobJanitor.js";
-import {
-  API_KEY,
-  MONDAY_2PM,
-  makeFakeProviderOps,
-  makeTestApp,
-} from "./helpers.js";
+import { API_KEY, MONDAY_2PM, makeFakeProviderOps, makeTestApp } from "./helpers.js";
 
 const HEADERS = { "x-api-key": API_KEY, "content-type": "application/json" };
 const NOW = new Date(MONDAY_2PM);
@@ -25,7 +20,12 @@ const LINK_BODY = {
 };
 
 test("a link job survives a restart: a second app over the same db answers the poll", async () => {
-  const t = makeTestApp({ providerOps: () => makeFakeProviderOps() });
+  // issuing_card user: the provider_card default would skip the chained
+  // setup-card job this test is about.
+  const t = makeTestApp({
+    providerOps: () => makeFakeProviderOps(),
+    paymentSource: "issuing_card",
+  });
   t.state.issuingCards.push({ stripeCardId: "ic_1", userId: "u1" });
 
   const link = await t.app.inject({

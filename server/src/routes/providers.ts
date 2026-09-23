@@ -105,11 +105,19 @@ export function registerProviders(app: FastifyInstance, deps: AppDeps): void {
     const user = req.authedUser!;
     const at = now();
 
-    // Shadow mode: sessions pay with whatever payment method the account
-    // already has, so linking neither replaces the payment method nor needs
-    // consent for it — the chained setup-card is skipped outright.
+    // provider_card (the default payment source): sessions pay with the
+    // card already on the user's provider account, so linking neither
+    // replaces the payment method nor needs consent for it — the chained
+    // setup-card is skipped outright. shadow_mode no longer skips it: it
+    // only adds a test authorization alongside real spends, whatever the
+    // source.
+    const userRow = await deps.db.user.findUnique({
+      where: { id: user.id },
+      select: { paymentSource: true },
+    });
+    const paymentSource = userRow?.paymentSource ?? "provider_card";
     const shadowMode = deps.policy.get().shadow_mode === true;
-    const setUpCard = body.set_up_card && !shadowMode;
+    const setUpCard = body.set_up_card && paymentSource === "issuing_card";
 
     // Replacing the account's payment method is consequential enough to
     // demand explicit consent up front, before anything runs.
@@ -131,6 +139,7 @@ export function registerProviders(app: FastifyInstance, deps: AppDeps): void {
       domains: [...new Set(filtered.map((c) => c.domain))],
       setUpCard,
       shadowMode,
+      paymentSource,
     };
     const decide = (rule: string, outcome: Record<string, unknown>) =>
       deps.db.decision.create({
@@ -199,7 +208,12 @@ export function registerProviders(app: FastifyInstance, deps: AppDeps): void {
     let jobId: string | null = null;
     if (setUpCard) {
       jobId = randomUUID();
-      await jobs.create({ id: jobId, userId: user.id, provider: provider.id, phase: "adding_card" });
+      await jobs.create({
+        id: jobId,
+        userId: user.id,
+        provider: provider.id,
+        phase: "adding_card",
+      });
       const id = jobId;
       void runSetupCard(deps, user.id, provider)
         .then((outcome) => {
@@ -229,56 +243,48 @@ export function registerProviders(app: FastifyInstance, deps: AppDeps): void {
     };
   });
 
-  app.get(
-    "/providers/:provider/link-status",
-    { preHandler: limitReads },
-    async (req, reply) => {
-      const provider = requireProvider(req, reply);
-      if (!provider) return;
-      const parsed = linkStatusSchema.safeParse(req.query);
-      if (!parsed.success) {
-        return reply.code(400).send({ error: z.treeifyError(parsed.error) });
-      }
-      const user = req.authedUser!;
-      const job = await jobs.get(parsed.data.jobId);
-      if (!job || job.userId !== user.id || job.provider !== provider.id) {
-        return reply.code(404).send({ error: "unknown_job" });
-      }
-      return {
-        phase: job.phase,
-        ...(job.reason !== undefined ? { reason: job.reason } : {}),
-        ...(job.retrySafe !== undefined ? { retrySafe: job.retrySafe } : {}),
-        ...(job.dryRun !== undefined ? { dryRun: job.dryRun } : {}),
-      };
-    },
-  );
+  app.get("/providers/:provider/link-status", { preHandler: limitReads }, async (req, reply) => {
+    const provider = requireProvider(req, reply);
+    if (!provider) return;
+    const parsed = linkStatusSchema.safeParse(req.query);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: z.treeifyError(parsed.error) });
+    }
+    const user = req.authedUser!;
+    const job = await jobs.get(parsed.data.jobId);
+    if (!job || job.userId !== user.id || job.provider !== provider.id) {
+      return reply.code(404).send({ error: "unknown_job" });
+    }
+    return {
+      phase: job.phase,
+      ...(job.reason !== undefined ? { reason: job.reason } : {}),
+      ...(job.retrySafe !== undefined ? { retrySafe: job.retrySafe } : {}),
+      ...(job.dryRun !== undefined ? { dryRun: job.dryRun } : {}),
+    };
+  });
 
-  app.post(
-    "/providers/:provider/setup-card",
-    { preHandler: limitWrites },
-    async (req, reply) => {
-      const provider = requireProvider(req, reply);
-      if (!provider) return;
-      const user = req.authedUser!;
+  app.post("/providers/:provider/setup-card", { preHandler: limitWrites }, async (req, reply) => {
+    const provider = requireProvider(req, reply);
+    if (!provider) return;
+    const user = req.authedUser!;
 
-      const account = await deps.db.providerAccount.findUnique({
-        where: { userId_provider: { userId: user.id, provider: provider.id } },
-      });
-      if (!account || account.status !== "linked") {
-        return reply.code(409).send({ error: "provider_not_linked", provider: provider.id });
-      }
-      const outcome = await runSetupCard(deps, user.id, provider);
-      if (outcome.ok) {
-        return { ok: true, dryRun: outcome.dryRun };
-      }
-      if (outcome.code === "no_card") {
-        return reply.code(409).send({ error: "no_card", retrySafe: outcome.retrySafe });
-      }
-      return reply
-        .code(502)
-        .send({ error: "setup_card_failed", code: outcome.code, retrySafe: outcome.retrySafe });
-    },
-  );
+    const account = await deps.db.providerAccount.findUnique({
+      where: { userId_provider: { userId: user.id, provider: provider.id } },
+    });
+    if (!account || account.status !== "linked") {
+      return reply.code(409).send({ error: "provider_not_linked", provider: provider.id });
+    }
+    const outcome = await runSetupCard(deps, user.id, provider);
+    if (outcome.ok) {
+      return { ok: true, dryRun: outcome.dryRun };
+    }
+    if (outcome.code === "no_card") {
+      return reply.code(409).send({ error: "no_card", retrySafe: outcome.retrySafe });
+    }
+    return reply
+      .code(502)
+      .send({ error: "setup_card_failed", code: outcome.code, retrySafe: outcome.retrySafe });
+  });
 
   app.post("/providers/:provider/unlink", { preHandler: limitWrites }, async (req, reply) => {
     const provider = requireProvider(req, reply);

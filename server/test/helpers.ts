@@ -215,6 +215,8 @@ export interface FakeIssuingAuthorizationRow {
 }
 
 export interface FakeDbState {
+  /** Per-user payment source ("provider_card" default when absent). */
+  userPaymentSources: Record<string, string>;
   parkedEvents: FakeParkedEvent[];
   decisions: {
     kind: string;
@@ -355,6 +357,7 @@ function matchesSessionWhere(s: SessionRow, where: SessionWhere): boolean {
 
 export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
   const state: FakeDbState = {
+    userPaymentSources: {},
     parkedEvents: [],
     decisions: [],
     snapshots: [],
@@ -408,13 +411,27 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
       // Auth looks up by hash now — mirror prod: only the peppered hashes
       // match. u1 is the owner/admin; u2 exercises the 403 paths.
       findUnique: async ({ where }) => {
-        if (where.apiKeyHash === hashApiKey(TEST_PEPPER, API_KEY)) {
-          return { id: "u1", name: "Thomas", isAdmin: true };
+        const sourceFor = (id: string) => state.userPaymentSources[id] ?? "provider_card";
+        if ("apiKeyHash" in where) {
+          if (where.apiKeyHash === hashApiKey(TEST_PEPPER, API_KEY)) {
+            return { id: "u1", name: "Thomas", isAdmin: true, paymentSource: sourceFor("u1") };
+          }
+          if (where.apiKeyHash === hashApiKey(TEST_PEPPER, NONADMIN_API_KEY)) {
+            return { id: "u2", name: "Ana", isAdmin: false, paymentSource: sourceFor("u2") };
+          }
+          return null;
         }
-        if (where.apiKeyHash === hashApiKey(TEST_PEPPER, NONADMIN_API_KEY)) {
-          return { id: "u2", name: "Ana", isAdmin: false };
+        if (where.id === "u1") {
+          return { id: "u1", name: "Thomas", isAdmin: true, paymentSource: sourceFor("u1") };
+        }
+        if (where.id === "u2") {
+          return { id: "u2", name: "Ana", isAdmin: false, paymentSource: sourceFor("u2") };
         }
         return null;
+      },
+      update: async ({ where, data }) => {
+        state.userPaymentSources[where.id] = data.paymentSource;
+        return { paymentSource: data.paymentSource };
       },
     },
     zone: {
@@ -1061,8 +1078,15 @@ export function makeTestApp(options: {
   garage?: GarageProvider;
   /** Faked Link client; wires the LinkWallet as configured. */
   linkClient?: LinkClient;
+  /** u1's payment source (default "provider_card", like a fresh user). */
+  paymentSource?: string;
+  /** ISSUING_LIVE: whether "issuing_card" may be chosen (default false). */
+  issuingLive?: boolean;
 }): TestApp {
   const { db, state } = makeFakeDb();
+  if (options.paymentSource) {
+    state.userPaymentSources["u1"] = options.paymentSource;
+  }
   state.zones.push(...(options.zones ?? []));
   if (options.seedLinkedProvider !== false) {
     seedProviderAccount(state);
@@ -1113,6 +1137,7 @@ export function makeTestApp(options: {
     ...(options.assistantModel ? { assistantModel: options.assistantModel } : {}),
     assistantTools,
     linkWallet,
+    ...(options.issuingLive !== undefined ? { issuingLive: options.issuingLive } : {}),
     now,
   };
   return { app: buildApp(deps), state, deps, pushes };

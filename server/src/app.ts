@@ -14,6 +14,7 @@ import { registerCard } from "./routes/card.js";
 import { registerCity } from "./routes/city.js";
 import { registerDevice } from "./routes/device.js";
 import { registerLocation } from "./routes/location.js";
+import { registerMe } from "./routes/me.js";
 import { registerParked } from "./routes/parked.js";
 import { registerPolicy } from "./routes/policy.js";
 import { registerProviders } from "./routes/providers.js";
@@ -65,6 +66,10 @@ export interface AppDeps {
   assistantTools?: AssistantTools;
   /** Link wallet for agents; absent/unconfigured → /link/* answers 503. */
   linkWallet?: LinkWallet;
+  /** ISSUING_LIVE env: whether the ParkAgent Issuing card may be chosen
+   * as a payment source (PUT /me/payment-source). Default false — the app
+   * shows "coming soon". */
+  issuingLive?: boolean;
   /** Injectable clock for tests; routes fall back to `new Date()`. */
   now?: () => Date;
 }
@@ -172,6 +177,7 @@ export function buildApp(deps?: AppDeps): FastifyInstance {
     registerPolicy(app, deps);
     registerSession(app, deps);
     registerLocation(app, deps);
+    registerMe(app, deps);
     registerDevice(app, deps);
     registerCard(app, deps);
     registerProviders(app, deps);

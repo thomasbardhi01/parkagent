@@ -55,11 +55,19 @@ export interface RatedTerms {
   /** ParkBoston sells parking in a per-zone duration increment (the
    * duration picker's `incrementalMinutes` — zone 456 is 12 minutes,
    * observed 2026-09-23), so a 15-minute request is billed as 12 minutes.
-   * When known, the charged minutes are snapped to a whole number of
+   * When set, the charged minutes are snapped to a whole number of
    * increments (minimum one) BEFORE pricing, so the quote matches the
-   * receipt to the cent. Absent (NYC, or a Boston zone whose increment we
-   * haven't collected) → priced per-minute as requested. See the
-   * acceptance report, Job 2. */
+   * receipt to the cent.
+   *
+   * NOTE — no producer yet, by design: the increment is operator-configured
+   * per zone and is NOT in Analyze Boston's open data (only in the picker's
+   * shortcut API, reachable by starting a session), so nothing populates
+   * this field in production today and the quote stays per-minute (an upper
+   * bound for sub-hour Boston stays). It is the ready hook for when
+   * increments are collected per zone during the field test; until then the
+   * live reconciliation is the executor's real receipt, recorded on the
+   * session (session start), which already matches the card to the cent.
+   * See the acceptance report, Job 2. */
   billingIncrementMinutes?: number;
 }
 

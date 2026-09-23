@@ -470,6 +470,17 @@ describe("ParkBoston receipt amounts (parsePassportReceipt)", () => {
       }).format(end),
     ).toBe("3:11 PM");
   });
+
+  test("the session screen offers Extend but NOT Stop (zone 456: no early stop)", () => {
+    // The client's structural detection: the extend flow finds #extendBtn,
+    // and the stop flow finds NO #sessStopBtn → stopNotSupported. session.js
+    // pushes #sessStopBtn only when the operator enables early stop, which
+    // ParkBoston zone 456 (non-refundable) does not. Pure structural check —
+    // exactly what page.locator(id).count() reads at runtime.
+    const html = readFileSync(join(dir, "session-active--stop-disabled.html"), "utf8");
+    expect(html).toMatch(/id="extendBtn"/);
+    expect(html).not.toMatch(/id="sessStopBtn"/);
+  });
 });
 
 describe("Parking Denied lockout popup (isParkingDeniedModal)", () => {

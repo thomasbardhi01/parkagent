@@ -411,6 +411,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
     // so the estimate stands. See the acceptance report, Job 2.
     const chargedMeterUsd = result.receipt?.meterUsd ?? price.meterUsd;
     const chargedFeeUsd = result.receipt?.feeUsd ?? price.feeUsd;
+    const chargedTotalUsd = result.receipt?.totalUsd ?? price.totalUsd;
     await deps.db.session.update({
       where: { id: session.id },
       data: {
@@ -444,11 +445,13 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
       },
     });
     // Shadow mode: rehearse the Stripe pipeline (webhook → budget checks →
-    // ledger) with a test-mode authorization for the same amount. Recorded
-    // on the decision below; a shadow failure never fails the session.
+    // ledger) with a test-mode authorization for the SAME amount the card
+    // was charged (the provider receipt when there is one, else the
+    // estimate), so the rehearsal matches the real spend. Recorded on the
+    // decision below; a shadow failure never fails the session.
     const shadow =
       deps.policy.get().shadow_mode === true
-        ? await fireShadowAuthorization(deps, user.id, price.totalUsd, terms.city)
+        ? await fireShadowAuthorization(deps, user.id, chargedTotalUsd, terms.city)
         : undefined;
 
     await deps.db.decision.create({
@@ -476,9 +479,8 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
         sessionId: session.id,
       },
     });
-    // The push and the reply carry the ACTUAL total when the provider gave
-    // a receipt, so the app shows what the card paid, not the estimate.
-    const chargedTotalUsd = result.receipt?.totalUsd ?? price.totalUsd;
+    // The push and the reply carry the ACTUAL total (chargedTotalUsd) when
+    // the provider gave a receipt, so the app shows what the card paid.
     await deps.sendPush(
       user.id,
       sessionStartedPush({

@@ -1144,10 +1144,12 @@ export class PassportClient {
         .catch(() => {});
       await this.stableClick(page, selectors.session.stopConfirmButton(page), "stop-confirm");
       await this.step("stop-confirmed", page);
-      await selectors.session
-        .stopButton(page)
-        .waitFor({ state: "hidden" })
-        .catch(() => {});
+      // The stop only took if the Stop button is now gone (session ended). A
+      // NON-swallowed wait here: if it never hides — the confirm didn't
+      // register, or the provider showed a decline/error — this throws, the
+      // run() wrapper types it, and the server keeps the session active
+      // (fail-closed). NEVER report ok on an unconfirmed stop.
+      await selectors.session.stopButton(page).waitFor({ state: "hidden" });
       return { ok: true, providerSessionId, expiresAt: new Date(), amountUsd: 0 };
     });
   }

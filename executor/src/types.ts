@@ -22,6 +22,7 @@ export type ExecutorErrorCode =
   | "browser_crashed" // the shared Chromium died mid-call (retried once first)
   | "payment_method_missing" // the account has no saved payment method to charge
   | "free_period" // the provider says this zone isn't charging now (after hours)
+  | "vehicle_missing" // the provider account has no saved vehicle matching the plate
   | "unknown"; // none of the above matched
 
 /** Evidence captured from an unexpected screen; attached to decisions. */
@@ -65,6 +66,29 @@ export interface ExecutorOk {
   amountUsd: number;
   /** Present when the flow resolved the zone from the provider's map. */
   zoneResolution?: ZoneResolution;
+  /** The zone terms the provider itself displayed mid-flow (Passport's
+   * Vehicles chooser shows a Zone Information line); the server logs them
+   * and compares against our zone record. */
+  providerTerms?: ProviderZoneTerms;
+}
+
+/**
+ * Zone terms as the provider's own UI displayed them — Passport's Vehicles
+ * chooser carries a "Zone Information" line ("$3.75 Hr|Max 5 Hr|M-Sat
+ * 8am-8pm") plus the zone number and name in its header. Evidence for the
+ * server's zone_terms_observed table; null fields mean "not shown or not
+ * parsed", never a claim of absence.
+ */
+export interface ProviderZoneTerms {
+  /** The Zone Information line exactly as shown. */
+  rawText: string;
+  ratePerHourUsd: number | null;
+  maxStayMinutes: number | null;
+  hours: ParsedProviderHours | null;
+  /** Zone number echoed in the chooser header ("… park in Zone 456 (…)"). */
+  zoneNumber: string | null;
+  /** Zone/block name from the same header parenthetical. */
+  zoneName: string | null;
 }
 
 /** Enforcement hours parsed from a provider's free-period notice, so we
@@ -90,6 +114,10 @@ export interface ExecutorError {
   /** Set on code "free_period": the provider's after-hours notice text
    * and the hours parsed out of it. */
   freePeriod?: { rawText: string; hours: ParsedProviderHours | null };
+  /** Zone terms the provider displayed before the flow ended — kept on
+   * failures too, so a run that died after the Vehicles chooser still
+   * feeds zone_terms_observed. */
+  providerTerms?: ProviderZoneTerms;
 }
 
 export type ExecutorResult = ExecutorOk | ExecutorError;
@@ -106,6 +134,11 @@ export interface StartSessionArgs {
   amountUsd: number;
   feeUsd: number;
   plate?: string;
+  /** The session's vehicle from the server's vehicles table. Passport's
+   * Vehicles chooser lists saved vehicles as "<PLATE> (<STATE>)" buttons;
+   * the client clicks the one matching this and returns vehicle_missing
+   * when none does. */
+  vehicle?: { plate: string; state: string };
   /** Where the car is (the parked event's fix): feeds ParkNYC's non-fatal
    * map cross-check. The Passport client ignores it — ParkBoston has no
    * map (2026-09-21 recording); its zone numbers come from user reports. */

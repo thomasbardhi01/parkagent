@@ -23,6 +23,11 @@ export interface StartSessionArgs {
   amountUsd: number;
   feeUsd: number;
   plate?: string;
+  /** The session's vehicle from the vehicles table. Passport's Vehicles
+   * chooser lists saved vehicles as "<PLATE> (<STATE>)" buttons; the
+   * executor clicks the matching one and answers vehicle_missing when
+   * none does (it never clicks Add Vehicle). */
+  vehicle?: { plate: string; state: string };
   /** The car's fix: feeds ParkNYC's NON-FATAL map cross-check only. */
   carLat?: number;
   carLng?: number;
@@ -52,6 +57,7 @@ export type ExecutorErrorCode =
   | "browser_crashed" // Chromium died mid-call; the executor retried once first
   | "payment_method_missing" // the account has no saved payment method to charge
   | "free_period" // the provider says this zone isn't charging now (after hours)
+  | "vehicle_missing" // the provider account has no saved vehicle matching the plate
   | "unknown"; // none of the above matched
 
 /** Evidence from an unexpected screen; the caller attaches it to decisions. */
@@ -89,6 +95,22 @@ export interface ExecutorOk {
   amountUsd: number;
   /** Present when the flow resolved the zone from the provider's map. */
   zoneResolution?: ZoneResolution;
+  /** Zone terms the provider's own UI displayed mid-flow (Passport's
+   * Vehicles chooser); logged on the decision and fed to
+   * zone_terms_observed. */
+  providerTerms?: ProviderZoneTerms;
+}
+
+/** Zone terms as the provider displayed them (mirrors executor/types.ts). */
+export interface ProviderZoneTerms {
+  /** The terms line exactly as shown, e.g. "$3.75 Hr|Max 5 Hr|M-Sat 8am-8pm". */
+  rawText: string;
+  ratePerHourUsd: number | null;
+  maxStayMinutes: number | null;
+  hours: ParsedProviderHours | null;
+  /** Zone number/name echoed in the provider's screen header. */
+  zoneNumber: string | null;
+  zoneName: string | null;
 }
 
 /** Enforcement hours parsed from a provider free-period notice. */
@@ -108,6 +130,9 @@ export interface ExecutorError {
   diagnostics?: ExecutorDiagnostics;
   /** Set on code "free_period": provider notice text + parsed hours. */
   freePeriod?: { rawText: string; hours: ParsedProviderHours | null };
+  /** Terms the provider displayed before the flow failed — kept so a run
+   * that died after the Vehicles chooser still feeds zone_terms_observed. */
+  providerTerms?: ProviderZoneTerms;
 }
 
 export type ExecutorResult = ExecutorOk | ExecutorError;

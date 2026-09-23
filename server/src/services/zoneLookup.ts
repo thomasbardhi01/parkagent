@@ -27,6 +27,9 @@ export interface Candidate {
   hours: HoursInterval[];
   distanceM: number;
   containsPoint: boolean;
+  /** "observed" when zone_terms_observed overrode the dataset's rate/max
+   * stay (services/zoneTermsObserved.ts); absent means dataset terms. */
+  termsSource?: "observed";
 }
 
 export interface LookupQuery {

@@ -52,13 +52,21 @@ export type { ParkNycClientOptions } from "./parknyc/client.js";
 export { PassportClient } from "./passport/client.js";
 export type { PassportClientOptions } from "./passport/client.js";
 export {
+  findVehicleOption,
   normalizeStreet,
+  parseVehicleChooser,
   parseZoneEntryHtml,
   parseZoneInfoHtml,
+  parseZoneInfoTerms,
   streetsMatch,
 } from "./passport/parse.js";
-export type { ZoneEntryScreen, ZonePanel } from "./passport/parse.js";
-export type { ZoneResolution } from "./types.js";
+export type {
+  VehicleChooserScreen,
+  VehicleOption,
+  ZoneEntryScreen,
+  ZonePanel,
+} from "./passport/parse.js";
+export type { ProviderZoneTerms, ZoneResolution } from "./types.js";
 
 export interface ParkNycExecutorOptions {
   /** Playwright storageState file (from `pnpm -C executor run login`). */
@@ -108,7 +116,7 @@ export function createParkNycExecutor(options: ParkNycExecutorOptions): Executor
       withClient((c) =>
         c.startSession(
           args.zoneNumber,
-          args.plate ?? options.defaultPlate,
+          args.vehicle?.plate ?? args.plate ?? options.defaultPlate,
           args.minutes,
           // Car coordinates enable the non-fatal map cross-check; the
           // expected street rides along as decision evidence.
@@ -171,8 +179,15 @@ export function createPassportExecutor(options: PassportExecutorOptions): Execut
     // No map in the ParkBoston web app (2026-09-21 recording): the zone
     // number is required and typed into the Enter Zone screen; car
     // coordinates are ignored here (they only feed ParkNYC's cross-check).
+    // The vehicle (plate + state) picks the button on the Vehicles chooser.
     startSession: (args: StartSessionArgs) =>
-      withClient((c) => c.startSession(args.zoneNumber, args.plate, args.minutes)),
+      withClient((c) =>
+        c.startSession(
+          args.zoneNumber,
+          args.vehicle ?? (args.plate !== undefined ? { plate: args.plate } : undefined),
+          args.minutes,
+        ),
+      ),
     extendSession: (args: ExtendSessionArgs) =>
       withClient((c) => c.extendSession(args.providerSessionId, args.minutes)),
     stopSession: (args: StopSessionArgs) =>

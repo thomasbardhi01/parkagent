@@ -1,4 +1,4 @@
-import type { ParsedProviderHours } from "../types.js";
+import type { ParsedProviderHours, ProviderZoneTerms } from "../types.js";
 /**
  * PERSONAL-USE PROTOTYPE — see ../types.ts header and issue #37.
  *
@@ -125,7 +125,6 @@ export function streetsMatch(expectedStreet: string, panelStreet: string): boole
   return a === b || a.includes(b) || b.includes(a);
 }
 
-
 /** One zone from the Find Parking map feed (getnearzoneswithoccupancy). */
 export interface NearbyZone {
   /** The pay-by-app zone number a driver enters — what our dataset lacks. */
@@ -147,7 +146,8 @@ export function parseNearbyZones(body: unknown): NearbyZone[] {
   for (const raw of data) {
     if (typeof raw !== "object" || raw === null) continue;
     const r = raw as Record<string, unknown>;
-    const number = r["number"] === undefined || r["number"] === null ? "" : String(r["number"]).trim();
+    const number =
+      r["number"] === undefined || r["number"] === null ? "" : String(r["number"]).trim();
     const name = typeof r["name"] === "string" ? r["name"].trim() : "";
     if (number === "" || name === "") continue;
     const num = (v: unknown): number | null => {
@@ -165,7 +165,6 @@ export function parseNearbyZones(body: unknown): NearbyZone[] {
   return out;
 }
 
-
 /** True when the given page HTML is the "Add Payment Details" screen —
  * the card-entry form the start flow lands on when the account has no
  * saved payment method (header #updateCardWindowHeader + the #cardNumber
@@ -175,7 +174,6 @@ export function isAddPaymentScreen(html: string): boolean {
   const hasForm = /id="cardNumber"/.test(html) && /id="saveCard"/.test(html);
   return hasHeader && hasForm;
 }
-
 
 /** State of the Enter Zone recent-zones panel in a page's HTML — the
  * element that pops on input focus and, when visible with chips, can
@@ -190,10 +188,11 @@ export function recentZonesState(html: string): {
   if (!m) return { present: false, visible: false, chips: [] };
   const openTag = /<div id="recentZones"[^>]*>/.exec(html)?.[0] ?? "";
   const hidden = /style="[^"]*display:\s*none/i.test(openTag);
-  const chips = [...m[1]!.matchAll(/<button[^>]*>\s*([^<]+?)\s*<\/button>/g)].map((c) => c[1]!.trim());
+  const chips = [...m[1]!.matchAll(/<button[^>]*>\s*([^<]+?)\s*<\/button>/g)].map((c) =>
+    c[1]!.trim(),
+  );
   return { present: true, visible: !hidden && chips.length > 0, chips };
 }
-
 
 /** True when the HTML shows the optional "Review Signage" interstitial —
  * a popup/dialog with signage/meter-hours/restrictions text AND both a
@@ -212,15 +211,14 @@ export function isSignageModal(html: string): boolean {
   return isPopupish && mentionsSignage && hasContinue && hasCancel;
 }
 
-
 /** True when the HTML shows a settled jQuery Mobile page: a .ui-page-active
  * exists and no .ui-page carries a transition token (in/out/slide/…). The
  * runtime stableClick waits for this AND a stable bounding box; this pure
  * mirror lets the settle condition be unit-tested. */
 export function activePageSettled(html: string): boolean {
   const TOKENS = ["in", "out", "slide", "slideup", "slidedown", "fade", "pop", "flip", "turn"];
-  const pages = [...html.matchAll(/<div[^>]*class="([^"]*\bui-page\b[^"]*)"[^>]*>/g)].map(
-    (m) => m[1]!.split(/\s+/),
+  const pages = [...html.matchAll(/<div[^>]*class="([^"]*\bui-page\b[^"]*)"[^>]*>/g)].map((m) =>
+    m[1]!.split(/\s+/),
   );
   if (!pages.some((cls) => cls.includes("ui-page-active"))) return false;
   return !pages.some((cls) => cls.some((c) => TOKENS.includes(c)));
@@ -262,15 +260,178 @@ export function parseProviderHours(text: string): ParsedProviderHours | null {
   };
 }
 
-/** "Mon-Sat" → the inclusive run; a comma/space list is also accepted. */
-function parseDays(text: string): string[] {
-  const range = /\b(Sun|Mon|Tue|Wed|Thu|Fri|Sat)\w*\s*[-–—]\s*(Sun|Mon|Tue|Wed|Thu|Fri|Sat)\w*/i.exec(
+// ---------------------------------------------------------------------------
+// The Vehicles chooser (#vehicleManagement) — the screen after Review
+// Signage on the live 2026-09-22 walk (fixture passport-start-
+// 2026-09-22T15-45-19-408Z): a "Please choose the vehicle you would like to
+// park in Zone 456 (North Boylston between Dartmouth and Clarendon)" label,
+// one button.selectVehicle per saved vehicle ("<PLATE> (<STATE>)"), an
+// #addVehicleButton we never click, and a Zone Information line
+// "$3.75 Hr|Max 5 Hr|M-Sat 8am-8pm". The page div is in the DOM from boot
+// (jQuery Mobile shell) with the label display:none and the list empty, so
+// detection keys on the label being visible AND populated.
+
+/** One saved-vehicle button on the Vehicles chooser. */
+export interface VehicleOption {
+  /** Button text exactly as shown, e.g. "ABC123 (MA)". */
+  description: string;
+  plate: string;
+  /** Two-letter state from the trailing parenthetical; null when absent. */
+  state: string | null;
+}
+
+export interface VehicleChooserScreen {
+  /** Zone number from the header label ("… park in Zone 456 (…)"). */
+  zoneNumber: string | null;
+  /** Block/zone name from the header parenthetical. */
+  zoneName: string | null;
+  vehicles: VehicleOption[];
+  hasAddVehicle: boolean;
+  /** The Zone Information line, parsed; null when the line is absent. */
+  terms: ProviderZoneTerms | null;
+}
+
+/**
+ * Parse the "$3.75 Hr|Max 5 Hr|M-Sat 8am-8pm" Zone Information line. Total
+ * function: any segment that doesn't parse becomes null, never a throw —
+ * the line is operator-configured and the flow must not die on wording.
+ */
+export function parseZoneInfoTerms(rawText: string): ProviderZoneTerms {
+  const text = rawText.replace(/\s+/g, " ").trim();
+  const rate = /\$\s*(\d+(?:\.\d+)?)\s*(?:\/\s*|per\s*)?h(?:ou)?r\b/i.exec(text);
+  const max =
+    /max(?:imum)?\.?\s*(?:stay\s*)?(\d+(?:\.\d+)?)\s*(hours?|hrs?|hr|min(?:ute)?s?)/i.exec(text);
+  const maxStayMinutes =
+    max === null
+      ? null
+      : Math.round(Number(max[1]) * (max[2]!.toLowerCase().startsWith("h") ? 60 : 1));
+
+  const clock = /(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*[-–—]\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i.exec(
     text,
   );
+  let hours: ParsedProviderHours | null = null;
+  if (clock) {
+    const to24 = (h: number, minutes: number, ap: string) =>
+      ((ap.toLowerCase() === "pm" ? (h % 12) + 12 : h % 12) * 60 + minutes) % (24 * 60);
+    const tzMatch = /\b([A-Z]{2,4}T)\b/.exec(text);
+    hours = {
+      startLabel: `${clock[1]}${clock[2] ? `:${clock[2]}` : ""}${clock[3]!.toLowerCase()}`,
+      endLabel: `${clock[4]}${clock[5] ? `:${clock[5]}` : ""}${clock[6]!.toLowerCase()}`,
+      startMinutes: to24(Number(clock[1]), Number(clock[2] ?? 0), clock[3]!),
+      endMinutes: to24(Number(clock[4]), Number(clock[5] ?? 0), clock[6]!),
+      days: parseDays(text),
+      tz: tzMatch ? tzMatch[1]! : null,
+    };
+  }
+
+  return {
+    rawText: text,
+    ratePerHourUsd: rate === null ? null : Number(rate[1]),
+    maxStayMinutes,
+    hours,
+    zoneNumber: null,
+    zoneName: null,
+  };
+}
+
+/**
+ * Recognize the POPULATED Vehicles chooser in page HTML. Null when the
+ * #selectVehicleLabel is missing, hidden (display:none — the shell state on
+ * every other screen), or empty. The inline <script class="template"> copy
+ * of the vehicle button has an empty description and is skipped.
+ */
+export function parseVehicleChooser(html: string): VehicleChooserScreen | null {
+  const label = /<label[^>]*id=["']selectVehicleLabel["']([^>]*)>([\s\S]*?)<\/label>/i.exec(html);
+  if (!label) return null;
+  if (/style=["'][^"']*display:\s*none/i.test(label[1]!)) return null;
+  const labelText = visibleTextFromHtml(label[2]!);
+  if (labelText.length === 0) return null;
+
+  const header = /zone\s*#?\s*(\d{1,10})\s*(?:\(([^)]+)\))?/i.exec(labelText);
+
+  const vehicles: VehicleOption[] = [];
+  for (const m of html.matchAll(
+    /<span[^>]*class=["'][^"']*vehicleDescription[^"']*["'][^>]*>([\s\S]*?)<\/span>/gi,
+  )) {
+    const description = visibleTextFromHtml(m[1]!);
+    if (description.length === 0) continue; // the template's empty copy
+    const split = /^(.*?)\s*\(([A-Za-z]{2})\)$/.exec(description);
+    vehicles.push({
+      description,
+      plate: (split?.[1] ?? description).trim(),
+      state: split?.[2]?.toUpperCase() ?? null,
+    });
+  }
+
+  const infoLabel = [
+    ...html.matchAll(
+      /<label[^>]*class=["'][^"']*zoneInfoLabel[^"']*["'][^>]*>([\s\S]*?)<\/label>/gi,
+    ),
+  ]
+    .map((m) => visibleTextFromHtml(m[1]!))
+    .find((t) => t.length > 0);
+
+  const zoneNumber = header?.[1] ?? null;
+  const zoneName = header?.[2]?.trim() ?? null;
+  return {
+    zoneNumber,
+    zoneName,
+    vehicles,
+    hasAddVehicle: /id=["']addVehicleButton["']/i.test(html),
+    terms:
+      infoLabel === undefined ? null : { ...parseZoneInfoTerms(infoLabel), zoneNumber, zoneName },
+  };
+}
+
+/** Plates as typed vs as the provider shows them: case/spacing/dashes vary. */
+function canonicalPlate(plate: string): string {
+  return plate.toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+/**
+ * The chooser button matching the session's vehicle: plate must match
+ * (canonicalized); when both sides carry a state it must match too. Null
+ * when nothing matches — the caller returns a typed vehicle_missing.
+ */
+export function findVehicleOption(
+  vehicles: VehicleOption[],
+  wanted: { plate: string; state?: string },
+): VehicleOption | null {
+  const plate = canonicalPlate(wanted.plate);
+  if (plate.length === 0) return null;
+  return (
+    vehicles.find(
+      (v) =>
+        canonicalPlate(v.plate) === plate &&
+        (v.state === null || wanted.state === undefined || v.state === wanted.state.toUpperCase()),
+    ) ?? null
+  );
+}
+
+// Day tokens as providers abbreviate them: full names, 3-letter, and the
+// signage shorthand Passport's Zone Information line uses ("M-Sat").
+// Longest-first so "Sat" wins over "Sa" and "M" never eats "Mon".
+const DAY_TOKEN =
+  "sun(?:day)?|mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|thu(?:rs(?:day)?)?|fri(?:day)?|sat(?:urday)?|su|sa|tu|th|m|w|f";
+
+function normalizeDayToken(token: string): string | null {
+  const t = token.toLowerCase();
+  if (t.startsWith("su")) return "Sun";
+  if (t.startsWith("sa")) return "Sat";
+  if (t.startsWith("tu")) return "Tue";
+  if (t.startsWith("th")) return "Thu";
+  if (t.startsWith("m")) return "Mon";
+  if (t.startsWith("w")) return "Wed";
+  if (t.startsWith("f")) return "Fri";
+  return null;
+}
+
+/** "Mon-Sat" / "M-Sat" → the inclusive run; [] when no day range appears. */
+function parseDays(text: string): string[] {
+  const range = new RegExp(`\\b(${DAY_TOKEN})\\s*[-–—]\\s*(${DAY_TOKEN})\\b`, "i").exec(text);
   if (range) {
-    const norm = (d: string) => d.slice(0, 3).replace(/^\w/, (c) => c.toUpperCase());
-    const a = DAY_ORDER.indexOf(norm(range[1]!));
-    const b = DAY_ORDER.indexOf(norm(range[2]!));
+    const a = DAY_ORDER.indexOf(normalizeDayToken(range[1]!) ?? "");
+    const b = DAY_ORDER.indexOf(normalizeDayToken(range[2]!) ?? "");
     if (a >= 0 && b >= 0) {
       const out: string[] = [];
       for (let i = a; ; i = (i + 1) % 7) {

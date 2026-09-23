@@ -402,14 +402,23 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
         .send({ error: "executor_failed", code: result.code, decisionId: decision.id });
     }
 
+    // Record the ACTUAL charge when the provider returned a receipt
+    // (ParkBoston lists meter/fee/total on the confirm + session screens),
+    // so the session's stored spend and the daily-cap accounting match the
+    // card to the cent. It differs from `price` (the pre-charge estimate)
+    // because ParkBoston sells in per-zone duration increments — a 15-min
+    // request is billed as 12 min ($0.75). NYC/dry-run return no receipt,
+    // so the estimate stands. See the acceptance report, Job 2.
+    const chargedMeterUsd = result.receipt?.meterUsd ?? price.meterUsd;
+    const chargedFeeUsd = result.receipt?.feeUsd ?? price.feeUsd;
     await deps.db.session.update({
       where: { id: session.id },
       data: {
         status: "active",
         startedAt: at,
         expiresAt: result.expiresAt,
-        amountUsd: price.meterUsd,
-        feeUsd: price.feeUsd,
+        amountUsd: chargedMeterUsd,
+        feeUsd: chargedFeeUsd,
         purchasedMinutes: minutes,
         chargedMinutes: price.chargedMinutes,
         parknycConfirmation: result.providerSessionId,
@@ -421,12 +430,17 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
         kind: "started",
         at,
         minutes,
-        amountUsd: price.meterUsd,
-        feeUsd: price.feeUsd,
+        amountUsd: chargedMeterUsd,
+        feeUsd: chargedFeeUsd,
         expiresAt: result.expiresAt,
         providerSessionId: result.providerSessionId,
         dryRun,
-        details: { durationMs },
+        details: {
+          durationMs,
+          // Both numbers, for the audit: what we estimated vs what the
+          // provider actually charged (present only when it gave a receipt).
+          ...(result.receipt ? { estimatedTotalUsd: price.totalUsd, receipt: result.receipt } : {}),
+        },
       },
     });
     // Shadow mode: rehearse the Stripe pipeline (webhook → budget checks →
@@ -448,6 +462,9 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
           sessionId: session.id,
           price,
           durationMs,
+          // What the provider actually charged (ParkBoston's receipt), when
+          // it differs from `price` (the estimate) — the audit shows both.
+          ...(result.receipt ? { providerReceipt: result.receipt } : {}),
           // Both sides of the map-based zone resolution, when the executor
           // ran one (authoritative for Boston, cross-check for NYC).
           ...(result.zoneResolution ? { zoneResolution: result.zoneResolution } : {}),
@@ -459,17 +476,20 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
         sessionId: session.id,
       },
     });
+    // The push and the reply carry the ACTUAL total when the provider gave
+    // a receipt, so the app shows what the card paid, not the estimate.
+    const chargedTotalUsd = result.receipt?.totalUsd ?? price.totalUsd;
     await deps.sendPush(
       user.id,
       sessionStartedPush({
         zoneNumber: zone.providerZoneNumber,
         minutes,
-        totalUsd: price.totalUsd,
+        totalUsd: chargedTotalUsd,
         expiresAt: result.expiresAt,
         dryRun,
       }),
     );
-    return { sessionId: session.id, expiresAt: result.expiresAt, amountUsd: price.totalUsd };
+    return { sessionId: session.id, expiresAt: result.expiresAt, amountUsd: chargedTotalUsd };
   });
 
   app.post("/session/extend", async (req, reply) => {

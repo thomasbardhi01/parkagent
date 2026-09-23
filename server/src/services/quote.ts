@@ -52,6 +52,24 @@ export interface RatedTerms {
   rateFirstHourUsd: number;
   rateAdditionalHourUsd: number;
   hours: HoursInterval[];
+  /** ParkBoston sells parking in a per-zone duration increment (the
+   * duration picker's `incrementalMinutes` — zone 456 is 12 minutes,
+   * observed 2026-09-23), so a 15-minute request is billed as 12 minutes.
+   * When known, the charged minutes are snapped to a whole number of
+   * increments (minimum one) BEFORE pricing, so the quote matches the
+   * receipt to the cent. Absent (NYC, or a Boston zone whose increment we
+   * haven't collected) → priced per-minute as requested. See the
+   * acceptance report, Job 2. */
+  billingIncrementMinutes?: number;
+}
+
+/** Snap `minutes` to a whole number of provider increments, nearest, with a
+ * floor of one increment — how ParkBoston's duration picker rounds a
+ * request. A non-positive/absent increment leaves the minutes unchanged. */
+export function snapToIncrement(minutes: number, incrementMinutes?: number): number {
+  if (!incrementMinutes || incrementMinutes <= 0) return minutes;
+  const steps = Math.max(1, Math.round(minutes / incrementMinutes));
+  return steps * incrementMinutes;
 }
 
 /**
@@ -68,9 +86,13 @@ export function priceStay(
   minutes: number,
   priorChargedMinutes = 0,
 ): StayPrice {
+  // ParkBoston bills the granted duration, which its picker snaps to the
+  // zone's increment; do the same before counting enforced minutes so the
+  // quote matches the receipt. NYC / unknown-increment zones pass through.
+  const requestedMinutes = snapToIncrement(minutes, zone.billingIncrementMinutes);
   const chargedMinutes = policy.respect_enforcement_hours
-    ? enforcementProfile(zone.hours, from, minutes).filter(Boolean).length
-    : minutes;
+    ? enforcementProfile(zone.hours, from, requestedMinutes).filter(Boolean).length
+    : requestedMinutes;
 
   const firstHourMinutes = Math.min(Math.max(60 - priorChargedMinutes, 0), chargedMinutes);
   const additionalMinutes = chargedMinutes - firstHourMinutes;
@@ -81,7 +103,9 @@ export function priceStay(
   const feeUsd = meterUsd > 0 ? roundCents(cityPolicy(policy, zone.city).parkingFeeUsd) : 0;
 
   return {
-    stayMinutes: minutes,
+    // The stay is what will actually be bought (snapped to the increment
+    // when one applies), so it matches the receipt's duration.
+    stayMinutes: requestedMinutes,
     chargedMinutes,
     meterUsd,
     feeUsd,

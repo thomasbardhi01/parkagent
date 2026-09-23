@@ -97,14 +97,17 @@ export function paymentFailedPush(args: {
   what: "pay" | "extend";
   code: string;
 }): Push {
-  // A card-less account or an unknown plate are distinct, actionable
-  // failures: the fix is doing something in ParkBoston, not "retry".
+  // A card-less account, an unknown plate, or an operator lockout are
+  // distinct, actionable failures: the fix is doing something in ParkBoston
+  // (or waiting), not blindly "retry"/"tap to pay".
   const body =
     args.code === "payment_method_missing"
       ? `The meter for zone ${args.zoneNumber} is unpaid — add a card to ParkBoston, then tap to pay.`
       : args.code === "vehicle_missing"
         ? `ParkBoston doesn't know your plate — add your vehicle there, then tap to pay zone ${args.zoneNumber}.`
-        : `Could not ${args.what} zone ${args.zoneNumber} (${args.code}). The meter is unpaid — tap to pay.`;
+        : args.code === "parking_denied"
+          ? `ParkBoston won't let you re-park zone ${args.zoneNumber} right now (an operator lockout). Nothing was charged — wait or move the car.`
+          : `Could not ${args.what} zone ${args.zoneNumber} (${args.code}). The meter is unpaid — tap to pay.`;
   return {
     type: "payment_failed",
     title:
@@ -112,7 +115,9 @@ export function paymentFailedPush(args: {
         ? "Add a card to ParkBoston"
         : args.code === "vehicle_missing"
           ? "Add your plate to ParkBoston"
-          : "Payment failed",
+          : args.code === "parking_denied"
+            ? "Parking blocked right now"
+            : "Payment failed",
     body,
     extra: {
       code: args.code,

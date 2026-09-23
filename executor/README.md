@@ -77,8 +77,8 @@ saves to `executor/fixtures/<provider>-<flow>-<stamp>/` (gitignored):
 `har.har`, `trace.zip`, and a `NN-<step>.html` + `.png` pair per screen.
 **`start` and `extend` pay a real meter** — the harness makes you type
 `pay` first; use a cheap zone and the minimum duration. (The old
-`resolve` flow is gone: the 2026-09-21 recording showed ParkBoston has no
-map — signed-in navigation lands on the Enter Zone screen.) Open traces
+`resolve` flow is gone — superseded by `findParking`/`sweep`, which read
+the map feed without ever touching the pay path.) Open traces
 with `pnpm -C executor exec playwright show-trace <dir>/trace.zip`.
 
 To grow the unit tests, sanitize a recorded page (strip email, plate, card

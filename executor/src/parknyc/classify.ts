@@ -29,6 +29,12 @@ const ZONE_TEXT =
   /(zone.{0,40}(not.{0,10}(found|recognized|valid)|invalid|unavailable)|invalid zone|check the zone number)/i;
 const PAYMENT_TEXT =
   /((payment|card).{0,40}(declined|failed|unsuccessful|expired|could not be processed)|declined.{0,30}(payment|card)|insufficient funds)/i;
+// ParkBoston's repark/zone lockout ("Parking Denied. The parking operator
+// has setup a lockout period. You are ... not allowed to park at this time
+// in this zone/space."). Checked BEFORE the payment pattern: it is NOT a
+// card decline (the card is fine), so "tap to pay" would just be denied
+// again — the fix is to wait or move.
+const PARKING_DENIED_TEXT = /(parking denied|lockout period|not allowed to park at this time)/i;
 
 // The shared Chromium (or this call's context/page) died under us — not a
 // provider failure at all. The executor retries once on a fresh context
@@ -45,10 +51,15 @@ const TIMEOUT_ERROR = /Timeout \d+m?s exceeded/i;
  */
 export function classifyPageText(
   text: string,
-): Extract<ExecutorErrorCode, "auth_expired" | "zone_not_found" | "payment_declined"> | null {
+): Extract<
+  ExecutorErrorCode,
+  "auth_expired" | "zone_not_found" | "payment_declined" | "parking_denied"
+> | null {
   if (CAPTCHA_TEXT.test(text)) return null; // see CAPTCHA_TEXT: never auth_expired
   if (AUTH_TEXT.test(text)) return "auth_expired";
   if (ZONE_TEXT.test(text)) return "zone_not_found";
+  // Before payment: a lockout reads "denied" but is not a card decline.
+  if (PARKING_DENIED_TEXT.test(text)) return "parking_denied";
   if (PAYMENT_TEXT.test(text)) return "payment_declined";
   return null;
 }

@@ -33,9 +33,12 @@ const EXPIRY_TIME =
 // Passport labels the end with a full date first: "End: Wed, Sep 23,
 // 11:52 AM" / "New End Time: …" (verified live 2026-09-23). The lazy gap
 // skips the weekday/date; the meridiem is required so "Sep 23," can never
-// half-match.
+// half-match. The leading \b and trailing (?=\s|:) keep "end" from matching
+// mid-word — the block name "Clarendon" and the button "Extend" both
+// contain "end", and without the boundary the lazy gap would reach the
+// nearby Start time (2026-09-23 fixture regression).
 const PASSPORT_END =
-  /(?:new\s+end(?:\s+time)?|ends?)\s*:?\s*.{0,40}?(\d{1,2}):(\d{2})\s*(am|pm)\b/i;
+  /\b(?:new\s+end(?:\s+time)?|ends?)(?=\s|:)\s*:?\s*.{0,40}?(\d{1,2}):(\d{2})\s*(am|pm)\b/i;
 
 // Prefer the labeled total; fall back to the last dollar amount on the page.
 const LABELED_TOTAL = /total[^$\n]{0,40}\$\s*(\d+(?:\.\d{2})?)/i;

@@ -23,6 +23,7 @@ export type ExecutorErrorCode =
   | "payment_method_missing" // the account has no saved payment method to charge
   | "free_period" // the provider says this zone isn't charging now (after hours)
   | "vehicle_missing" // the provider account has no saved vehicle matching the plate
+  | "parking_denied" // the operator blocked re-parking (repark/zone lockout); NOT a charge
   | "unknown"; // none of the above matched
 
 /** Evidence captured from an unexpected screen; attached to decisions. */
@@ -64,6 +65,15 @@ export interface ExecutorOk {
   expiresAt: Date;
   /** Dollars this call actually moved (meter + fee), as the provider showed. */
   amountUsd: number;
+  /** The provider's receipt broken out (meter / fee / total), when the
+   * confirm or session screen listed it — ParkBoston does. Lets the server
+   * record what the card actually paid instead of its pre-charge estimate,
+   * which differs because ParkBoston sells in per-zone duration increments. */
+  receipt?: { meterUsd: number; feeUsd: number; totalUsd: number };
+  /** stopSession only: the provider offers no early stop for this zone
+   * (ParkBoston zone 456 — meter time is non-refundable), so the local
+   * session is marked stopped but nothing was cancelled or refunded. */
+  stopNotSupported?: boolean;
   /** Present when the flow resolved the zone from the provider's map. */
   zoneResolution?: ZoneResolution;
   /** The zone terms the provider itself displayed mid-flow (Passport's

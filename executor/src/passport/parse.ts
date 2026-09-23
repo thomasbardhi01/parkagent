@@ -233,6 +233,57 @@ export function isFreePeriodModal(html: string): boolean {
   return isPopupish && mentions && hasOk;
 }
 
+/**
+ * True when the HTML shows ParkBoston's "Parking Denied" lockout popup —
+ * the operator's repark/zone lockout (Passport strings csa_sp_repark_error
+ * / csa_zone_repark_error, title csa_sp_repark_error_title "Parking
+ * Denied"): "The parking operator has setup a lockout period. You are
+ * within this period and are not allowed to park at this time in this
+ * zone/space." Observed live 2026-09-23 after the confirm-Yes click — the
+ * card was NOT charged (the operator refused before authorizing). Distinct
+ * from a payment decline: the fix is to wait/move, not to add a card.
+ */
+export function isParkingDeniedModal(html: string): boolean {
+  const isPopupish = /data-role="popup"|ui-popup|role="dialog"/i.test(html);
+  const mentions = /parking denied|lockout period|not allowed to park at this time/i.test(html);
+  const hasOk = /(>\s*ok\s*<|>\s*okay\s*<)/i.test(html);
+  return isPopupish && mentions && hasOk;
+}
+
+export interface PassportReceipt {
+  /** "Parking Fee" — the meter portion, in dollars. */
+  meterUsd: number;
+  /** "Convenience Fee" — ParkBoston's flat per-transaction fee. */
+  feeUsd: number;
+  /** "Total Fee" — what the card is charged. */
+  totalUsd: number;
+}
+
+/**
+ * Parse the ParkBoston receipt amounts off the "Please Confirm" dialog or
+ * the active-session screen. The layout lists each fee as a label then its
+ * amount (often across a line break):
+ *   Parking Fee: $0.75 / Convenience Fee: $0.35 / Total Fee: $1.10
+ * (ground truth: the parking-history rows for transactions 831908580 and
+ * 831291617, both zone 456, and the confirm dialog captured on the
+ * 2026-09-23 acceptance run). Returns the real charged amounts so the
+ * server records what the card actually paid, not the pre-charge estimate.
+ * Null when the Parking-Fee and Total-Fee lines aren't both present.
+ */
+export function parsePassportReceipt(text: string): PassportReceipt | null {
+  const t = text.replace(/\s+/g, " ");
+  const dollars = (label: RegExp): number | null => {
+    const m = label.exec(t);
+    return m ? Number(m[1]) : null;
+  };
+  const meterUsd = dollars(/parking fee:?\s*\$\s*(\d+\.\d{2})/i);
+  const totalUsd = dollars(/total fee:?\s*\$\s*(\d+\.\d{2})/i);
+  if (meterUsd === null || totalUsd === null) return null;
+  // Convenience Fee may be absent on a $0 free window; default 0.
+  const feeUsd = dollars(/convenience fee:?\s*\$\s*(\d+\.\d{2})/i) ?? 0;
+  return { meterUsd, feeUsd, totalUsd };
+}
+
 const DAY_ORDER = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 /** Parse a provider free-period notice like "Paid parking is between

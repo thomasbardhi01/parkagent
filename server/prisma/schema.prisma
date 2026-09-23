@@ -94,6 +94,31 @@ model ZoneNumberImport {
   @@map("zone_number_imports")
 }
 
+// Zone terms as the provider's own UI displayed them, keyed by the
+// pay-by-app zone number: the Passport Vehicles chooser shows a "Zone
+// Information" line ("$3.75 Hr|Max 5 Hr|M-Sat 8am-8pm") and the executor
+// returns it with every start attempt. Quoting prefers these over the
+// dataset when present — Boston's dataset assumed a 2-hour max everywhere,
+// but e.g. zone 456 is posted 5 hours. No FK to zones (zone rows are
+// replaced on every load:zones run); zone_id is audit only.
+model ZoneTermsObserved {
+  city           String
+  zoneNumber     String   @map("zone_number")
+  ratePerHourUsd Decimal? @map("rate_per_hour_usd") @db.Decimal(6, 2)
+  maxStayMinutes Int?     @map("max_stay_minutes")
+  // The provider's terms line exactly as shown.
+  rawText        String   @map("raw_text")
+  // ParsedProviderHours JSON (start/end minutes, days, tz); observation
+  // evidence only — quoting still uses the dataset's enforcement hours.
+  hoursJson      Json?    @map("hours_json")
+  zoneId         String?  @map("zone_id")
+  firstSeenAt    DateTime @default(now()) @map("first_seen_at") @db.Timestamptz(6)
+  lastSeenAt     DateTime @default(now()) @map("last_seen_at") @db.Timestamptz(6)
+
+  @@id([city, zoneNumber])
+  @@map("zone_terms_observed")
+}
+
 // The two humans this prototype serves. api_key is the whole auth story.
 model User {
   id        String   @id @default(cuid())

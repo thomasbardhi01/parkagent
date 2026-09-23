@@ -9,8 +9,11 @@ open data, so they come from the Passport Find Parking feed importer
 plus driver reports of the posted number
 (`POST /zones/:zoneId/provider-number`, verified when two users agree —
 a verified report beats an import, an import beats a single unverified
-report) and the executor types the stored number in. Post-zone Passport screens remain drafted
-TODO-verify until the first paid recording. Two users, iOS only.
+report) and the executor types the stored number in. The Passport flow is
+verified through the Vehicles chooser (which also yields provider-observed
+zone terms — `zone_terms_observed` beats the dataset when quoting); the
+screens after it remain drafted TODO-verify until the first paid
+recording. Two users, iOS only.
 
 ## Locations
 The checkout lives at `~/Documents/parkagent`; the `feat/nyc-data` worktree

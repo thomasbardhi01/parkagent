@@ -27,8 +27,12 @@ import {
   isSignageModal,
   activePageSettled,
   isFreePeriodModal,
+  isParkingDeniedModal,
+  parsePassportReceipt,
   parseProviderHours,
 } from "../src/passport/parse.js";
+import { visibleTextFromHtml } from "../src/parknyc/classify.js";
+import { parseExpiresAt } from "../src/parknyc/parse.js";
 
 const pagesDir = fileURLToPath(new URL("./fixtures/pages/passport", import.meta.url));
 
@@ -402,5 +406,103 @@ describe("No Meter Parking after-hours notice (free period)", () => {
     });
     expect(parseProviderHours("between 9am-5pm")).toMatchObject({ days: [] });
     expect(parseProviderHours("no hours mentioned here")).toBeNull();
+  });
+});
+
+describe("ParkBoston receipt amounts (parsePassportReceipt)", () => {
+  const dir = fileURLToPath(new URL("./fixtures/pages/passport", import.meta.url));
+  const receiptText = visibleTextFromHtml(
+    readFileSync(join(dir, "confirm-receipt--zone-456.html"), "utf8"),
+  );
+
+  // The two real zone-456 transactions on the account (parking history):
+  // 831908580 (9/23) and 831291617 (9/21), both 12 minutes billed as
+  // $0.75 meter + $0.35 convenience = $1.10. The confirm dialog fixture
+  // carries the same amounts, so the parser must reproduce them to the cent.
+  test("reads Parking / Convenience / Total off the confirm dialog to the cent", () => {
+    expect(parsePassportReceipt(receiptText)).toEqual({
+      meterUsd: 0.75,
+      feeUsd: 0.35,
+      totalUsd: 1.1,
+    });
+  });
+
+  test("tolerates the label-then-newline layout and a missing convenience line", () => {
+    expect(
+      parsePassportReceipt("Parking Fee:\n$0.75\nConvenience Fee:\n$0.35\nTotal Fee:\n$1.10"),
+    ).toEqual({
+      meterUsd: 0.75,
+      feeUsd: 0.35,
+      totalUsd: 1.1,
+    });
+    // A $0 free window shows no convenience fee — default it to 0.
+    expect(parsePassportReceipt("Parking Fee: $0.00 Total Fee: $0.00")).toEqual({
+      meterUsd: 0,
+      feeUsd: 0,
+      totalUsd: 0,
+    });
+  });
+
+  test("returns null when the fee rows aren't both present", () => {
+    expect(parsePassportReceipt("You are parked! Zone 456")).toBeNull();
+    expect(parsePassportReceipt("Convenience Fee: $0.35 only")).toBeNull();
+  });
+
+  test("reads the CUMULATIVE fees and new end time off the post-extend session screen", () => {
+    // After a 15-min extend the session screen shows the whole session's
+    // running total (24 min = $1.50 + $0.70 = $2.20) and the new End clock.
+    const sessionText = visibleTextFromHtml(
+      readFileSync(join(dir, "session-active--stop-disabled.html"), "utf8"),
+    );
+    expect(parsePassportReceipt(sessionText)).toEqual({
+      meterUsd: 1.5,
+      feeUsd: 0.7,
+      totalUsd: 2.2,
+    });
+    // The extend flow reads expiry from this screen's "End:" line.
+    const end = parseExpiresAt(sessionText, new Date("2026-09-23T18:55:00-04:00"))!;
+    expect(end).not.toBeNull();
+    expect(
+      new Intl.DateTimeFormat("en-US", {
+        timeZone: "America/New_York",
+        hour: "numeric",
+        minute: "2-digit",
+      }).format(end),
+    ).toBe("3:11 PM");
+  });
+
+  test("the session screen offers Extend but NOT Stop (zone 456: no early stop)", () => {
+    // The client's structural detection: the extend flow finds #extendBtn,
+    // and the stop flow finds NO #sessStopBtn → stopNotSupported. session.js
+    // pushes #sessStopBtn only when the operator enables early stop, which
+    // ParkBoston zone 456 (non-refundable) does not. Pure structural check —
+    // exactly what page.locator(id).count() reads at runtime.
+    const html = readFileSync(join(dir, "session-active--stop-disabled.html"), "utf8");
+    expect(html).toMatch(/id="extendBtn"/);
+    expect(html).not.toMatch(/id="sessStopBtn"/);
+  });
+});
+
+describe("Parking Denied lockout popup (isParkingDeniedModal)", () => {
+  const dir = fileURLToPath(new URL("./fixtures/pages/passport", import.meta.url));
+  const denied = readFileSync(join(dir, "parking-denied-lockout.html"), "utf8");
+
+  test("fires on the lockout popup, not on the confirm or free-period screens", () => {
+    expect(isParkingDeniedModal(denied)).toBe(true);
+    expect(
+      isParkingDeniedModal(readFileSync(join(dir, "no-meter-parking-modal.html"), "utf8")),
+    ).toBe(false);
+    expect(
+      isParkingDeniedModal(readFileSync(join(dir, "confirm-receipt--zone-456.html"), "utf8")),
+    ).toBe(false);
+  });
+
+  test("classifyPageText reads the lockout as parking_denied, not payment_declined", async () => {
+    const { classifyPageText } = await import("../src/parknyc/classify.js");
+    expect(classifyPageText(visibleTextFromHtml(denied))).toBe("parking_denied");
+    // A genuine card decline still reads payment_declined.
+    expect(classifyPageText("Your payment was declined. Please try another card.")).toBe(
+      "payment_declined",
+    );
   });
 });

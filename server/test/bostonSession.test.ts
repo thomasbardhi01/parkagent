@@ -84,6 +84,88 @@ test("a Boston start stores city bos and prices the ParkBoston fee", async () =>
   expect(Number(session.feeUsd)).toBe(0.35);
 });
 
+test("records the ParkBoston receipt as the actual charge, not the estimate", async () => {
+  // Job 2: a 15-min request is billed as 12 min ($0.75) — the executor
+  // returns the real receipt, and the server records THAT, so the session
+  // spend and the daily-cap accounting match the card to the cent.
+  const expires = new Date(NOW.getTime() + 15 * 60_000);
+  const receipt = { meterUsd: 0.75, feeUsd: 0.35, totalUsd: 1.1 };
+  const { app, state } = makeApp({
+    envDryRun: false,
+    policy: { dry_run: false },
+    executor: {
+      startSession: async () => ({
+        ok: true,
+        providerSessionId: "831908580",
+        expiresAt: expires,
+        amountUsd: 1.1,
+        receipt,
+      }),
+      extendSession: async () => ({
+        ok: true,
+        providerSessionId: "x",
+        expiresAt: expires,
+        amountUsd: 0,
+      }),
+      stopSession: async () => ({
+        ok: true,
+        providerSessionId: "x",
+        expiresAt: expires,
+        amountUsd: 0,
+      }),
+    },
+  });
+
+  const started = await post(app, "/session/start", {
+    parkedEventId: "pe1",
+    zoneId: BOYLSTON_ZONE.zoneId,
+    minutes: 15,
+  });
+  expect(started.statusCode).toBe(200);
+  // The reply is the actual $1.10, not the 15-min estimate ($0.94 + $0.35 = $1.29).
+  expect(started.json().amountUsd).toBe(1.1);
+
+  const session = state.sessions.at(-1)!;
+  expect(Number(session.amountUsd)).toBe(0.75); // actual meter, not $0.94
+  expect(Number(session.feeUsd)).toBe(0.35);
+
+  const decision = state.decisions.find(
+    (d) => d.kind === "session_start" && d.rule === "start_ok",
+  )!;
+  expect(decision.outcome["providerReceipt"]).toEqual(receipt);
+  const event = state.sessionEvents.find((e) => e.kind === "started")!;
+  expect(event.details).toMatchObject({ estimatedTotalUsd: 1.29, receipt });
+});
+
+test("a Boston start denied by the operator lockout fails typed parking_denied, meter unpaid", async () => {
+  const { app, state, pushes } = makeApp({
+    envDryRun: false,
+    policy: { dry_run: false },
+    executor: {
+      startSession: async () => ({
+        ok: false,
+        code: "parking_denied",
+        message: "The parking operator has setup a lockout period.",
+      }),
+      extendSession: async () => ({ ok: false, code: "parking_denied", message: "" }),
+      stopSession: async () => ({ ok: false, code: "parking_denied", message: "" }),
+    },
+  });
+  const res = await post(app, "/session/start", {
+    parkedEventId: "pe1",
+    zoneId: BOYLSTON_ZONE.zoneId,
+    minutes: 15,
+  });
+  expect(res.statusCode).toBe(502);
+  expect(res.json()).toMatchObject({ error: "executor_failed", code: "parking_denied" });
+  expect(state.sessions.at(-1)!.status).toBe("failed"); // stays unpaid
+  // The push tells the user to wait/move, not "add a card" or "tap to pay".
+  const push = pushes.at(-1)!.push;
+  expect(push.type).toBe("payment_failed");
+  expect(push.title).toBe("Parking blocked right now");
+  expect(push.body).toMatch(/lockout|wait or move/i);
+});
+
 test("a Boston start without a linked passport account refuses provider_not_linked", async () => {
   const t = makeTestApp({ zones: [BOYLSTON_ZONE], now: () => NOW, seedLinkedProvider: false });
   t.state.parkedEvents.push({

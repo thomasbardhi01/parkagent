@@ -1,0 +1,44 @@
+<!--
+  Sanitized ParkBoston active-session screen after a real extend (captured
+  2026-09-23; plate, cardholder name and transaction number scrubbed). This
+  is the screen the extend flow lands back on after the confirm-Yes click
+  (NOT a separate receipt page), so it is the extend success marker. Its
+  fees are CUMULATIVE for the whole session — one 12-min start + one 12-min
+  extend = 24 min: $1.50 parking + $0.70 convenience ($0.35 x2) = $2.20.
+
+  session.js pushes #sessStopBtn only when stopParkingOptionEnabled; zone
+  456 does NOT enable it (Boston meter time is non-refundable), so Stop is
+  absent from the DOM — only Zone Info / Extend / Discount render. The
+  fixture proves the extend-success and no-early-stop detectors.
+-->
+<div id="session" data-role="page" data-theme="a" class="ui-page ui-page-theme-a ui-page-active">
+  <div id="parkingSessionHeader" data-role="header" class="ui-header ui-bar-a">
+    <h1 class="ui-title">Active Session</h1>
+  </div>
+  <div id="parkingSessionContent" data-role="content" class="ui-content">
+    <div class="countdownTimerContainerAll">
+      <div id="countdownTimerContainer">00 hours : 16 minutes : 37 seconds</div>
+    </div>
+    <p id="sessionParkedIn">Parked in BOSTON, MA (North Boylston between Dartmouth and Clarendon, Zone 456)</p>
+    <div id="sessionItems">
+      <p>Transaction Number: <span>000000000</span></p>
+      <p>License Plate: <span>MA ABC1234</span></p>
+      <p>Zone: <span>North Boylston between Dartmouth and Clarendon (456)</span></p>
+      <p>Start: <span>Wed, Sep 23, 02:47 PM</span></p>
+      <p>End: <span>Wed, Sep 23, 03:11 PM</span></p>
+      <p>Parking Fee: <span>$1.50</span></p>
+      <p>Convenience Fee: <span>$0.70</span></p>
+      <p>Total Fee: <span>$2.20</span></p>
+      <p>Payment Info: <span>Test Driver</span></p>
+      <p>Payments: <span>Powered by Passport</span></p>
+    </div>
+    <!-- Desktop button row (session.js #sessionButtonsDesktop): the operator
+         enabled info + extend + discount, NOT stop, so #sessStopBtn is absent. -->
+    <div id="sessionButtonsDesktop">
+      <button id="activeSessionZoneInfoBtn" data-role="button">Zone Info</button>
+      <button id="extendBtn" data-role="button">Extend</button>
+      <button id="sessDiscountBtn" data-role="button">Discount</button>
+    </div>
+    <div id="sessionShutterPanel" style="height:0"></div>
+  </div>
+</div>

@@ -1,0 +1,28 @@
+<!--
+  Sanitized slice of ParkBoston's "Please Confirm" pay dialog, captured on
+  the 2026-09-23 acceptance run for zone 456 (plate, cardholder name and
+  card last4 removed). The fee rows are the ground truth for
+  parsePassportReceipt: they match parking-history transactions 831908580
+  and 831291617 (both 12 min, $0.75 + $0.35 = $1.10) to the cent.
+-->
+<div class="ui-popup-container ui-popup-active confirmationPopupIdentify">
+  <div data-role="popup" class="ui-popup ui-body-a ui-overlay-shadow ui-corner-all">
+    <div data-role="header" class="ui-header ui-bar-a">
+      <h1 class="ui-title">Please Confirm</h1>
+    </div>
+    <div data-role="content" class="ui-content">
+      <div class="confirm">
+        <p>Zone: <span>456</span></p>
+        <p>Location: <span>North Boylston between Dartmouth and Clarendon</span></p>
+        <p>Start: <span>Wed, Sep 23, 11:40 AM</span></p>
+        <p>End: <span>Wed, Sep 23, 11:52 AM</span></p>
+        <p>Parking Fee: <span>$0.75</span></p>
+        <p>Convenience Fee: <span>$0.35</span></p>
+        <p>Total Fee: <span>$1.10</span></p>
+        <p>Payments: <span>Powered by Passport</span></p>
+      </div>
+      <button class="ui-btn">Yes</button>
+      <button class="ui-btn">No</button>
+    </div>
+  </div>
+</div>

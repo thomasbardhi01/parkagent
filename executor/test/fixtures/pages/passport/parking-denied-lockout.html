@@ -1,0 +1,30 @@
+<!--
+  Sanitized slice of ParkBoston's "Parking Denied" lockout popup, captured
+  on the 2026-09-23 extend/stop run: it appears AFTER the confirm-Yes click
+  but the card is NOT charged (the operator refused before authorizing).
+  Passport strings csa_sp_repark_error_title "Parking Denied" +
+  csa_sp_repark_error / csa_zone_repark_error message. The behind card list
+  is left in (as the real DOM has it) so the test proves the detector scopes
+  to the open popup, not the page background.
+-->
+<div id="creditCards" data-role="page" class="ui-page ui-page-active">
+  <div data-role="content">
+    <h2>Your Cards</h2>
+    <button class="cardItem">Card on file</button>
+    <button class="addCard">Add Card</button>
+  </div>
+</div>
+<div class="ui-popup-container ui-popup-active">
+  <div data-role="popup" role="dialog" class="ui-popup ui-body-a ui-overlay-shadow ui-corner-all">
+    <div data-role="header" class="ui-header ui-bar-a">
+      <h1 class="ui-title">Parking Denied</h1>
+    </div>
+    <div data-role="content" class="ui-content centered">
+      <p>
+        The parking operator has setup a lockout period. You are within this
+        period and are not allowed to park at this time in this zone.
+      </p>
+      <button class="ui-btn ui-shadow ui-corner-all">Ok</button>
+    </div>
+  </div>
+</div>

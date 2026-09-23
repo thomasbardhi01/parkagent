@@ -30,16 +30,20 @@
  *    the Vehicles chooser (#vehicleManagement) — the screen after Review
  *    Signage: #selectVehicleLabel header, button.selectVehicle per saved
  *    vehicle, #addVehicleButton, and the .zoneInfoLabel terms line.
- *  - VERIFIED live on the paid START path (2026-09-23 acceptance run,
- *    server-driven, ParkBoston transaction 831908580): Length of Stay
- *    (#lengthOfStay), the duration picker (#durationPickerPage), Payment
- *    Methods (#paymentMethod), Your Cards (#creditCards), the "Please
- *    Confirm" jQuery-Mobile dialog (Common.confirmationPopup — Yes pays),
- *    and the active-session screen (#extendBtn / transaction number).
+ *  - VERIFIED live on the paid START, EXTEND, and STOP paths (2026-09-23:
+ *    start txn 831908580; a start→extend→stop walk on txn 831997285):
+ *    Length of Stay (#lengthOfStay), the duration picker
+ *    (#durationPickerPage), Payment Methods (#paymentMethod), Your Cards
+ *    (#creditCards), the "Please Confirm" jQuery-Mobile dialog
+ *    (Common.confirmationPopup — Yes pays), the active-session screen
+ *    (#extendBtn; Extend dispatched past the countdown overlay), and the
+ *    "Parking Denied" operator-lockout popup (no charge). ParkBoston zone
+ *    456 renders NO #sessStopBtn (stop disabled — non-refundable), so the
+ *    stop flow returns stopNotSupported.
  *  - FROM SHIPPED SOURCE, NOT YET WALKED (TODO-verify): the zone info
- *    panel (#zi_*), the EXTEND path past the session screen, the STOP
- *    button in the #sessionShutterPanel pull-up, and the card screens
- *    (setupCard/removeCard — the provider_card default never uses them).
+ *    panel (#zi_*), the card screens (setupCard/removeCard — the
+ *    provider_card default never uses them), and the #sessStopBtn stop
+ *    path itself (no covered zone enables early stop to walk it).
  */
 
 import type { Locator, Page } from "playwright";
@@ -173,6 +177,16 @@ export const selectors = {
         .locator(".ui-popup-container.ui-popup-active", { hasText: "No Meter Parking" })
         .getByRole("button", { name: /^ok(ay)?$/i })
         .filter({ visible: true }),
+    /** "Parking Denied" lockout popup (VERIFIED live 2026-09-23): the
+     * operator's repark/zone lockout, shown AFTER the confirm-Yes click
+     * with no charge. Scoped to the open popup by its title. */
+    parkingDeniedModal: (page: Page): Locator =>
+      page.locator(".ui-popup-container.ui-popup-active", { hasText: "Parking Denied" }),
+    parkingDeniedOk: (page: Page): Locator =>
+      page
+        .locator(".ui-popup-container.ui-popup-active", { hasText: "Parking Denied" })
+        .getByRole("button", { name: /^ok(ay)?$/i })
+        .filter({ visible: true }),
     /** Recent-zones panel: pops on input focus, sits right after
      * #zoneNext, and (when non-empty) shifts/overlays it — the
      * 2026-09-21 regression. Dismissed before clicking Continue. */
@@ -296,39 +310,28 @@ export const selectors = {
       ),
   },
 
-  // The loaded active-session screen (session.js: #sessStopBtn "Stop
-  // Parking", #extendBtn "Extend", #parkingSessionContent, a countdown
-  // timer). Its appearance is the executor's PAID-and-active signal —
-  // reached after the "Loading session details…" loader clears.
+  // The loaded active-session screen (session.js: #extendBtn "Extend",
+  // #sessDiscountBtn, #activeSessionZoneInfoBtn in #sessionButtonsDesktop;
+  // #parkingSessionContent; a countdown timer). Its appearance is the
+  // executor's PAID-and-active signal (reached after the "Loading session
+  // details…" loader) and also the EXTEND success marker (the extension
+  // lands back here). VERIFIED live 2026-09-23.
   session: {
+    /** Real id, present only when the operator enables early stop.
+     * ParkBoston zone 456 does NOT (non-refundable) → count 0 → the stop
+     * flow returns stopNotSupported. */
     stopButton: (page: Page): Locator => page.locator("#sessStopBtn"),
+    /** #extendBtn — its centre is under the countdown overlay, so the flow
+     * dispatches the click on it rather than hit-testing. */
     extendButton: (page: Page): Locator => page.locator("#extendBtn"),
-    /** Any of the reliable session-screen markers, for the success wait.
-     * (#extendBtn injects with the rest; "You are parked!" is the header.) */
+    /** Any of the reliable session-screen markers, for the success wait. */
     activeMarker: (page: Page): Locator =>
       page
         .locator("#extendBtn")
         .or(page.locator("#parkingSessionContent"))
         .or(page.getByText(/you are parked/i)),
-    /** The Session Options shutter's pull tab (#sessionShutterPanel);
-     * opening it reveals Stop when the screen shows 3+ buttons. */
-    shutterHandle: (page: Page): Locator =>
-      page.locator("#sessionShutterPanel .shutterPanelHandle, #sessionShutterPanel").first(),
-  },
-
-  // ------------------- Active session screen (session.js; TODO-verify)
-  sessions: {
-    sessionRow: (page: Page, providerSessionId: string): Locator =>
-      page.getByText(new RegExp(escapeForRegex(providerSessionId), "i")).first(),
-    // Real ids from session.js (VERIFIED 2026-09-23), with the role-based
-    // wording as a fallback for other Passport cities' skins.
-    extendButton: (page: Page): Locator =>
-      page.locator("#extendBtn").or(page.getByRole("button", { name: /extend|add time/i })),
-    stopButton: (page: Page): Locator =>
-      page
-        .locator("#sessStopBtn")
-        .or(page.getByRole("button", { name: /stop|end (session|parking)/i })),
-    /** Stop asks for confirmation via the same jQM confirm dialog as pay. */
+    /** Stop confirmation (when an operator DOES enable stop): the same jQM
+     * Yes dialog as pay. */
     stopConfirmButton: (page: Page): Locator =>
       page
         .locator(".ui-popup-container.ui-popup-active button")

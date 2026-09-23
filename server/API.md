@@ -259,9 +259,20 @@ charging now — after-hours; the server records a free period with the
 notice's parsed hours and pushes "parking is free", no session, no
 charge), `payment_method_missing` (the provider account has no
 saved payment method — the `payment_failed` push says "add a card to
-ParkBoston" instead of offering a retry), `ui_changed`, `network`,
-`browser_crashed` (Chromium died mid-call; the executor already retried
-once on a fresh context), `unknown`.
+ParkBoston" instead of offering a retry), `parking_denied` (the operator
+blocked re-parking — a repark/zone lockout, ParkBoston's "Parking Denied"
+popup after the confirm click; **no charge** — the provider refused before
+authorizing, and the push says "wait or move the car", not "tap to pay"),
+`ui_changed`, `network`, `browser_crashed` (Chromium died mid-call; the
+executor already retried once on a fresh context), `unknown`.
+
+On success the executor may also return the provider's **receipt** (meter /
+fee / total) when the confirm/session screen lists it (ParkBoston does); a
+start records those ACTUALS on the session and the `start_ok` decision
+(`providerReceipt`), so the stored spend and the daily-cap accounting match
+the card to the cent even when it differs from the pre-charge estimate
+(ParkBoston sells in per-zone duration increments — see the acceptance
+report, Job 2).
 
 **Zone numbers.** Every start types a zone number at the provider, so a
 provider-covered zone whose `provider_zone_number` is still `""` (a Boston

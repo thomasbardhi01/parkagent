@@ -20,15 +20,23 @@
  * The gated entry / T&C / e-mail verification screens, the Enter Zone
  * screen (#zoneNumber, #zoneNext), the Review Signage popup, and the
  * Vehicles chooser (#vehicleManagement, 2026-09-22) are verified against
- * recordings. The paid START path is now verified end to end against a
- * real server-driven session (2026-09-23 acceptance run, ParkBoston
- * transaction 831908580): after the chooser it walks Length of Stay
- * (#lengthOfStay) → duration picker (#durationPickerPage) → Payment
- * Methods (#paymentMethod) → Your Cards (#creditCards) → the "Please
- * Confirm" dialog (Yes pays) → the active-session screen. The EXTEND and
- * STOP paths reach that session screen but their later screens (extend
- * duration/confirm; the Stop button in the #sessionShutterPanel pull-up)
- * are NOT yet walked to completion — still TODO-verify.
+ * recordings. The START, EXTEND, and STOP paths are all verified end to
+ * end against real paid sessions (2026-09-23: start txn 831908580, and a
+ * start→extend→stop walk on txn 831997285):
+ *  - START: after the chooser it walks Length of Stay (#lengthOfStay) →
+ *    duration picker (#durationPickerPage) → Payment Methods
+ *    (#paymentMethod) → Your Cards (#creditCards) → the "Please Confirm"
+ *    dialog (Yes pays) → the active-session screen.
+ *  - EXTEND: from the session screen, Extend (#extendBtn — dispatched, its
+ *    centre is under the countdown overlay) → the same Length of Stay →
+ *    duration → confirm, landing BACK on the session screen with the new
+ *    End time and cumulative fees (the success marker, not a receipt page).
+ *  - STOP: ParkBoston zone 456 offers no early stop (session.js pushes
+ *    #sessStopBtn only when the operator enables it; Boston meter time is
+ *    non-refundable), so the stop flow returns stopNotSupported — there is
+ *    no stop action and no refund.
+ * A "Parking Denied" operator lockout can appear after the confirm-Yes
+ * click with NO charge; it is typed parking_denied.
  */
 
 import { existsSync } from "node:fs";
@@ -43,6 +51,8 @@ import { parseAmountUsd, parseConfirmation, parseExpiresAt } from "../parknyc/pa
 import {
   findVehicleOption,
   isFreePeriodModal,
+  isParkingDeniedModal,
+  parsePassportReceipt,
   parseProviderHours,
   parseVehicleChooser,
   recentZonesState,
@@ -428,6 +438,23 @@ export class PassportClient {
     return false;
   }
 
+  /**
+   * Click by dispatching the DOM click event straight on the element,
+   * bypassing Playwright's hit-testing. The active-session screen
+   * (#sessionButtonsDesktop) lays Extend / Discount / Zone Info as
+   * full-width buttons whose CENTRE is covered by the countdown timer
+   * overlay, so a normal OR forced click lands on the overlay, not the
+   * button (VERIFIED live 2026-09-23: a forced #extendBtn click left the
+   * page on #session; dispatchEvent advanced it to Length of Stay). Use
+   * this only for those session-screen actions — every other screen's
+   * buttons take stableClick.
+   */
+  private async dispatchClick(page: Page, locator: Locator, name: string): Promise<void> {
+    await locator.waitFor({ state: "attached", timeout: this.timeoutMs }).catch(() => {});
+    await locator.dispatchEvent("click");
+    this.options.log?.(`dispatchClick ${name}`);
+  }
+
   /** The gated entry screen means the cookies are not a signed-in session. */
   private async atGatedEntry(page: Page): Promise<boolean> {
     return await selectors.gatedEntry
@@ -749,18 +776,50 @@ export class PassportClient {
 
       // After Yes the app shows a brief "Loading session details…" then the
       // active-session screen (VERIFIED live 2026-09-23). Wait for one of:
-      // the loaded session screen (paid + active), a decline, or the
-      // "Add Payment Details" page (no card on file). The isVisible checks
-      // are active-page-scoped — hidden SPA pages don't count — so the
-      // ever-present add-card markup can't false-fire.
+      // the loaded session screen (paid + active), a decline, the "Add
+      // Payment Details" page (no card on file), or the "Parking Denied"
+      // lockout popup (the operator refused re-parking — no charge). The
+      // isVisible checks are active-page/popup-scoped — hidden SPA pages
+      // don't count — so the ever-present add-card markup can't false-fire.
       await selectors.session
         .activeMarker(page)
         .or(selectors.confirm.declinedMessage(page))
         .or(selectors.payment.addPaymentHeader(page))
+        .or(selectors.zone.parkingDeniedModal(page))
         .first()
         .waitFor({ state: "visible", timeout: 20_000 })
         .catch(() => {});
 
+      // "Parking Denied" lockout: the operator blocked re-parking in this
+      // zone (repark/zone lockout). VERIFIED live 2026-09-23 — it appears
+      // AFTER the confirm-Yes click but the card is NOT charged. Typed so
+      // the server tells the user to wait/move rather than "add a card" or
+      // "tap to pay" (which would just be denied again).
+      if (
+        (await selectors.zone
+          .parkingDeniedModal(page)
+          .isVisible()
+          .catch(() => false)) &&
+        isParkingDeniedModal(await page.content())
+      ) {
+        const rawText = (
+          await selectors.zone
+            .parkingDeniedModal(page)
+            .first()
+            .innerText()
+            .catch(() => "")
+        )
+          .replace(/\s+/g, " ")
+          .trim();
+        await this.stableClick(page, selectors.zone.parkingDeniedOk(page), "parking-denied-ok");
+        await this.step("parking-denied", page);
+        return {
+          ok: false,
+          code: "parking_denied",
+          message:
+            rawText || "ParkBoston: the operator has a lockout period on this zone right now",
+        };
+      }
       if (
         await selectors.payment
           .addPaymentHeader(page)
@@ -788,21 +847,28 @@ export class PassportClient {
         .waitFor({ state: "visible", timeout: 10_000 });
       await this.step("session-active", page);
 
-      // Parse the receipt if the screen carries one; otherwise (the live
-      // session screen shows a countdown, not an end clock) synthesize a
-      // provider id and derive the expiry from the minutes just purchased —
-      // the session is confirmed active, so a missing end-time string must
-      // NOT fail a paid start (Passport's extend/stop click buttons on this
-      // screen and never use the id).
+      // Report the ACTUAL charged amount from the receipt, not the server's
+      // pre-charge estimate: ParkBoston sells in a per-zone duration
+      // increment (zone 456: 12-minute increments) so a 15-minute request
+      // is billed as 12 minutes ($0.75). The confirm dialog / session
+      // screen lists "Parking Fee: $0.75 / Convenience Fee: $0.35 / Total
+      // Fee: $1.10" — parse it so the audit matches the card to the cent.
       const now = new Date();
       const text = await page.innerText("body");
+      const receipt = parsePassportReceipt(text);
+      const amountUsd = receipt?.totalUsd ?? parseAmountUsd(text) ?? -1;
       const parsed = parseConfirmation(text, now);
-      if (parsed) return { ok: true, ...parsed };
+      const providerSessionId = parsed?.providerSessionId ?? `passport-${now.getTime()}`;
+      const expiresAt =
+        parsed?.expiresAt ??
+        parseExpiresAt(text, now) ??
+        new Date(now.getTime() + minutes * 60_000);
       return {
         ok: true,
-        providerSessionId: `passport-${now.getTime()}`,
-        expiresAt: parseExpiresAt(text, now) ?? new Date(now.getTime() + minutes * 60_000),
-        amountUsd: parseAmountUsd(text) ?? -1,
+        providerSessionId,
+        expiresAt,
+        amountUsd,
+        ...(receipt ? { receipt } : {}),
       };
     });
     if (result.ok) {
@@ -827,14 +893,23 @@ export class PassportClient {
       if (await this.atGatedEntry(page)) {
         return this.fail(page, "auth_expired", "Passport asked to sign in; state is stale");
       }
-      // session.js injects the Extend/Stop buttons a beat after navigation
-      // (both containers are empty on first paint — acceptance capture
-      // 2026-09-23) so WAIT for the button before clicking, never race it.
-      await selectors.sessions
+      // session.js injects the action buttons a beat after navigation
+      // (containers empty on first paint — 2026-09-23), so wait for Extend
+      // first. Its centre is under the countdown overlay, so DISPATCH the
+      // click on the element (a normal/forced click hits the overlay).
+      await selectors.session
         .extendButton(page)
         .waitFor({ state: "visible", timeout: 15_000 })
         .catch(() => {});
-      await this.stableClick(page, selectors.sessions.extendButton(page), "extend-open");
+      await this.dispatchClick(page, selectors.session.extendButton(page), "extend-open");
+      // Extend advances to Length of Stay (VERIFIED live 2026-09-23), the
+      // same screen start reaches after the Vehicles chooser.
+      await selectors.lengthOfStay
+        .page(page)
+        .or(selectors.duration.pickerPage(page))
+        .first()
+        .waitFor({ state: "visible", timeout: 10_000 })
+        .catch(() => {});
       await this.step("extend-opened", page);
 
       // "No Meter Parking" can meet an extension at the enforcement
@@ -948,25 +1023,62 @@ export class PassportClient {
       }
       await this.step("extend-payment-submitted", page);
 
-      await selectors.confirmation
-        .successMarker(page)
+      // The extension returns to the ACTIVE SESSION screen with the NEW End
+      // time and CUMULATIVE fees (VERIFIED live 2026-09-23: a 15-min extend
+      // took End 2:58→3:11 PM and the fees to $1.50/$0.70/$2.20 total) — NOT
+      // a separate receipt page, so the success marker is the session screen,
+      // like start. A decline / lockout still shows its own popup first.
+      await selectors.session
+        .activeMarker(page)
         .or(selectors.confirm.declinedMessage(page))
+        .or(selectors.zone.parkingDeniedModal(page))
         .first()
-        .waitFor();
-      if (await selectors.confirm.declinedMessage(page).isVisible()) {
+        .waitFor({ state: "visible", timeout: 20_000 })
+        .catch(() => {});
+      if (
+        (await selectors.zone
+          .parkingDeniedModal(page)
+          .isVisible()
+          .catch(() => false)) &&
+        isParkingDeniedModal(await page.content())
+      ) {
+        await this.stableClick(
+          page,
+          selectors.zone.parkingDeniedOk(page),
+          "extend-parking-denied-ok",
+        );
+        return {
+          ok: false,
+          code: "parking_denied",
+          message: "ParkBoston: the operator has a lockout period on this zone right now",
+        };
+      }
+      if (
+        await selectors.confirm
+          .declinedMessage(page)
+          .isVisible()
+          .catch(() => false)
+      ) {
         return this.fail(page, "payment_declined", "Passport refused the extension payment");
       }
+      await selectors.session
+        .activeMarker(page)
+        .first()
+        .waitFor({ state: "visible", timeout: 10_000 });
       await this.step("extend-confirmation", page);
 
+      // The new expiry is the session screen's "End:" clock. The fees shown
+      // are CUMULATIVE for the whole session (not this extension), and the
+      // server records its own per-extension price, so amountUsd here is the
+      // session's running total — informational only.
       const text = await page.innerText("body");
       const now = new Date();
       const expiresAt = parseExpiresAt(text, now);
-      const amountUsd = parseAmountUsd(text);
-      if (expiresAt === null || amountUsd === null) {
+      if (expiresAt === null) {
         return this.fail(
           page,
           "ui_changed",
-          "extension confirmation did not match the expected receipt shape",
+          "extension confirmation did not carry the new end time",
         );
       }
       const parsed = parseConfirmation(text, now);
@@ -974,7 +1086,7 @@ export class PassportClient {
         ok: true,
         providerSessionId: parsed?.providerSessionId ?? providerSessionId,
         expiresAt,
-        amountUsd,
+        amountUsd: parsePassportReceipt(text)?.totalUsd ?? parseAmountUsd(text) ?? -1,
       };
     });
   }
@@ -991,30 +1103,53 @@ export class PassportClient {
         return this.fail(page, "auth_expired", "Passport asked to sign in; state is stale");
       }
       // Wait for the session screen to finish rendering — session.js injects
-      // the buttons a beat after navigation (acceptance capture 2026-09-23:
-      // both button containers empty on first paint).
+      // the buttons a beat after navigation (both button containers empty on
+      // first paint, 2026-09-23).
       await selectors.session
         .activeMarker(page)
         .first()
         .waitFor({ state: "visible", timeout: 15_000 })
         .catch(() => {});
-      // Stop lives in the pull-up Session Options shutter (#sessionShutterPanel)
-      // when the screen shows 3+ buttons, so it isn't directly clickable —
-      // open the shutter first if the Stop button isn't already visible.
-      // (TODO-verify: the shutter-open + stop-confirm path is not yet walked
-      // to completion against a live paid session.)
-      const stopButton = selectors.sessions.stopButton(page);
-      if (!(await stopButton.isVisible().catch(() => false))) {
-        await selectors.session
-          .shutterHandle(page)
-          .click()
-          .catch(() => {});
-        await stopButton.waitFor({ state: "visible", timeout: 5_000 }).catch(() => {});
+
+      // Early stop is an OPERATOR OPTION (session.js pushes #sessStopBtn only
+      // when stopParkingOptionEnabled). ParkBoston zone 456 does NOT enable
+      // it — the button is never in the DOM (VERIFIED live 2026-09-23):
+      // Boston meter time is non-refundable, so there is nothing to stop and
+      // no refund. The paid session simply runs to its purchased end. Mark
+      // the local session stopped (forfeiting the remaining paid time, which
+      // has no cash value) and report it, rather than failing.
+      await selectors.session
+        .stopButton(page)
+        .waitFor({ state: "attached", timeout: 4_000 })
+        .catch(() => {});
+      const stopOffered = (await selectors.session.stopButton(page).count()) > 0;
+      if (!stopOffered) {
+        this.options.log?.("stop: ParkBoston offers no early stop for this zone (non-refundable)");
+        await this.step("stop-not-offered", page);
+        return {
+          ok: true,
+          providerSessionId,
+          expiresAt: new Date(),
+          amountUsd: 0,
+          stopNotSupported: true,
+        };
       }
-      await this.stableClick(page, stopButton, "stop");
-      await this.stableClick(page, selectors.sessions.stopConfirmButton(page), "stop-confirm");
+      // When an operator DOES enable stop, its button sits on the session
+      // screen under the countdown overlay like Extend — dispatch the click,
+      // then confirm on the jQM Yes dialog.
+      await this.dispatchClick(page, selectors.session.stopButton(page), "stop");
+      await selectors.session
+        .stopConfirmButton(page)
+        .waitFor({ state: "visible", timeout: 8_000 })
+        .catch(() => {});
+      await this.stableClick(page, selectors.session.stopConfirmButton(page), "stop-confirm");
       await this.step("stop-confirmed", page);
-      await selectors.sessions.stopButton(page).waitFor({ state: "hidden" });
+      // The stop only took if the Stop button is now gone (session ended). A
+      // NON-swallowed wait here: if it never hides — the confirm didn't
+      // register, or the provider showed a decline/error — this throws, the
+      // run() wrapper types it, and the server keeps the session active
+      // (fail-closed). NEVER report ok on an unconfirmed stop.
+      await selectors.session.stopButton(page).waitFor({ state: "hidden" });
       return { ok: true, providerSessionId, expiresAt: new Date(), amountUsd: 0 };
     });
   }

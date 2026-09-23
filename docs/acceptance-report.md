@@ -14,7 +14,7 @@ Acceptance user `Thomas` (`cmue98gj0…`), vehicle **2TZY87 MA**.
 | Part | Scope | Result |
 |---|---|---|
 | A | `provider_card` payment source | **Done** — server + iOS, tested |
-| B | Boston end to end for real (zone 456) | **Start paid & verified** (ParkBoston txn 831908580); extend/stop partial — see gaps |
+| B | Boston end to end for real (zone 456) | **Start, extend, stop all paid & verified** (txns 831908580, 831997285); pricing reconciled (Job 2) |
 | C | Assistant accuracy (geocoder, named areas) | **Done** — tested |
 | D | iOS every-button walkthrough | See matrix; UI suite green |
 | E | Ops readiness | **Done** (live push delivery needs prod creds + device) |
@@ -74,16 +74,52 @@ The paid start produced a **real ParkBoston session, transaction
 831908580**, `payment_source: provider_card`, meter **$0.94** + fee
 **$0.35**. Session later ran to `expired` on its own.
 
-### Amounts charged / fee reconciliation
+### Amounts charged / fee reconciliation (Job 2)
 
-- **Our quote:** 15 min at $3.75/hr = $0.94 meter + $0.35 fee = **$1.29**.
-- **ParkBoston actually charged:** parking **$0.75** + convenience **$0.35**
-  = **$1.10** (read off the "Please Confirm" screen and the live session
-  screen). The **$0.35 Boston fee matches `policy.json` `city_overrides`** —
-  **no change needed.** The meter portion differs ($0.75 actual vs $0.94
-  quoted): ParkBoston prices a 15-minute stay at its own increment, below
-  our prorated $3.75/hr. This is a quote-vs-actual delta worth watching for
-  short stays; the fee itself is correct, so policy.json is unchanged.
+Ground truth — three real zone-456 transactions (parking history), all
+plate 2TZY87:
+
+| Txn | Date | Requested | Billed | Meter | Fee | Total |
+|---|---|---|---|---|---|---|
+| 831291617 | 9/21 | 15 min | **12 min** | $0.75 | $0.35 | $1.10 |
+| 831908580 | 9/23 | 15 min | **12 min** | $0.75 | $0.35 | $1.10 |
+| 831997285 | 9/23 | 15 min start + 15 min extend | 12 + 12 min | $1.50¹ | $0.70¹ | $2.20¹ |
+
+¹ cumulative on the session screen (two 12-min transactions).
+
+**The inferred rule:**
+
+- **Fee — flat $0.35, confirmed.** Every transaction shows exactly $0.35
+  convenience, matching `policy.json` `city_overrides.bos.parking_fee_usd`.
+  No change; pinned by a test.
+- **Meter — per-minute at the zone rate, confirmed.** 12 min × $3.75/hr =
+  **$0.75** exactly (not per-15-minute, no minimum-charge padding). Our
+  `priceStay` already models this; a test reproduces both receipts from the
+  granted 12 minutes to the cent.
+- **The delta is the DURATION, not the formula.** We quoted 15 min
+  ($0.94 meter); ParkBoston granted **12 min** ($0.75). ParkBoston sells
+  parking in a **per-zone duration increment** — the duration picker's
+  `incrementalMinutes`, read live off `#minTimeText` as **12 minutes** for
+  zone 456 — and snaps the request to it. That increment is
+  operator-configured per zone and is **NOT in Analyze Boston's open data**,
+  so it can't be inferred for other zones from these two same-zone receipts.
+  **Recorded for the field test:** collect each zone's increment on its
+  first live start (it's in the picker's shortcut API).
+
+**What was encoded:**
+
+1. **`priceStay` gains `billingIncrementMinutes`** (`snapToIncrement`): when
+   a zone's increment is known, the quote snaps to it so it matches the
+   receipt to the cent (test: a 15-min request + increment 12 → $0.75 /
+   $1.10, reproducing 831908580 and 831291617). Default off (NYC, and
+   Boston zones whose increment we haven't collected) → priced per-minute
+   as today, no behavior change.
+2. **The executor now returns the real receipt** (meter / fee / total,
+   parsed off the confirm + session screens), and **session start records
+   those actuals** — so the stored spend and the daily-cap accounting match
+   the card to the cent, instead of the pre-charge estimate. (This is the
+   concrete "match to the cent" on the audit side, independent of the
+   forward quote.)
 
 ### Fixtures captured (`executor/fixtures/acceptance/`, gitignored)
 
@@ -139,22 +175,42 @@ reported number (`provider_zone_number: "456"` on the session row).
 effective dry run on). The repo's `policy.json` is unchanged (dry_run true,
 fee $0.35).
 
-### Known gaps (Part B)
+### Extend and stop — walked live (follow-up, 2026-09-23)
 
-- **Auto-extend and stop executor flows** reach the live session screen
-  (which confirmed the session was real) but their later screens are not
-  yet walked: the extend duration/confirm past the session screen, and the
-  **Stop button lives in the `#sessionShutterPanel` pull-up** so it isn't
-  directly clickable. Render-waits and a shutter-open were added and the
-  markers are pinned, but these paths remain **TODO-verify** — they need a
-  signed-in paid extend/stop run to finish. The worker's extend *decision*
-  logic is correct (it fired `rule: extend`); the gap is purely the
-  provider UI walk. The dry-run stop path works (DryRunExecutor;
-  `session_stop stop_ok` at 16:22).
-- The many `session_start executor_failed` rows at 15:32–16:01 are the
-  iterations while walking the flow; they moved no money (each failed
-  before the confirm-Yes click). Exactly one real charge occurred (the
-  16:10 `start_ok`, txn 831908580).
+The extend and stop executor flows are now **verified end to end** against
+a real paid session (`chore/passport-extend-stop`), driving the Passport
+client directly (record-equivalent, headless), zone 456 / plate 2TZY87:
+
+- **Blocker hit first, no charge:** the first start was **denied by a
+  ParkBoston operator lockout** ("Parking Denied — the operator has setup a
+  lockout period … not allowed to park at this time in this zone"),
+  ~1h35m after the acceptance session ended. The card was **not** charged
+  (a denial is refused before authorizing — verified: no new history row,
+  no active session). This surfaced a real misclassification — the client
+  read the lockout as `ui_changed` — now fixed: a typed **`parking_denied`**
+  (executor + server), with a "wait or move — nothing was charged" push
+  instead of "tap to pay", plus a sanitized fixture and classify test.
+- **Lockout cleared ~2h later; the walk completed** on transaction
+  **831997285**:
+  - **START** (charge #1, ~$1.10): 12 min, $0.75 + $0.35 = $1.10.
+  - **EXTEND** (charge #2, ~$1.10): `#extendBtn` → Length of Stay →
+    duration → confirm-Yes → back to the session screen with End
+    2:58→**3:11 PM** and cumulative fees $1.50 / $0.70 / **$2.20**. Two
+    fixes it needed: the session-screen buttons' centres sit under the
+    countdown overlay, so Extend must be **dispatched** (a normal/forced
+    click hits the overlay); and the extension returns to the **session
+    screen**, not a receipt page, so that is the success marker.
+  - **STOP** (free): ParkBoston zone 456 renders **no Stop button** —
+    `session.js` pushes `#sessStopBtn` only when the operator enables early
+    stop, and Boston meter time is **non-refundable**, so there is no stop
+    action and **no refund/credit**. The flow returns `stopNotSupported`.
+- **Charges this run:** start $1.10 + extend $1.10 = **$2.20** (the denied
+  start was $0). TODO-verify markers for extend and stop are removed;
+  fixtures + tests added (`session-active--stop-disabled.html`,
+  `sessionScreen.dom.test.ts`, `passportParse.test.ts`).
+- The many `session_start executor_failed` rows in the acceptance run
+  (15:32–16:01) were flow-walking iterations that moved no money (each
+  failed before the confirm-Yes click).
 
 ---
 
@@ -279,11 +335,16 @@ push-test check. This report is `docs/acceptance-report.md`.
 
 ## Known gaps carried forward
 
-1. **Passport extend/stop UI** past the live session screen (shutter-panel
-   Stop; extend duration/confirm) — TODO-verify with a paid extend/stop run.
-2. **Live APNs delivery** — needs prod creds + a registered device
+1. **Live APNs delivery** — needs prod creds + a registered device
    (endpoint and reporting are in place and tested).
-3. **Quote-vs-actual meter delta on short Boston stays** — ParkBoston's own
-   15-minute price ($0.75) is below our prorated $3.75/hr ($0.94). The fee
-   ($0.35) is correct; the meter proration for sub-hour stays is a known
-   estimate.
+2. **Per-zone ParkBoston billing increments** — the quote can match the
+   receipt to the cent once each zone's `incrementalMinutes` is collected
+   (mechanism + zone-456 value in place; the executor already reads it live
+   off the picker). Collect the rest on each zone's first live start during
+   the field test. Until then, sub-hour Boston quotes are an upper-bound
+   estimate, while the **recorded** spend already matches the card (the
+   executor returns the real receipt).
+3. **ParkBoston early stop** — no covered zone enables it (non-refundable),
+   so the `#sessStopBtn` stop-confirm path can't be walked; the flow
+   correctly returns `stopNotSupported` (no stop, no refund). If a Passport
+   city that allows stopping is ever added, walk it then.

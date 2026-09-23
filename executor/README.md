@@ -206,22 +206,31 @@ advances the flow — the screen has no Continue of its own.
 **Verification status.** Walked live: the gated entry (Sign In / Register /
 Guest), T&C accept, and e-mail verification screens (2026-09-20, headless),
 the Enter Zone screen (2026-09-21, signed in), and the signage popup +
-Vehicles chooser (2026-09-22). The paid **start** path is now verified end
-to end (2026-09-23 acceptance run, server-driven, ParkBoston transaction
-831908580): after the chooser it walks Length of Stay (`#lengthOfStay`) →
-duration picker (`#durationPickerPage`) → Payment Methods (`#paymentMethod`,
-"Credit/Debit Card") → Your Cards (`#creditCards`, the card on file) → the
-"Please Confirm" jQuery-Mobile dialog (Yes pays) → the active-session
-screen (`#extendBtn`, transaction number). Fixtures for each screen are
-under `fixtures/acceptance/` (gitignored). Still **not** walked to
-completion (TODO-verify in `selectors.ts`): the **extend** path past the
-session screen, the **stop** button in the `#sessionShutterPanel` pull-up,
-the account signed-in probe's older markers, and the card screens
-(`setupCard`/`removeCard` — the provider_card default never uses them).
-The account link verify (`#zoneNumber` as the signed-in marker) was also
-corrected against this run. Verify the remaining screens with a signed-in
-`record -- --provider passport --flow extend|stop` run (each pays/settles a
-real meter) before relying on auto-extend or auto-stop.
+Vehicles chooser (2026-09-22). The paid **start, extend, and stop** paths
+are all verified end to end (2026-09-23: start txn 831908580, and a
+start→extend→stop walk on txn 831997285):
+
+- **start** — after the chooser: Length of Stay (`#lengthOfStay`) →
+  duration picker (`#durationPickerPage`) → Payment Methods
+  (`#paymentMethod`, "Credit/Debit Card") → Your Cards (`#creditCards`) →
+  the "Please Confirm" jQuery-Mobile dialog (Yes pays) → the active-session
+  screen.
+- **extend** — from the session screen, Extend (`#extendBtn`, **dispatched**
+  — its centre is under the countdown overlay) → the same Length of Stay →
+  duration → confirm, landing back on the session screen with the new End
+  time and cumulative fees (the success marker, not a receipt page).
+- **stop** — ParkBoston zone 456 renders no `#sessStopBtn` (`session.js`
+  pushes it only when the operator enables early stop; Boston meter time is
+  non-refundable), so the flow returns `stopNotSupported` — no stop action,
+  no refund.
+
+A "Parking Denied" operator lockout can appear after the confirm-Yes click
+with **no charge**; it is typed `parking_denied`. Fixtures for each screen
+are under `fixtures/` (gitignored); sanitized slices live in
+`test/fixtures/pages/passport/`. Still **not** walked (TODO-verify in
+`selectors.ts`): the zone info panel (`#zi_*`), the card screens
+(`setupCard`/`removeCard` — the provider_card default never uses them), and
+the `#sessStopBtn` stop-confirm path (no covered zone enables early stop).
 
 ## Error taxonomy
 
@@ -233,6 +242,7 @@ real meter) before relying on auto-extend or auto-stop.
 | `payment_method_missing` | The provider account has no saved payment method — the start flow hit "Add Payment Details" (ParkBoston). The server pushes an "add a card" prompt, not a retry |
 | `free_period` | The provider says this zone isn't charging now — ParkBoston's "No Meter Parking. Please Check Signage" after-hours notice. Carries `freePeriod: { rawText, hours }`; the server records a free period (no charge) and pushes "parking is free here right now" |
 | `vehicle_missing` | The provider account has no saved vehicle matching the session's plate — the Vehicles chooser listed none that match. The server pushes "Add your plate to ParkBoston"; the flow never clicks Add Vehicle |
+| `parking_denied` | The operator blocked re-parking (a repark/zone lockout — ParkBoston's "Parking Denied" popup after the confirm-Yes click). **No charge**: the provider refused before authorizing. The server pushes "wait or move the car", not "tap to pay" (a retry would just be denied again) |
 | `ui_changed` | An expected screen/element never appeared (capture attached) — includes captcha/bot-check walls, which classify.ts deliberately never reads as `auth_expired` (that would wrongly expire the linked account and push a relink) |
 | `network` | Couldn't reach the provider |
 | `browser_crashed` | The shared Chromium died mid-call. The executor retries the call ONCE on a fresh context first (warmBrowser relaunches lazily); this code means the retry failed too |

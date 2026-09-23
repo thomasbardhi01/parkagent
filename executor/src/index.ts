@@ -57,7 +57,9 @@ export { PassportClient } from "./passport/client.js";
 export type { PassportClientOptions } from "./passport/client.js";
 export {
   findVehicleOption,
+  isParkingDeniedModal,
   normalizeStreet,
+  parsePassportReceipt,
   parseVehicleChooser,
   parseZoneEntryHtml,
   parseZoneInfoHtml,
@@ -65,6 +67,7 @@ export {
   streetsMatch,
 } from "./passport/parse.js";
 export type {
+  PassportReceipt,
   VehicleChooserScreen,
   VehicleOption,
   ZoneEntryScreen,

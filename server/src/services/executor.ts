@@ -58,6 +58,7 @@ export type ExecutorErrorCode =
   | "payment_method_missing" // the account has no saved payment method to charge
   | "free_period" // the provider says this zone isn't charging now (after hours)
   | "vehicle_missing" // the provider account has no saved vehicle matching the plate
+  | "parking_denied" // the operator blocked re-parking (repark/zone lockout); NOT a charge
   | "unknown"; // none of the above matched
 
 /** Evidence from an unexpected screen; the caller attaches it to decisions. */
@@ -93,6 +94,12 @@ export interface ExecutorOk {
   expiresAt: Date;
   /** Dollars this call actually moved (meter + fee). */
   amountUsd: number;
+  /** The provider's receipt broken out (meter / fee / total), when the
+   * confirm or session screen listed it — ParkBoston does. The server
+   * records these ACTUALS on the decision so the audit matches the card,
+   * which differs from the pre-charge estimate because ParkBoston sells in
+   * per-zone duration increments (see the acceptance report, Job 2). */
+  receipt?: { meterUsd: number; feeUsd: number; totalUsd: number };
   /** Present when the flow resolved the zone from the provider's map. */
   zoneResolution?: ZoneResolution;
   /** Zone terms the provider's own UI displayed mid-flow (Passport's

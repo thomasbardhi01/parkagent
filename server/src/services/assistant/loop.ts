@@ -29,6 +29,7 @@ Rules you cannot break (the tools enforce them too):
 - How the tap works, so you phrase cards correctly: a garage option and a street option for RIGHT NOW get a Confirm button. A street option for a FUTURE time gets no button at all — set startsAt on the option and the card says "We'll pay automatically when you park here" (the detector pays at the curb). Don't promise to start future meters now; meters run from the moment they're paid.
 - book_garage and start_session work only with a confirmation_token from a card tap. You normally never have one; if a call is refused, propose a plan instead.
 - Quote street prices with quote_street and garages with search_garages — never invent a price, address, or availability.
+- When the user names a PLACE or area rather than "here" ("Newbury Street", "near India Street", "in South Boston", "near Fenway"), call geocode_place FIRST to get that place's coordinates, then quote_street / search_garages at those coordinates — never silently use the phone's location for a named place. For garages at a named place, pass within_m: 600 so every option is walkable from it. If geocode_place finds nothing, the place isn't in a city we cover — say so, don't substitute the current location.
 - If search_garages returns garage_search_unavailable, the search FAILED — say "I couldn't check garages right now", never "no garages available", and still propose the street option. Only an empty options list means none were found.
 - An itinerary's total must fit the user's remaining daily budget (build_itinerary shows it). If it doesn't fit, say what to cut.
 - Garage checkout today is a SpotHero deep link: the user finishes the purchase in SpotHero and the pass lives there. Say so when it matters, in a few words.
@@ -46,17 +47,12 @@ const VERBAL_CONFIRM_PATTERN =
 
 /** One content block of an assistant message, Messages-API shaped. */
 export type ModelContentBlock =
-  | { type: "text"; text: string }
-  | { type: "tool_use"; id: string; name: string; input: unknown };
+  { type: "text"; text: string } | { type: "tool_use"; id: string; name: string; input: unknown };
 
 export interface ModelTurn {
   role: "user" | "assistant";
   content:
-    | string
-    | (
-        | ModelContentBlock
-        | { type: "tool_result"; tool_use_id: string; content: string }
-      )[];
+    string | (ModelContentBlock | { type: "tool_result"; tool_use_id: string; content: string })[];
 }
 
 export interface ModelResponse {
@@ -68,7 +64,12 @@ export interface ModelResponse {
  * tests inject a scripted fake. onText receives streamed text deltas. */
 export interface ModelClient {
   create(
-    args: { system: string; messages: ModelTurn[]; tools: typeof TOOL_DEFINITIONS; maxTokens: number },
+    args: {
+      system: string;
+      messages: ModelTurn[];
+      tools: typeof TOOL_DEFINITIONS;
+      maxTokens: number;
+    },
     onText?: (delta: string) => void,
   ): Promise<ModelResponse>;
 }
@@ -159,9 +160,15 @@ export function joinReplySegments(segments: string[]): string {
 export function scrubVerbalConfirm(reply: string, hasPlan: boolean): string {
   if (!VERBAL_CONFIRM_PATTERN.test(reply)) return reply;
   VERBAL_CONFIRM_PATTERN.lastIndex = 0;
-  const scrubbed = reply.replace(VERBAL_CONFIRM_PATTERN, "").replace(/\s{2,}/g, " ").trim();
+  const scrubbed = reply
+    .replace(VERBAL_CONFIRM_PATTERN, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
   const pointer = hasPlan ? "Tap Confirm on a card to go ahead." : "";
-  return [scrubbed, pointer].filter((s) => s.length > 0).join(" ").trim();
+  return [scrubbed, pointer]
+    .filter((s) => s.length > 0)
+    .join(" ")
+    .trim();
 }
 
 export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> {

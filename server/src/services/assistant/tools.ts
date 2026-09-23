@@ -12,6 +12,8 @@ import { randomUUID } from "node:crypto";
 import type { AppDb } from "../../db.js";
 import { explainDecision } from "../explanations.js";
 import type { GarageProvider } from "../garage/garageProvider.js";
+import type { GeocoderProvider } from "./geocoder.js";
+import { metersBetween } from "./geocoder.js";
 import type { HoursInterval } from "../hours.js";
 import type { LinkWallet } from "../link/linkWallet.js";
 import type { PolicyService } from "../policy.js";
@@ -19,6 +21,7 @@ import { priceStay } from "../quote.js";
 import { spentToday } from "../sessions.js";
 import type { CandidateFetcher } from "../zoneLookup.js";
 import { lookupRadiusM, resolveCandidates } from "../zoneLookup.js";
+import { applyObservedToCandidates } from "../zoneTermsObserved.js";
 import { currentTimeLine } from "./loop.js";
 import { itineraryTotalUsd, planSchema } from "./plans.js";
 import type { AssistantPlanBody } from "./plans.js";
@@ -28,6 +31,10 @@ export interface AssistantDeps {
   policy: PolicyService;
   findCandidates: CandidateFetcher;
   garage: GarageProvider;
+  /** Named-place geocoding (Boston/NYC biased). Absent → geocode_place
+   * answers "geocoding not configured" and the model uses coordinates or
+   * the phone location directly. */
+  geocoder?: GeocoderProvider | undefined;
   linkWallet?: LinkWallet | undefined;
   now?: (() => Date) | undefined;
 }
@@ -51,9 +58,31 @@ export const CONFIRMATION_TTL_MS = 10 * 60_000;
  * the schema tests pin exactly what the model sees. */
 export const TOOL_DEFINITIONS = [
   {
+    name: "geocode_place",
+    description:
+      "Resolve a NAMED place or area to coordinates, biased to the two cities ParkAgent covers (New York City and Boston). Call this FIRST whenever the user names a street, neighborhood, or landmark ('Newbury Street', 'near India Street', 'in South Boston', 'near Fenway') instead of relying on their current location. Returns up to 3 matches, best first, each with lat/lng, a display name, and which city it's in. Then pass the chosen lat/lng to quote_street or search_garages. Empty results mean the place isn't in either city.",
+    input_schema: {
+      type: "object" as const,
+      additionalProperties: false,
+      required: ["query"],
+      properties: {
+        query: {
+          type: "string",
+          description: "The named place, e.g. 'Newbury Street' or 'Fenway'",
+        },
+        city: {
+          type: "string",
+          enum: ["nyc", "bos"],
+          description:
+            "Bias toward this city when you know it (e.g. the user's current city). Omit to search both.",
+        },
+      },
+    },
+  },
+  {
     name: "search_garages",
     description:
-      "Search off-street garages near a point for a time window. Returns up to 8 options with price, walk time, entry type, and a checkout deep link. Provider today: SpotHero (deep-link checkout — the user finishes the purchase there).",
+      "Search off-street garages near a point for a time window. Returns up to 8 options with price, walk time, entry type, and a checkout deep link. Provider today: SpotHero (deep-link checkout — the user finishes the purchase there). For a NAMED area, geocode_place it first and pass within_m: 600 so every option is walkable from that place.",
     input_schema: {
       type: "object" as const,
       additionalProperties: false,
@@ -63,7 +92,15 @@ export const TOOL_DEFINITIONS = [
         lng: { type: "number", description: "Longitude of the destination" },
         starts_at: { type: "string", description: "ISO start of the parking window" },
         ends_at: { type: "string", description: "ISO end of the parking window" },
-        budget_usd: { type: "number", description: "Optional price ceiling; pricier options are dropped" },
+        budget_usd: {
+          type: "number",
+          description: "Optional price ceiling; pricier options are dropped",
+        },
+        within_m: {
+          type: "number",
+          description:
+            "Optional max walking distance in metres from the point; options farther away are dropped. Use 600 for a named-area search so results are actually at that place.",
+        },
       },
     },
   },
@@ -162,7 +199,12 @@ export const TOOL_DEFINITIONS = [
       type: "object" as const,
       additionalProperties: false,
       properties: {
-        days: { type: "integer", minimum: 1, maximum: 90, description: "Look-back window, default 14" },
+        days: {
+          type: "integer",
+          minimum: 1,
+          maximum: 90,
+          description: "Look-back window, default 14",
+        },
       },
     },
   },
@@ -213,6 +255,8 @@ export class AssistantTools {
   async execute(ctx: ToolContext, name: string, input: unknown): Promise<ToolOutcome> {
     try {
       switch (name) {
+        case "geocode_place":
+          return await this.geocodePlace(ctx, input as Record<string, unknown>);
         case "search_garages":
           return await this.searchGarages(ctx, input as Record<string, unknown>);
         case "quote_street":
@@ -258,12 +302,75 @@ export class AssistantTools {
     }));
   }
 
-  private async searchGarages(ctx: ToolContext, input: Record<string, unknown>): Promise<ToolOutcome> {
-    const past = await this.pastWindowError(ctx, "search_garages", input, String(input["starts_at"] ?? ""));
+  /** Resolve a named place to coordinates, biased to NYC/Boston. The model
+   * calls this before quoting a named area so it searches the PLACE, not
+   * the phone's dot. */
+  private async geocodePlace(
+    ctx: ToolContext,
+    input: Record<string, unknown>,
+  ): Promise<ToolOutcome> {
+    const query = String(input["query"] ?? "").trim();
+    if (!query) {
+      return { result: { error: "query is required" } };
+    }
+    if (!this.deps.geocoder) {
+      await this.audit(ctx, "geocode_place", input, "geocoder_unavailable", {});
+      return {
+        result: {
+          error: "geocoding_unavailable",
+          instruction:
+            "Geocoding isn't configured. If the user gave an explicit address or coordinates, use those; otherwise ask them to share their location or name a more specific spot.",
+        },
+      };
+    }
+    const cityRaw = input["city"];
+    const city = cityRaw === "nyc" || cityRaw === "bos" ? cityRaw : undefined;
+    const outcome = await this.deps.geocoder.geocode({ query, ...(city ? { city } : {}) }, 3);
+    if (!outcome.ok) {
+      await this.audit(ctx, "geocode_place", input, "geocode_error", { reason: outcome.reason });
+      return {
+        result: {
+          error: "geocode_failed",
+          instruction:
+            "Couldn't look that place up right now — tell the user and ask them to try a nearby cross-street or share their location.",
+        },
+      };
+    }
+    if (outcome.results.length === 0) {
+      await this.audit(ctx, "geocode_place", input, "no_match", { query });
+      return {
+        result: {
+          found: false,
+          instruction:
+            "That place isn't in New York City or Boston, the two cities ParkAgent covers. Say so; don't fall back to the user's current location for a place we can't place.",
+        },
+      };
+    }
+    await this.audit(ctx, "geocode_place", input, "ok", {
+      query,
+      count: outcome.results.length,
+      top: outcome.results[0],
+    });
+    return { result: { found: true, results: outcome.results } };
+  }
+
+  private async searchGarages(
+    ctx: ToolContext,
+    input: Record<string, unknown>,
+  ): Promise<ToolOutcome> {
+    const past = await this.pastWindowError(
+      ctx,
+      "search_garages",
+      input,
+      String(input["starts_at"] ?? ""),
+    );
     if (past) return past;
+    const anchorLat = num(input["lat"]);
+    const anchorLng = num(input["lng"]);
+    const withinM = input["within_m"] !== undefined ? num(input["within_m"]) : null;
     const outcome = await this.deps.garage.search({
-      lat: num(input["lat"]),
-      lng: num(input["lng"]),
+      lat: anchorLat,
+      lng: anchorLng,
       startsAt: String(input["starts_at"]),
       endsAt: String(input["ends_at"]),
       ...(input["budget_usd"] !== undefined ? { budgetUsd: num(input["budget_usd"]) } : {}),
@@ -286,23 +393,61 @@ export class AssistantTools {
         },
       };
     }
+    // Named-area guard: when the caller anchored the search to a geocoded
+    // place (within_m), drop any option farther than that from the point,
+    // so every option we surface is actually walkable from the named place.
+    // The provider reports distanceM, but recompute from the option's own
+    // coordinates when it carries them so the guard can't be fooled.
+    let options = outcome.options;
+    let droppedFar = 0;
+    if (withinM !== null && Number.isFinite(withinM)) {
+      const near = options.filter((o) => {
+        const withCoords = o as typeof o & { lat?: number; lng?: number };
+        const d =
+          typeof withCoords.lat === "number" && typeof withCoords.lng === "number"
+            ? metersBetween(anchorLat, anchorLng, withCoords.lat, withCoords.lng)
+            : o.distanceM;
+        return d <= withinM;
+      });
+      droppedFar = options.length - near.length;
+      options = near;
+    }
     await this.audit(ctx, "search_garages", input, "ok", {
       provider: this.deps.garage.id,
-      count: outcome.options.length,
+      count: options.length,
       fromCache: outcome.fromCache,
+      ...(withinM !== null ? { withinM, droppedFar } : {}),
     });
-    return { result: { provider: this.deps.garage.id, options: outcome.options } };
+    return {
+      result: {
+        provider: this.deps.garage.id,
+        options,
+        ...(droppedFar > 0 ? { droppedForDistance: droppedFar } : {}),
+      },
+    };
   }
 
-  private async quoteStreet(ctx: ToolContext, input: Record<string, unknown>): Promise<ToolOutcome> {
-    const past = await this.pastWindowError(ctx, "quote_street", input, String(input["when"] ?? ""));
+  private async quoteStreet(
+    ctx: ToolContext,
+    input: Record<string, unknown>,
+  ): Promise<ToolOutcome> {
+    const past = await this.pastWindowError(
+      ctx,
+      "quote_street",
+      input,
+      String(input["when"] ?? ""),
+    );
     if (past) return past;
     const lat = num(input["lat"]);
     const lng = num(input["lng"]);
     const minutes = num(input["duration_minutes"]);
     const when = new Date(String(input["when"]));
     const policy = this.deps.policy.get();
-    const found = await this.deps.findCandidates({ lat, lng, radiusM: lookupRadiusM(25) });
+    const raw = await this.deps.findCandidates({ lat, lng, radiusM: lookupRadiusM(25) });
+    // Provider-observed terms beat the dataset (e.g. Boston's real "Max 5 Hr"
+    // vs the data's assumed 2-hour cap) — the same override /parked and
+    // session start apply, so a named-area quote matches what the curb pays.
+    const found = await applyObservedToCandidates(this.deps.db, raw);
     const resolution = resolveCandidates(found, when, policy.respect_enforcement_hours);
     if (resolution.kind === "unknown") {
       await this.audit(ctx, "quote_street", input, "unknown_zone", {});
@@ -331,15 +476,22 @@ export class AssistantTools {
       costUsd: price.totalUsd,
       chargedMinutes: price.chargedMinutes,
       freePeriod: price.totalUsd === 0,
+      // "observed" when a driver-reported provider term (rate/max stay)
+      // overrode the dataset for this zone number.
+      ...(zone.termsSource === "observed" ? { termsSource: "observed" as const } : {}),
     };
     await this.audit(ctx, "quote_street", input, "ok", {
       zoneId: zone.zoneId,
       costUsd: price.totalUsd,
+      ...(zone.termsSource === "observed" ? { termsSource: "observed" } : {}),
     });
     return { result };
   }
 
-  private async buildItinerary(ctx: ToolContext, input: Record<string, unknown>): Promise<ToolOutcome> {
+  private async buildItinerary(
+    ctx: ToolContext,
+    input: Record<string, unknown>,
+  ): Promise<ToolOutcome> {
     const stops = input["stops"] as Record<string, unknown>[];
     const policy = this.deps.policy.get();
     const at = this.now();
@@ -367,9 +519,7 @@ export class AssistantTools {
         durationMinutes: minutes,
         street: street.result,
         garage: garages.ok ? (garages.options[0] ?? null) : null,
-        ...(garages.ok
-          ? {}
-          : { garageSearchUnavailable: true, garageSearchError: garages.error }),
+        ...(garages.ok ? {} : { garageSearchUnavailable: true, garageSearchError: garages.error }),
       });
     }
     const spentTodayUsd = await spentToday(this.deps.db, ctx.userId, at);
@@ -385,7 +535,10 @@ export class AssistantTools {
     return { result: summary };
   }
 
-  private async proposePlan(ctx: ToolContext, input: Record<string, unknown>): Promise<ToolOutcome> {
+  private async proposePlan(
+    ctx: ToolContext,
+    input: Record<string, unknown>,
+  ): Promise<ToolOutcome> {
     const parsed = planSchema.safeParse(input["plan"]);
     if (!parsed.success) {
       await this.audit(ctx, "propose_plan", input, "invalid_plan", {
@@ -483,15 +636,16 @@ export class AssistantTools {
     token: unknown,
     tool: string,
     input: unknown,
-  ): Promise<{ ok: true; planId: string; optionId: string | null } | { ok: false; result: unknown }> {
+  ): Promise<
+    { ok: true; planId: string; optionId: string | null } | { ok: false; result: unknown }
+  > {
     const refusal = async (why: string) => {
       await this.audit(ctx, tool, input, "needs_confirmation", { refused: why });
       return {
         ok: false as const,
         result: {
           error: "needs_confirmation",
-          message:
-            `${why}. Nothing books or spends without the user's explicit Confirm tap on a proposed `,
+          message: `${why}. Nothing books or spends without the user's explicit Confirm tap on a proposed `,
         },
       };
     };
@@ -537,7 +691,10 @@ export class AssistantTools {
     };
   }
 
-  private async startSession(ctx: ToolContext, input: Record<string, unknown>): Promise<ToolOutcome> {
+  private async startSession(
+    ctx: ToolContext,
+    input: Record<string, unknown>,
+  ): Promise<ToolOutcome> {
     const gate = await this.consumeConfirmation(ctx, input["confirmation_token"], "start_session", {
       zone: input["zone"],
       duration_minutes: input["duration_minutes"],

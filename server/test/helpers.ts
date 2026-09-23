@@ -29,6 +29,7 @@ import { makeStateCrypto } from "../src/services/crypto.js";
 import type { ModelClient } from "../src/services/assistant/loop.js";
 import { AssistantTools } from "../src/services/assistant/tools.js";
 import type { GarageProvider } from "../src/services/garage/garageProvider.js";
+import type { GeocoderProvider } from "../src/services/assistant/geocoder.js";
 import type { LinkClient } from "../src/services/link/linkClient.js";
 import { LinkWallet } from "../src/services/link/linkWallet.js";
 import type { ProviderAccountOps, ProviderOpsFactory } from "../src/services/providerOps.js";
@@ -1076,6 +1077,9 @@ export function makeTestApp(options: {
   assistantModel?: ModelClient;
   /** Garage search fake; default returns no results and hits no network. */
   garage?: GarageProvider;
+  /** Named-place geocoder fake; default resolves nothing (geocode_place
+   * then answers no_match). */
+  geocoder?: GeocoderProvider;
   /** Faked Link client; wires the LinkWallet as configured. */
   linkClient?: LinkClient;
   /** u1's payment source (default "provider_card", like a fresh user). */
@@ -1119,6 +1123,7 @@ export function makeTestApp(options: {
     policy: policyService,
     findCandidates,
     garage,
+    ...(options.geocoder ? { geocoder: options.geocoder } : {}),
     linkWallet,
     now,
   });

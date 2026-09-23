@@ -977,8 +977,21 @@ payload); otherwise plain JSON:
 Conversation state persists per user (last 20 turns) keyed by
 `conversation_id`. Rate-limited 20/min — each turn is a paid model call.
 
-The model's tools: `search_garages(area, window, budget)`,
-`quote_street(lat, lng, duration, when)`, `build_itinerary(stops[])`,
+The model's tools: `geocode_place(query, city?)` — resolve a NAMED place
+or area (a street, neighborhood, or landmark) to coordinates, biased hard
+to the two cities we cover (NYC and Boston) so "Newbury Street" lands in
+Back Bay, not Ohio; the model calls it FIRST for any named area and quotes
+at the returned point instead of the phone's location, and results outside
+both metros' bounding boxes are dropped (found:false rather than a wrong
+fallback). Requires a geocoder (Nominatim; without one the tool answers
+`geocoding_unavailable`). `search_garages(area, window, budget, within_m?)`
+— pass `within_m: 600` for a named-area search so every option is
+walkable from the place; farther options are dropped and counted
+(`droppedForDistance`). `quote_street(lat, lng, duration, when)` — now
+applies provider-observed terms (`zone_terms_observed`) the same way
+`/parked` and session start do, so a named-area quote matches what the
+curb actually charges (result carries `termsSource: "observed"` when a
+driver-reported term overrode the dataset). `build_itinerary(stops[])`,
 `propose_plan(plan)` (ends the turn with the structured plan),
 `book_garage(option_id, confirmation_token)` and
 `start_session(zone, duration, confirmation_token)` (REFUSED without a

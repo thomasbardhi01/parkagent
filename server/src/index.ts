@@ -20,6 +20,7 @@ import { PolicyService, snapshotPolicy } from "./services/policy.js";
 import { makeAnthropicModelClient } from "./services/assistant/anthropicClient.js";
 import { AssistantTools } from "./services/assistant/tools.js";
 import { makeSpotHeroProvider } from "./services/garage/spotheroDeepLink.js";
+import { NominatimGeocoder } from "./services/assistant/geocoder.js";
 import { makeLinkHttpClient } from "./services/link/linkClient.js";
 import { LinkWallet } from "./services/link/linkWallet.js";
 import { makeItineraryWorker } from "./jobs/itineraryTick.js";
@@ -117,7 +118,17 @@ const assistantModel = env.ANTHROPIC_API_KEY
   ? makeAnthropicModelClient(env.ANTHROPIC_API_KEY, env.ANTHROPIC_MODEL)
   : undefined;
 const findCandidates = makeCandidateFetcher(prisma);
-const assistantTools = new AssistantTools({ db, policy, findCandidates, garage, linkWallet });
+// Named-place geocoding for the assistant, biased to NYC/Boston (Nominatim,
+// the same free geocoder the Boston zone importer uses).
+const geocoder = new NominatimGeocoder();
+const assistantTools = new AssistantTools({
+  db,
+  policy,
+  findCandidates,
+  garage,
+  geocoder,
+  linkWallet,
+});
 
 const app = buildApp({
   db,

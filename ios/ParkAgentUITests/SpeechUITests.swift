@@ -94,6 +94,25 @@ final class SpeechUITests: ParkAgentUITestCase {
         XCTAssertTrue(element(app, "assistant.userMessage").waitForExistence(timeout: 5))
     }
 
+    /// Dismissing the sheet mid-dictation releases the mic (onDisappear →
+    /// stop); reopening starts clean and a fresh session works.
+    func testDismissingSheetStopsDictation() {
+        let app = openAssistant(speechScenario: "scripted")
+        element(app, "assistant.micButton").tap()
+        XCTAssertTrue(element(app, "assistant.liveTranscript").waitForExistence(timeout: 5))
+
+        app.buttons["Done"].tap()
+        element(app, "home.askAssistantButton").tap()
+        XCTAssertTrue(element(app, "assistant.inputField").waitForExistence(timeout: 5))
+        XCTAssertFalse(element(app, "assistant.liveTranscript").exists, "Old session must not survive")
+
+        element(app, "assistant.micButton").tap()
+        XCTAssertTrue(
+            element(app, "assistant.liveTranscript").waitForExistence(timeout: 5),
+            "A fresh session should start after the teardown"
+        )
+    }
+
     /// Recognition unavailable: its own notice, no Settings button.
     func testUnavailableShowsNotice() {
         let app = openAssistant(speechScenario: "unavailable")

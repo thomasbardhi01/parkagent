@@ -234,7 +234,8 @@ extension MockAPI {
             }
             let summary = await MockAssistantStore.shared.signOff(plan: plan, linked: linked)
             return AssistantConfirmResponse(
-                kind: "itinerary_signed_off", deepLink: nil, zoneId: nil, durationMinutes: nil,
+                kind: "itinerary_signed_off", deepLink: nil, zoneId: nil,
+                providerZoneNumber: nil, durationMinutes: nil,
                 paymentSource: linked ? "link_wallet" : "issuing_card",
                 linkApproval: nil, itineraryId: summary.id, totalUsd: summary.totalUsd,
                 linkApprovals: linked
@@ -251,7 +252,8 @@ extension MockAPI {
         }
         if option.type == "garage" {
             return AssistantConfirmResponse(
-                kind: "garage_handoff", deepLink: option.deepLink, zoneId: nil, durationMinutes: nil,
+                kind: "garage_handoff", deepLink: option.deepLink, zoneId: nil,
+                providerZoneNumber: nil, durationMinutes: nil,
                 paymentSource: linked ? "link_wallet" : "issuing_card",
                 linkApproval: approval, itineraryId: nil, totalUsd: nil, linkApprovals: nil,
                 note: "Checkout finishes in SpotHero; the parking pass will live in your SpotHero account."
@@ -259,6 +261,9 @@ extension MockAPI {
         }
         return AssistantConfirmResponse(
             kind: "street_confirmed", deepLink: nil, zoneId: option.zoneId,
+            // The number a user could check against the posted sign, like
+            // the real server sends ("Street — Zone 81234" option).
+            providerZoneNumber: "81234",
             durationMinutes: option.durationMinutes,
             paymentSource: linked ? "link_wallet" : "issuing_card",
             linkApproval: approval, itineraryId: nil, totalUsd: nil, linkApprovals: nil, note: nil

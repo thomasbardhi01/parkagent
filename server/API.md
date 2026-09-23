@@ -977,9 +977,11 @@ token-gated tools the model faces:
   linkApproval?, note}` — the app opens the SpotHero deep link in
   SFSafariViewController; the pass lives in SpotHero. We NEVER automate
   SpotHero login or checkout.
-- street option → `{kind: "street_confirmed", zoneId, durationMinutes,
-  paymentSource, linkApproval?}` — the session itself starts through the
-  existing detector → /parked → /session/start flow at the curb.
+- street option → `{kind: "street_confirmed", zoneId, providerZoneNumber,
+  durationMinutes, paymentSource, linkApproval?}` — the session itself
+  starts through the existing detector → /parked → /session/start flow at
+  the curb. `providerZoneNumber` is the pay-by-app number (null when the
+  zone has none yet); `zoneId` is the internal slug and is not for display.
 - itinerary (no optionId) → `{kind: "itinerary_signed_off", itineraryId,
   totalUsd, capUsd, paymentSource, linkApprovals[]}` — the day total is
   re-checked against `daily_cap_usd` at the moment of sign-off.

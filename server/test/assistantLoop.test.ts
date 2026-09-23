@@ -127,8 +127,28 @@ describe("the loop", () => {
       {
         content: [
           { type: "text", text: "Let me check both. " },
-          { type: "tool_use", id: "t1", name: "quote_street", input: { lat: 40.7784, lng: -73.9819, duration_minutes: 90, when: "2026-01-05T14:00:00-05:00" } },
-          { type: "tool_use", id: "t2", name: "search_garages", input: { lat: 40.7784, lng: -73.9819, starts_at: "2026-01-05T14:00:00-05:00", ends_at: "2026-01-05T15:30:00-05:00" } },
+          {
+            type: "tool_use",
+            id: "t1",
+            name: "quote_street",
+            input: {
+              lat: 40.7784,
+              lng: -73.9819,
+              duration_minutes: 90,
+              when: "2026-01-05T14:00:00-05:00",
+            },
+          },
+          {
+            type: "tool_use",
+            id: "t2",
+            name: "search_garages",
+            input: {
+              lat: 40.7784,
+              lng: -73.9819,
+              starts_at: "2026-01-05T14:00:00-05:00",
+              ends_at: "2026-01-05T15:30:00-05:00",
+            },
+          },
         ],
         stopReason: "tool_use",
       },
@@ -171,7 +191,12 @@ describe("the loop", () => {
     const model = scriptedModel([
       {
         content: [
-          { type: "tool_use", id: "t1", name: "propose_plan", input: { plan: { kind: "single_spot", options: [] } } },
+          {
+            type: "tool_use",
+            id: "t1",
+            name: "propose_plan",
+            input: { plan: { kind: "single_spot", options: [] } },
+          },
         ],
         stopReason: "tool_use",
       },
@@ -233,7 +258,12 @@ describe("confirmation-token enforcement", () => {
         content: [{ type: "tool_use", id: "t1", name: "book_garage", input: { option_id: "g1" } }],
         stopReason: "tool_use",
       },
-      { content: [{ type: "text", text: "I can't book without your confirmation — here's a plan instead." }], stopReason: "end_turn" },
+      {
+        content: [
+          { type: "text", text: "I can't book without your confirmation — here's a plan instead." },
+        ],
+        stopReason: "end_turn",
+      },
     ]);
     const t = makeTestApp({ assistantModel: model, garage: fakeGarage() });
     const res = await t.app.inject({
@@ -294,7 +324,20 @@ describe("confirmation-token enforcement", () => {
   });
 
   test("street confirm returns the zone directive and audits it", async () => {
-    const t = makeTestApp({});
+    const t = makeTestApp({
+      // Seeded so the response can carry the pay-by-app number — the
+      // client shows THAT, never the internal zoneId slug.
+      zones: [
+        {
+          zoneId: "nyc-417371",
+          providerZoneNumber: "417371",
+          rateFirstHour: 5,
+          rateAdditionalHour: 8.25,
+          maxStayMinutes: 120,
+          hoursJson: [],
+        },
+      ],
+    });
     t.state.assistantPlans.push({
       id: "plan1",
       userId: "u1",
@@ -312,10 +355,42 @@ describe("confirmation-token enforcement", () => {
     expect(res.json()).toMatchObject({
       kind: "street_confirmed",
       zoneId: "nyc-417371",
+      providerZoneNumber: "417371",
       durationMinutes: 90,
       paymentSource: "issuing_card",
     });
     expect(t.state.decisions.some((d) => d.rule === "street_confirmed")).toBe(true);
+  });
+
+  test("street confirm sends a null provider number when the zone has none", async () => {
+    const t = makeTestApp({
+      zones: [
+        {
+          zoneId: "nyc-417371",
+          // "" is the schema's "unknown" — the wire must say null, not "".
+          providerZoneNumber: "",
+          rateFirstHour: 5,
+          rateAdditionalHour: 8.25,
+          maxStayMinutes: 120,
+          hoursJson: [],
+        },
+      ],
+    });
+    t.state.assistantPlans.push({
+      id: "plan2",
+      userId: "u1",
+      conversationId: "c1",
+      kind: "single_spot",
+      plan: SINGLE_SPOT_PLAN,
+    });
+    const res = await t.app.inject({
+      method: "POST",
+      url: "/assistant/confirm",
+      headers: HEADERS,
+      payload: { planId: "plan2", optionId: "opt-street" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().providerZoneNumber).toBeNull();
   });
 
   test("confirming an unknown plan or option fails without minting anything usable", async () => {
@@ -359,7 +434,9 @@ describe("history and explanations", () => {
     const mine = await tools.execute({ userId: "u1", conversationId: "c" }, "explain_decision", {
       decision_id: "d1",
     });
-    expect((mine.result as { explanation: string }).explanation).toContain("safe to pay automatically");
+    expect((mine.result as { explanation: string }).explanation).toContain(
+      "safe to pay automatically",
+    );
 
     const theirs = await tools.execute({ userId: "u2", conversationId: "c" }, "explain_decision", {
       decision_id: "d1",
@@ -402,7 +479,10 @@ describe("garage search failure vs empty (Seaport prod bug)", () => {
         throw new Error("unreachable");
       },
     };
-    const t = askForGarage(broken, "I couldn't check garages right now — street is still an option.");
+    const t = askForGarage(
+      broken,
+      "I couldn't check garages right now — street is still an option.",
+    );
     const res = await t.app.inject({
       method: "POST",
       url: "/assistant/message",
@@ -436,9 +516,7 @@ describe("garage search failure vs empty (Seaport prod bug)", () => {
       headers: HEADERS,
       payload: { text: "garage under $1" },
     });
-    const audit = t.state.decisions.find(
-      (d) => d.kind === "assistant_tool" && d.rule === "ok",
-    );
+    const audit = t.state.decisions.find((d) => d.kind === "assistant_tool" && d.rule === "ok");
     expect(audit?.outcome).toMatchObject({ count: 0 });
     const turns = JSON.stringify(t.state.conversations[0]!.turns);
     expect(turns).toContain('\\"options\\":[]');
@@ -523,8 +601,11 @@ describe("garage deepLink delivery", () => {
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ kind: "garage_handoff", deepLink: GARAGE.deepLink });
     expect(
-      t.state.decisions.some((d) => d.rule === "garage_confirmed" &&
-        (d.outcome as { cacheExpired?: boolean }).cacheExpired === true),
+      t.state.decisions.some(
+        (d) =>
+          d.rule === "garage_confirmed" &&
+          (d.outcome as { cacheExpired?: boolean }).cacheExpired === true,
+      ),
     ).toBe(true);
   });
 

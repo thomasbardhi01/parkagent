@@ -123,12 +123,20 @@ struct ActiveSessionView: View {
         } message: {
             Text("Paid time is not refunded.")
         }
-        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
-            let expiring = model.activeSession?.isExpiring(at: AppClock.now) ?? false
-            if expiring && !wasExpiring {
-                Haptics.warning()
+        // .task, not onReceive(Timer.publish…): a publisher built in body
+        // is torn down and re-phased on every re-evaluation (which the
+        // walking-away distance updates cause about once a second), so the
+        // 1s tick could be starved exactly when the session nears expiry.
+        // The task survives re-evaluations and cancels on disappear.
+        .task {
+            while !Task.isCancelled {
+                let expiring = model.activeSession?.isExpiring(at: AppClock.now) ?? false
+                if expiring && !wasExpiring {
+                    Haptics.warning()
+                }
+                wasExpiring = expiring
+                try? await Task.sleep(for: .seconds(1))
             }
-            wasExpiring = expiring
         }
     }
 

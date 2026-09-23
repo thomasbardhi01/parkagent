@@ -22,7 +22,10 @@ struct LivingBackground: View {
     }
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1 / 12, paused: !animated)) { context in
+        // 1 fps is plenty: the drift periods are 47s/61s, so per-second
+        // movement is a few points at whisper opacity — higher rates just
+        // kept the render loop awake for invisible change.
+        TimelineView(.animation(minimumInterval: 1, paused: !animated)) { context in
             let t = animated ? context.date.timeIntervalSinceReferenceDate : 0
             wash(at: t)
         }

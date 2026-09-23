@@ -162,7 +162,10 @@ struct ParkingDetectedSheet: View {
     }
 
     private var zoneNumberValid: Bool {
-        (3...10).contains(trimmedZoneNumber.count) && trimmedZoneNumber.allSatisfy(\.isNumber)
+        // 1–5 digits: real ParkBoston numbers go as short as "1" (seen in
+        // the 2026-09-22 Find Parking sweep); the old 3-digit floor made
+        // those blocks impossible to enter.
+        (1...5).contains(trimmedZoneNumber.count) && trimmedZoneNumber.allSatisfy(\.isNumber)
     }
 
     /// One tap: store the number, then pay with whatever number the

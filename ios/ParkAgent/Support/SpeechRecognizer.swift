@@ -49,22 +49,36 @@ final class SpeechRecognizer {
     private var lastActivityAt = Date()
     private var silenceWatchdog: Task<Void, Never>?
     private var scriptedRun: Task<Void, Never>?
+    /// True from the moment start() is entered until it resolves — the
+    /// permission awaits suspend with state still .idle, and a second mic
+    /// tap in that window must not double-install the audio tap (an
+    /// uncatchable AVFoundation exception).
+    private var isStarting = false
+    /// Tests inject a scenario directly; the UserDefaults path is for UI
+    /// tests only and is gated on the -uiTesting launch flag.
+    private let scenarioOverride: SpeechMockScenario?
+
+    init(scenarioOverride: SpeechMockScenario? = nil) {
+        self.scenarioOverride = scenarioOverride
+    }
 
     func acknowledge() {
         finishedTranscript = nil
     }
 
     func start() async {
-        guard state != .listening else { return }
+        guard state != .listening, !isStarting else { return }
+        isStarting = true
+        defer { isStarting = false }
         transcript = ""
         words = []
         level = 0
         silenceCountdown = nil
         finishedTranscript = nil
 
-        // UI tests script the whole session — no engine, no permission
-        // prompts, deterministic timing.
-        if let scenario = SpeechMockScenario.fromDefaults() {
+        // Scripted sessions — no engine, no permission prompts,
+        // deterministic timing.
+        if let scenario = scenarioOverride ?? SpeechMockScenario.fromDefaults() {
             startScripted(scenario)
             return
         }
@@ -91,6 +105,7 @@ final class SpeechRecognizer {
         }
         request.shouldReportPartialResults = true
 
+        var tapInstalled = false
         do {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.record, mode: .measurement, options: .duckOthers)
@@ -102,9 +117,18 @@ final class SpeechRecognizer {
                 let level = Self.normalizedLevel(of: buffer)
                 Task { @MainActor [weak self] in self?.ingest(level: level) }
             }
+            tapInstalled = true
             audioEngine.prepare()
             try audioEngine.start()
         } catch {
+            // A half-set-up engine must be torn down here: leaving the tap
+            // installed makes the user-invited retry crash on the second
+            // installTap, and leaving the .record session active keeps
+            // other apps' audio ducked.
+            if tapInstalled {
+                audioEngine.inputNode.removeTap(onBus: 0)
+            }
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
             state = .unavailable
             return
         }
@@ -260,7 +284,12 @@ enum SpeechMockScenario: String {
 
     static let defaultsKey = "speechScenario"
 
+    /// UI-test launches only: the key persists in UserDefaults after a
+    /// test run, and unlike the other scenario keys (consumed inside
+    /// MockAPI) this one would rewire the REAL recognizer — so a normal
+    /// launch must never read it.
     static func fromDefaults() -> SpeechMockScenario? {
+        guard LaunchOverrides.uiTesting else { return nil }
         guard let raw = UserDefaults.standard.string(forKey: defaultsKey) else { return nil }
         return SpeechMockScenario(rawValue: raw)
     }

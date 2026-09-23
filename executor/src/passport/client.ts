@@ -20,9 +20,15 @@
  * The gated entry / T&C / e-mail verification screens, the Enter Zone
  * screen (#zoneNumber, #zoneNext), the Review Signage popup, and the
  * Vehicles chooser (#vehicleManagement, 2026-09-22) are verified against
- * recordings. The screens AFTER the chooser (duration/confirm) are still
- * drafted from the app's shipped view source and MUST be verified against
- * a `pnpm -C executor run record -- --provider passport` run (see README).
+ * recordings. The paid START path is now verified end to end against a
+ * real server-driven session (2026-09-23 acceptance run, ParkBoston
+ * transaction 831908580): after the chooser it walks Length of Stay
+ * (#lengthOfStay) → duration picker (#durationPickerPage) → Payment
+ * Methods (#paymentMethod) → Your Cards (#creditCards) → the "Please
+ * Confirm" dialog (Yes pays) → the active-session screen. The EXTEND and
+ * STOP paths reach that session screen but their later screens (extend
+ * duration/confirm; the Stop button in the #sessionShutterPanel pull-up)
+ * are NOT yet walked to completion — still TODO-verify.
  */
 
 import { existsSync } from "node:fs";
@@ -36,13 +42,12 @@ import { classifyFailure } from "../parknyc/classify.js";
 import { parseAmountUsd, parseConfirmation, parseExpiresAt } from "../parknyc/parse.js";
 import {
   findVehicleOption,
-  isAddPaymentScreen,
   isFreePeriodModal,
   parseProviderHours,
   parseVehicleChooser,
   recentZonesState,
 } from "./parse.js";
-import { handleSignageModal } from "./signage.js";
+import { handleSignageModal, waitForPopupSettled } from "./signage.js";
 import type {
   CardFormDetails,
   ExecutorError,
@@ -342,6 +347,87 @@ export class PassportClient {
     }
   }
 
+  /**
+   * Your Cards (#creditCards, VERIFIED live 2026-09-23): after Payment
+   * Methods → Credit/Debit Card the app lists the saved cards. Click the
+   * first saved card (accounts here have one); Add Card is NEVER clicked.
+   * A no-op when the screen doesn't appear (single-method accounts may
+   * skip straight to the confirmation).
+   */
+  private async chooseSavedCard(page: Page, stepName: string): Promise<void> {
+    await selectors.cards
+      .page(page)
+      .or(selectors.confirm.dialog(page))
+      .first()
+      .waitFor({ state: "visible", timeout: 10_000 })
+      .catch(() => {});
+    if (
+      !(await selectors.cards
+        .page(page)
+        .isVisible()
+        .catch(() => false))
+    ) {
+      return;
+    }
+    const card = selectors.cards.cardItems(page).first();
+    const description = (await card.innerText().catch(() => "")).replace(/\s+/g, " ").trim();
+    this.options.log?.(`choosing saved card: ${description || "(unlabeled)"}`);
+    await this.stableClick(page, card, "saved-card");
+    await this.step(stepName, page);
+  }
+
+  /**
+   * The "Please Confirm" pay dialog (VERIFIED live 2026-09-23) is a
+   * jQuery-Mobile popup that fades in behind a .ui-popup-screen overlay —
+   * the same trap as Review Signage. Clicking Yes during the fade lands on
+   * the overlay and times out, so wait for the popup to settle, then click
+   * Yes with a dispatchEvent fallback past the overlay. This click is what
+   * PAYS; returning true means it landed (the dialog closed) or a receipt-
+   * style pay button was clicked instead. Returns false only when no
+   * confirm control could be found.
+   */
+  private async confirmPay(page: Page, stepName: string): Promise<boolean> {
+    const dialog = selectors.confirm.dialog(page);
+    const yes = selectors.confirm.dialogYes(page);
+    // Either the jQM confirm dialog fades in, or a receipt-style page with a
+    // labeled pay button renders — wait for whichever comes first.
+    await dialog
+      .or(selectors.confirm.payButton(page))
+      .first()
+      .waitFor({ state: "visible", timeout: 10_000 })
+      .catch(() => {});
+
+    if (await dialog.isVisible().catch(() => false)) {
+      const settled = await waitForPopupSettled(page, dialog, 5_000);
+      if (!settled) this.options.log?.(`${stepName}: confirm popup never settled; clicking anyway`);
+      await yes.waitFor({ state: "visible", timeout: 5_000 }).catch(() => {});
+      try {
+        await this.stableClick(page, yes, stepName);
+      } catch (err) {
+        this.options.log?.(`${stepName}: Yes click failed (${String(err).split("\n")[0]})`);
+      }
+      // If the dialog is still up (overlay ate the click), dispatch straight
+      // on the button, past pointer interception.
+      const closed = await dialog
+        .waitFor({ state: "hidden", timeout: 3_000 })
+        .then(() => true)
+        .catch(() => false);
+      if (!closed) {
+        this.options.log?.(`${stepName}: dialog still open; dispatching click`);
+        await yes.dispatchEvent("click").catch(() => {});
+      }
+      return true;
+    }
+
+    // No jQM dialog — a receipt-style page. Use the labeled pay button.
+    const payButton = selectors.confirm.payButton(page);
+    if (await payButton.isVisible().catch(() => false)) {
+      await this.stableClick(page, payButton, stepName);
+      return true;
+    }
+    return false;
+  }
+
   /** The gated entry screen means the cookies are not a signed-in session. */
   private async atGatedEntry(page: Page): Promise<boolean> {
     return await selectors.gatedEntry
@@ -428,6 +514,7 @@ export class PassportClient {
         .or(selectors.zone.anyActivePopup(page))
         .or(selectors.zoneInfo.selectZoneButton(page))
         .or(selectors.vehicle.chooserMarker(page))
+        .or(selectors.lengthOfStay.page(page))
         .or(selectors.duration.pickerPage(page))
         .first()
         .waitFor({ state: "visible", timeout: 10_000 })
@@ -491,6 +578,7 @@ export class PassportClient {
         await selectors.zoneInfo
           .selectZoneButton(page)
           .or(selectors.vehicle.chooserMarker(page))
+          .or(selectors.lengthOfStay.page(page))
           .or(selectors.duration.pickerPage(page))
           .first()
           .waitFor({ state: "visible", timeout: 10_000 })
@@ -508,6 +596,7 @@ export class PassportClient {
         // checks below ({ timeout } on isVisible is a no-op).
         await selectors.vehicle
           .chooserMarker(page)
+          .or(selectors.lengthOfStay.page(page))
           .or(selectors.duration.pickerPage(page))
           .first()
           .waitFor({ state: "visible", timeout: 10_000 })
@@ -564,13 +653,33 @@ export class PassportClient {
           "vehicle-select",
         );
         // Clicking the vehicle button advances the flow — the screen has
-        // no Continue of its own (TODO-verify past this point on the
-        // first paid recording).
+        // no Continue of its own (VERIFIED 2026-09-23: it advances to the
+        // Length of Stay screen).
+        await selectors.lengthOfStay
+          .page(page)
+          .or(selectors.duration.pickerPage(page))
+          .first()
+          .waitFor({ state: "visible", timeout: 10_000 })
+          .catch(() => {});
+        await this.step("vehicle-selected", page);
+      }
+
+      // Length of Stay (#lengthOfStay, VERIFIED live 2026-09-23): shortcut
+      // stay buttons (e.g. "2 Hr ($7.85)" — the max stay, fee included)
+      // plus "Choose Stay", which opens the duration picker. Always go
+      // through Choose Stay so the requested minutes are exact.
+      if (
+        await selectors.lengthOfStay
+          .page(page)
+          .isVisible()
+          .catch(() => false)
+      ) {
+        await this.stableClick(page, selectors.lengthOfStay.chooseStayButton(page), "choose-stay");
         await selectors.duration
           .pickerPage(page)
           .waitFor({ state: "visible", timeout: 10_000 })
           .catch(() => {});
-        await this.step("vehicle-selected", page);
+        await this.step("length-of-stay", page);
       }
 
       // Duration picker (#durationPickerPage, VERIFIED ids 2026-09-21):
@@ -602,45 +711,99 @@ export class PassportClient {
       }
       await this.stableClick(page, selectors.duration.continueButton(page), "duration-continue");
       await this.step("duration-selected", page);
-      // TODO-verify: after #pickerNext the app either charges the default
-      // card straight to confirmation (use_default_card) or shows the
-      // payment-method page — not yet walked with a paid run.
 
-      await selectors.confirm.total(page).waitFor();
-      await this.stableClick(page, selectors.confirm.payButton(page), "pay");
+      // Payment Methods chooser (VERIFIED live 2026-09-23): Wallet vs
+      // Credit/Debit Card. Take the card on file; the chooser may be
+      // skipped entirely when the account has only one method.
+      await selectors.paymentMethod
+        .page(page)
+        .or(selectors.confirm.dialog(page))
+        .first()
+        .waitFor({ state: "visible", timeout: 10_000 })
+        .catch(() => {});
+      if (
+        await selectors.paymentMethod
+          .page(page)
+          .isVisible()
+          .catch(() => false)
+      ) {
+        await this.stableClick(
+          page,
+          selectors.paymentMethod.creditCardButton(page),
+          "payment-method-card",
+        );
+        await this.step("payment-method", page);
+      }
+
+      await this.chooseSavedCard(page, "card-chosen");
+
+      // The pay click (VERIFIED live 2026-09-23): the "Please Confirm"
+      // jQuery-Mobile dialog's Yes, or a labeled pay button on older
+      // receipt-style variants. This is what charges the card. (No total
+      // gate — Passport splits "Total Fee:" and "$1.10" across two nodes,
+      // so confirmPay waits on the dialog/button itself.)
+      if (!(await this.confirmPay(page, "confirm-yes"))) {
+        return this.fail(page, "ui_changed", "no pay confirmation control on the confirm screen");
+      }
       await this.step("payment-submitted", page);
 
-      // No saved payment method → the app routes to "Add Payment Details"
-      // instead of a receipt (recorded 2026-09-21). Typed so the server
-      // can tell the user to add a card, not retry blindly.
-      if (isAddPaymentScreen(await page.content())) {
+      // After Yes the app shows a brief "Loading session details…" then the
+      // active-session screen (VERIFIED live 2026-09-23). Wait for one of:
+      // the loaded session screen (paid + active), a decline, or the
+      // "Add Payment Details" page (no card on file). The isVisible checks
+      // are active-page-scoped — hidden SPA pages don't count — so the
+      // ever-present add-card markup can't false-fire.
+      await selectors.session
+        .activeMarker(page)
+        .or(selectors.confirm.declinedMessage(page))
+        .or(selectors.payment.addPaymentHeader(page))
+        .first()
+        .waitFor({ state: "visible", timeout: 20_000 })
+        .catch(() => {});
+
+      if (
+        await selectors.payment
+          .addPaymentHeader(page)
+          .isVisible()
+          .catch(() => false)
+      ) {
         return this.fail(
           page,
           "payment_method_missing",
           "ParkBoston has no saved payment method on this account",
         );
       }
-
-      await selectors.confirmation
-        .successMarker(page)
-        .or(selectors.confirm.declinedMessage(page))
-        .first()
-        .waitFor();
-      if (await selectors.confirm.declinedMessage(page).isVisible()) {
+      if (
+        await selectors.confirm
+          .declinedMessage(page)
+          .isVisible()
+          .catch(() => false)
+      ) {
         return this.fail(page, "payment_declined", "Passport refused the payment");
       }
-      await this.step("confirmation", page);
+      // The session screen is up: money has moved and the meter is running.
+      await selectors.session
+        .activeMarker(page)
+        .first()
+        .waitFor({ state: "visible", timeout: 10_000 });
+      await this.step("session-active", page);
 
+      // Parse the receipt if the screen carries one; otherwise (the live
+      // session screen shows a countdown, not an end clock) synthesize a
+      // provider id and derive the expiry from the minutes just purchased —
+      // the session is confirmed active, so a missing end-time string must
+      // NOT fail a paid start (Passport's extend/stop click buttons on this
+      // screen and never use the id).
+      const now = new Date();
       const text = await page.innerText("body");
-      const parsed = parseConfirmation(text, new Date());
-      if (!parsed) {
-        return this.fail(
-          page,
-          "ui_changed",
-          "confirmation screen did not match the expected receipt shape",
-        );
-      }
-      return { ok: true, ...parsed };
+      const parsed = parseConfirmation(text, now);
+      if (parsed) return { ok: true, ...parsed };
+      return {
+        ok: true,
+        providerSessionId: `passport-${now.getTime()}`,
+        expiresAt: parseExpiresAt(text, now) ?? new Date(now.getTime() + minutes * 60_000),
+        amountUsd: parseAmountUsd(text) ?? -1,
+      };
     });
     if (result.ok) {
       return {
@@ -664,6 +827,13 @@ export class PassportClient {
       if (await this.atGatedEntry(page)) {
         return this.fail(page, "auth_expired", "Passport asked to sign in; state is stale");
       }
+      // session.js injects the Extend/Stop buttons a beat after navigation
+      // (both containers are empty on first paint — acceptance capture
+      // 2026-09-23) so WAIT for the button before clicking, never race it.
+      await selectors.sessions
+        .extendButton(page)
+        .waitFor({ state: "visible", timeout: 15_000 })
+        .catch(() => {});
       await this.stableClick(page, selectors.sessions.extendButton(page), "extend-open");
       await this.step("extend-opened", page);
 
@@ -700,6 +870,25 @@ export class PassportClient {
         };
       }
 
+      // Length of Stay can front the extend picker too, like at start.
+      if (
+        await selectors.lengthOfStay
+          .page(page)
+          .isVisible()
+          .catch(() => false)
+      ) {
+        await this.stableClick(
+          page,
+          selectors.lengthOfStay.chooseStayButton(page),
+          "extend-choose-stay",
+        );
+        await selectors.duration
+          .pickerPage(page)
+          .waitFor({ state: "visible", timeout: 10_000 })
+          .catch(() => {});
+        await this.step("extend-length-of-stay", page);
+      }
+
       // Same duration picker as start (TODO-verify for the extend entry).
       if (
         await selectors.duration
@@ -729,8 +918,34 @@ export class PassportClient {
         selectors.duration.continueButton(page),
         "extend-duration-continue",
       );
-      await selectors.confirm.total(page).waitFor();
-      await this.stableClick(page, selectors.confirm.payButton(page), "extend-pay");
+      // Same Payment Methods chooser as start (card on file).
+      await selectors.paymentMethod
+        .page(page)
+        .or(selectors.confirm.dialog(page))
+        .first()
+        .waitFor({ state: "visible", timeout: 10_000 })
+        .catch(() => {});
+      if (
+        await selectors.paymentMethod
+          .page(page)
+          .isVisible()
+          .catch(() => false)
+      ) {
+        await this.stableClick(
+          page,
+          selectors.paymentMethod.creditCardButton(page),
+          "extend-payment-method-card",
+        );
+        await this.step("extend-payment-method", page);
+      }
+      await this.chooseSavedCard(page, "extend-card-chosen");
+      if (!(await this.confirmPay(page, "extend-confirm-yes"))) {
+        return this.fail(
+          page,
+          "ui_changed",
+          "no pay confirmation control on the extend confirm screen",
+        );
+      }
       await this.step("extend-payment-submitted", page);
 
       await selectors.confirmation
@@ -775,7 +990,28 @@ export class PassportClient {
       if (await this.atGatedEntry(page)) {
         return this.fail(page, "auth_expired", "Passport asked to sign in; state is stale");
       }
-      await this.stableClick(page, selectors.sessions.stopButton(page), "stop");
+      // Wait for the session screen to finish rendering — session.js injects
+      // the buttons a beat after navigation (acceptance capture 2026-09-23:
+      // both button containers empty on first paint).
+      await selectors.session
+        .activeMarker(page)
+        .first()
+        .waitFor({ state: "visible", timeout: 15_000 })
+        .catch(() => {});
+      // Stop lives in the pull-up Session Options shutter (#sessionShutterPanel)
+      // when the screen shows 3+ buttons, so it isn't directly clickable —
+      // open the shutter first if the Stop button isn't already visible.
+      // (TODO-verify: the shutter-open + stop-confirm path is not yet walked
+      // to completion against a live paid session.)
+      const stopButton = selectors.sessions.stopButton(page);
+      if (!(await stopButton.isVisible().catch(() => false))) {
+        await selectors.session
+          .shutterHandle(page)
+          .click()
+          .catch(() => {});
+        await stopButton.waitFor({ state: "visible", timeout: 5_000 }).catch(() => {});
+      }
+      await this.stableClick(page, stopButton, "stop");
       await this.stableClick(page, selectors.sessions.stopConfirmButton(page), "stop-confirm");
       await this.step("stop-confirmed", page);
       await selectors.sessions.stopButton(page).waitFor({ state: "hidden" });

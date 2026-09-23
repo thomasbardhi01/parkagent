@@ -19,7 +19,9 @@ class ParkAgentUITestCase: XCTestCase {
         onboardingStep: Int? = nil,
         selectedCity: String? = nil,
         skipOnboarding: Bool = true,
-        appearance: String? = nil
+        appearance: String? = nil,
+        paymentSource: String? = nil,
+        issuingLive: Bool = false
     ) -> XCUIApplication {
         let app = XCUIApplication()
         var args = [
@@ -36,6 +38,8 @@ class ParkAgentUITestCase: XCTestCase {
         if let cityScenario { args += ["-cityScenario", cityScenario] }
         if let onboardingStep { args += ["-onboardingStep", String(onboardingStep)] }
         if let selectedCity { args += ["-selectedCity", selectedCity] }
+        if let paymentSource { args += ["-paymentSource", paymentSource] }
+        if issuingLive { args += ["-issuingLive", "YES"] }
         app.launchArguments = args
         app.launch()
         return app

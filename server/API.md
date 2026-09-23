@@ -353,6 +353,28 @@ every 60 s. Stored in `location_fixes` keyed to the user's active session
 → `{ok: true, sessionId}`. `409 {"error": "no_active_session"}` when there
 is nothing to attach the fix to (the app treats that as "stop reporting").
 
+## GET /me/payment-source · PUT /me/payment-source
+
+Which source pays the caller's sessions. `GET` →
+`{"paymentSource": "provider_card" | "issuing_card", "issuingLive": false}`;
+`PUT {"paymentSource": …}` switches it (Settings; onboarding's "How do you
+want to pay" step). Values:
+
+- `provider_card` (default for every user) — the card already saved on the
+  user's own ParkNYC/ParkBoston account. Onboarding skips card setup and
+  funding entirely, and provider linking skips the chained setup-card and
+  its consent gate (the account's payment method is never touched).
+- `issuing_card` — the ParkAgent Issuing card. Selectable only while the
+  `ISSUING_LIVE` env flag is `true`; otherwise `PUT` refuses
+  `409 {"error": "issuing_not_live"}` and the app shows "coming soon".
+
+Sessions snapshot the user's source at start (`sessions.payment_source`),
+and it rides on `session_start` decision inputs. The session and daily caps
+apply to **every** source — the choice moves where the charge lands, never
+what is allowed. `shadow_mode` is independent of the source: it only adds a
+Stripe test authorization alongside real spends. Every `PUT` writes a
+`decisions` row (kind `payment_source`).
+
 ## POST /device
 
 `{token, platform: "ios", environment: "development" | "production"}` →
@@ -711,11 +733,14 @@ linking answers `503 {"error": "provider_linking_not_configured"}`.
 Cookies are filtered against the provider's registered domains — anything
 else is dropped at the door; none left → `400 no_session_cookies` (with
 `expectedDomains`). With `set_up_card` and no explicit consent →
-`400 consent_required`, before anything runs. **Shadow mode**
-(`policy.shadow_mode`) skips the chained setup-card entirely — sessions pay
-with whatever payment method the account already has — so the consent
-requirement doesn't apply and `jobId` is always `null`; the link decision
-records `setUpCard: false, shadowMode: true`. The surviving cookies are
+`400 consent_required`, before anything runs. The chained setup-card only
+runs for **issuing_card** users (see `/me/payment-source`): with the
+`provider_card` default, sessions pay with whatever payment method the
+account already has, so the consent requirement doesn't apply and `jobId`
+is always `null`; the link decision records
+`setUpCard: false, paymentSource: "provider_card"`. (Shadow mode no longer
+affects linking — it only adds a test authorization alongside real
+spends.) The surviving cookies are
 verified headlessly (the executor loads the provider's account page); a
 sign-in screen → `409 {"error": "verification_failed", "code": "auth_expired"}`.
 On success the sealed state is upserted (`status: "linked"`) and:
@@ -856,12 +881,12 @@ so the worker's ticket-risk math uses that city's `ticket_cost_usd` (a $40
 Boston ticket argues for extension less strongly than a $65 NYC one).
 
 `shadow_mode` (optional, default false) is the rehearsal switch for a new
-city: the real executor pays with whatever payment method the user's
-provider account already has (linking skips setup-card and its consent
-gate), and every session start and extension **also** fires a Stripe
-test-mode Issuing authorization for the same amount at the user's virtual
-card, so the webhook, budget checks, and ledger run in parallel with the
-real spend. The shadow result lands on the decision outcome (`shadow:
+city, **independent of the payment source**: every session start and
+extension **also** fires a Stripe test-mode Issuing authorization for the
+same amount at the user's virtual card, so the webhook, budget checks, and
+ledger run in parallel with the real spend. (Which card the provider
+charges is the payment-source setting's job — see `/me/payment-source`;
+shadow mode no longer changes how linking behaves.) The shadow result lands on the decision outcome (`shadow:
 {fired, authorizationId, approved, amountUsd}` — or `{fired: false,
 reason}`) and `pnpm -C server decisions:recent` prints it. Shadow mode
 never bypasses the dry-run switches: the executor leg still moves money
@@ -878,6 +903,44 @@ to start on an invalid file.
 No auth. `{ok, dryRun, commit, builtAt}`.
 
 ---
+
+## POST /admin/push-test
+
+Auth-gated and **admin only**. Sends a representative sample of each push
+type to the caller's own registered devices and reports the APNs response
+per device — the field-test "did notifications actually arrive?" check.
+Moves no money and writes no decisions.
+
+Body (optional): `{"types": ["session_started", …]}` to send a subset;
+omitted → all five documented user-facing types (`session_started`,
+`session_extended`, `session_expiring`, `payment_failed`,
+`provider_relink`). `503 {"error": "apns_not_configured"}` when the APNs
+credential set is incomplete.
+
+```json
+{
+  "configured": true,
+  "anyDevices": true,
+  "allAccepted": true,          // every delivery returned APNs 200
+  "sent": [
+    {
+      "type": "session_started",
+      "configured": true,
+      "deviceCount": 1,
+      "results": [
+        { "tokenPrefix": "a1b2c3d4", "environment": "development",
+          "status": 200, "reason": null, "deleted": false }
+      ]
+    }
+  ]
+}
+```
+
+`status` is the APNs HTTP status (200 = accepted); `reason` carries APNs's
+`reason` string on a non-200 (e.g. `"BadDeviceToken"`, `"Unregistered"`),
+and a 410/BadDeviceToken deletes the dead token (`deleted: true`) exactly
+as the live sender does. Only the token's 8-char prefix is returned — a
+device token is a credential.
 
 ## GET /admin/summary
 
@@ -952,8 +1015,21 @@ payload); otherwise plain JSON:
 Conversation state persists per user (last 20 turns) keyed by
 `conversation_id`. Rate-limited 20/min — each turn is a paid model call.
 
-The model's tools: `search_garages(area, window, budget)`,
-`quote_street(lat, lng, duration, when)`, `build_itinerary(stops[])`,
+The model's tools: `geocode_place(query, city?)` — resolve a NAMED place
+or area (a street, neighborhood, or landmark) to coordinates, biased hard
+to the two cities we cover (NYC and Boston) so "Newbury Street" lands in
+Back Bay, not Ohio; the model calls it FIRST for any named area and quotes
+at the returned point instead of the phone's location, and results outside
+both metros' bounding boxes are dropped (found:false rather than a wrong
+fallback). Requires a geocoder (Nominatim; without one the tool answers
+`geocoding_unavailable`). `search_garages(area, window, budget, within_m?)`
+— pass `within_m: 600` for a named-area search so every option is
+walkable from the place; farther options are dropped and counted
+(`droppedForDistance`). `quote_street(lat, lng, duration, when)` — now
+applies provider-observed terms (`zone_terms_observed`) the same way
+`/parked` and session start do, so a named-area quote matches what the
+curb actually charges (result carries `termsSource: "observed"` when a
+driver-reported term overrode the dataset). `build_itinerary(stops[])`,
 `propose_plan(plan)` (ends the turn with the structured plan),
 `book_garage(option_id, confirmation_token)` and
 `start_session(zone, duration, confirmation_token)` (REFUSED without a
@@ -1017,8 +1093,9 @@ provider accepts them today (2026-09), so it stays a comment, not code.
 Stripe's Link CLI/agentic-commerce surface
 (docs.stripe.com/agentic-commerce/link-cli) as a second payment source
 for assistant plans. `PaymentSource` on sessions and bookings:
-`issuing_card` (default — autonomous street parking STAYS here) |
-`link_wallet`.
+`provider_card` (the user-level default — see `/me/payment-source`) |
+`issuing_card` (autonomous street parking on the ParkAgent card, when
+`ISSUING_LIVE`) | `link_wallet`.
 
 **Verified against the docs (2026-09-21):**
 

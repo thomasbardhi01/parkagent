@@ -30,9 +30,16 @@
  *    the Vehicles chooser (#vehicleManagement) — the screen after Review
  *    Signage: #selectVehicleLabel header, button.selectVehicle per saved
  *    vehicle, #addVehicleButton, and the .zoneInfoLabel terms line.
- *  - FROM SHIPPED SOURCE, NOT YET WALKED (TODO-verify on the first paid
- *    `record` run): everything after the chooser — the zone info panel
- *    (#zi_*), duration, confirm, session, and card screens.
+ *  - VERIFIED live on the paid START path (2026-09-23 acceptance run,
+ *    server-driven, ParkBoston transaction 831908580): Length of Stay
+ *    (#lengthOfStay), the duration picker (#durationPickerPage), Payment
+ *    Methods (#paymentMethod), Your Cards (#creditCards), the "Please
+ *    Confirm" jQuery-Mobile dialog (Common.confirmationPopup — Yes pays),
+ *    and the active-session screen (#extendBtn / transaction number).
+ *  - FROM SHIPPED SOURCE, NOT YET WALKED (TODO-verify): the zone info
+ *    panel (#zi_*), the EXTEND path past the session screen, the STOP
+ *    button in the #sessionShutterPanel pull-up, and the card screens
+ *    (setupCard/removeCard — the provider_card default never uses them).
  */
 
 import type { Locator, Page } from "playwright";
@@ -211,6 +218,18 @@ export const selectors = {
   },
 
   // ----------------- Duration + confirm (duration-picker.js; TODO-verify)
+  // Length of Stay (#lengthOfStay, VERIFIED live 2026-09-23, acceptance
+  // fixture passport-2026-09-23T15-31-54-107Z): the screen after the
+  // Vehicles chooser. "Please select the length of stay in zone <n>,
+  // <name>. License Plate <ST> <PLATE>." with shortcut stay buttons
+  // (e.g. "2 Hr ($7.85)" — max stay, fee included) and a "Choose Stay"
+  // button that opens the day/hour/minute duration picker.
+  lengthOfStay: {
+    page: (page: Page): Locator => page.locator("#lengthOfStay.ui-page-active"),
+    chooseStayButton: (page: Page): Locator =>
+      page.locator("#lengthOfStayContent button").filter({ hasText: /choose stay/i }),
+  },
+
   // Duration picker (#durationPickerPage, real ids from the 2026-09-21
   // recording): day/hour/minute steppers + #pickerNext to continue.
   duration: {
@@ -222,33 +241,114 @@ export const selectors = {
     pickerPage: (page: Page): Locator => page.locator("#durationPickerPage"),
     continueButton: (page: Page): Locator => page.locator("#pickerNext"),
   },
+  // Payment Methods (#paymentMethod, VERIFIED live 2026-09-23, acceptance
+  // fixture passport-2026-09-23T15-35-*): after the duration picker the
+  // app asks Wallet vs Credit/Debit Card (vs hidden Validation/PayPal).
+  // We always take the card on file — provider_card and issuing_card
+  // sessions both charge the account's stored card.
+  paymentMethod: {
+    page: (page: Page): Locator => page.locator("#paymentMethod.ui-page-active"),
+    creditCardButton: (page: Page): Locator =>
+      page.locator("#paymentMethod button.paymentModeCreditCard"),
+  },
+
+  // Your Cards (#creditCards, VERIFIED live 2026-09-23): after choosing
+  // Credit/Debit Card the app lists the saved cards ("<Name> (<last4>)")
+  // plus Add Card. The flow clicks the first saved card and NEVER Add
+  // Card (the driver manages their own cards).
+  cards: {
+    page: (page: Page): Locator => page.locator("#creditCards.ui-page-active"),
+    cardItems: (page: Page): Locator => page.locator("#creditCards .cardList button.cardItem"),
+  },
+
   confirm: {
     total: (page: Page): Locator => page.getByText(/total.*\$\s*\d+\.\d{2}/i),
+    /** The "Please Confirm" dialog (VERIFIED live 2026-09-23,
+     * Common.confirmationPopup in shared/common.js). On open, jQuery Mobile
+     * MOVES the popup body into its own `.ui-popup-container.ui-popup-active`
+     * (emptying the authored .confirmationPopupIdentify), so scope to the
+     * open jQM container filtered by the confirm wording — the same trick
+     * the signage handler uses. Zone/plate/fees are listed inside, with
+     * Yes/No <button>s; Yes is the pay click. */
+    dialog: (page: Page): Locator =>
+      page
+        .locator(".ui-popup-container.ui-popup-active")
+        .filter({ hasText: /please confirm|total fee|convenience fee/i }),
+    dialogYes: (page: Page): Locator =>
+      page
+        .locator(".ui-popup-container.ui-popup-active")
+        .filter({ hasText: /please confirm|total fee|convenience fee/i })
+        .locator("button")
+        .filter({ hasText: /^\s*yes\s*$/i })
+        .filter({ visible: true })
+        .first(),
     payButton: (page: Page): Locator =>
       page.getByRole("button", { name: /pay|confirm|start (parking|session)/i }),
     declinedMessage: (page: Page): Locator =>
       page.getByText(/declined|payment (failed|unsuccessful)|could not process/i),
   },
   confirmation: {
+    /** "You are parked!" is the live session screen's header
+     * (VERIFIED 2026-09-23); the rest cover receipt-style variants. */
     successMarker: (page: Page): Locator =>
-      page.getByText(/session (started|confirmed|active)|you're parked|receipt|expires/i),
+      page.getByText(
+        /you are parked|session (started|confirmed|active)|you're parked|receipt|expires/i,
+      ),
+  },
+
+  // The loaded active-session screen (session.js: #sessStopBtn "Stop
+  // Parking", #extendBtn "Extend", #parkingSessionContent, a countdown
+  // timer). Its appearance is the executor's PAID-and-active signal —
+  // reached after the "Loading session details…" loader clears.
+  session: {
+    stopButton: (page: Page): Locator => page.locator("#sessStopBtn"),
+    extendButton: (page: Page): Locator => page.locator("#extendBtn"),
+    /** Any of the reliable session-screen markers, for the success wait.
+     * (#extendBtn injects with the rest; "You are parked!" is the header.) */
+    activeMarker: (page: Page): Locator =>
+      page
+        .locator("#extendBtn")
+        .or(page.locator("#parkingSessionContent"))
+        .or(page.getByText(/you are parked/i)),
+    /** The Session Options shutter's pull tab (#sessionShutterPanel);
+     * opening it reveals Stop when the screen shows 3+ buttons. */
+    shutterHandle: (page: Page): Locator =>
+      page.locator("#sessionShutterPanel .shutterPanelHandle, #sessionShutterPanel").first(),
   },
 
   // ------------------- Active session screen (session.js; TODO-verify)
   sessions: {
     sessionRow: (page: Page, providerSessionId: string): Locator =>
       page.getByText(new RegExp(escapeForRegex(providerSessionId), "i")).first(),
-    extendButton: (page: Page): Locator => page.getByRole("button", { name: /extend|add time/i }),
+    // Real ids from session.js (VERIFIED 2026-09-23), with the role-based
+    // wording as a fallback for other Passport cities' skins.
+    extendButton: (page: Page): Locator =>
+      page.locator("#extendBtn").or(page.getByRole("button", { name: /extend|add time/i })),
     stopButton: (page: Page): Locator =>
-      page.getByRole("button", { name: /stop|end (session|parking)/i }),
+      page
+        .locator("#sessStopBtn")
+        .or(page.getByRole("button", { name: /stop|end (session|parking)/i })),
+    /** Stop asks for confirmation via the same jQM confirm dialog as pay. */
     stopConfirmButton: (page: Page): Locator =>
-      page.getByRole("button", { name: /yes|confirm|end/i }),
+      page
+        .locator(".ui-popup-container.ui-popup-active button")
+        .filter({ hasText: /^\s*(yes|confirm|end)\s*$/i })
+        .filter({ visible: true })
+        .first(),
   },
 
-  // --------------------------------- Profile / signed-in marker (TODO-verify)
+  // ------------------------------------------- Profile / signed-in marker
   account: {
-    signedInMarker: (page: Page): Locator =>
-      page.getByText(/profile|sign out|log ?out|parker history/i).first(),
+    /** VERIFIED live (2026-09-23, acceptance run): navigating a signed-in
+     * session to the account URL lands on the Enter Zone screen (the app
+     * has no separate profile landing) — so the zone-number input IS the
+     * signed-in marker, alongside any profile/sign-out text should a city
+     * ever show one. Signed-out sessions hit the gated entry screen,
+     * which atGatedEntry catches first. */
+    /** Only the input: unioning in menu text like "Log Out" breaks the
+     * visible-wait — the nav drawer's copy sits hidden earlier in the DOM
+     * and .first() then waits on a hidden node forever. */
+    signedInMarker: (page: Page): Locator => page.locator("#zoneNumber"),
   },
 
   // ------------------- Card management (login.js UPDATE_CARD ids; TODO-verify)

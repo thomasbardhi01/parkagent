@@ -29,6 +29,7 @@ import { makeStateCrypto } from "../src/services/crypto.js";
 import type { ModelClient } from "../src/services/assistant/loop.js";
 import { AssistantTools } from "../src/services/assistant/tools.js";
 import type { GarageProvider } from "../src/services/garage/garageProvider.js";
+import type { GeocoderProvider } from "../src/services/assistant/geocoder.js";
 import type { LinkClient } from "../src/services/link/linkClient.js";
 import { LinkWallet } from "../src/services/link/linkWallet.js";
 import type { ProviderAccountOps, ProviderOpsFactory } from "../src/services/providerOps.js";
@@ -215,6 +216,8 @@ export interface FakeIssuingAuthorizationRow {
 }
 
 export interface FakeDbState {
+  /** Per-user payment source ("provider_card" default when absent). */
+  userPaymentSources: Record<string, string>;
   parkedEvents: FakeParkedEvent[];
   decisions: {
     kind: string;
@@ -355,6 +358,7 @@ function matchesSessionWhere(s: SessionRow, where: SessionWhere): boolean {
 
 export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
   const state: FakeDbState = {
+    userPaymentSources: {},
     parkedEvents: [],
     decisions: [],
     snapshots: [],
@@ -408,13 +412,27 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
       // Auth looks up by hash now — mirror prod: only the peppered hashes
       // match. u1 is the owner/admin; u2 exercises the 403 paths.
       findUnique: async ({ where }) => {
-        if (where.apiKeyHash === hashApiKey(TEST_PEPPER, API_KEY)) {
-          return { id: "u1", name: "Thomas", isAdmin: true };
+        const sourceFor = (id: string) => state.userPaymentSources[id] ?? "provider_card";
+        if ("apiKeyHash" in where) {
+          if (where.apiKeyHash === hashApiKey(TEST_PEPPER, API_KEY)) {
+            return { id: "u1", name: "Thomas", isAdmin: true, paymentSource: sourceFor("u1") };
+          }
+          if (where.apiKeyHash === hashApiKey(TEST_PEPPER, NONADMIN_API_KEY)) {
+            return { id: "u2", name: "Ana", isAdmin: false, paymentSource: sourceFor("u2") };
+          }
+          return null;
         }
-        if (where.apiKeyHash === hashApiKey(TEST_PEPPER, NONADMIN_API_KEY)) {
-          return { id: "u2", name: "Ana", isAdmin: false };
+        if (where.id === "u1") {
+          return { id: "u1", name: "Thomas", isAdmin: true, paymentSource: sourceFor("u1") };
+        }
+        if (where.id === "u2") {
+          return { id: "u2", name: "Ana", isAdmin: false, paymentSource: sourceFor("u2") };
         }
         return null;
+      },
+      update: async ({ where, data }) => {
+        state.userPaymentSources[where.id] = data.paymentSource;
+        return { paymentSource: data.paymentSource };
       },
     },
     zone: {
@@ -1059,10 +1077,23 @@ export function makeTestApp(options: {
   assistantModel?: ModelClient;
   /** Garage search fake; default returns no results and hits no network. */
   garage?: GarageProvider;
+  /** Named-place geocoder fake; default resolves nothing (geocode_place
+   * then answers no_match). */
+  geocoder?: GeocoderProvider;
   /** Faked Link client; wires the LinkWallet as configured. */
   linkClient?: LinkClient;
+  /** u1's payment source (default "provider_card", like a fresh user). */
+  paymentSource?: string;
+  /** ISSUING_LIVE: whether "issuing_card" may be chosen (default false). */
+  issuingLive?: boolean;
+  /** Reporting APNs delivery for the admin push-test endpoint; absent →
+   * that endpoint answers 503. */
+  apnsDelivery?: AppDeps["apnsDelivery"];
 }): TestApp {
   const { db, state } = makeFakeDb();
+  if (options.paymentSource) {
+    state.userPaymentSources["u1"] = options.paymentSource;
+  }
   state.zones.push(...(options.zones ?? []));
   if (options.seedLinkedProvider !== false) {
     seedProviderAccount(state);
@@ -1095,6 +1126,7 @@ export function makeTestApp(options: {
     policy: policyService,
     findCandidates,
     garage,
+    ...(options.geocoder ? { geocoder: options.geocoder } : {}),
     linkWallet,
     now,
   });
@@ -1113,6 +1145,8 @@ export function makeTestApp(options: {
     ...(options.assistantModel ? { assistantModel: options.assistantModel } : {}),
     assistantTools,
     linkWallet,
+    ...(options.issuingLive !== undefined ? { issuingLive: options.issuingLive } : {}),
+    ...(options.apnsDelivery ? { apnsDelivery: options.apnsDelivery } : {}),
     now,
   };
   return { app: buildApp(deps), state, deps, pushes };

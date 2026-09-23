@@ -25,6 +25,10 @@ const schema = z
     APNS_KEY_ID: z.string().min(1).optional(),
     APNS_TEAM_ID: z.string().min(1).optional(),
     APNS_BUNDLE_ID: z.string().min(1).optional(),
+    // Whether the ParkAgent Issuing card is live as a selectable payment
+    // source. Until then onboarding/Settings show it as "coming soon" and
+    // PUT /me/payment-source refuses "issuing_card".
+    ISSUING_LIVE: z.enum(["true", "false"]).default("false"),
     // Seals linked provider session state (provider_accounts). 32 bytes of
     // base64: `openssl rand -base64 32`. Without it provider linking is
     // off (503) and real executor calls fail typed.
@@ -57,7 +61,12 @@ const schema = z
         message: "required when STRIPE_SECRET_KEY is set (webhook signature verification)",
       });
     }
-    const linkKeys = [env.LINK_CLIENT_ID, env.LINK_CLIENT_SECRET, env.LINK_PUBLISHABLE_KEY, env.LINK_REDIRECT_URI];
+    const linkKeys = [
+      env.LINK_CLIENT_ID,
+      env.LINK_CLIENT_SECRET,
+      env.LINK_PUBLISHABLE_KEY,
+      env.LINK_REDIRECT_URI,
+    ];
     const linkSet = linkKeys.filter((k) => k !== undefined).length;
     if (linkSet > 0 && linkSet < linkKeys.length) {
       ctx.addIssue({

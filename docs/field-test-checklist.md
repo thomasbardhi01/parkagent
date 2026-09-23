@@ -22,11 +22,25 @@ and decides, but no money moves and you pay the meter by hand as usual.
    **Log raw detector signals**. This writes every motion, car-audio, and location event
    with a timestamp to a file on the phone; it is the only way to debug
    a missed or false park after the fact.
-5. **Provider link** (needed even in dry run — session start refuses
+5. **Payment source** (onboarding "How do you want to pay", or Settings →
+   Payment): the default is **My card on ParkNYC/ParkBoston** —
+   `provider_card`, the card already saved on your provider account. On
+   that path there is **no ParkAgent card setup and no Add money step**:
+   linking just captures the session and the executor pays with the
+   account's own card (it picks the card on file at the "Your Cards"
+   screen). The **ParkAgent card** option only appears when the server has
+   `ISSUING_LIVE=true`; until then it reads "coming soon". Daily and
+   per-stop caps apply the same either way — the choice only moves where
+   the charge lands. If you switch sources, re-link isn't required, but a
+   switch to the ParkAgent card needs a fresh setup-card (consent prompt in
+   the link flow).
+6. **Provider link** (needed even in dry run — session start refuses
    without it): Settings → Providers → link ParkNYC (NYC) or ParkBoston
    (Boston). ParkBoston sign-in is passwordless: T&C accept, e-mail/phone
-   code, then a 4-digit PIN.
-6. Note the time you leave. Everything in the decisions table is
+   code, then a 4-digit PIN. On the `provider_card` default the link flow
+   shows "the card already saved on your account keeps paying" instead of
+   the card-replacement consent, and finishes without a card-setup job.
+7. Note the time you leave. Everything in the decisions table is
    timestamped; knowing "I parked around 2:10" is how you find the rows.
 
 ## The drive (each parking stop)
@@ -100,6 +114,18 @@ Watch for:
 Deeper: `pnpm -C server decisions:recent -- --city bos --limit 50`
 (prod: through the fly proxy, see server/README.md) shows every decision
 with its rule; the `decisions` table has the full inputs.
+
+**Push notifications** — before relying on them in the field, confirm they
+actually land on the phone:
+
+    curl -X POST -H "x-api-key: $KEY" https://parkagent-api.fly.dev/admin/push-test | jq
+
+sends a sample of each of the five push types
+(`session_started`/`session_extended`/`session_expiring`/`payment_failed`/`provider_relink`)
+to every device registered to your key and reports the APNs status per
+device. Watch for `allAccepted: true`; a `reason` like `"BadDeviceToken"`
+or `"Unregistered"` means the token is stale (open the app to re-register)
+and the server has already dropped it.
 
 ## Reporting a bug
 

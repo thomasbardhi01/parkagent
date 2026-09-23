@@ -134,6 +134,12 @@ model User {
   // Gates PUT /policy and /admin/* (403 otherwise). Set at create:user
   // --admin, or by hand in SQL for an existing user.
   isAdmin   Boolean  @default(false) @map("is_admin")
+  // "provider_card" (default) | "issuing_card" — which payment source the
+  // user chose in onboarding/Settings. provider_card = the card already on
+  // their ParkNYC/ParkBoston account (linking skips setup-card);
+  // issuing_card = the ParkAgent Issuing card (only selectable when
+  // ISSUING_LIVE=true). Sessions snapshot it at start.
+  paymentSource String @default("provider_card") @map("payment_source")
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   vehicles     Vehicle[]
@@ -206,10 +212,12 @@ model Session {
   amountUsd            Decimal?  @map("amount_usd") @db.Decimal(6, 2)
   feeUsd               Decimal?  @map("fee_usd") @db.Decimal(6, 2)
   parknycConfirmation  String?   @map("parknyc_confirmation")
-  // "issuing_card" (default) | "link_wallet" — which source pays this
-  // session. link_wallet requires a valid (unexpired, unused) one-time
-  // card from an approved Link spend request; expiry falls back to
-  // issuing_card and tells the user.
+  // "issuing_card" (schema default) | "provider_card" | "link_wallet" —
+  // which source pays this session; start snapshots the user's setting.
+  // provider_card is the card already on the user's provider account.
+  // link_wallet requires a valid (unexpired, unused) one-time card from an
+  // approved Link spend request; expiry falls back to issuing_card and
+  // tells the user.
   paymentSource        String    @default("issuing_card") @map("payment_source")
   // The parked_events row this session came from (plain string, no FK churn).
   parkedEventId        String?   @map("parked_event_id")

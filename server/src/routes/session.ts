@@ -200,12 +200,24 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
       rule = "daily_cap_exceeded";
     }
 
+    // Which source pays this session: the user's setting, snapshotted at
+    // start. provider_card = the card already on their provider account
+    // (the executor pays with the account's own default card either way —
+    // with issuing_card that default IS our card, put there by setup-card).
+    // The caps above apply regardless of source.
+    const userRow = await deps.db.user.findUnique({
+      where: { id: user.id },
+      select: { paymentSource: true },
+    });
+    const paymentSource = userRow?.paymentSource ?? "provider_card";
+
     const decisionInputs = {
       body,
       minutes,
       price,
       spentTodayUsd,
       dryRun,
+      paymentSource,
       policyHash: deps.policy.hash(),
       // Which terms priced this: the observed row's values when one
       // overrode the dataset.
@@ -252,6 +264,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
           providerZoneNumber: zone.providerZoneNumber,
           status: "pending",
           dryRun,
+          paymentSource,
           parkedEventId: parkedEvent.id,
           carLat: parkedEvent.lat,
           carLng: parkedEvent.lng,

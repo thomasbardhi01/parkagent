@@ -226,16 +226,18 @@ test("shadow mode: extension fires and records too; no card is recorded, not thr
   expect(bareDecision.outcome["shadow"]).toMatchObject({ fired: false, reason: "no_card" });
 });
 
-test("shadow mode: linking skips the chained setup-card and its consent gate", async () => {
+test("provider_card linking skips the chained setup-card and its consent gate (shadow mode has no say)", async () => {
+  // The skip is driven by the user's payment source now, not shadow_mode:
+  // shadow mode only adds a test authorization alongside real spends.
   const { app, state } = makeApp({
     policy: { shadow_mode: true },
     stripe: makeFakeGateway(),
     providerOps: () => makeFakeProviderOps(),
   });
 
-  // No consent_replace_payment_method, set_up_card defaulting true: outside
-  // shadow mode this is 400 consent_required; in shadow mode it links and
-  // chains NO setup-card job.
+  // No consent_replace_payment_method, set_up_card defaulting true: for an
+  // issuing_card user this is 400 consent_required; for the provider_card
+  // default it links and chains NO setup-card job.
   const linked = await post(app, "/providers/passport/link", {
     cookies: [{ name: "sid", value: "s3cret", domain: ".bostonma.ppprk.com" }],
   });
@@ -243,6 +245,10 @@ test("shadow mode: linking skips the chained setup-card and its consent gate", a
   expect(linked.json()).toMatchObject({ status: "linked", jobId: null });
 
   const decision = state.decisions.find((d) => d.kind === "provider_link" && d.rule === "link_ok")!;
-  expect(decision.inputs).toMatchObject({ setUpCard: false, shadowMode: true });
+  expect(decision.inputs).toMatchObject({
+    setUpCard: false,
+    shadowMode: true,
+    paymentSource: "provider_card",
+  });
   expect(state.decisions.some((d) => d.kind === "provider_setup_card")).toBe(false);
 });

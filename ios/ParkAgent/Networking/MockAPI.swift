@@ -194,6 +194,27 @@ struct MockAPI: APIClient {
         return await policyStore.replace(policy)
     }
 
+    /// Mirrors the server: the stored choice persists (UserDefaults, like
+    /// the scenario pickers), and switching to the ParkAgent card refuses
+    /// issuing_not_live unless `-issuingLive YES` is set.
+    private var issuingLive: Bool {
+        UserDefaults.standard.bool(forKey: "issuingLive")
+    }
+
+    func paymentSource() async throws -> PaymentSourceResponse {
+        try await pause()
+        return PaymentSourceResponse(paymentSource: PaymentSource.stored, issuingLive: issuingLive)
+    }
+
+    func updatePaymentSource(_ source: PaymentSource) async throws -> PaymentSourceResponse {
+        try await pause()
+        if source == .issuingCard && !issuingLive {
+            throw APIError.refused(code: "issuing_not_live")
+        }
+        UserDefaults.standard.set(source.rawValue, forKey: PaymentSource.defaultsKey)
+        return PaymentSourceResponse(paymentSource: source, issuingLive: issuingLive)
+    }
+
     func startSession(_ request: SessionStartRequest) async throws -> SessionStartOutcome {
         try await pause()
         if scenario == .paymentFailed { throw APIError.paymentFailed }

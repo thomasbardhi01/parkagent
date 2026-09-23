@@ -206,13 +206,22 @@ advances the flow — the screen has no Continue of its own.
 **Verification status.** Walked live: the gated entry (Sign In / Register /
 Guest), T&C accept, and e-mail verification screens (2026-09-20, headless),
 the Enter Zone screen (2026-09-21, signed in), and the signage popup +
-Vehicles chooser (2026-09-22). Everything after the chooser (duration,
-pay, session, cards) is drafted from the app's shipped Backbone view
-source (`js/application/views/*.js` — the element ids are real, the flows
-around them are not yet walked) and is
-marked TODO-verify in `selectors.ts`. Verify with a signed-in
-`record -- --provider passport --flow start` run (pays a real meter) on a
-cheap zone before any real use.
+Vehicles chooser (2026-09-22). The paid **start** path is now verified end
+to end (2026-09-23 acceptance run, server-driven, ParkBoston transaction
+831908580): after the chooser it walks Length of Stay (`#lengthOfStay`) →
+duration picker (`#durationPickerPage`) → Payment Methods (`#paymentMethod`,
+"Credit/Debit Card") → Your Cards (`#creditCards`, the card on file) → the
+"Please Confirm" jQuery-Mobile dialog (Yes pays) → the active-session
+screen (`#extendBtn`, transaction number). Fixtures for each screen are
+under `fixtures/acceptance/` (gitignored). Still **not** walked to
+completion (TODO-verify in `selectors.ts`): the **extend** path past the
+session screen, the **stop** button in the `#sessionShutterPanel` pull-up,
+the account signed-in probe's older markers, and the card screens
+(`setupCard`/`removeCard` — the provider_card default never uses them).
+The account link verify (`#zoneNumber` as the signed-in marker) was also
+corrected against this run. Verify the remaining screens with a signed-in
+`record -- --provider passport --flow extend|stop` run (each pays/settles a
+real meter) before relying on auto-extend or auto-stop.
 
 ## Error taxonomy
 

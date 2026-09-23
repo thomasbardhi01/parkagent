@@ -6,11 +6,14 @@
  */
 
 import type { FastifyInstance } from "fastify";
+import { z } from "zod";
 
 import type { AppDeps } from "../app.js";
 import { requireAdmin } from "../app.js";
 import { cityForZone } from "../providers/registry.js";
 import { nycStartOfDay } from "../services/hours.js";
+import { PUSH_TEST_TYPES, samplePush } from "../services/apns.js";
+import type { PushTestType } from "../services/apns.js";
 
 interface CitySummary {
   parks: number;
@@ -55,6 +58,38 @@ interface DecisionOutcome {
 }
 
 export function registerAdmin(app: FastifyInstance, deps: AppDeps): void {
+  const pushTestSchema = z.object({
+    types: z.array(z.enum(PUSH_TEST_TYPES)).optional(),
+  });
+
+  // Send a sample of each push type to the caller's registered devices and
+  // report the APNs response per device — the field-test "did notifications
+  // arrive?" check. Admin only; writes no decisions (it moves no money).
+  app.post("/admin/push-test", async (req, reply) => {
+    if (!requireAdmin(req, reply)) return;
+    if (!deps.apnsDelivery) {
+      return reply.code(503).send({ error: "apns_not_configured" });
+    }
+    const parsed = pushTestSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({ error: z.treeifyError(parsed.error) });
+    }
+    const user = req.authedUser!;
+    const at = deps.now?.() ?? new Date();
+    const types: PushTestType[] = parsed.data.types ?? [...PUSH_TEST_TYPES];
+    const sent = [];
+    for (const type of types) {
+      const report = await deps.apnsDelivery(user.id, samplePush(type, at));
+      sent.push({ type, ...report });
+    }
+    // Overall: were there devices, and did every delivery return 200?
+    const anyDevices = sent.some((s) => s.deviceCount > 0);
+    const allAccepted =
+      anyDevices &&
+      sent.every((s) => s.results.length > 0 && s.results.every((r) => r.status === 200));
+    return { configured: true, anyDevices, allAccepted, sent };
+  });
+
   app.get("/admin/summary", async (req, reply) => {
     if (!requireAdmin(req, reply)) return;
     const at = deps.now?.() ?? new Date();

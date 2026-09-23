@@ -27,7 +27,8 @@ export interface SessionRow {
   amountUsd: unknown;
   feeUsd: unknown;
   parknycConfirmation: string | null;
-  /** "issuing_card" | "link_wallet"; pre-assistant fakes may omit it. */
+  /** "issuing_card" | "provider_card" | "link_wallet"; pre-assistant
+   * fakes may omit it. */
   paymentSource?: string;
   parkedEventId: string | null;
   carLat: number | null;
@@ -59,6 +60,7 @@ export interface SessionWrite {
   amountUsd?: number;
   feeUsd?: number;
   parknycConfirmation?: string;
+  paymentSource?: string;
   parkedEventId?: string;
   carLat?: number;
   carLng?: number;
@@ -218,11 +220,16 @@ export interface LinkSpendRequestRow {
 export interface AppDb {
   user: {
     findUnique(args: {
-      where: { apiKeyHash: string };
+      where: { apiKeyHash: string } | { id: string };
       /** Always pass this: without it the runtime row carries the key
        * hash and prefix, one spread away from a response body. */
-      select?: { id: true; name: true; isAdmin: true };
-    }): Promise<{ id: string; name: string; isAdmin: boolean } | null>;
+      select?: { id?: true; name?: true; isAdmin?: true; paymentSource?: true };
+    }): Promise<{ id: string; name: string; isAdmin: boolean; paymentSource: string } | null>;
+    update(args: {
+      where: { id: string };
+      data: { paymentSource: string };
+      select: { paymentSource: true };
+    }): Promise<{ paymentSource: string }>;
   };
   zone: {
     findUnique(args: { where: { zoneId: string } }): Promise<ZoneTermsRow | null>;

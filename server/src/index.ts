@@ -6,7 +6,7 @@ import { asAppDb, createPrisma } from "./db.js";
 import { makeCardJanitor } from "./jobs/cardJanitor.js";
 import { makeLinkJobJanitor } from "./jobs/linkJobJanitor.js";
 import { makeExtender } from "./jobs/extendTick.js";
-import { makeApnsSender } from "./services/apns.js";
+import { makeApnsDelivery, makeApnsSender } from "./services/apns.js";
 import { makeStateCrypto } from "./services/crypto.js";
 import { withDecisionLogging } from "./services/decisionLog.js";
 import { DryRunExecutor } from "./services/executor.js";
@@ -20,6 +20,7 @@ import { PolicyService, snapshotPolicy } from "./services/policy.js";
 import { makeAnthropicModelClient } from "./services/assistant/anthropicClient.js";
 import { AssistantTools } from "./services/assistant/tools.js";
 import { makeSpotHeroProvider } from "./services/garage/spotheroDeepLink.js";
+import { NominatimGeocoder } from "./services/assistant/geocoder.js";
 import { makeLinkHttpClient } from "./services/link/linkClient.js";
 import { LinkWallet } from "./services/link/linkWallet.js";
 import { makeItineraryWorker } from "./jobs/itineraryTick.js";
@@ -64,6 +65,9 @@ const log = {
   warn: (msg: string) => app.log.warn(msg),
 };
 const sendPush = makeApnsSender(apnsConfig, db, log);
+// Same delivery, but reporting per-device APNs status — the admin
+// push-test endpoint's transport (money path stays on sendPush).
+const apnsDelivery = makeApnsDelivery(apnsConfig, db, log);
 
 // Executor auth is per user now: linked provider accounts, sealed under
 // PROVIDER_STATE_KEY (env.ts validated its shape). No key → linking is off
@@ -73,6 +77,10 @@ const executorOptions = {
   ...(env.PARKNYC_PLATE ? { defaultPlate: env.PARKNYC_PLATE } : {}),
   ...(process.env["EXECUTOR_CAPTURE_DIR"]
     ? { captureDir: process.env["EXECUTOR_CAPTURE_DIR"] }
+    : {}),
+  // Verification runs: save every real Passport step as fixture screens.
+  ...(process.env["EXECUTOR_STEP_CAPTURE_DIR"]
+    ? { stepCaptureDir: process.env["EXECUTOR_STEP_CAPTURE_DIR"] }
     : {}),
 };
 const dryRunExecutor = new DryRunExecutor((msg) => app.log.info(msg));
@@ -113,7 +121,17 @@ const assistantModel = env.ANTHROPIC_API_KEY
   ? makeAnthropicModelClient(env.ANTHROPIC_API_KEY, env.ANTHROPIC_MODEL)
   : undefined;
 const findCandidates = makeCandidateFetcher(prisma);
-const assistantTools = new AssistantTools({ db, policy, findCandidates, garage, linkWallet });
+// Named-place geocoding for the assistant, biased to NYC/Boston (Nominatim,
+// the same free geocoder the Boston zone importer uses).
+const geocoder = new NominatimGeocoder();
+const assistantTools = new AssistantTools({
+  db,
+  policy,
+  findCandidates,
+  garage,
+  geocoder,
+  linkWallet,
+});
 
 const app = buildApp({
   db,
@@ -125,10 +143,12 @@ const app = buildApp({
   linkWallet,
   executorFor,
   sendPush,
+  apnsDelivery,
   ...(stripe ? { stripe } : {}),
   hasPendingSession: makePendingSessionCheck(db),
   ...(stateCrypto ? { stateCrypto } : {}),
   providerOps,
+  issuingLive: env.ISSUING_LIVE === "true",
 });
 
 const extender = makeExtender({

@@ -166,8 +166,14 @@ describe("POST /providers/:provider/link", () => {
     expect(t.state.providerAccounts).toHaveLength(0);
   });
 
-  it("requires explicit consent before a chained card setup", async () => {
-    const t = makeTestApp({ seedLinkedProvider: false, providerOps: () => makeFakeProviderOps() });
+  it("requires explicit consent before a chained card setup (issuing_card users)", async () => {
+    // Only an issuing_card user gets the chained setup-card at all — the
+    // provider_card default skips it (pinned in paymentSource.test.ts).
+    const t = makeTestApp({
+      seedLinkedProvider: false,
+      providerOps: () => makeFakeProviderOps(),
+      paymentSource: "issuing_card",
+    });
     const res = await post(t, "/providers/parknyc/link", { cookies: [SESSION_COOKIE] });
     expect(res.statusCode).toBe(400);
     expect(res.json()).toEqual({ error: "consent_required" });
@@ -197,6 +203,9 @@ describe("chained link → setup-card", () => {
       stripe: makeFakeGateway(),
       now: () => NOW,
       providerOps: () => makeFakeProviderOps(),
+      // The chained setup-card only runs for issuing_card users; the
+      // provider_card default leaves the account's own payment method.
+      paymentSource: "issuing_card",
       ...LIVE,
       ...options,
     });

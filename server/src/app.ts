@@ -14,6 +14,7 @@ import { registerCard } from "./routes/card.js";
 import { registerCity } from "./routes/city.js";
 import { registerDevice } from "./routes/device.js";
 import { registerLocation } from "./routes/location.js";
+import { registerMe } from "./routes/me.js";
 import { registerParked } from "./routes/parked.js";
 import { registerPolicy } from "./routes/policy.js";
 import { registerProviders } from "./routes/providers.js";
@@ -22,7 +23,7 @@ import { registerStripeWebhook } from "./routes/webhooksStripe.js";
 import { registerZones } from "./routes/zones.js";
 import { registerAssistant } from "./routes/assistant.js";
 import { registerLink } from "./routes/link.js";
-import type { PushSender } from "./services/apns.js";
+import type { ApnsSendReport, Push, PushSender } from "./services/apns.js";
 import type { ModelClient } from "./services/assistant/loop.js";
 import type { AssistantTools } from "./services/assistant/tools.js";
 import type { LinkWallet } from "./services/link/linkWallet.js";
@@ -48,6 +49,9 @@ export interface AppDeps {
   /** Picks the dry-run or real executor per call (dry_run can flip at runtime). */
   executorFor: ExecutorProvider;
   sendPush: PushSender;
+  /** Reporting APNs delivery for the admin push-test endpoint; absent →
+   * that endpoint answers 503. The money path uses sendPush, not this. */
+  apnsDelivery?: (userId: string, push: Push) => Promise<ApnsSendReport>;
   /** Absent when STRIPE_SECRET_KEY isn't set; /webhooks/stripe then 503s. */
   stripe?: StripeGateway;
   /** The issuing webhook's "is a session awaiting payment?" check. */
@@ -65,6 +69,10 @@ export interface AppDeps {
   assistantTools?: AssistantTools;
   /** Link wallet for agents; absent/unconfigured → /link/* answers 503. */
   linkWallet?: LinkWallet;
+  /** ISSUING_LIVE env: whether the ParkAgent Issuing card may be chosen
+   * as a payment source (PUT /me/payment-source). Default false — the app
+   * shows "coming soon". */
+  issuingLive?: boolean;
   /** Injectable clock for tests; routes fall back to `new Date()`. */
   now?: () => Date;
 }
@@ -172,6 +180,7 @@ export function buildApp(deps?: AppDeps): FastifyInstance {
     registerPolicy(app, deps);
     registerSession(app, deps);
     registerLocation(app, deps);
+    registerMe(app, deps);
     registerDevice(app, deps);
     registerCard(app, deps);
     registerProviders(app, deps);

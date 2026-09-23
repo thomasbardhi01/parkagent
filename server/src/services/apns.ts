@@ -162,6 +162,47 @@ export function providerRelinkPush(args: { provider: string; displayName: string
   };
 }
 
+/** The five user-facing push types, and a representative sample of each —
+ * what the admin push-test endpoint sends to prove delivery end to end. */
+export const PUSH_TEST_TYPES = [
+  "session_started",
+  "session_extended",
+  "session_expiring",
+  "payment_failed",
+  "provider_relink",
+] as const;
+
+export type PushTestType = (typeof PUSH_TEST_TYPES)[number];
+
+/** Build a labeled sample of one push type for the delivery test. */
+export function samplePush(type: PushTestType, now: Date): Push {
+  const expires = new Date(now.getTime() + 30 * 60_000);
+  switch (type) {
+    case "session_started":
+      return sessionStartedPush({
+        zoneNumber: "456",
+        minutes: 90,
+        totalUsd: 5.98,
+        expiresAt: expires,
+        dryRun: false,
+      });
+    case "session_extended":
+      return sessionExtendedPush({
+        zoneNumber: "456",
+        minutes: 30,
+        totalUsd: 1.94,
+        expiresAt: expires,
+        dryRun: false,
+      });
+    case "session_expiring":
+      return sessionExpiringPush({ zoneNumber: "456", minutesLeft: 10, reason: "max_stay" });
+    case "payment_failed":
+      return paymentFailedPush({ zoneNumber: "456", what: "pay", code: "payment_declined" });
+    case "provider_relink":
+      return providerRelinkPush({ provider: "passport", displayName: "ParkBoston" });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Transport.
 
@@ -239,27 +280,49 @@ function postNotification(
 
 const JWT_TTL_MS = 50 * 60_000;
 
+/** One device's delivery outcome — what the debug endpoint reports back. */
+export interface ApnsDeliveryResult {
+  /** First 8 chars only; a device token is a credential. */
+  tokenPrefix: string;
+  environment: string;
+  /** APNs HTTP status (200 = accepted), or null when the request threw. */
+  status: number | null;
+  /** APNs `reason` on a non-200 (e.g. "BadDeviceToken"), else null. */
+  reason: string | null;
+  /** True when a 410/BadDeviceToken caused the row to be deleted. */
+  deleted: boolean;
+}
+
+/** Delivery status for a whole send: config/target state plus per-device
+ * APNs results. Returned by the debug sender; the void PushSender ignores it. */
+export interface ApnsSendReport {
+  configured: boolean;
+  deviceCount: number;
+  results: ApnsDeliveryResult[];
+}
+
 /**
- * Real sender. Fans a push out to every registered device of the user;
- * failures are logged, never thrown — a push must not fail the money path.
+ * Core APNs delivery, returning a per-device report. Fans a push out to
+ * every registered device of the user; failures are captured (and logged),
+ * never thrown — a push must not fail the money path.
  */
-export function makeApnsSender(
+export function makeApnsDelivery(
   config: ApnsConfig | null,
   db: ApnsDb,
   log: { info: (msg: string) => void; warn: (msg: string) => void },
   now: () => Date = () => new Date(),
-): PushSender {
+): (userId: string, push: Push) => Promise<ApnsSendReport> {
   let cachedJwt: { value: string; at: number } | null = null;
 
   return async (userId, push) => {
     const tokens = await db.deviceToken.findMany({ where: { userId } });
     if (!config) {
       log.info(`apns not configured; skipping "${push.type}" to ${tokens.length} device(s)`);
-      return;
+      return { configured: false, deviceCount: tokens.length, results: [] };
     }
     if (tokens.length === 0) {
       log.info(`no device tokens for user ${userId}; dropping "${push.type}"`);
-      return;
+      return { configured: true, deviceCount: 0, results: [] };
     }
     const nowMs = now().getTime();
     if (!cachedJwt || nowMs - cachedJwt.at > JWT_TTL_MS) {
@@ -270,9 +333,17 @@ export function makeApnsSender(
       type: push.type,
       ...push.extra,
     };
+    const results: ApnsDeliveryResult[] = [];
     for (const row of tokens) {
       const host =
         row.environment === "development" ? "api.sandbox.push.apple.com" : "api.push.apple.com";
+      const base: ApnsDeliveryResult = {
+        tokenPrefix: row.token.slice(0, 8),
+        environment: row.environment,
+        status: null,
+        reason: null,
+        deleted: false,
+      };
       try {
         const res = await postNotification(
           host,
@@ -281,15 +352,45 @@ export function makeApnsSender(
           row.token,
           payload,
         );
+        base.status = res.status;
+        // APNs returns `{"reason": "..."}` on non-200.
+        if (res.status !== 200 && res.body) {
+          try {
+            base.reason = (JSON.parse(res.body) as { reason?: string }).reason ?? null;
+          } catch {
+            base.reason = res.body.slice(0, 120);
+          }
+        }
         if (res.status === 410 || (res.status === 400 && res.body.includes("BadDeviceToken"))) {
           log.warn(`apns token ${row.token.slice(0, 8)}… rejected (${res.status}); deleting`);
           await db.deviceToken.delete({ where: { id: row.id } });
+          base.deleted = true;
         } else if (res.status !== 200) {
           log.warn(`apns ${res.status} for "${push.type}": ${res.body}`);
         }
       } catch (err) {
+        base.reason = String(err).split("\n")[0] ?? "error";
         log.warn(`apns send failed: ${String(err)}`);
       }
+      results.push(base);
     }
+    return { configured: true, deviceCount: tokens.length, results };
+  };
+}
+
+/**
+ * Real sender (the money-path seam). Fans a push out to every registered
+ * device; failures are logged, never thrown. A thin wrapper over
+ * makeApnsDelivery that discards the per-device report.
+ */
+export function makeApnsSender(
+  config: ApnsConfig | null,
+  db: ApnsDb,
+  log: { info: (msg: string) => void; warn: (msg: string) => void },
+  now: () => Date = () => new Date(),
+): PushSender {
+  const deliver = makeApnsDelivery(config, db, log, now);
+  return async (userId, push) => {
+    await deliver(userId, push);
   };
 }

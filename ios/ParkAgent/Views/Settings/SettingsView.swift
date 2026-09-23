@@ -16,6 +16,9 @@ struct SettingsView: View {
     @State private var relinkProviderId: String?
     @State private var confirmingUnlink: ProviderAccountStatus?
     @State private var isConnectingLink = false
+    @State private var paymentInfo: PaymentSourceResponse?
+    @State private var isSwitchingPayment = false
+    @State private var showIssuingComingSoon = false
 
     var body: some View {
         @Bindable var model = model
@@ -32,6 +35,8 @@ struct SettingsView: View {
                 }
 
                 citySection
+
+                paymentSection
 
                 linkedAccountsSection
 
@@ -105,6 +110,7 @@ struct SettingsView: View {
             .refreshable {
                 await model.loadPolicy()
                 await loadProviders()
+                paymentInfo = try? await model.api.paymentSource()
             }
             .task { await loadProviders() }
             .fullScreenCover(
@@ -161,6 +167,99 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: - Payment source
+
+    @ViewBuilder
+    private var paymentSection: some View {
+        Section {
+            if let info = paymentInfo {
+                paymentRow(
+                    .providerCard,
+                    label: "My card on \(providerShortName)",
+                    current: info.paymentSource
+                )
+                if info.issuingLive {
+                    paymentRow(.issuingCard, label: "ParkAgent card", current: info.paymentSource)
+                } else {
+                    HStack {
+                        Text("ParkAgent card")
+                            .font(.bodyText)
+                            .foregroundStyle(Color.textSecondary)
+                        Spacer()
+                        TagPill(label: "Coming soon", color: .textSecondary)
+                    }
+                    .contentShape(Rectangle())
+                    .onTapGesture { showIssuingComingSoon = true }
+                    .accessibilityIdentifier("settings.payment.comingSoon")
+                }
+            } else {
+                HStack(spacing: Spacing.half) {
+                    ProgressView()
+                    Text("Checking payment source")
+                        .font(.secondaryText)
+                        .foregroundStyle(Color.textSecondary)
+                }
+            }
+        } header: {
+            Text("Payment")
+        } footer: {
+            Text("Which card pays the meter. Your per-stop and daily caps apply either way.")
+        }
+        .task {
+            if paymentInfo == nil {
+                paymentInfo = try? await model.api.paymentSource()
+            }
+        }
+        .alert("Coming soon", isPresented: $showIssuingComingSoon) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("The ParkAgent card isn't available yet. Your \(providerShortName) card keeps paying.")
+                .accessibilityIdentifier("settings.payment.comingSoonMessage")
+        }
+    }
+
+    private func paymentRow(_ source: PaymentSource, label: String, current: PaymentSource) -> some View {
+        Button {
+            guard source != current, !isSwitchingPayment else { return }
+            Task { await switchPayment(to: source) }
+        } label: {
+            HStack {
+                Text(label)
+                    .font(.bodyText)
+                    .foregroundStyle(Color.textPrimary)
+                Spacer()
+                if current == source {
+                    Image(systemName: "checkmark")
+                        .foregroundStyle(Color.actionCoralLink)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("settings.payment.\(source.rawValue)")
+        .accessibilityValue(current == source ? "selected" : "not selected")
+    }
+
+    private var providerShortName: String {
+        CityCatalog.providerDisplayName(for: model.cityOverride == "auto" ? nil : model.cityOverride)
+            ?? CityCatalog.providerDisplayName(for: providerAccounts.first(where: \.isLinked)?.city)
+            ?? "your parking account"
+    }
+
+    private func switchPayment(to source: PaymentSource) async {
+        isSwitchingPayment = true
+        do {
+            let saved = try await model.api.updatePaymentSource(source)
+            paymentInfo = saved
+            UserDefaults.standard.set(saved.paymentSource.rawValue, forKey: PaymentSource.defaultsKey)
+        } catch APIError.refused(let code) where code == "issuing_not_live" {
+            showIssuingComingSoon = true
+        } catch {
+            // Leave the current selection; pull-to-refresh retries the load.
+        }
+        isSwitchingPayment = false
+    }
+
     // MARK: - Linked accounts
 
     @ViewBuilder
@@ -205,6 +304,7 @@ struct SettingsView: View {
                                 .foregroundStyle(Color.textSecondary)
                         }
                         .accessibilityIdentifier("settings.providerMenu.\(account.id)")
+                        .accessibilityLabel("\(account.displayName) account actions")
                     } else {
                         Button(account.status == "expired" ? "Re-link" : "Link") {
                             relinkProviderId = account.id

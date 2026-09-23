@@ -34,6 +34,9 @@ export interface ParkNycOptions {
   defaultPlate?: string;
   /** Unexpected-screen evidence is also written here (EXECUTOR_CAPTURE_DIR). */
   captureDir?: string;
+  /** Every step of every real Passport flow saved as fixture screens here
+   * (EXECUTOR_STEP_CAPTURE_DIR) — for verification runs; off by default. */
+  stepCaptureDir?: string;
 }
 
 /** One line of an arbitrary error — multi-line Playwright call logs can
@@ -111,6 +114,7 @@ export function makePassportExecutor(
       mod.createPassportExecutor({
         storageState: state,
         ...(options.captureDir ? { captureDir: options.captureDir } : {}),
+        ...(options.stepCaptureDir ? { stepCaptureDir: options.stepCaptureDir } : {}),
       }),
     ),
   );
@@ -178,6 +182,7 @@ export interface UserExecutorProviderConfig {
   sendPush: PushSender;
   defaultPlate?: string;
   captureDir?: string;
+  stepCaptureDir?: string;
   warn: (msg: string) => void;
   /** Injectable for tests; defaults to the real Playwright-backed factory. */
   makeRealExecutor?: RealExecutorFactory;
@@ -241,6 +246,7 @@ export function makeUserExecutorProvider(config: UserExecutorProviderConfig): Ex
           {
             ...(config.defaultPlate ? { defaultPlate: config.defaultPlate } : {}),
             ...(config.captureDir ? { captureDir: config.captureDir } : {}),
+            ...(config.stepCaptureDir ? { stepCaptureDir: config.stepCaptureDir } : {}),
           },
         );
         const result = await fn(executor);

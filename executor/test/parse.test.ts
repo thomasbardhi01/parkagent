@@ -73,6 +73,20 @@ test("session ids need a labelled anchor, not any code-looking string", () => {
   expect(parseSessionId("totally unrelated words")).toBeNull();
 });
 
+test("Passport's Transaction/Auth Number reads as the session id", () => {
+  // The ParkBoston session screen (acceptance run 2026-09-23).
+  expect(parseSessionId("Transaction Number:\n831908580")).toBe("831908580");
+  expect(parseSessionId("Auth Number: 054321")).toBe("054321");
+});
+
+test("Passport's dated End time parses to an expiry (weekday/date skipped)", () => {
+  // "End: Wed, Sep 23, 3:30 PM" — the meridiem is required so the "Sep 23,"
+  // fragment can't half-match a bare HH:MM.
+  const at = parseExpiresAt("End:\nWed, Sep 23, 3:30 PM", NOW)!;
+  expect(at).not.toBeNull();
+  expect(inNyc(at)).toBe("3:30 PM");
+});
+
 test("a page missing any piece refuses to parse (caller reports ui_changed)", () => {
   expect(parseConfirmation("Confirmation #X12345 Total $3.65", NOW)).toBeNull(); // no expiry
   expect(parseConfirmation("Expires at 3:30 PM Total $3.65", NOW)).toBeNull(); // no id

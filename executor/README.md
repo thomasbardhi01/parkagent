@@ -187,16 +187,29 @@ filtered on signage wording), takes the VISIBLE Continue only
 animating, clicks, and falls back to dispatching the click event if the
 modal is still up. Absent → skipped. `isSignageModal` (parse.ts, pinned
 by signage-modal.html) is the pure detector; the exactly-one-visible
-assertion is a Playwright setContent test. Confirmed live: dismissing it
-advances to the vehicle screen (#vehicleManagement, after-signage-vehicle
-.html) — the following screens stay TODO-verify.
+assertion is a Playwright setContent test.
+
+**Vehicles chooser (2026-09-22):** dismissing signage advances to
+`#vehicleManagement` (after-signage-vehicle.html): a "Please choose the
+vehicle you would like to park in Zone 456 (North Boylston between
+Dartmouth and Clarendon)" header, one `button.selectVehicle` per saved
+vehicle labeled `<PLATE> (<STATE>)`, an `#addVehicleButton`, and a Zone
+Information line (`$3.75 Hr|Max 5 Hr|M-Sat 8am-8pm`). The flow clicks the
+button matching the session's vehicle (plate + state ride the executor
+protocol from the server's vehicles table) — no match is a typed
+`vehicle_missing`, and Add Vehicle is NEVER clicked. `parseVehicleChooser`
+also reads the terms line and the header's zone number/name; they come
+back as `providerTerms` (fed to the server's `zone_terms_observed`) and a
+non-fatal `zoneResolution` cross-check. Clicking the vehicle button
+advances the flow — the screen has no Continue of its own.
 
 **Verification status.** Walked live: the gated entry (Sign In / Register /
-Guest), T&C accept, and e-mail verification screens (2026-09-20, headless)
-and the Enter Zone screen (2026-09-21, signed in). Everything after zone
-submit (zone panel, duration, pay, session, cards) is drafted from the
-app's shipped Backbone view source (`js/application/views/*.js` — the
-element ids are real, the flows around them are not yet walked) and is
+Guest), T&C accept, and e-mail verification screens (2026-09-20, headless),
+the Enter Zone screen (2026-09-21, signed in), and the signage popup +
+Vehicles chooser (2026-09-22). Everything after the chooser (duration,
+pay, session, cards) is drafted from the app's shipped Backbone view
+source (`js/application/views/*.js` — the element ids are real, the flows
+around them are not yet walked) and is
 marked TODO-verify in `selectors.ts`. Verify with a signed-in
 `record -- --provider passport --flow start` run (pays a real meter) on a
 cheap zone before any real use.
@@ -210,6 +223,7 @@ cheap zone before any real use.
 | `payment_declined` | The payment step refused |
 | `payment_method_missing` | The provider account has no saved payment method — the start flow hit "Add Payment Details" (ParkBoston). The server pushes an "add a card" prompt, not a retry |
 | `free_period` | The provider says this zone isn't charging now — ParkBoston's "No Meter Parking. Please Check Signage" after-hours notice. Carries `freePeriod: { rawText, hours }`; the server records a free period (no charge) and pushes "parking is free here right now" |
+| `vehicle_missing` | The provider account has no saved vehicle matching the session's plate — the Vehicles chooser listed none that match. The server pushes "Add your plate to ParkBoston"; the flow never clicks Add Vehicle |
 | `ui_changed` | An expected screen/element never appeared (capture attached) — includes captcha/bot-check walls, which classify.ts deliberately never reads as `auth_expired` (that would wrongly expire the linked account and push a relink) |
 | `network` | Couldn't reach the provider |
 | `browser_crashed` | The shared Chromium died mid-call. The executor retries the call ONCE on a fresh context first (warmBrowser relaunches lazily); this code means the retry failed too |

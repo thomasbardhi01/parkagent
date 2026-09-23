@@ -22,6 +22,7 @@ import type {
   SessionWhere,
   ZoneNumberImportRow,
   ZoneNumberReportRow,
+  ZoneTermsObservedRow,
   ZoneTermsRow,
 } from "../src/db.js";
 import { makeStateCrypto } from "../src/services/crypto.js";
@@ -257,6 +258,8 @@ export interface FakeDbState {
   providerAccounts: ProviderAccountRow[];
   zoneNumberReports: ZoneNumberReportRow[];
   zoneNumberImports: ZoneNumberImportRow[];
+  zoneTermsObserved: ZoneTermsObservedRow[];
+  vehicles: { id: string; userId: string; plate: string; state: string; createdAt: Date }[];
   processedTopups: { paymentIntentId: string; amountUsd: number; userId: string | null }[];
   conversations: { id: string; userId: string; turns: unknown }[];
   assistantPlans: {
@@ -366,6 +369,8 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
     providerAccounts: [],
     zoneNumberReports: [],
     zoneNumberImports: [],
+    zoneTermsObserved: [],
+    vehicles: [],
     processedTopups: [],
     linkJobs: [],
     conversations: [],
@@ -449,6 +454,43 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
     zoneNumberImport: {
       findUnique: async ({ where }) =>
         state.zoneNumberImports.find((r) => r.zoneId === where.zoneId) ?? null,
+    },
+    zoneTermsObserved: {
+      findUnique: async ({ where }) =>
+        state.zoneTermsObserved.find(
+          (r) =>
+            r.city === where.city_zoneNumber.city &&
+            r.zoneNumber === where.city_zoneNumber.zoneNumber,
+        ) ?? null,
+      findMany: async ({ where }) =>
+        state.zoneTermsObserved.filter(
+          (r) => r.city === where.city && where.zoneNumber.in.includes(r.zoneNumber),
+        ),
+      upsert: async ({ where, create, update }) => {
+        const existing = state.zoneTermsObserved.find(
+          (r) =>
+            r.city === where.city_zoneNumber.city &&
+            r.zoneNumber === where.city_zoneNumber.zoneNumber,
+        );
+        if (existing) {
+          Object.assign(existing, update);
+          return existing;
+        }
+        const row: ZoneTermsObservedRow = {
+          hoursJson: null,
+          zoneId: null,
+          firstSeenAt: create.lastSeenAt,
+          ...create,
+        } as ZoneTermsObservedRow;
+        state.zoneTermsObserved.push(row);
+        return row;
+      },
+    },
+    vehicle: {
+      findFirst: async ({ where }) =>
+        [...state.vehicles]
+          .filter((v) => v.userId === where.userId)
+          .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())[0] ?? null,
     },
     parkedEvent: {
       create: async ({ data }) => {
@@ -957,6 +999,23 @@ export function makeFakeProviderOps(
     topupWallet: async () => ({ ok: true, walletBalanceCents: 3250 }),
     ...overrides,
   };
+}
+
+/** Seed a saved vehicle (the session's plate, passed to the executor). */
+export function seedVehicle(
+  state: FakeDbState,
+  overrides: Partial<FakeDbState["vehicles"][number]> = {},
+): FakeDbState["vehicles"][number] {
+  const row = {
+    id: `v${state.vehicles.length + 1}`,
+    userId: "u1",
+    plate: "ABC123",
+    state: "MA",
+    createdAt: new Date(MONDAY_2PM),
+    ...overrides,
+  };
+  state.vehicles.push(row);
+  return row;
 }
 
 /** Seed a linked provider account; state defaults to a sealed empty state. */

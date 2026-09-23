@@ -26,9 +26,13 @@
  *    ("Continue"). That recording also established the app has NO map:
  *    signed-in navigation lands on Enter Zone, so zone numbers must come
  *    from us, not from a Find Parking map.
+ *  - VERIFIED live (2026-09-22, fixture passport-start-2026-09-22T15-45-19-408Z):
+ *    the Vehicles chooser (#vehicleManagement) — the screen after Review
+ *    Signage: #selectVehicleLabel header, button.selectVehicle per saved
+ *    vehicle, #addVehicleButton, and the .zoneInfoLabel terms line.
  *  - FROM SHIPPED SOURCE, NOT YET WALKED (TODO-verify on the first paid
- *    `record` run): everything after zone submit — the zone info panel
- *    (#zi_*), vehicle, duration, confirm, session, and card screens.
+ *    `record` run): everything after the chooser — the zone info panel
+ *    (#zi_*), duration, confirm, session, and card screens.
  */
 
 import type { Locator, Page } from "playwright";
@@ -183,16 +187,27 @@ export const selectors = {
     selectZoneButton: (page: Page): Locator => page.locator("#zi_selectZone"),
   },
 
-  // ---------------------------------------------------- Vehicle selection
+  // ------------- Vehicle selection (#vehicleManagement, VERIFIED live
+  // 2026-09-22, fixture passport-start-2026-09-22T15-45-19-408Z: zone
+  // submit → signage → Vehicles chooser)
   vehicle: {
-    /** The Vehicles chooser's prompt — the post-signage "next screen"
-     * witness (VERIFIED live 2026-09-22: zone submit → signage → Vehicles,
-     * "Please choose the vehicle you would like to park in Zone …"). */
-    chooserMarker: (page: Page): Locator => page.getByText(/choose the vehicle/i),
-    plateOption: (page: Page, plate: string): Locator =>
-      page.getByText(new RegExp(escapeForRegex(plate), "i")).first(),
-    firstOption: (page: Page): Locator => page.getByRole("radio").first(),
-    continueButton: (page: Page): Locator => page.getByRole("button", { name: /continue|next/i }),
+    /** The chooser's prompt label ("Please choose the vehicle you would
+     * like to park in Zone …"). Present-but-hidden on every other screen
+     * (jQM keeps all page divs in the DOM), so visibility ⇒ this screen. */
+    chooserMarker: (page: Page): Locator => page.locator("#selectVehicleLabel"),
+    /** One button per saved vehicle; its .vehicleDescription span reads
+     * "<PLATE> (<STATE>)". Clicking it advances the flow — the screen has
+     * no separate Continue (TODO-verify on the first paid recording). */
+    vehicleButton: (page: Page, description: string): Locator =>
+      page
+        .locator("#vehicleManagement button.selectVehicle")
+        .filter({ hasText: new RegExp(escapeForRegex(description), "i") })
+        .first(),
+    /** "Add Vehicle" — NEVER clicked: a missing plate is a typed
+     * vehicle_missing result, the driver adds vehicles themselves. */
+    addVehicleButton: (page: Page): Locator => page.locator("#addVehicleButton"),
+    /** The Zone Information line, e.g. "$3.75 Hr|Max 5 Hr|M-Sat 8am-8pm". */
+    zoneInfoLabel: (page: Page): Locator => page.locator("#vehicleManagement .zoneInfoLabel"),
   },
 
   // ----------------- Duration + confirm (duration-picker.js; TODO-verify)

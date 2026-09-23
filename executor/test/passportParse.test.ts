@@ -13,10 +13,13 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 
 import {
+  findVehicleOption,
   normalizeStreet,
   parseZoneEntryHtml,
   parseZoneInfoHtml,
   parseZoneNumberText,
+  parseVehicleChooser,
+  parseZoneInfoTerms,
   streetsMatch,
   parseNearbyZones,
   isAddPaymentScreen,
@@ -104,7 +107,9 @@ test("streetsMatch: our abbreviated data vs the provider's spelled-out names", (
 describe("parseNearbyZones (Find Parking map feed)", () => {
   const body = JSON.parse(
     readFileSync(
-      fileURLToPath(new URL("./fixtures/passport/nearby-zones--boylston-back-bay.json", import.meta.url)),
+      fileURLToPath(
+        new URL("./fixtures/passport/nearby-zones--boylston-back-bay.json", import.meta.url),
+      ),
       "utf8",
     ),
   );
@@ -126,14 +131,13 @@ describe("parseNearbyZones (Find Parking map feed)", () => {
   });
 
   test("returns [] for an error body or a no-data envelope", () => {
-    expect(parseNearbyZones({ status: 404, reason: "No zones in this radius.", data: null })).toEqual(
-      [],
-    );
+    expect(
+      parseNearbyZones({ status: 404, reason: "No zones in this radius.", data: null }),
+    ).toEqual([]);
     expect(parseNearbyZones(null)).toEqual([]);
     expect(parseNearbyZones({})).toEqual([]);
   });
 });
-
 
 describe("Add Payment Details screen (card-less account)", () => {
   const dir = fileURLToPath(new URL("./fixtures/pages/passport", import.meta.url));
@@ -149,15 +153,23 @@ describe("Add Payment Details screen (card-less account)", () => {
     }
     expect(isAddPaymentScreen("<html><body>anything else</body></html>")).toBe(false);
     // Header without the form (e.g. a confirmation echoing the words) is not it.
-    expect(
-      isAddPaymentScreen('<h1 id="updateCardWindowHeader">Add Payment Details</h1>'),
-    ).toBe(false);
+    expect(isAddPaymentScreen('<h1 id="updateCardWindowHeader">Add Payment Details</h1>')).toBe(
+      false,
+    );
   });
 
   test("the same form backs setupCard: the fixture carries every selector id the flow fills", () => {
     // Selectors in passport/selectors.ts payment.* target these ids; the
     // recording is where they came from, so both flows share one form.
-    for (const id of ["cardNumber", "selectMonth", "selectYear", "cvv", "billingZipcode", "cardName", "saveCard"]) {
+    for (const id of [
+      "cardNumber",
+      "selectMonth",
+      "selectYear",
+      "cvv",
+      "billingZipcode",
+      "cardName",
+      "saveCard",
+    ]) {
       expect(addPayment).toContain(`id="${id}"`);
     }
   });
@@ -220,7 +232,7 @@ describe("Review Signage interstitial (optional, after Enter Zone)", () => {
     }
     expect(isSignageModal("<html><body>nothing here</body></html>")).toBe(false);
   });
-})
+});
 
 describe("duration picker + jQM transition settle", () => {
   const dir = fileURLToPath(new URL("./fixtures/pages/passport", import.meta.url));
@@ -228,7 +240,14 @@ describe("duration picker + jQM transition settle", () => {
 
   test("the duration-picker fixture carries the real stepper + continue ids", () => {
     const html = read("duration-picker.html");
-    for (const id of ["dayPlus", "hourPlus", "hourTimeText", "minPlus", "minTimeText", "pickerNext"]) {
+    for (const id of [
+      "dayPlus",
+      "hourPlus",
+      "hourTimeText",
+      "minPlus",
+      "minTimeText",
+      "pickerNext",
+    ]) {
       expect(html).toContain(`id="${id}"`);
     }
   });
@@ -246,7 +265,7 @@ describe("duration picker + jQM transition settle", () => {
       activePageSettled('<div class="ui-page ui-page-theme-a ui-page-active ui-corner-all"></div>'),
     ).toBe(true);
   });
-})
+});
 
 describe("screen after Review Signage (confirmed live 2026-09-21)", () => {
   const dir = fileURLToPath(new URL("./fixtures/pages/passport", import.meta.url));
@@ -258,7 +277,95 @@ describe("screen after Review Signage (confirmed live 2026-09-21)", () => {
     // Sanity: the next screen is not itself the signage modal.
     expect(isSignageModal(html)).toBe(false);
   });
-})
+});
+
+describe("the Vehicles chooser (recorded 2026-09-22, after-signage-vehicle.html)", () => {
+  const dir = fileURLToPath(new URL("./fixtures/pages/passport", import.meta.url));
+  const html = readFileSync(join(dir, "after-signage-vehicle.html"), "utf8");
+  const chooser = parseVehicleChooser(html)!;
+
+  test("reads the zone header, the saved vehicles, and Add Vehicle", () => {
+    expect(chooser).not.toBeNull();
+    expect(chooser.zoneNumber).toBe("456");
+    expect(chooser.zoneName).toBe("North Boylston between Dartmouth and Clarendon");
+    expect(chooser.hasAddVehicle).toBe(true);
+    // The inline <script class="template"> button has an empty description
+    // and must not appear as a vehicle.
+    expect(chooser.vehicles).toEqual([
+      { description: "ABC123 (MA)", plate: "ABC123", state: "MA" },
+    ]);
+  });
+
+  test("parses the Zone Information line into rate, max stay, and hours", () => {
+    expect(chooser.terms).toMatchObject({
+      rawText: "$3.75 Hr|Max 5 Hr|M-Sat 8am-8pm",
+      ratePerHourUsd: 3.75,
+      maxStayMinutes: 300,
+      zoneNumber: "456",
+      zoneName: "North Boylston between Dartmouth and Clarendon",
+    });
+    expect(chooser.terms!.hours).toEqual({
+      startLabel: "8am",
+      endLabel: "8pm",
+      startMinutes: 480,
+      endMinutes: 1200,
+      days: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
+      tz: null,
+    });
+  });
+
+  test("is not detected on other screens (label absent or display:none)", () => {
+    expect(parseVehicleChooser(readFileSync(join(dir, "zone-entry.html"), "utf8"))).toBeNull();
+    // The jQM shell state on every other screen: label present but hidden.
+    expect(
+      parseVehicleChooser(
+        '<label id="selectVehicleLabel" style="display: none"></label>' +
+          '<span class="vehicleDescription">ABC123 (MA)</span>',
+      ),
+    ).toBeNull();
+    // Visible but never populated (no zone submitted) — also not the screen.
+    expect(parseVehicleChooser('<label id="selectVehicleLabel" style=""></label>')).toBeNull();
+  });
+
+  test("findVehicleOption matches by canonical plate + state, else null", () => {
+    // Case/spacing/dashes don't matter; the state must agree when both known.
+    expect(findVehicleOption(chooser.vehicles, { plate: "abc-123", state: "ma" })).toEqual(
+      chooser.vehicles[0],
+    );
+    expect(findVehicleOption(chooser.vehicles, { plate: "ABC123" })).toEqual(chooser.vehicles[0]);
+    expect(findVehicleOption(chooser.vehicles, { plate: "ABC123", state: "NY" })).toBeNull();
+    expect(findVehicleOption(chooser.vehicles, { plate: "ZZZ999", state: "MA" })).toBeNull();
+    expect(findVehicleOption([], { plate: "ABC123", state: "MA" })).toBeNull();
+  });
+});
+
+describe("parseZoneInfoTerms on operator wording variants", () => {
+  test("minute max stays and per-hour spellings", () => {
+    expect(parseZoneInfoTerms("$1.25/hr|Max 30 Min|Mon-Fri 9am-6pm")).toMatchObject({
+      ratePerHourUsd: 1.25,
+      maxStayMinutes: 30,
+      hours: { startMinutes: 540, endMinutes: 1080, days: ["Mon", "Tue", "Wed", "Thu", "Fri"] },
+    });
+  });
+
+  test("segments that don't parse become null, never a throw", () => {
+    expect(parseZoneInfoTerms("Pay at meter")).toEqual({
+      rawText: "Pay at meter",
+      ratePerHourUsd: null,
+      maxStayMinutes: null,
+      hours: null,
+      zoneNumber: null,
+      zoneName: null,
+    });
+    // Half-hour clock times survive.
+    expect(parseZoneInfoTerms("$2 Hr|M-Su 8:30am-7pm").hours).toMatchObject({
+      startLabel: "8:30am",
+      startMinutes: 510,
+      endMinutes: 1140,
+      days: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+    });
+  });
+});
 
 describe("No Meter Parking after-hours notice (free period)", () => {
   const dir = fileURLToPath(new URL("./fixtures/pages/passport", import.meta.url));
@@ -267,7 +374,9 @@ describe("No Meter Parking after-hours notice (free period)", () => {
   test("isFreePeriodModal fires on the notice, not on the other screens", () => {
     expect(isFreePeriodModal(modal)).toBe(true);
     expect(isFreePeriodModal(readFileSync(join(dir, "signage-modal.html"), "utf8"))).toBe(false);
-    expect(isFreePeriodModal(readFileSync(join(dir, "zone-entry--recent-zones-visible.html"), "utf8"))).toBe(false);
+    expect(
+      isFreePeriodModal(readFileSync(join(dir, "zone-entry--recent-zones-visible.html"), "utf8")),
+    ).toBe(false);
   });
 
   test("parseProviderHours reads 8am-8pm EST Mon-Sat off the message", () => {
@@ -294,4 +403,4 @@ describe("No Meter Parking after-hours notice (free period)", () => {
     expect(parseProviderHours("between 9am-5pm")).toMatchObject({ days: [] });
     expect(parseProviderHours("no hours mentioned here")).toBeNull();
   });
-})
+});

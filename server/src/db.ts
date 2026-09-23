@@ -47,6 +47,7 @@ export interface SessionRow {
 /** Fields sessions routes write; everything else is column defaults. */
 export interface SessionWrite {
   userId?: string;
+  vehicleId?: string;
   zoneId?: string;
   city?: string;
   providerZoneNumber?: string;
@@ -105,6 +106,21 @@ export interface ZoneNumberReportRow {
   number: string;
   source: string;
   createdAt: Date;
+}
+
+/** Provider-displayed zone terms, keyed (city, zone number) — see
+ * schema.prisma. Quoting prefers these over the dataset when present. */
+export interface ZoneTermsObservedRow {
+  city: string;
+  zoneNumber: string;
+  /** Decimal | null; convert with Number(...). */
+  ratePerHourUsd: unknown;
+  maxStayMinutes: number | null;
+  rawText: string;
+  hoursJson: unknown;
+  zoneId: string | null;
+  firstSeenAt: Date;
+  lastSeenAt: Date;
 }
 
 /** One imported (Find Parking feed) number for a zone — see schema.prisma. */
@@ -225,6 +241,44 @@ export interface AppDb {
   };
   zoneNumberImport: {
     findUnique(args: { where: { zoneId: string } }): Promise<ZoneNumberImportRow | null>;
+  };
+  zoneTermsObserved: {
+    findUnique(args: {
+      where: { city_zoneNumber: { city: string; zoneNumber: string } };
+    }): Promise<ZoneTermsObservedRow | null>;
+    /** The /parked batch read: observed rows for the candidate zone numbers. */
+    findMany(args: {
+      where: { city: string; zoneNumber: { in: string[] } };
+    }): Promise<ZoneTermsObservedRow[]>;
+    upsert(args: {
+      where: { city_zoneNumber: { city: string; zoneNumber: string } };
+      create: {
+        city: string;
+        zoneNumber: string;
+        ratePerHourUsd: number | null;
+        maxStayMinutes: number | null;
+        rawText: string;
+        hoursJson?: unknown;
+        zoneId?: string;
+        lastSeenAt: Date;
+      };
+      update: {
+        ratePerHourUsd: number | null;
+        maxStayMinutes: number | null;
+        rawText: string;
+        hoursJson?: unknown;
+        zoneId?: string;
+        lastSeenAt: Date;
+      };
+    }): Promise<ZoneTermsObservedRow>;
+  };
+  vehicle: {
+    /** The session's vehicle: the caller's first saved plate (two-user
+     * prototype — one vehicle each). */
+    findFirst(args: {
+      where: { userId: string };
+      orderBy: { createdAt: "asc" };
+    }): Promise<{ id: string; plate: string; state: string } | null>;
   };
   parkedEvent: {
     create(args: {

@@ -8,6 +8,7 @@ import { spentToday } from "../services/sessions.js";
 import { quoteZone } from "../services/quote.js";
 import type { Candidate } from "../services/zoneLookup.js";
 import { lookupRadiusM, resolveCandidates } from "../services/zoneLookup.js";
+import { applyObservedToCandidates } from "../services/zoneTermsObserved.js";
 import { makeRateLimiter } from "../services/rateLimit.js";
 
 const bodySchema = z.object({
@@ -31,6 +32,8 @@ function candidatePayload(candidate: Candidate, quote: Quote) {
     rateAdditionalHourUsd: candidate.rateAdditionalHourUsd,
     maxStayMinutes: candidate.maxStayMinutes,
     hours: candidate.hours,
+    // "observed" when zone_terms_observed overrode the dataset's terms.
+    ...(candidate.termsSource ? { termsSource: candidate.termsSource } : {}),
     quote,
   };
 }
@@ -68,11 +71,15 @@ export function registerParked(app: FastifyInstance, deps: AppDeps): void {
         : "server_time";
     const radiusM = lookupRadiusM(body.accuracy);
 
-    const found = await deps.findCandidates({
+    const fetched = await deps.findCandidates({
       lat: body.lat,
       lng: body.lng,
       radiusM,
     });
+    // Terms the provider itself displayed (zone_terms_observed) beat the
+    // dataset before anything is quoted — the Boston data's assumed 2-hour
+    // max understates e.g. zone 456's posted 5 hours.
+    const found = await applyObservedToCandidates(deps.db, fetched);
     const resolution = resolveCandidates(found, at, policy.respect_enforcement_hours);
 
     let action: Action;

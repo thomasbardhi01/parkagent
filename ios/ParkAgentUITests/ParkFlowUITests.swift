@@ -131,9 +131,23 @@ final class ParkFlowUITests: ParkAgentUITestCase {
         field.typeText("81234")
         element(app, "parkedSheet.saveAndPayButton").tap()
 
-        let notice = element(app, "parkedSheet.appliedNumberNotice")
-        XCTAssertTrue(notice.waitForExistence(timeout: 5), "Applied-number notice missing")
-        XCTAssertTrue(notice.label.contains("55555"), "Notice must name the applied number")
+        // The applied-number notice is transient: it shows only for the pay
+        // round-trip (a 400 ms mock pause here; seconds in prod) and then the
+        // sheet dismisses. Match identifier AND label in ONE predicate wait so
+        // there is no gap between confirming it exists and reading its label —
+        // reading `.label` after the sheet had already dismissed was the flake
+        // (CI run 35913760288 attempt 1: waitForExistence passed at :135, the
+        // separate `.label` read at :136 then found no element).
+        let appliedNotice = app.descendants(matching: .any).matching(
+            NSPredicate(
+                format: "identifier == %@ AND label CONTAINS %@",
+                "parkedSheet.appliedNumberNotice", "55555"
+            )
+        ).firstMatch
+        XCTAssertTrue(
+            appliedNotice.waitForExistence(timeout: 8),
+            "Applied-number notice naming 55555 missing"
+        )
 
         XCTAssertTrue(
             element(app, "parkedSheet.view").waitForNonExistence(timeout: 10),

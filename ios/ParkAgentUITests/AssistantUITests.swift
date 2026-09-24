@@ -220,10 +220,20 @@ final class AssistantUITests: ParkAgentUITestCase {
             NSPredicate(format: "label CONTAINS 'Link approved'")
         ).firstMatch
         XCTAssertTrue(approved.waitForExistence(timeout: 5))
-        // The payment banner told the user which source pays.
+        // The CONFIRMATION note names the source that pays — match the
+        // note itself, not any "Link wallet" on screen. The plan card's
+        // own badge says "Paying with your Link wallet" too, so a bare
+        // match would pass on that alone; it discriminates today only
+        // because confirming dismisses the card, which is not something
+        // this test should silently depend on.
+        let sourceNote = app.staticTexts.containing(
+            NSPredicate(
+                format: "label CONTAINS 'session starts when you park' AND label CONTAINS 'Link wallet'"
+            )
+        ).firstMatch
         XCTAssertTrue(
-            app.staticTexts.containing(NSPredicate(format: "label CONTAINS 'Link wallet'"))
-                .firstMatch.exists
+            sourceNote.waitForExistence(timeout: 5),
+            "The street confirmation should name the Link wallet as the payment source"
         )
     }
 

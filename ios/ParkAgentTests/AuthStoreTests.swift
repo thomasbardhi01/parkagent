@@ -154,8 +154,94 @@ final class AuthStoreTests: XCTestCase {
         XCTAssertNil(credentials.string(.refreshToken))
         XCTAssertNil(AuthUser.cached)
         XCTAssertFalse(store.isSignedIn)
-        // The device id goes too: the next sign-in mints a fresh family.
-        XCTAssertNil(credentials.string(.deviceId), "Sign-out must leave nothing behind")
+    }
+
+    /// The device id is replaced on sign-out — the next account isn't
+    /// linkable to this one by it — and the replacement is PERSISTED, so a
+    /// sign-in after sign-out and the refreshes after the next launch
+    /// present the same id. The old code deleted it from the Keychain but
+    /// kept using the in-memory copy: the sign-in bound its family to the
+    /// dead id, the relaunch minted a new one, and the first refresh was
+    /// refused device_mismatch — signing the user out.
+    func testSignOutRotatesTheDeviceIdAndKeepsItConsistentAcrossALaunch() {
+        let store = makeStore()
+        let before = store.deviceId
+        store.adopt(makeSession(access: "a1", refresh: "r1"))
+
+        store.signOutLocally()
+
+        XCTAssertNotEqual(store.deviceId, before, "sign-out should mint a new device id")
+        XCTAssertEqual(credentials.string(.deviceId), store.deviceId, "the new id must be written through")
+        // Signed in again in the same process, then relaunched: the next
+        // process must present the id the sign-in used.
+        let usedAtSignIn = store.deviceId
+        store.adopt(makeSession(access: "a2", refresh: "r2"))
+        XCTAssertEqual(makeStore().deviceId, usedAtSignIn)
+    }
+
+    /// A session the server killed (a rejected refresh) leaves nothing of
+    /// the account behind either — not only an explicit sign-out does.
+    func testARejectedRefreshClearsTheAccountsLocalState() async {
+        let defaults = UserDefaults.standard
+        defaults.set("ABC1234", forKey: "vehicle.plate")
+        defaults.set(true, forKey: "hasOnboarded")
+        defaults.set(42.35, forKey: "carLat")
+        defaults.set("bos", forKey: "selectedCity")
+        defer { defaults.removeObject(forKey: "selectedCity") }
+
+        let store = makeStore()
+        store.adopt(makeSession(access: "a1", refresh: "r1"))
+        store.restore { _, _ in .rejected }
+        _ = await store.refreshAfterUnauthorized(usedToken: "a1")
+
+        XCTAssertFalse(store.isSignedIn)
+        XCTAssertNil(defaults.string(forKey: "vehicle.plate"), "the last account's plate survived")
+        XCTAssertFalse(defaults.bool(forKey: "hasOnboarded"))
+        XCTAssertNil(defaults.object(forKey: "carLat"))
+        // Where the phone is isn't the account's: the city stays.
+        XCTAssertEqual(defaults.string(forKey: "selectedCity"), "bos")
+    }
+
+    /// Signing out while a rotation is on the wire must not be undone by
+    /// its answer arriving afterwards.
+    func testSignOutDuringARefreshStaysSignedOut() async {
+        let store = makeStore()
+        store.adopt(makeSession(access: "a1", refresh: "r1"))
+        let gate = Gate()
+        let session = makeSession(access: "late", refresh: "late-r")
+        store.restore { _, _ in
+            await gate.wait()
+            return .refreshed(session)
+        }
+
+        let refresh = Task { await store.refreshAfterUnauthorized(usedToken: "a1") }
+        // Let the refresh reach the network, then sign out under it.
+        while await gate.waiting == 0 { await Task.yield() }
+        store.signOutLocally()
+        await gate.open()
+        let token = await refresh.value
+
+        XCTAssertNil(token)
+        XCTAssertFalse(store.isSignedIn, "a late refresh answer signed the user back in")
+        XCTAssertNil(credentials.string(.refreshToken))
+    }
+}
+
+/// Holds a fake network call until the test opens it.
+private actor Gate {
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var isOpen = false
+    var waiting: Int { waiters.count }
+
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func open() {
+        isOpen = true
+        waiters.forEach { $0.resume() }
+        waiters = []
     }
 }
 

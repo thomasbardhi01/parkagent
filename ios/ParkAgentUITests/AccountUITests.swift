@@ -52,6 +52,12 @@ final class AccountUITests: ParkAgentUITestCase {
             profileRow.label.contains("Tom Bardhi"),
             "Profile row should show the saved name, got: \(profileRow.label)"
         )
+        // The phone isn't on the row; reopen the editor, which loads from
+        // the saved profile, and read it back.
+        element(app, "account.profileLink").tap()
+        let savedPhone = element(app, "profile.phoneField")
+        XCTAssertTrue(savedPhone.waitForExistence(timeout: 5))
+        XCTAssertEqual(savedPhone.value as? String, "6175550100", "The phone didn't round-trip")
     }
 
     /// Add a car, see it listed, then remove it.
@@ -104,6 +110,7 @@ final class AccountUITests: ParkAgentUITestCase {
 
         let error = element(app, "vehicleEditor.errorLabel")
         XCTAssertTrue(error.waitForExistence(timeout: 5), "No message for a duplicate plate")
+        XCTAssertEqual(error.label, "That plate is already registered.")
     }
 
     /// A connected account shows which card it will actually charge.
@@ -200,7 +207,12 @@ final class AccountUITests: ParkAgentUITestCase {
 
         let location = scrollTo(app, "account.privacy.location")
         XCTAssertTrue(location.waitForExistence(timeout: 5), "Location status row missing")
-        XCTAssertTrue(element(app, "account.privacy.motion").exists, "Motion status row missing")
+        // A fresh simulator has asked for nothing: the rows say so, and
+        // with nothing DENIED there is nothing to fix.
+        XCTAssertEqual(location.label, "Location, Not requested")
+        // The simulator has no motion coprocessor, so the row says so.
+        XCTAssertEqual(element(app, "account.privacy.motion").label, "Motion, Unavailable")
+        XCTAssertFalse(element(app, "account.privacyFixButton").exists, "Fix offered with nothing denied")
     }
 
     /// Payment section: provider card selected by default, ParkAgent card

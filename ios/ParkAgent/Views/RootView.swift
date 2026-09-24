@@ -49,7 +49,13 @@ struct RootView: View {
     }
 
     var body: some View {
-        Group {
+        // A ZStack, not a Group: a Group hands its modifiers to whichever
+        // branch is showing, so the lifecycle tasks below were torn down
+        // and restarted every time the screen changed — the policy load
+        // was cancelled mid-flight the moment the gate flipped from the
+        // spinner to Home, and Home showed "can't reach the server" over a
+        // request that had in fact answered 200 (seen on the live path).
+        ZStack {
             switch authStore.state {
             case .loading:
                 // One frame while the Keychain is read; a spinner here

@@ -57,6 +57,18 @@ enum Keychain {
         set("mock-access-token", for: .accessToken)
         set("mock-refresh-token", for: .refreshToken)
     }
+
+    /// Live-path checks (`-seedSession <json>`): a REAL session from
+    /// `pnpm -C server create:fr-throwaway` against a local API, so the app
+    /// can be driven signed in without a real Apple or email sign-in —
+    /// including a deliberately dead access token, to exercise the
+    /// 401 → refresh → retry path for real. DEBUG only; the tokens come
+    /// from the developer's own local server.
+    static func seedSession(access: String, refresh: String, deviceId: String) {
+        set(access, for: .accessToken)
+        set(refresh, for: .refreshToken)
+        set(deviceId, for: .deviceId)
+    }
     #endif
 
     // MARK: - SecItem plumbing
@@ -70,7 +82,7 @@ enum Keychain {
     }
 
     private static func read(_ account: String) -> Data? {
-        #if DEBUG
+        #if DEBUG && targetEnvironment(simulator)
         if !isAvailable { return Fallback.read(account) }
         #endif
         var query = query(account)
@@ -84,7 +96,7 @@ enum Keychain {
     }
 
     private static func write(_ data: Data, _ account: String) {
-        #if DEBUG
+        #if DEBUG && targetEnvironment(simulator)
         if !isAvailable {
             Fallback.write(data, account)
             return
@@ -93,9 +105,7 @@ enum Keychain {
         let query = query(account)
         let attributes: [String: Any] = [
             kSecValueData as String: data,
-            // Background refresh runs with the phone locked; anything
-            // stricter than AfterFirstUnlock would fail there.
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
+            kSecAttrAccessible as String: accessibility,
         ]
         let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
         if status == errSecItemNotFound {
@@ -104,7 +114,7 @@ enum Keychain {
     }
 
     private static func delete(_ account: String) {
-        #if DEBUG
+        #if DEBUG && targetEnvironment(simulator)
         if !isAvailable {
             Fallback.delete(account)
             return
@@ -113,7 +123,16 @@ enum Keychain {
         SecItemDelete(query(account) as CFDictionary)
     }
 
-    #if DEBUG
+    /// Background refresh runs with the phone locked, so nothing stricter
+    /// than AfterFirstUnlock works. ThisDeviceOnly: the refresh family is
+    /// bound to this install's device id, and an encrypted backup restored
+    /// onto a second phone would otherwise carry both — two phones rotating
+    /// one family is exactly what reuse detection revokes. A restored phone
+    /// signs in again instead. (SecItemUpdate rewrites the class too, so
+    /// items from older builds move over on their next write.)
+    private static var accessibility: CFString { kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly }
+
+    #if DEBUG && targetEnvironment(simulator)
     /// An UNSIGNED simulator build (`CODE_SIGNING_ALLOWED=NO` — how the
     /// tests and headless builds run) has no `application-identifier`
     /// entitlement, so every SecItem call fails errSecMissingEntitlement
@@ -122,15 +141,20 @@ enum Keychain {
     /// Probed once per process by attempting a real write, rather than
     /// matching on error codes: read and write don't fail with the same
     /// status, and guessing which is which is how this silently half-works.
-    /// On any signed build — simulator or device — the probe succeeds and
-    /// the fallback below is never touched. It is compiled out of release
-    /// builds entirely.
-    nonisolated(unsafe) private static let isAvailable: Bool = {
+    /// Simulator-only, not just DEBUG-only: a Debug build on a PHONE (how
+    /// this app is installed from Xcode) relaunched in the background while
+    /// locked could fail the probe for lock reasons, and would then run the
+    /// whole process on an empty in-memory store — signed out, with the
+    /// background park report unauthenticated. On a device a Keychain error
+    /// is just an error. The probe also uses the real accessibility class,
+    /// so it fails only for the reason it is looking for.
+    private static let isAvailable: Bool = {
         let probe: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: "com.thomasbardhi.parkagent",
             kSecAttrAccount as String: "availability.probe",
             kSecValueData as String: Data([0]),
+            kSecAttrAccessible as String: accessibility,
         ]
         SecItemDelete(probe as CFDictionary)
         let status = SecItemAdd(probe as CFDictionary, nil)

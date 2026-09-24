@@ -4,9 +4,9 @@ Twelve checks, in order, on the phone itself. They go cheapest-first and
 build on each other: each one assumes the ones above it passed. If a check
 fails, stop there — the ones below it will mislead you.
 
-Prerequisites: `ios/Config.xcconfig` has your `DEVELOPMENT_TEAM`,
-`API_BASE_URL`, and `API_KEY`, and `cd ios && xcodegen generate` has been
-run since the last `project.yml` change.
+Prerequisites: `ios/Config.xcconfig` has your `DEVELOPMENT_TEAM` and
+`API_BASE_URL` (there is no `API_KEY` any more), and `cd ios && xcodegen
+generate` has been run since the last `project.yml` change.
 
 For a **fresh** run (onboarding from the top), delete the app from the
 phone first — see "Reinstalling for a fresh onboarding" at the bottom.
@@ -21,15 +21,20 @@ reinstall rather than continuing.
 
 ### 2. It opens on your city, not New York
 
-Launch. Home's map should settle on **where you are** within a second or
+Launch. A fresh install lands on the **welcome screen** — sign in with
+Apple (or the emailed code). Never a "not connected" banner here: if
+sign-in says the app isn't configured, `API_BASE_URL` is missing. After
+sign-in you land on the first setup step you haven't done, or Home.
+
+Home's map should settle on **where you are** within a second or
 two, and the chip at the top should read your city (e.g. "Boston · No
 active session"). If the map opens on Manhattan, the location fix failed
 and it fell back to a city default — check Location permission (step 3).
 
 ### 3. Permissions are actually granted
 
-Settings tab → Permissions. Location should read **Allowed**, Motion
-**Allowed**. Then iOS Settings → ParkAgent → Location must say **Always**,
+Home → the avatar (top right) → Account → Privacy. Location should read
+**Allowed**, Motion **Allowed**. Then iOS Settings → ParkAgent → Location must say **Always**,
 not "While Using". While Using means no background detection: the whole
 unattended-park loop is off, and Diagnostics (step 11) will list
 `Location (Always)` as missing.
@@ -46,8 +51,8 @@ parking card", not a $42.50 balance.
 
 ### 5. The server is the one you think it is
 
-Settings → scroll to About → tap the version number **five times** →
-Diagnostics → Server. Check:
+Home → avatar → Account → scroll to About → tap the version number **five
+times** → Diagnostics → Server. Check:
 
 - **API base** matches the server you deployed to.
 - **Commit** matches what you just deployed (not `dev`, not `mock`).
@@ -98,8 +103,9 @@ transcript.
 
 ### 10. Nothing hides under the tab bar
 
-Card tab and Settings tab: scroll to the very bottom. The last row must be
-fully visible and tappable above the floating tab bar. Switch tabs a few
+Card and Sessions tabs: scroll to the very bottom. The last row must be
+fully visible and tappable above the floating tab bar. The Account sheet
+covers the tab bar; its last row (Version) must scroll fully into view. Switch tabs a few
 times quickly — you should never see two screens superimposed.
 
 ### 11. The detector is armed

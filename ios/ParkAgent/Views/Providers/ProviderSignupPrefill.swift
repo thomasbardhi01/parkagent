@@ -56,11 +56,31 @@ struct ProviderPrefillValues: Equatable {
 /// The JavaScript that fills the page. One assignment per known field,
 /// with the events the provider's own framework listens for so the value
 /// registers as typed rather than pasted-and-ignored.
+///
+/// What it will NOT do is the point, and each limit is enforced in the
+/// script itself rather than trusted to the selectors:
+/// - **Only on the provider's own site.** The web view injects into every
+///   main-frame page it lands on — a terms link, a help centre, an SSO
+///   button — and generic selectors like `input[name='email']` match
+///   plenty of third-party forms. The script returns at once unless the
+///   page's host is one of the provider's registered session domains.
+/// - **Only rendered, enabled, empty text/email/tel `<input>`s.** Never a
+///   password, checkbox, hidden or read-only field, whatever a selector
+///   happens to hit.
+/// - **Each element at most once.** The timer re-runs for late-rendered
+///   SPA inputs, but a field it has already considered is never touched
+///   again, so a value the user deleted stays deleted.
+/// - No focus changes, no clicks, no submit.
 enum ProviderPrefillScript {
     static func javaScript(
         fields: [SignupPrefillField],
-        values: ProviderPrefillValues
+        values: ProviderPrefillValues,
+        allowedDomains: [String]
     ) -> String? {
+        let domains = allowedDomains
+            .map { ($0.hasPrefix(".") ? String($0.dropFirst()) : $0).lowercased() }
+            .filter { !$0.isEmpty }
+        guard !domains.isEmpty else { return nil }
         let assignments = fields.compactMap { field -> String? in
             guard let value = values.value(for: field.field), !value.isEmpty else { return nil }
             return """
@@ -68,15 +88,21 @@ enum ProviderPrefillScript {
             """
         }
         guard !assignments.isEmpty else { return nil }
-        // Re-runs on a timer: these are single-page apps, so the inputs
-        // often do not exist yet when the page first loads. Filling only
-        // EMPTY inputs means we never fight the user's own typing.
         return """
         (function () {
+          var allowed = \(jsArray(domains));
+          var host = location.hostname.toLowerCase();
+          if (!allowed.some(function (d) { return host === d || host.endsWith('.' + d); })) return;
+          var typeable = ['text', 'email', 'tel'];
+          var seen = new WeakSet();
           function fill(selector, value) {
             var el = document.querySelector(selector);
-            if (!el || el.value) return;
-            el.focus();
+            if (!el || seen.has(el)) return;
+            if (el.tagName !== 'INPUT') return;
+            if (typeable.indexOf((el.getAttribute('type') || 'text').toLowerCase()) < 0) return;
+            if (el.disabled || el.readOnly || el.getClientRects().length === 0) return;
+            seen.add(el);
+            if (el.value) return;
             el.value = value;
             el.dispatchEvent(new Event('input', { bubbles: true }));
             el.dispatchEvent(new Event('change', { bubbles: true }));
@@ -91,6 +117,10 @@ enum ProviderPrefillScript {
           }, 500);
         })();
         """
+    }
+
+    private static func jsArray(_ values: [String]) -> String {
+        "[" + values.map(jsString).joined(separator: ", ") + "]"
     }
 
     /// JSON-quote a string for safe embedding in the script.

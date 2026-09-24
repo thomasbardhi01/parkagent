@@ -21,7 +21,13 @@ struct ProviderLoginWebView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .default()
+        // Ephemeral, never `.default()`: the persistent store outlived
+        // sign-out, so the next account on this phone opened the link page
+        // already signed in to the LAST account's provider session — and
+        // the watcher below would post those cookies up as the new
+        // account's link, paying its meters on someone else's card. The
+        // cookies we need go to the server; the phone keeps none.
+        configuration.websiteDataStore = .nonPersistent()
         if let prefillScript {
             // At documentEnd on every frame load: these are SPAs, and the
             // script itself re-runs on a timer for late-rendered inputs.

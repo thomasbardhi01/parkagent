@@ -84,8 +84,12 @@ final class ProviderLinkModel {
     /// The script the web view injects, or nil when we know nothing worth
     /// typing (or the server sent no signup metadata).
     func prefillScript() -> String? {
-        guard let fields = provider?.signup?.prefill, !prefill.isEmpty else { return nil }
-        return ProviderPrefillScript.javaScript(fields: fields, values: prefill)
+        guard let provider, let fields = provider.signup?.prefill, !prefill.isEmpty else { return nil }
+        return ProviderPrefillScript.javaScript(
+            fields: fields,
+            values: prefill,
+            allowedDomains: provider.cookieDomains
+        )
     }
 
     /// Sign-in and sign-up start at the same place for Passport; ParkNYC

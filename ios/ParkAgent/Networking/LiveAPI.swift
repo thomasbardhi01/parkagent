@@ -85,25 +85,40 @@ struct LiveAPI: APIClient {
     /// token source it is refreshing.
     ///
     /// The distinction matters: `.rejected` means the refresh token is
-    /// genuinely dead (rotated away, revoked, expired) and the user must
-    /// sign in again; `.unreachable` is a flaky network, which must leave
-    /// the session alone so a subway ride doesn't sign anyone out.
+    /// genuinely dead (rotated away, revoked, expired, wrong device) and the
+    /// user must sign in again; `.unreachable` means the server couldn't
+    /// give a verdict right now, which must leave the session alone so a
+    /// subway ride doesn't sign anyone out. Classified on the raw status,
+    /// not through `perform`: that maps a JSON-bodied 429 or 503 to
+    /// `.refused`, indistinguishable from a verdict — and the per-IP token
+    /// limit (429) would then sign a phone out for refreshing too eagerly.
     func refreshSession(refreshToken: String, deviceId: String) async -> RefreshOutcome {
+        var request = URLRequest(url: Self.url(base: baseURL, path: "auth/refresh"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? Self.encoder.encode(["refreshToken": refreshToken, "deviceId": deviceId])
+
+        let data: Data
+        let response: URLResponse
         do {
-            let session: AuthSession = try await send(
-                "auth/refresh",
-                method: "POST",
-                body: ["refreshToken": refreshToken, "deviceId": deviceId],
-                authenticated: false
-            )
-            return .refreshed(session)
-        } catch APIError.transport {
-            return .unreachable
-        } catch APIError.server {
-            // 5xx is the server having a bad day, not a verdict on the token.
-            return .unreachable
+            (data, response) = try await URLSession.shared.data(for: request)
         } catch {
+            return .unreachable
+        }
+        switch (response as? HTTPURLResponse)?.statusCode ?? 0 {
+        case 200..<300:
+            // A 200 we can't read is not a verdict on the token; the next
+            // attempt presents the rotated-away token and gets a real one.
+            guard let session = try? Self.decoder.decode(AuthSession.self, from: data) else {
+                return .unreachable
+            }
+            return .refreshed(session)
+        case 400, 401, 403:
             return .rejected
+        default:
+            // 429, 5xx (auth_not_configured included), the edge's HTML
+            // error pages: no verdict.
+            return .unreachable
         }
     }
 

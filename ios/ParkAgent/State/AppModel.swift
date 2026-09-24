@@ -261,6 +261,9 @@ final class AppModel {
         do {
             policyResponse = try await api.policy()
         } catch {
+            // Cancelled is not unreachable: whoever cancelled (a sign-out,
+            // a view going away) owns what happens next.
+            guard !Task.isCancelled else { return }
             policyLoadFailed = true
         }
     }

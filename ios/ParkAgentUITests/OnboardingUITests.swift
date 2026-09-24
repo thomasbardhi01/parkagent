@@ -230,9 +230,12 @@ final class OnboardingUITests: ParkAgentUITestCase {
         // The one-sentence promise from the server registry.
         let note = element(app, "link.introNote")
         XCTAssertTrue(note.exists, "Sign-up note missing")
+        // The REGISTRY's sentence for ParkNYC — the fallback copy also
+        // promises "never see your password", so match what only the
+        // server's signup block says.
         XCTAssertTrue(
-            note.label.contains("never see your password"),
-            "Note should promise we never see the password: \(note.label)"
+            note.label.contains("Create your ParkNYC account"),
+            "Note should be the registry's sign-up sentence: \(note.label)"
         )
         XCTAssertTrue(
             element(app, "link.prefillNote").exists,

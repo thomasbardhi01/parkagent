@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import WebKit
 
 /// Who is signed in, and the tokens that prove it. One instance owns the
 /// Keychain credentials; `LiveAPI` asks it for the current access token and
@@ -25,8 +26,13 @@ final class AuthStore {
     /// returns to the welcome screen and says why.
     private(set) var signedOutReason: String?
 
-    /// Stable per install; the refresh family is bound to it.
-    let deviceId: String
+    /// Stable for as long as one account is signed in on this install; the
+    /// refresh family is bound to it. Sign-out mints a new one (see
+    /// `signOutLocally`), so the next account isn't linkable to the last
+    /// by device id — and the new one is written through at once, because
+    /// a sign-in and the refreshes after a relaunch must present the SAME
+    /// id or the server answers device_mismatch.
+    private(set) var deviceId: String
 
     /// Keychain in the app, in-memory in tests.
     private let credentials: any CredentialStoring
@@ -100,7 +106,10 @@ final class AuthStore {
         let deviceId = self.deviceId
         let task = Task<String?, Never> { [weak self] in
             let outcome = await tokenRefresher(refreshToken, deviceId)
-            guard let self else { return nil }
+            // Signed out while the rotation was on the wire: its answer
+            // belongs to a session that no longer exists. Adopting it would
+            // sign the user straight back in.
+            guard let self, !Task.isCancelled else { return nil }
             switch outcome {
             case .refreshed(let session):
                 self.adopt(session)
@@ -137,14 +146,53 @@ final class AuthStore {
     }
 
     /// Sign-out clears EVERYTHING: tokens, cached profile, and the local
-    /// app state that only made sense for that account.
+    /// app state that only made sense for that account. Every way out goes
+    /// through here — sign-out, delete, and a refresh the server rejected —
+    /// so none of them can leave one person's setup for the next.
     func signOutLocally(reason: String? = nil) {
         credentials.clearAll()
+        // A fresh device id for whoever signs in next, persisted now: the
+        // old in-memory one would otherwise outlive the Keychain entry, a
+        // sign-in would bind to it, and the next launch would mint another
+        // and fail its first refresh on device_mismatch.
+        deviceId = UUID().uuidString
+        credentials.set(deviceId, for: .deviceId)
         AuthUser.clearCache()
         refreshInFlight?.cancel()
         refreshInFlight = nil
+        Self.clearAccountLocalState()
         signedOutReason = reason
         state = .signedOut
+    }
+
+    /// Everything account-shaped that lives outside the Keychain. Leaving
+    /// any of it behind would leak one person's setup into the next
+    /// sign-in — the plate above all, which onboarding would otherwise
+    /// prefill for the next person (and a slow gate would accept as theirs).
+    /// The chosen city stays: it describes where the phone is, and the gate
+    /// re-checks everything that belongs to the account.
+    static func clearAccountLocalState(_ defaults: UserDefaults = .standard) {
+        for key in [
+            "hasOnboarded",
+            OnboardingStep.defaultsKey,
+            "detectedCity",
+            "cityOverride",
+            PaymentSource.defaultsKey,
+            "carLat",
+            "carLng",
+            "vehicle.plate",
+            "vehicle.state",
+            "vehicle.nickname",
+        ] {
+            defaults.removeObject(forKey: key)
+        }
+        // Builds before the link web view went ephemeral kept provider
+        // sessions in WebKit's persistent store; the next account's
+        // link page would have opened signed in to this one's provider.
+        WKWebsiteDataStore.default().removeData(
+            ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(),
+            modifiedSince: .distantPast
+        ) {}
     }
 
     func clearSignedOutReason() {
@@ -200,7 +248,8 @@ struct AuthSession: Codable, Sendable {
     var accessExpiresAt: Date
     var refreshToken: String
     var user: AuthUser
-    /// True when this sign-in created the account (the app then runs
-    /// onboarding instead of going straight Home).
+    /// True when this sign-in created the account. Informational only:
+    /// where the app lands next is RootView's onboarding gate, which asks
+    /// the server and the phone what is actually missing.
     var created: Bool
 }

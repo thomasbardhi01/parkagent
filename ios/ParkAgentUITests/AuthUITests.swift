@@ -73,6 +73,8 @@ final class AuthUITests: ParkAgentUITestCase {
 
         let error = element(app, "welcome.errorLabel")
         XCTAssertTrue(error.waitForExistence(timeout: 10), "No failure message shown")
+        // The refusal's own copy (invalid_identity_token), not just any text.
+        XCTAssertEqual(error.label, "That sign-in didn't verify. Try again.")
         XCTAssertTrue(element(app, "welcome.view").exists, "Should stay on the welcome screen")
     }
 
@@ -123,6 +125,7 @@ final class AuthUITests: ParkAgentUITestCase {
 
         let message = element(app, "emailSignIn.messageLabel")
         XCTAssertTrue(message.waitForExistence(timeout: 10), "No message for a wrong code")
+        XCTAssertEqual(message.label, "That code doesn't match. Check it and try again.")
         XCTAssertFalse(app.tabBars.buttons["Home"].exists, "A wrong code must not sign anyone in")
     }
 

@@ -59,8 +59,9 @@ the whole family. Verified-email matches merge into one account.
 
 `Authorization: Bearer` is how the app authenticates; `x-api-key` remains
 for admin and scripts only, and the iOS app no longer carries a key at
-all (tokens live in the Keychain, `kSecAttrAccessibleAfterFirstUnlock` so
-background detection can refresh while locked). Carry an existing
+all (tokens live in the Keychain, `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`
+so background detection can refresh while locked and a restored backup
+never carries a refresh family to a second phone). Carry an existing
 script-made user across with
 `pnpm -C server attach-identity -- --user <id> --email <e> [--apple-sub <s>]`.
 
@@ -109,16 +110,21 @@ Sign in with Apple needs the capability on the App ID; the entitlement is
 declared in `project.yml`. On an UNSIGNED simulator build
 (`CODE_SIGNING_ALLOWED=NO`, how the tests run) every Keychain call fails
 `errSecMissingEntitlement` (-34018), so `Keychain.swift` keeps a
-DEBUG-only in-memory fallback — without it nobody could stay signed in on
-the simulator. It is compiled out of release builds and never reached on
-a signed one.
+in-memory fallback — without it nobody could stay signed in on the
+simulator. It is compiled only into DEBUG *simulator* builds: a Debug
+build on a phone never has it, so a locked-phone Keychain error can't
+quietly sign the app out onto an empty store.
 
 The app talks to the **live API on every build**, Debug included. `MockAPI`
 activates only for a launch carrying `-useMockAPI YES` (the UI tests) or
 inside a SwiftUI preview, and the choice is never persisted — a missing
-`API_BASE_URL`/`API_KEY` produces a visible error state, never a silent
-swap to fixtures. Developer tools live in `Settings/DiagnosticsView.swift`,
-reached by tapping the version number in Settings → About five times and
+`API_BASE_URL` puts the app on `UnconfiguredAPI` (a visible error state:
+the welcome screen's sign-in failure, or Home's banner once signed in),
+never a silent swap to fixtures. Launch order is Welcome (no valid
+session) → the onboarding truth gate (`State/OnboardingGate.swift`, the
+one place that decides which setup step is missing) → Home. Developer
+tools live in `Settings/DiagnosticsView.swift`, reached by tapping the
+version number in the Account sheet's About section five times, and
 compiled out of Release.
 
 Maps use MapKit for now; Mapbox is a possible later swap and nothing outside
@@ -177,6 +183,9 @@ before any customer use. Details: `executor/README.md`.
 - `pnpm -C server migrate:policy-fee`   move parknyc_fee_usd into city_overrides
 - `./scripts/check-city-neutral.sh`     fail on hardcoded city/provider names
 - `pnpm -C server attach-identity -- --user <id> --email <e>`  give an existing user a sign-in identity
+  (or `--api-key-prefix <8 chars>` in place of `--user`; on prod:
+  `fly ssh console -a parkagent-api -C "node dist/scripts/attach-identity.js …"`)
+- `pnpm -C server create:fr-throwaway`  mint a throwaway session for FR-32's live tests (needs the target's DB + AUTH_JWT_SECRET)
 - `pnpm -C executor run login`     headed browser; sign in to ParkNYC once, save auth state
 - `pnpm -C executor run record`    record a real ParkNYC flow (HAR/trace/screens) to fixtures/
 - `pnpm -C executor run build`     compile (server build needs its d.ts first)

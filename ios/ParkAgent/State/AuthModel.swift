@@ -128,7 +128,6 @@ final class AuthModel {
             try? await api.logout(refreshToken: refreshToken)
         }
         store.signOutLocally()
-        Self.clearAccountLocalState()
     }
 
     /// Two-step confirmed in the Account sheet. The server tears the
@@ -137,7 +136,6 @@ final class AuthModel {
         do {
             try await api.deleteAccount()
             store.signOutLocally()
-            Self.clearAccountLocalState()
             return .success(())
         } catch {
             return .failure(error as? APIError ?? .transport(error))
@@ -174,26 +172,4 @@ final class AuthModel {
         store.adopt(session)
     }
 
-    /// Everything account-shaped that lives in UserDefaults. Leaving any of
-    /// it behind would leak one person's setup into the next sign-in — the
-    /// plate above all, which onboarding would otherwise prefill for the
-    /// next person. The chosen city stays: it describes where the phone is,
-    /// and the gate re-checks everything that belongs to the account.
-    private static func clearAccountLocalState() {
-        let defaults = UserDefaults.standard
-        for key in [
-            "hasOnboarded",
-            OnboardingStep.defaultsKey,
-            "detectedCity",
-            "cityOverride",
-            PaymentSource.defaultsKey,
-            "carLat",
-            "carLng",
-            "vehicle.plate",
-            "vehicle.state",
-            "vehicle.nickname",
-        ] {
-            defaults.removeObject(forKey: key)
-        }
-    }
 }

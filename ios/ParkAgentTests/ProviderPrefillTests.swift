@@ -4,6 +4,7 @@ import XCTest
 /// The link-or-create prefill: which value goes in which field, and the
 /// hard limits on what the injected script is allowed to touch.
 final class ProviderPrefillTests: XCTestCase {
+    static let domains = ["flowbirdapp.com"]
     private let user = AuthUser(
         id: "u1",
         name: "Thomas Bardhi",
@@ -59,7 +60,7 @@ final class ProviderPrefillTests: XCTestCase {
             SignupPrefillField(field: "email", selector: "input[name='email']"),
             SignupPrefillField(field: "zip", selector: "input[name='zipCode']"),
         ]
-        let script = ProviderPrefillScript.javaScript(fields: fields, values: values)
+        let script = ProviderPrefillScript.javaScript(fields: fields, values: values, allowedDomains: Self.domains)
 
         let js = try? XCTUnwrap(script)
         XCTAssertNotNil(js)
@@ -79,20 +80,32 @@ final class ProviderPrefillTests: XCTestCase {
             SignupPrefillField(field: "email", selector: "input[name='email']"),
             SignupPrefillField(field: "plate", selector: "input[name='licensePlate']"),
         ]
-        let js = ProviderPrefillScript.javaScript(fields: fields, values: values) ?? ""
+        let js = ProviderPrefillScript.javaScript(fields: fields, values: values, allowedDomains: Self.domains) ?? ""
 
-        for forbidden in [".submit(", ".click(", "checked", "form.submit"] {
+        for forbidden in [".submit(", ".click(", "checked", "form.submit", ".focus("] {
             XCTAssertFalse(js.contains(forbidden), "Prefill must never \(forbidden)")
         }
-        // And it only writes into inputs that are still empty, so it can
-        // never overwrite what the user typed.
-        XCTAssertTrue(js.contains("if (!el || el.value) return;"), "Must skip non-empty inputs")
+        // The behaviour itself — empty fields only, text inputs only, the
+        // provider's own origin only — is proven against a real DOM in
+        // ProviderPrefillDOMTests, not by reading the source.
+    }
+
+    /// No domains to pin the script to means no script: an unpinned one
+    /// would type into whatever page the web view wandered onto.
+    func testNoScriptWithoutAnAllowedDomain() {
+        let values = ProviderPrefillValues.from(user: user, vehicle: vehicle, zip: nil)
+        let fields = [SignupPrefillField(field: "email", selector: "input[name='email']")]
+        XCTAssertNil(ProviderPrefillScript.javaScript(fields: fields, values: values, allowedDomains: []))
     }
 
     func testScriptIsNilWithNothingToFill() {
         let fields = [SignupPrefillField(field: "email", selector: "input[name='email']")]
         XCTAssertNil(
-            ProviderPrefillScript.javaScript(fields: fields, values: ProviderPrefillValues()),
+            ProviderPrefillScript.javaScript(
+                fields: fields,
+                values: ProviderPrefillValues(),
+                allowedDomains: Self.domains
+            ),
             "No known values should mean no script at all"
         )
     }
@@ -102,7 +115,9 @@ final class ProviderPrefillTests: XCTestCase {
     /// script actually emitted back to the original string — a substring
     /// search would pass on a value that merely looks escaped.
     func testValuesAreEscaped() throws {
-        let hostile = "o'brien\"; alert(1); //@example.com"
+        // Quotes, a backslash, a would-be script close, and U+2028 (a line
+        // terminator inside a JS string literal on old engines).
+        let hostile = "o'brien\"; alert(1); //\\ </script>\u{2028}@example.com"
         let values = ProviderPrefillValues(
             email: hostile,
             phone: nil,
@@ -112,7 +127,7 @@ final class ProviderPrefillTests: XCTestCase {
             plate: nil
         )
         let fields = [SignupPrefillField(field: "email", selector: "input[name='email']")]
-        let js = try XCTUnwrap(ProviderPrefillScript.javaScript(fields: fields, values: values))
+        let js = try XCTUnwrap(ProviderPrefillScript.javaScript(fields: fields, values: values, allowedDomains: Self.domains))
 
         // fill("input[name='email']", "<literal>");
         // The closing quote has to be found by scanning, not searching: the

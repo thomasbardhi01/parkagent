@@ -19,6 +19,9 @@ import Foundation
 ///   -authScenario <name>   preset the mock sign-in (returning|newUser|badCode|appleFails)
 ///   -signedIn YES          seed a mock session so the app starts past the
 ///                          welcome screen (most tests want this)
+///   -seedSession <json>    DEBUG: seed a REAL session ({accessToken,
+///                          refreshToken, deviceId} from create:fr-throwaway)
+///                          for live-path checks against a local API
 ///   -googleSignIn YES      show "Continue with Google" on the welcome screen
 ///   -onboardingStep <n>    resume onboarding at step n (OnboardingStep raw)
 ///   -selectedCity <key>    preset onboarding's chosen city (nyc|bos|other)
@@ -93,6 +96,9 @@ enum LaunchOverrides {
         let authScenario = argued[AuthMockScenario.defaultsKey] != nil
             ? defaults.string(forKey: AuthMockScenario.defaultsKey) : nil
         let signedIn = argued["signedIn"] != nil && defaults.bool(forKey: "signedIn")
+        // Raw argv, not the argument domain: UserDefaults parses argument
+        // values as property lists, and a JSON object doesn't survive that.
+        let seededSession = flagValue("-seedSession")
         let googleSignIn = argued["googleSignIn"] != nil
             ? defaults.bool(forKey: "googleSignIn") : nil
 
@@ -116,8 +122,14 @@ enum LaunchOverrides {
         // the app. Mock tokens only, and compiled out of Release — the
         // seeding helper itself is DEBUG-only.
         if signedIn { Keychain.seedTestSession() }
+        if let seededSession, let data = seededSession.data(using: .utf8),
+           let seed = try? JSONDecoder().decode([String: String].self, from: data),
+           let access = seed["accessToken"], let refresh = seed["refreshToken"],
+           let deviceId = seed["deviceId"] {
+            Keychain.seedSession(access: access, refresh: refresh, deviceId: deviceId)
+        }
         #else
-        _ = signedIn
+        _ = (signedIn, seededSession)
         #endif
         if skipOnboarding { defaults.set(true, forKey: "hasOnboarded") }
         if let appearance { defaults.set(appearance, forKey: AppearanceSetting.defaultsKey) }

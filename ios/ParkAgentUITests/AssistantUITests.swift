@@ -150,9 +150,13 @@ final class AssistantUITests: ParkAgentUITestCase {
         app.buttons["Done"].tap()
         openAccountSheet(app)
         let connect = scrollTo(app, "account.linkConnectButton")
-        XCTAssertTrue(connect.waitForExistence(timeout: 5))
+        XCTAssertTrue(connect.waitForExistence(timeout: 5), "Connect row never came into reach")
         connect.tap()
-        // Mock connects instantly; the row flips to Connected + Disconnect.
-        XCTAssertTrue(element(app, "account.linkDisconnectButton").waitForExistence(timeout: 5))
+        // The mock connects instantly and the row becomes two rows —
+        // "Connected" plus Disconnect — so Disconnect lands lower than the
+        // Connect row it replaced, and on a tall screen that can be past
+        // the fold. Scroll for it rather than assuming it is on screen.
+        let disconnect = scrollTo(app, "account.linkDisconnectButton")
+        XCTAssertTrue(disconnect.waitForExistence(timeout: 5), "Row did not flip to Connected")
     }
 }

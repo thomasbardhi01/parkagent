@@ -39,7 +39,7 @@ Rules you cannot break (the tools enforce them too):
 - If search_garages returns garage_search_unavailable, the search FAILED — say "I couldn't check garages right now", never "no garages available", and still propose the street option. Only an empty options list means none were found. If every garage was dropped for distance, the result's nearestBeyondM says how far the closest one is — tell the user that distance ("the nearest garage is about 900 m away") rather than "none found".
 - A follow-up message edits the CURRENT plan: "cheaper?", "closer", "make it 5 instead", "add a stop at 3" refer to what you just proposed. Re-run only the tools whose inputs changed and propose the revised plan. Ask a clarifying question only when you truly cannot proceed; otherwise assume the sensible reading and say what you assumed in a few words.
 - An itinerary's total must fit the user's remaining daily budget (build_itinerary shows it). If it doesn't fit, say what to cut.
-- Garage checkout today is a SpotHero deep link: the user finishes the purchase in SpotHero and the pass lives there. Say so when it matters, in a few words.
+- Garage checkout is a deep link to the site the option came from (each search_garages option names its provider — SpotHero or ParkWhiz): the user finishes the purchase there and the pass lives in that site's account. Say so when it matters, in a few words, naming the right site.
 - Every user message ends with the CURRENT date and time in brackets. Compute every date from it — "tonight", "tomorrow", "at 2pm" are relative to that timestamp. NEVER guess or recall a date; a window in the past is always a mistake, and the tools will bounce it back to you with the current time so you can retry.`;
 
 /** The one-shot correction when a turn quoted prices but never proposed. */
@@ -87,11 +87,22 @@ export function resolveAssistantModels(env: {
   };
 }
 
-/** Anthropic list prices per million tokens (2026-09). Unknown models
- * estimate at the priciest tier so the cap errs toward refusing. */
+/** One model call's bill — what the turn's accounting row sums. */
+export interface ModelUsage {
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+/** Anthropic list prices per million tokens (checked 2026-09-24), most
+ * specific first: a generation can reprice a family (Sonnet 5 is $2/$10,
+ * Sonnet 4.x $3/$15). Unknown models estimate at the priciest tier so the
+ * cap errs toward refusing. */
 const MODEL_PRICES_PER_MTOK: { match: RegExp; inputUsd: number; outputUsd: number }[] = [
   { match: /haiku/, inputUsd: 1, outputUsd: 5 },
+  { match: /sonnet-5/, inputUsd: 2, outputUsd: 10 },
   { match: /sonnet/, inputUsd: 3, outputUsd: 15 },
+  { match: /opus-5-5/, inputUsd: 4, outputUsd: 20 },
   { match: /opus/, inputUsd: 5, outputUsd: 25 },
   { match: /fable|mythos/, inputUsd: 10, outputUsd: 50 },
 ];
@@ -252,13 +263,18 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
   const userText = `${args.text}\n\n${envelope.join("\n")}`;
   const messages: ModelTurn[] = [...history, { role: "user", content: userText }];
 
+  // Calls a tool makes on its own model (explain_decision's phrasing) —
+  // billed on this turn's accounting row with the loop's own.
+  const sideCalls: ModelUsage[] = [];
   const ctx: ToolContext = {
     userId: args.userId,
     conversationId: args.conversationId,
     location: args.location,
-    // Earlier turns' quotes count: "go ahead and propose" after a
-    // clarifying question proposes what the previous turn quoted.
-    streetQuotes: streetQuotesIn(history),
+    // Earlier turns' grounding counts: "go ahead and propose" after a
+    // clarifying question proposes what the previous turn quoted, and a
+    // "make it 5 instead" plan keeps the place it was about.
+    ...groundingIn(history),
+    onModelUsage: (usage) => sideCalls.push(usage),
   };
 
   const segments: string[] = [];
@@ -336,7 +352,17 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
     if (plan) args.onPlan?.(plan);
   } finally {
     // What this turn cost and how long it took, on the record next to the
-    // tool calls it drove. The daily spend cap reads these rows back.
+    // tool calls it drove. The daily spend cap reads these rows back, so
+    // every paid call counts — the loop's and any a tool made itself.
+    const estimatedCostUsd =
+      Math.round(
+        (estimateCostUsd(modelId, inputTokens, outputTokens) +
+          sideCalls.reduce(
+            (sum, c) => sum + estimateCostUsd(c.model, c.inputTokens, c.outputTokens),
+            0,
+          )) *
+          10_000,
+      ) / 10_000;
     await args.db.decision.create({
       data: {
         kind: "assistant_turn",
@@ -347,8 +373,9 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
           modelCalls,
           inputTokens,
           outputTokens,
+          ...(sideCalls.length > 0 ? { otherModelCalls: sideCalls } : {}),
           latencyMs: Date.now() - startedMs,
-          estimatedCostUsd: estimateCostUsd(modelId, inputTokens, outputTokens),
+          estimatedCostUsd,
           proposedPlan: plan !== null,
         },
         userId: args.userId,
@@ -368,27 +395,71 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
   return { conversationId: args.conversationId, reply, plan };
 }
 
-/** The street quotes in a stored transcript: every quote_street result
- * that found a zone. A result whose tool_use was trimmed away is skipped. */
-export function streetQuotesIn(turns: ModelTurn[]): StreetQuote[] {
-  const quoteCalls = new Set<string>();
-  const found: StreetQuote[] = [];
+/** What a stored transcript already grounded: every quote_street result
+ * that found a zone (with the point it was asked about — the option's
+ * pin), the latest geocode_place match, and the latest search_garages.
+ * A result whose tool_use was trimmed away is skipped. Derived from the
+ * transcript rather than held in memory, so it survives a restart and
+ * holds across machines, and it is the conversation OWNER's by
+ * construction (the loop only loads a transcript for its owner). */
+export function groundingIn(
+  turns: ModelTurn[],
+): Pick<ToolContext, "streetQuotes" | "geocode" | "garageSearch"> {
+  const calls = new Map<string, { name: string; input: Record<string, unknown> }>();
+  const streetQuotes: StreetQuote[] = [];
+  let geocode: ToolContext["geocode"];
+  let garageSearch: ToolContext["garageSearch"];
   for (const turn of turns) {
     if (typeof turn.content === "string") continue;
     for (const block of turn.content) {
-      if (block.type === "tool_use" && block.name === "quote_street") quoteCalls.add(block.id);
-      if (block.type !== "tool_result" || !quoteCalls.has(block.tool_use_id)) continue;
+      if (block.type === "tool_use") {
+        const input =
+          typeof block.input === "object" && block.input !== null
+            ? (block.input as Record<string, unknown>)
+            : {};
+        calls.set(block.id, { name: block.name, input });
+      }
+      if (block.type !== "tool_result") continue;
+      const call = calls.get(block.tool_use_id);
+      if (!call) continue;
+      let r: Record<string, unknown>;
       try {
-        const r = JSON.parse(block.content) as Record<string, unknown>;
-        if (r["found"] === true && typeof r["zoneId"] === "string") {
-          found.push({ zoneId: r["zoneId"], costUsd: Number(r["costUsd"] ?? 0) });
-        }
+        r = JSON.parse(block.content) as Record<string, unknown>;
       } catch {
-        // Not JSON — not a quote.
+        continue; // Not JSON — nothing grounded.
+      }
+      if (call.name === "quote_street" && r["found"] === true && typeof r["zoneId"] === "string") {
+        const { lat, lng } = call.input;
+        streetQuotes.push({
+          zoneId: r["zoneId"],
+          costUsd: Number(r["costUsd"] ?? 0),
+          ...(typeof lat === "number" && typeof lng === "number" ? { lat, lng } : {}),
+        });
+      } else if (call.name === "geocode_place" && r["found"] === true) {
+        const top = (r["results"] as Record<string, unknown>[] | undefined)?.[0];
+        if (
+          top &&
+          typeof top["lat"] === "number" &&
+          typeof top["lng"] === "number" &&
+          typeof top["displayName"] === "string"
+        ) {
+          geocode = { lat: top["lat"], lng: top["lng"], label: top["displayName"] };
+        }
+      } else if (
+        call.name === "search_garages" &&
+        typeof r["provider"] === "string" &&
+        typeof r["searchedAt"] === "string"
+      ) {
+        garageSearch = { provider: r["provider"], searchedAt: r["searchedAt"] };
       }
     }
   }
-  return found;
+  return { streetQuotes, geocode, garageSearch };
+}
+
+/** The street quotes in a stored transcript (see groundingIn). */
+export function streetQuotesIn(turns: ModelTurn[]): StreetQuote[] {
+  return groundingIn(turns).streetQuotes ?? [];
 }
 
 function captureQuotes(quotes: QuoteContext, tool: string, input: unknown, result: unknown): void {

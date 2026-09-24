@@ -70,9 +70,10 @@ const schema = z
     ANTHROPIC_MODEL: z.string().min(1).optional(),
     EXPLAIN_MODEL: z.string().min(1).default("claude-haiku-4-5-20251001"),
     // Per-user daily cap on ESTIMATED model spend (USD) for the assistant.
-    // Unset → no cap. Each turn's cost estimate is logged on its
+    // Defaults ON: a spend control that a missing env var switches off is
+    // no control. Each turn's cost estimate is logged on its
     // assistant_turn decision row; a user over the cap gets 429.
-    ASSISTANT_DAILY_SPEND_CAP_USD: z.coerce.number().positive().optional(),
+    ASSISTANT_DAILY_SPEND_CAP_USD: z.coerce.number().positive().default(5),
     // ParkWhiz is a read-only public search (no credentials — verified
     // live 2026-09-23); flip to "false" to drop back to SpotHero only.
     PARKWHIZ_ENABLED: z.enum(["true", "false"]).default("true"),

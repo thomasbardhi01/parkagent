@@ -204,9 +204,7 @@ const app = buildApp({
   authenticate: makeAuthenticate(db, env.API_KEY_PEPPER, env.AUTH_JWT_SECRET),
   ...(assistantModel ? { assistantModel } : {}),
   assistantTools,
-  ...(env.ASSISTANT_DAILY_SPEND_CAP_USD !== undefined
-    ? { assistantDailySpendCapUsd: env.ASSISTANT_DAILY_SPEND_CAP_USD }
-    : {}),
+  assistantDailySpendCapUsd: env.ASSISTANT_DAILY_SPEND_CAP_USD,
   linkWallet,
   executorFor,
   sendPush,

@@ -495,7 +495,12 @@ export interface AppDb {
       expiresAt: Date;
       usedAt: Date | null;
     } | null>;
-    update(args: { where: { token: string }; data: { usedAt: Date } }): Promise<unknown>;
+    /** The single-use claim: matches only an unused, unexpired token, so
+     * of two concurrent claims exactly one sees count 1. */
+    updateMany(args: {
+      where: { token: string; usedAt: null; expiresAt: { gt: Date } };
+      data: { usedAt: Date };
+    }): Promise<{ count: number }>;
   };
   itinerary: {
     create(args: {

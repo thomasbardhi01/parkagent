@@ -23,6 +23,7 @@
  * error, not evasion.
  */
 
+import { garageOptionId, newestCachedOption } from "./garageProvider.js";
 import type {
   GarageBooking,
   GarageOption,
@@ -245,7 +246,8 @@ export function makeParkWhizProvider(options: ParkWhizOptions = {}): GarageProvi
     const parsed = body
       .map((raw) => parseParkWhizQuote(raw, query))
       .filter((o): o is NonNullable<typeof o> => o !== null)
-      .slice(0, MAX_RESULTS);
+      .slice(0, MAX_RESULTS)
+      .map((o) => ({ ...o, id: garageOptionId("parkwhiz", o.id, query) }));
     if (body.length > 0 && parsed.length === 0) {
       return {
         ok: false as const,
@@ -258,11 +260,7 @@ export function makeParkWhizProvider(options: ParkWhizOptions = {}): GarageProvi
   }
 
   function optionById(optionId: string): GarageOption | null {
-    for (const entry of cache.values()) {
-      const option = entry.options.find((o) => o.id === optionId);
-      if (option) return option;
-    }
-    return null;
+    return newestCachedOption(cache, optionId);
   }
 
   return {

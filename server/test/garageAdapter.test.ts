@@ -172,10 +172,55 @@ describe("provider behavior", () => {
 
   test("book is a deep-link handoff for cached options and refuses unknown ids", async () => {
     const { provider } = providerOver([{ ok: true, status: 200, body: fixture }]);
-    await provider.search(QUERY);
-    const booking = await provider.book("10607");
+    const searched = await provider.search(QUERY);
+    if (!searched.ok) throw new Error("unreachable");
+    const booking = await provider.book(searched.options[0]!.id);
     expect(booking.kind).toBe("deeplink_handoff");
+    expect(booking.deepLink).toContain("spothero.com/checkout/10607");
     expect(provider.canReserve).toBe(false);
+    // A bare facility id is not an option id — options are per window.
+    await expect(provider.book("10607")).rejects.toThrow("unknown garage option");
     await expect(provider.book("nope")).rejects.toThrow("unknown garage option");
+  });
+
+  test("the same facility for two windows is two offers — each id books its own window", async () => {
+    // "make it 5 instead": the facility-only id let the cache hand back
+    // the FIRST window's checkout link for the second window's card.
+    const { provider } = providerOver([{ ok: true, status: 200, body: fixture }]);
+    const six = await provider.search(QUERY);
+    const later = { ...QUERY, startsAt: "2026-09-21T19:00:00", endsAt: "2026-09-21T23:00:00" };
+    const seven = await provider.search(later);
+    if (!six.ok || !seven.ok) throw new Error("unreachable");
+    const sixId = six.options[0]!.id;
+    const sevenId = seven.options[0]!.id;
+    expect(sixId).not.toBe(sevenId);
+    expect(sixId).toMatch(/^spothero-10607-/);
+    expect((await provider.book(sevenId)).deepLink).toContain(
+      encodeURIComponent("2026-09-21T19:00:00"),
+    );
+    expect((await provider.book(sixId)).deepLink).toContain(
+      encodeURIComponent("2026-09-21T18:00:00"),
+    );
+    expect(provider.optionById(sevenId)?.deepLink).toContain(
+      encodeURIComponent("2026-09-21T23:00:00"),
+    );
+  });
+
+  test("windows go to SpotHero as NYC wall-clock time, whatever offset they came with", async () => {
+    // Verified live 2026-09-24: SpotHero reads the digits and drops the
+    // offset, so 22:00Z (6 PM ET) rendered a 10 PM checkout.
+    const { provider, urls } = providerOver([{ ok: true, status: 200, body: fixture }]);
+    const utc = await provider.search({
+      ...QUERY,
+      startsAt: "2026-09-21T22:00:00.000Z",
+      endsAt: "2026-09-22T02:00:00.000Z",
+    });
+    if (!utc.ok) throw new Error("unreachable");
+    const search = new URL(urls[0]!);
+    expect(search.searchParams.get("starts")).toBe("2026-09-21T18:00:00");
+    expect(search.searchParams.get("ends")).toBe("2026-09-21T22:00:00");
+    const link = new URL(utc.options[0]!.deepLink);
+    expect(link.searchParams.get("starts")).toBe("2026-09-21T18:00:00");
+    expect(link.searchParams.get("ends")).toBe("2026-09-21T22:00:00");
   });
 });

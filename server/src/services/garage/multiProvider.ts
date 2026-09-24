@@ -46,6 +46,8 @@ export function normalizeAddress(address: string): string {
     .join(" ");
 }
 
+const MAX_MERGED_RESULTS = 8;
+
 export function makeMultiGarageProvider(providers: GarageProvider[]): GarageProvider {
   if (providers.length === 0)
     throw new Error("makeMultiGarageProvider needs at least one provider");
@@ -86,9 +88,11 @@ export function makeMultiGarageProvider(providers: GarageProvider[]): GarageProv
         }
       }
     }
-    const merged = [...byAddress.values(), ...unaddressed].sort(
-      (a, b) => a.distanceM - b.distanceM,
-    );
+    // Nearest first, and no more than one provider alone would return:
+    // the model reads every row, and 16 rows cost twice what 8 do.
+    const merged = [...byAddress.values(), ...unaddressed]
+      .sort((a, b) => a.distanceM - b.distanceM)
+      .slice(0, MAX_MERGED_RESULTS);
     return {
       ok: true as const,
       options: merged,

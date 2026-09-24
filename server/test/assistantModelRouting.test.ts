@@ -30,7 +30,9 @@ function scriptedModel(
     seen,
     calls: () => call,
     async create(args, onText) {
-      seen.push(args.messages);
+      // A snapshot: the loop keeps appending to the array it passed, so a
+      // stored reference would also show everything said AFTER this call.
+      seen.push(structuredClone(args.messages));
       const response = responses[Math.min(call, responses.length - 1)]!;
       call += 1;
       for (const block of response.content) {
@@ -112,11 +114,16 @@ describe("model resolution and pricing", () => {
   });
 
   test("cost estimates use per-model list prices; unknown models price at the top tier", () => {
-    // Sonnet: $3/M in, $15/M out.
-    expect(estimateCostUsd("claude-sonnet-5", 1_000_000, 0)).toBe(3);
-    expect(estimateCostUsd("claude-sonnet-5", 0, 1_000_000)).toBe(15);
+    // Sonnet 5: $2/M in, $10/M out — cheaper than the 4.x Sonnets' $3/$15,
+    // which a family-wide /sonnet/ match billed it at.
+    expect(estimateCostUsd("claude-sonnet-5", 1_000_000, 0)).toBe(2);
+    expect(estimateCostUsd("claude-sonnet-5", 0, 1_000_000)).toBe(10);
+    expect(estimateCostUsd("claude-sonnet-4-6", 1_000_000, 1_000_000)).toBe(18);
     // Haiku: $1/$5.
     expect(estimateCostUsd("claude-haiku-4-5-20251001", 1_000_000, 1_000_000)).toBe(6);
+    // Opus 5.5 is $4/$20; the rest of Opus $5/$25.
+    expect(estimateCostUsd("claude-opus-5-5", 1_000_000, 1_000_000)).toBe(24);
+    expect(estimateCostUsd("claude-opus-5", 1_000_000, 1_000_000)).toBe(30);
     // Unknown model: assume the priciest tier so the cap errs safe.
     expect(estimateCostUsd("mystery-model", 1_000_000, 0)).toBe(10);
   });
@@ -143,8 +150,8 @@ describe("per-turn accounting on the decisions table", () => {
     expect(outcome["outputTokens"]).toBe(300);
     expect(outcome["modelCalls"]).toBe(2);
     expect(typeof outcome["latencyMs"]).toBe("number");
-    // 2000 in + 300 out on sonnet: 2000*3/1M + 300*15/1M = 0.0105.
-    expect(outcome["estimatedCostUsd"]).toBeCloseTo(0.0105, 4);
+    // 2000 in + 300 out on sonnet 5: 2000*2/1M + 300*10/1M = 0.007.
+    expect(outcome["estimatedCostUsd"]).toBeCloseTo(0.007, 4);
     expect(outcome["proposedPlan"]).toBe(true);
   });
 
@@ -211,7 +218,7 @@ describe("per-turn accounting on the decisions table", () => {
         headers: HEADERS,
         payload: { text: "spot near the museum" },
       });
-    // First turn runs (0 spent so far) and logs ~$0.0105 — over the cap.
+    // First turn runs (0 spent so far) and logs ~$0.007 — over the cap.
     expect((await send()).statusCode).toBe(200);
     const callsAfterFirst = model.calls();
     const refused = await send();
@@ -393,12 +400,19 @@ describe("multi-turn plan edits", () => {
     const body = second.json();
     expect(body.plan.plan.options[0].durationMinutes).toBe(300);
     // The third model call (first of turn two) saw the full first turn:
-    // the user ask, the quote round-trip, and the propose_plan call.
+    // the user ask, the quote round-trip, and the propose_plan call — and
+    // nothing of turn two beyond its own question.
     const historySeen = model.seen[2]!;
-    const flat = JSON.stringify(historySeen);
-    expect(flat).toContain("90");
-    expect(flat).toContain("propose_plan");
-    expect(flat).toContain("make it 5 instead");
+    const userTexts = historySeen
+      .filter((t) => t.role === "user" && typeof t.content === "string")
+      .map((t) => (t.content as string).split("\n")[0]);
+    expect(userTexts).toEqual(["spot near the museum for 90 minutes", "make it 5 instead"]);
+    const toolIds = historySeen.flatMap((t) =>
+      typeof t.content === "string"
+        ? []
+        : t.content.filter((b) => b.type === "tool_use").map((b) => (b as { id: string }).id),
+    );
+    expect(toolIds).toEqual(["t1", "t2"]);
     // The system prompt pins the edit rule.
     const { SYSTEM_PROMPT } = await import("../src/services/assistant/loop.js");
     expect(SYSTEM_PROMPT).toContain("edits the CURRENT plan");

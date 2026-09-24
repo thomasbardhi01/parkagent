@@ -14,6 +14,8 @@
  * right behavior is the `blocked` error, not evasion.
  */
 
+import { easternWallClock, parseEasternTime } from "../hours.js";
+import { garageOptionId, newestCachedOption } from "./garageProvider.js";
 import type {
   GarageBooking,
   GarageOption,
@@ -64,8 +66,8 @@ export function spotheroDeepLink(query: {
   const params = new URLSearchParams({
     latitude: String(query.lat),
     longitude: String(query.lng),
-    starts: query.startsAt,
-    ends: query.endsAt,
+    starts: spotheroTime(query.startsAt),
+    ends: spotheroTime(query.endsAt),
   });
   return `https://spothero.com/search?${params.toString()}`;
 }
@@ -77,8 +79,23 @@ export function spotheroFacilityLink(
   facilityId: string,
   window: { startsAt: string; endsAt: string },
 ): string {
-  const params = new URLSearchParams({ starts: window.startsAt, ends: window.endsAt });
+  const params = new URLSearchParams({
+    starts: spotheroTime(window.startsAt),
+    ends: spotheroTime(window.endsAt),
+  });
   return `https://spothero.com/checkout/${encodeURIComponent(facilityId)}?${params.toString()}`;
+}
+
+/**
+ * SpotHero reads a window as WALL-CLOCK digits and ignores any offset
+ * (verified live 2026-09-24: `starts=2026-09-26T22:00:00.000Z` — 6 PM
+ * ET — rendered a 10 PM checkout). So every window goes out as NYC wall
+ * time with no offset, the form the checkout verification used; a string
+ * we can't read passes through untouched rather than being guessed at.
+ */
+export function spotheroTime(iso: string): string {
+  const at = parseEasternTime(iso);
+  return at ? easternWallClock(at) : iso;
 }
 
 /**
@@ -241,8 +258,8 @@ export function makeSpotHeroProvider(options: SpotHeroOptions = {}): GarageProvi
     const params = new URLSearchParams({
       lat: String(query.lat),
       lon: String(query.lng),
-      starts: query.startsAt,
-      ends: query.endsAt,
+      starts: spotheroTime(query.startsAt),
+      ends: spotheroTime(query.endsAt),
     });
     let response: Awaited<ReturnType<Fetcher>>;
     try {
@@ -282,6 +299,7 @@ export function makeSpotHeroProvider(options: SpotHeroOptions = {}): GarageProvi
       .slice(0, MAX_RESULTS)
       .map((o) => ({
         ...o,
+        id: garageOptionId("spothero", o.id, query),
         provider: "spothero",
         // Facility checkout, window prefilled — never just the area map.
         deepLink: spotheroFacilityLink(o.id, query),
@@ -296,11 +314,7 @@ export function makeSpotHeroProvider(options: SpotHeroOptions = {}): GarageProvi
   }
 
   function optionById(optionId: string): GarageOption | null {
-    for (const entry of cache.values()) {
-      const option = entry.options.find((o) => o.id === optionId);
-      if (option) return option;
-    }
-    return null;
+    return newestCachedOption(cache, optionId);
   }
 
   return {

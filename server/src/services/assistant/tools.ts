@@ -15,7 +15,8 @@ import { explainDecision } from "../explanations.js";
 import type { GarageProvider } from "../garage/garageProvider.js";
 import type { GeocoderProvider } from "./geocoder.js";
 import { metersBetween, metroForPoint } from "./geocoder.js";
-import type { ModelClient } from "./loop.js";
+import type { ModelClient, ModelUsage } from "./loop.js";
+import { easternIso, parseEasternTime } from "../hours.js";
 import type { HoursInterval } from "../hours.js";
 import type { LinkWallet } from "../link/linkWallet.js";
 import type { PolicyService } from "../policy.js";
@@ -26,7 +27,7 @@ import { lookupRadiusM, resolveCandidates } from "../zoneLookup.js";
 import { applyObservedToCandidates } from "../zoneTermsObserved.js";
 import { currentTimeLine } from "./loop.js";
 import { itineraryTotalUsd, planSchema } from "./plans.js";
-import type { AssistantPlanBody, SingleSpotOption } from "./plans.js";
+import type { AssistantPlanBody, SingleSpotOption, SingleSpotPlan } from "./plans.js";
 
 export interface AssistantDeps {
   db: AppDb;
@@ -48,17 +49,46 @@ export interface AssistantDeps {
 export interface StreetQuote {
   zoneId: string;
   costUsd: number;
+  /** The point quote_street was asked about — the option's map pin. */
+  lat?: number | undefined;
+  lng?: number | undefined;
 }
 
+/** The place geocode_place resolved — the card's destination pin. */
+export interface GeocodedPlace {
+  lat: number;
+  lng: number;
+  label: string;
+}
+
+/** The latest garage search — the card's "checked 2:05 PM". */
+export interface GarageSearchStamp {
+  provider: string;
+  searchedAt: string;
+}
+
+/**
+ * Per-turn state the tools read and write. The grounding fields are this
+ * CONVERSATION's so far: the loop seeds them from the stored transcript
+ * (so a follow-up turn, or another server machine, sees what earlier turns
+ * found) and the tools append as they run. propose_plan grounds and
+ * backfills plans from them — models drop optional fields routinely.
+ */
 export interface ToolContext {
   userId: string;
   conversationId: string;
   /** The phone's location when the message was sent, if it sent one. */
   location?: { lat: number; lng: number } | undefined;
-  /** This conversation's street quotes so far: the loop seeds it from
-   * the stored transcript and quote_street appends. propose_plan grounds
-   * street options in it. */
+  /** Street quotes: a street option's zoneId and map pin come from here. */
   streetQuotes?: StreetQuote[] | undefined;
+  /** The latest geocode_place match. */
+  geocode?: GeocodedPlace | undefined;
+  /** The latest search_garages. */
+  garageSearch?: GarageSearchStamp | undefined;
+  /** Model calls a tool makes on its own (explain_decision's phrasing)
+   * report here, so the turn's accounting row — and the daily spend cap
+   * that reads it — counts them too. */
+  onModelUsage?: ((usage: ModelUsage) => void) | undefined;
 }
 
 /** What a tool hands back to the loop. `endTurn` is propose_plan's exit. */
@@ -96,7 +126,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: "search_garages",
     description:
-      "Search off-street garages near a point for a time window. Returns up to 8 options with price, walk time, entry type, and a checkout deep link. Provider today: SpotHero (deep-link checkout — the user finishes the purchase there). For a NAMED area, geocode_place it first and pass within_m: 600 so every option is walkable from that place.",
+      "Search off-street garages near a point for a time window. Returns up to 8 options with price, walk time, entry type, and a checkout deep link. Sources: SpotHero and ParkWhiz, merged — each option names its provider, and checkout is a deep link to that site (the user finishes the purchase there). For a NAMED area, geocode_place it first and pass within_m: 600 so every option is walkable from that place.",
     input_schema: {
       type: "object" as const,
       additionalProperties: false,
@@ -269,35 +299,11 @@ export function groundStreetOptions(
   return { ok: true, options: grounded };
 }
 
-/** What this conversation's grounding tools last produced — propose_plan
- * re-attaches it so cards carry coordinates and provenance even when the
- * model dropped them (optional schema fields usually are dropped). */
-interface ConversationGrounding {
-  geocode?: { lat: number; lng: number; label: string };
-  streetQuote?: { lat: number; lng: number };
-  garageSearch?: { provider: string; searchedAt: string };
-}
-
-const MAX_GROUNDING_ENTRIES = 500;
+const TIME_FORMAT_HINT =
+  "Send times as ISO 8601 with the UTC offset, e.g. 2026-09-26T18:00:00-04:00.";
 
 export class AssistantTools {
-  /** Keyed by conversationId; oldest evicted past the cap. */
-  private readonly grounding = new Map<string, ConversationGrounding>();
-
   constructor(private readonly deps: AssistantDeps) {}
-
-  private groundingFor(conversationId: string): ConversationGrounding {
-    let entry = this.grounding.get(conversationId);
-    if (!entry) {
-      entry = {};
-      if (this.grounding.size >= MAX_GROUNDING_ENTRIES) {
-        const oldest = this.grounding.keys().next().value;
-        if (oldest !== undefined) this.grounding.delete(oldest);
-      }
-      this.grounding.set(conversationId, entry);
-    }
-    return entry;
-  }
 
   private now(): Date {
     return this.deps.now?.() ?? new Date();
@@ -361,8 +367,17 @@ export class AssistantTools {
    * the same turn instead of the provider erroring opaquely. */
   private pastWindowError(ctx: ToolContext, tool: string, input: unknown, startsAt: string) {
     const at = this.now();
-    if (!startsAt || Number.isNaN(new Date(startsAt).getTime())) return null;
-    if (at.getTime() - new Date(startsAt).getTime() <= 60 * 60_000) return null;
+    const starts = parseEasternTime(startsAt);
+    if (!starts) {
+      return this.audit(ctx, tool, input, "unreadable_time", { startsAt }).then(() => ({
+        result: {
+          error: "unreadable_time",
+          value: startsAt,
+          instruction: `Couldn't read that time. ${TIME_FORMAT_HINT} ${currentTimeLine(at)}`,
+        },
+      }));
+    }
+    if (at.getTime() - starts.getTime() <= 60 * 60_000) return null;
     return this.audit(ctx, tool, input, "past_window", { startsAt }).then(() => ({
       result: {
         error: "window_in_the_past",
@@ -428,11 +443,7 @@ export class AssistantTools {
     const top = outcome.results[0]!;
     // Remember the resolved place so propose_plan can pin it as the
     // card's destination even when the model drops the optional field.
-    this.groundingFor(ctx.conversationId).geocode = {
-      lat: top.lat,
-      lng: top.lng,
-      label: top.displayName,
-    };
+    ctx.geocode = { lat: top.lat, lng: top.lng, label: top.displayName };
     return { result: { found: true, results: outcome.results } };
   }
 
@@ -447,14 +458,29 @@ export class AssistantTools {
       String(input["starts_at"] ?? ""),
     );
     if (past) return past;
+    // One canonical form for the window (NYC offset spelled out): the
+    // providers read it, the cache keys on it, and the checkout links
+    // carry it — an offset-less or UTC string meant a different hour to
+    // each of them.
+    const starts = parseEasternTime(String(input["starts_at"]))!;
+    const ends = parseEasternTime(String(input["ends_at"] ?? ""));
+    if (!ends || ends.getTime() <= starts.getTime()) {
+      await this.audit(ctx, "search_garages", input, "bad_window", {});
+      return {
+        result: {
+          error: "bad_window",
+          instruction: `ends_at must be a readable time after starts_at. ${TIME_FORMAT_HINT}`,
+        },
+      };
+    }
     const anchorLat = num(input["lat"]);
     const anchorLng = num(input["lng"]);
     const withinM = input["within_m"] !== undefined ? num(input["within_m"]) : null;
     const outcome = await this.deps.garage.search({
       lat: anchorLat,
       lng: anchorLng,
-      startsAt: String(input["starts_at"]),
-      endsAt: String(input["ends_at"]),
+      startsAt: easternIso(starts),
+      endsAt: easternIso(ends),
       ...(input["budget_usd"] !== undefined ? { budgetUsd: num(input["budget_usd"]) } : {}),
     });
     if (!outcome.ok) {
@@ -500,10 +526,7 @@ export class AssistantTools {
       options = near.map((m) => m.option);
     }
     const searchedAt = this.now().toISOString();
-    this.groundingFor(ctx.conversationId).garageSearch = {
-      provider: this.deps.garage.id,
-      searchedAt,
-    };
+    ctx.garageSearch = { provider: this.deps.garage.id, searchedAt };
     await this.audit(ctx, "search_garages", input, "ok", {
       provider: this.deps.garage.id,
       count: options.length,
@@ -546,7 +569,8 @@ export class AssistantTools {
     const lat = num(input["lat"]);
     const lng = num(input["lng"]);
     const minutes = num(input["duration_minutes"]);
-    const when = new Date(String(input["when"]));
+    // Readable by construction: pastWindowError bounced anything else.
+    const when = parseEasternTime(String(input["when"]))!;
     const policy = this.deps.policy.get();
     const raw = await this.deps.findCandidates({ lat, lng, radiusM: lookupRadiusM(25) });
     // Provider-observed terms beat the dataset (e.g. Boston's real "Max 5 Hr"
@@ -590,9 +614,8 @@ export class AssistantTools {
       costUsd: price.totalUsd,
       ...(zone.termsSource === "observed" ? { termsSource: "observed" } : {}),
     });
-    (ctx.streetQuotes ??= []).push({ zoneId: zone.zoneId, costUsd: price.totalUsd });
     // The quoted point becomes the street option's map pin.
-    this.groundingFor(ctx.conversationId).streetQuote = { lat, lng };
+    (ctx.streetQuotes ??= []).push({ zoneId: zone.zoneId, costUsd: price.totalUsd, lat, lng });
     return { result };
   }
 
@@ -605,7 +628,20 @@ export class AssistantTools {
     const at = this.now();
     const out = [];
     for (const stop of stops) {
-      const arrival = String(stop["arrival"]);
+      const arrivalAt = parseEasternTime(String(stop["arrival"]));
+      if (!arrivalAt) {
+        await this.audit(ctx, "build_itinerary", { stopCount: stops.length }, "unreadable_time", {
+          arrival: stop["arrival"],
+        });
+        return {
+          result: {
+            error: "unreadable_time",
+            value: stop["arrival"],
+            instruction: `Couldn't read that arrival time. ${TIME_FORMAT_HINT}`,
+          },
+        };
+      }
+      const arrival = easternIso(arrivalAt);
       const minutes = num(stop["duration_minutes"]);
       const street = await this.quoteStreet(ctx, {
         lat: stop["lat"],
@@ -613,7 +649,7 @@ export class AssistantTools {
         duration_minutes: minutes,
         when: arrival,
       });
-      const endsAt = new Date(new Date(arrival).getTime() + minutes * 60_000).toISOString();
+      const endsAt = easternIso(new Date(arrivalAt.getTime() + minutes * 60_000));
       const garages = await this.deps.garage.search({
         lat: num(stop["lat"]),
         lng: num(stop["lng"]),
@@ -682,7 +718,37 @@ export class AssistantTools {
           },
         };
       }
-      plan = { ...plan, totalUsd, capUsd: policy.daily_cap_usd };
+      const unreadable = plan.stops.find((stop) => !parseEasternTime(stop.arrival));
+      if (unreadable) {
+        return {
+          result: {
+            error: "unreadable_time",
+            stopId: unreadable.id,
+            value: unreadable.arrival,
+            instruction: `Couldn't read that stop's arrival. ${TIME_FORMAT_HINT}`,
+          },
+        };
+      }
+      plan = {
+        ...plan,
+        totalUsd,
+        capUsd: policy.daily_cap_usd,
+        stops: plan.stops.map((stop) => {
+          // Arrivals are stored in one canonical form: the itinerary tick
+          // pushes each garage link 15 minutes before this instant, and an
+          // offset-less string meant a different instant on every host.
+          const arrival = easternIso(parseEasternTime(stop.arrival)!);
+          // A garage stop's link is pushed to the phone later — it comes
+          // from the search cache, never from model text.
+          const rest = { ...stop };
+          delete rest.deepLink;
+          const cached =
+            stop.choice === "garage" && stop.garageOptionId
+              ? this.deps.garage.optionById(stop.garageOptionId)
+              : null;
+          return { ...rest, arrival, ...(cached ? { deepLink: cached.deepLink } : {}) };
+        }),
+      };
     } else {
       // FR-26: a street option carries the zone quote_street quoted.
       // Models drop the optional zoneId, or rename it and zod strips the
@@ -710,6 +776,25 @@ export class AssistantTools {
         };
       }
       plan = { ...plan, options: grounded.options };
+      // The same rule for garages: an option is a search_garages result
+      // or it isn't on the card. Its price, link, source, and pin are the
+      // search's, never model text — a model-typed deepLink would open
+      // whatever URL it wrote, and become the Link merchant URL.
+      const garageMisses = plan.options.filter(
+        (o) => o.type === "garage" && !this.deps.garage.optionById(o.garageOptionId ?? o.id),
+      );
+      if (garageMisses.length > 0) {
+        await this.audit(ctx, "propose_plan", input, "ungrounded_garage_option", {
+          optionIds: garageMisses.map((o) => o.id),
+        });
+        return {
+          result: {
+            error: "garage_option_ungrounded",
+            optionIds: garageMisses.map((o) => o.id),
+            hint: "set garageOptionId to an option id from a search_garages result (search again if it's been a while), then propose again",
+          },
+        };
+      }
       const badges = plan.options.filter((o) => o.recommended).length;
       if (badges !== 1) {
         // Normalize instead of bouncing: first option wins the badge.
@@ -721,15 +806,10 @@ export class AssistantTools {
       // payOnArrival is OURS to decide, never the model's: a street
       // option starting more than 15 minutes out cannot be confirmed
       // now (meters run from payment) — the detector pays on arrival.
-      // Garage options get their deepLink and coordinates re-attached
-      // from the search cache when the model dropped them (the schema is
-      // optional and models often omit them) — the card and a late
-      // confirm both need them on the stored plan, not in a 10-minute
-      // in-memory cache. Street options pin at the quoted point, and the
-      // plan carries destination + provenance from this conversation's
-      // grounding when the model left them off.
+      // Street options pin at the point their own zone was quoted, and
+      // the plan carries destination + provenance from this
+      // conversation's grounding when the model left them off.
       const at = this.now().getTime();
-      const grounding = this.groundingFor(ctx.conversationId);
       // Which sources the SURFACED options actually came from — with two
       // providers merged, the aggregate search id ("spothero+parkwhiz")
       // would credit a source whose option didn't make the card.
@@ -738,42 +818,49 @@ export class AssistantTools {
         ...plan,
         options: plan.options.map((o) => {
           if (o.type !== "street") {
-            const cached = this.deps.garage.optionById(o.garageOptionId ?? o.id);
-            const deepLink = o.deepLink ?? cached?.deepLink;
-            const lat = o.lat ?? cached?.lat;
-            const lng = o.lng ?? cached?.lng;
-            if (cached?.provider) shownProviders.add(cached.provider);
+            const cached = this.deps.garage.optionById(o.garageOptionId ?? o.id)!;
+            shownProviders.add(cached.provider);
             return {
               ...o,
+              garageOptionId: cached.id,
+              priceUsd: cached.priceUsd,
+              provider: cached.provider,
+              deepLink: cached.deepLink,
               payOnArrival: false,
-              ...(deepLink ? { deepLink } : {}),
-              ...(lat !== undefined && lng !== undefined ? { lat, lng } : {}),
+              ...(cached.lat !== undefined && cached.lng !== undefined
+                ? { lat: cached.lat, lng: cached.lng }
+                : {}),
             };
           }
-          const starts = o.startsAt ? new Date(o.startsAt).getTime() : Number.NaN;
-          const future = Number.isFinite(starts) && starts - at > 15 * 60_000;
-          const pin = grounding.streetQuote;
+          // A street option has no checkout link or garage source; model
+          // text in either would reach the Link merchant fields.
+          const rest = { ...o };
+          delete rest.startsAt;
+          delete rest.provider;
+          delete rest.deepLink;
+          const starts = o.startsAt ? parseEasternTime(o.startsAt) : null;
+          const future = starts !== null && starts.getTime() - at > 15 * 60_000;
+          const pin = [...(ctx.streetQuotes ?? [])]
+            .reverse()
+            .find((q) => q.zoneId === o.zoneId && q.lat !== undefined && q.lng !== undefined);
           return {
-            ...o,
+            ...rest,
+            // One canonical form, so the phone parses what the server did.
+            ...(starts ? { startsAt: easternIso(starts) } : {}),
             payOnArrival: future,
-            ...(o.lat === undefined && pin ? { lat: pin.lat, lng: pin.lng } : {}),
+            ...(o.lat === undefined && pin ? { lat: pin.lat!, lng: pin.lng! } : {}),
           };
         }),
-        ...(plan.destination === undefined && grounding.geocode
-          ? { destination: grounding.geocode }
-          : {}),
-        // Provenance is server truth, never model text.
-        ...(plan.options.some((o) => o.type === "garage") && grounding.garageSearch
-          ? {
-              provenance: {
-                ...grounding.garageSearch,
-                ...(shownProviders.size > 0
-                  ? { provider: [...shownProviders].sort().join("+") }
-                  : {}),
-              },
-            }
-          : {}),
+        ...(plan.destination === undefined && ctx.geocode ? { destination: ctx.geocode } : {}),
       };
+      // Provenance is server truth, never model text.
+      delete plan.provenance;
+      if (shownProviders.size > 0 && ctx.garageSearch) {
+        plan.provenance = {
+          provider: [...shownProviders].sort().join("+"),
+          searchedAt: ctx.garageSearch.searchedAt,
+        };
+      }
     }
     const planId = randomUUID();
     await this.deps.db.assistantPlan.create({
@@ -798,13 +885,15 @@ export class AssistantTools {
   }
 
   /** Shared gate for the two consequential tools: a token minted by the
-   * user's tap, unused, unexpired, owned by this user — or a refusal the
-   * model can read. Marks the token used on success (single-use). */
+   * user's tap, unused, unexpired, owned by this user, and for THIS call —
+   * the tool's input must be the option the tap confirmed — or a refusal
+   * the model can read. Claims the token atomically on success
+   * (single-use even under concurrent calls). */
   private async consumeConfirmation(
     ctx: ToolContext,
     token: unknown,
-    tool: string,
-    input: unknown,
+    tool: "book_garage" | "start_session",
+    input: Record<string, unknown>,
   ): Promise<
     { ok: true; planId: string; optionId: string | null } | { ok: false; result: unknown }
   > {
@@ -814,7 +903,7 @@ export class AssistantTools {
         ok: false as const,
         result: {
           error: "needs_confirmation",
-          message: `${why}. Nothing books or spends without the user's explicit Confirm tap on a proposed `,
+          message: `${why}. Nothing books or spends without the user's explicit Confirm tap on a proposed plan.`,
         },
       };
     };
@@ -824,13 +913,30 @@ export class AssistantTools {
     const row = await this.deps.db.assistantConfirmation.findUnique({ where: { token } });
     if (!row || row.userId !== ctx.userId) return refusal("the confirmation token is not valid");
     if (row.usedAt !== null) return refusal("the confirmation token was already used");
-    if (row.expiresAt.getTime() <= this.now().getTime()) {
+    const now = this.now();
+    if (row.expiresAt.getTime() <= now.getTime()) {
       return refusal("the confirmation token expired — propose the plan again");
     }
-    await this.deps.db.assistantConfirmation.update({
-      where: { token },
-      data: { usedAt: this.now() },
+    // The token authorizes the option that was tapped, not "a" booking.
+    const planRow = await this.deps.db.assistantPlan.findUnique({ where: { id: row.planId } });
+    const option =
+      planRow?.kind === "single_spot"
+        ? (planRow.plan as SingleSpotPlan).options.find((o) => o.id === row.optionId)
+        : undefined;
+    const matches =
+      option !== undefined &&
+      (tool === "book_garage"
+        ? option.type === "garage" &&
+          String(input["option_id"]) === (option.garageOptionId ?? option.id)
+        : option.type === "street" &&
+          String(input["zone"]) === option.zoneId &&
+          num(input["duration_minutes"]) === option.durationMinutes);
+    if (!matches) return refusal("the confirmation token is for a different option");
+    const claimed = await this.deps.db.assistantConfirmation.updateMany({
+      where: { token, usedAt: null, expiresAt: { gt: now } },
+      data: { usedAt: now },
     });
+    if (claimed.count !== 1) return refusal("the confirmation token was already used");
     return { ok: true, planId: row.planId, optionId: row.optionId };
   }
 
@@ -931,6 +1037,12 @@ export class AssistantTools {
             "Rewrite the given parking-decision record as one or two friendly plain-English sentences. State only facts present in the input — never add, guess, or soften facts. No preamble.",
           messages: [{ role: "user", content: template }],
           maxTokens: 300,
+        });
+        // A paid call like any other: it counts toward this turn's spend.
+        ctx.onModelUsage?.({
+          model: phrased.model ?? "unknown",
+          inputTokens: phrased.usage?.inputTokens ?? 0,
+          outputTokens: phrased.usage?.outputTokens ?? 0,
         });
         const joined = phrased.content
           .filter((b): b is { type: "text"; text: string } => b.type === "text")

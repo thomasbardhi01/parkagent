@@ -12,18 +12,28 @@
  * pin the tool behavior the accuracy depends on.
  */
 
-import { describe, expect, test } from "vitest";
+import { beforeEach, describe, expect, test } from "vitest";
 
 import { AssistantTools } from "../src/services/assistant/tools.js";
 import type { ToolContext } from "../src/services/assistant/tools.js";
 import type { GeocoderProvider, GeocodeResult } from "../src/services/assistant/geocoder.js";
-import { metersBetween, NominatimGeocoder } from "../src/services/assistant/geocoder.js";
+import {
+  METRO_BBOX,
+  metersBetween,
+  NominatimGeocoder,
+} from "../src/services/assistant/geocoder.js";
 import type { GarageOption, GarageProvider } from "../src/services/garage/garageProvider.js";
 import { makeFakeDb } from "./helpers.js";
 import { makePolicyService } from "./helpers.js";
 import type { Candidate } from "../src/services/zoneLookup.js";
 
-const CTX: ToolContext = { userId: "u1", conversationId: "c1" };
+/** Fresh per test: the tools write this conversation's grounding onto the
+ * context, and a module-level object would carry one test's geocode into
+ * the next test's plan. */
+let CTX: ToolContext;
+beforeEach(() => {
+  CTX = { userId: "u1", conversationId: "c1" };
+});
 const NOW = () => new Date("2026-09-23T14:00:00-04:00");
 
 /** Four real Boston places and their coordinates, as our fake geocoder
@@ -68,17 +78,16 @@ function garageAt(id: string, fromLat: number, fromLng: number, metresNorth: num
 /** Garage provider that returns one option within 600 m and one well
  * beyond it, both anchored to the search point it's given. */
 function fakeGarage(): GarageProvider {
+  let last: GarageOption[] = [];
   return {
     id: "spothero",
     canReserve: false,
     async search({ lat, lng }) {
-      return {
-        ok: true,
-        fromCache: false,
-        options: [garageAt("near", lat, lng, 300), garageAt("far", lat, lng, 1500)],
-      };
+      last = [garageAt("near", lat, lng, 300), garageAt("far", lat, lng, 1500)];
+      return { ok: true, fromCache: false, options: last };
     },
-    optionById: () => null,
+    // Like the real cache: what the last search returned, by id.
+    optionById: (id) => last.find((o) => o.id === id) ?? null,
     book: async () => {
       throw new Error("not used");
     },
@@ -517,14 +526,19 @@ describe("NominatimGeocoder bias and box filtering (offline, fake fetch)", () =>
   test("a biased search that finds nothing falls through to the other metro", async () => {
     // The bos-viewbox query returns nothing; the nyc query finds Times
     // Square. The bias orders the search, it doesn't blind it.
-    let call = 0;
+    // The fake answers by the viewbox it was ASKED about, so a fallback
+    // that re-queried Boston (or skipped it) can't pass by call count.
+    const boxes: string[] = [];
+    const nycBox = METRO_BBOX.nyc.join(",");
+    const bosBox = METRO_BBOX.bos.join(",");
     const geo = new NominatimGeocoder({
-      fetchFn: (async () => {
-        call += 1;
+      fetchFn: (async (url: string) => {
+        const box = new URL(url).searchParams.get("viewbox") ?? "";
+        boxes.push(box);
         const rows =
-          call === 1
-            ? []
-            : [{ lat: "40.7580", lon: "-73.9855", display_name: "Times Square, Manhattan, NYC" }];
+          box === nycBox
+            ? [{ lat: "40.7580", lon: "-73.9855", display_name: "Times Square, Manhattan, NYC" }]
+            : [];
         return new Response(JSON.stringify(rows), { status: 200 });
       }) as unknown as typeof fetch,
       now: NOW,
@@ -535,7 +549,25 @@ describe("NominatimGeocoder bias and box filtering (offline, fake fetch)", () =>
       expect(out.results).toHaveLength(1);
       expect(out.results[0]!.city).toBe("nyc");
     }
-    expect(call).toBe(2);
+    // The biased metro first, then the fallback.
+    expect(boxes).toEqual([bosBox, nycBox]);
+  });
+
+  test("a biased search that matches stays in its metro — no fallback query", async () => {
+    const boxes: string[] = [];
+    const geo = new NominatimGeocoder({
+      fetchFn: (async (url: string) => {
+        boxes.push(new URL(url).searchParams.get("viewbox") ?? "");
+        const rows = [
+          { lat: "42.3503", lon: "-71.0811", display_name: "Newbury Street, Back Bay" },
+        ];
+        return new Response(JSON.stringify(rows), { status: 200 });
+      }) as unknown as typeof fetch,
+      now: NOW,
+    });
+    const out = await geo.geocode({ query: "Newbury Street", city: "bos" });
+    expect(out.ok && out.results[0]!.city).toBe("bos");
+    expect(boxes).toEqual([METRO_BBOX.bos.join(",")]);
   });
 
   test("a transport failure returns ok:false, never throws", async () => {

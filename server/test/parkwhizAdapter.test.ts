@@ -148,11 +148,16 @@ describe("public read-only client behavior", () => {
 
   test("book is a deep-link handoff, canReserve false — same contract as SpotHero", async () => {
     const { provider } = providerOver([{ ok: true, status: 200, body: fixture }]);
-    await provider.search(QUERY);
+    const searched = await provider.search(QUERY);
+    if (!searched.ok) throw new Error("unreachable");
     expect(provider.canReserve).toBe(false);
-    const booking = await provider.book("61989");
+    const option = searched.options.find((o) => o.id.startsWith("parkwhiz-61989-"))!;
+    expect(option).toBeDefined();
+    const booking = await provider.book(option.id);
     expect(booking.kind).toBe("deeplink_handoff");
     expect(booking.deepLink).toContain("parkwhiz.com/find_and_book");
+    // Location ids share SpotHero's numeric space; only the scoped id books.
+    await expect(provider.book("61989")).rejects.toThrow("unknown garage option");
     await expect(provider.book("nope")).rejects.toThrow("unknown garage option");
   });
 });

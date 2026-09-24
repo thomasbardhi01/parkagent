@@ -110,3 +110,93 @@ export function nycStartOfMonth(at: Date): Date {
   const dayOfMonth = Number(nycDayOfMonth.format(at));
   return new Date(nycStartOfDay(at).getTime() - (dayOfMonth - 1) * 24 * 60 * 60_000);
 }
+
+const nycWallClock = new Intl.DateTimeFormat("en-US", {
+  timeZone: NYC_TZ,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hourCycle: "h23",
+});
+
+function nycParts(at: Date): Record<string, string> {
+  const parts: Record<string, string> = {};
+  for (const part of nycWallClock.formatToParts(at)) parts[part.type] = part.value;
+  return parts;
+}
+
+/** Minutes east of UTC in NYC at `at` (-240 in summer, -300 in winter). */
+function nycOffsetMinutes(at: Date): number {
+  const p = nycParts(at);
+  const asUtc = Date.UTC(
+    Number(p["year"]),
+    Number(p["month"]) - 1,
+    Number(p["day"]),
+    Number(p["hour"]),
+    Number(p["minute"]),
+    Number(p["second"]),
+  );
+  return Math.round((asUtc - Math.floor(at.getTime() / 1000) * 1000) / 60_000);
+}
+
+const EXPLICIT_ZONE = /(?:[zZ]|[+-]\d{2}:?\d{2})$/;
+const WALL_CLOCK = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?$/;
+
+/**
+ * A model- or client-supplied timestamp as an instant. An explicit offset
+ * or "Z" is honored as written. An offset-less "YYYY-MM-DDTHH:mm[:ss]" is
+ * NYC wall-clock time — both cities are Eastern and the model is handed
+ * the current time in ET — never the host's own zone: `new Date()` on an
+ * offset-less string reads it as UTC on Fly and as ET on a dev Mac, so the
+ * same string meant two instants four hours apart and only prod was wrong.
+ * Anything else unreadable → null.
+ */
+export function parseEasternTime(value: string): Date | null {
+  const text = value.trim();
+  if (EXPLICIT_ZONE.test(text)) {
+    const at = new Date(text);
+    return Number.isNaN(at.getTime()) ? null : at;
+  }
+  const m = WALL_CLOCK.exec(text);
+  if (!m) return null;
+  const [y, mo, d, h, mi, s] = m.slice(1).map((part) => Number(part ?? 0)) as [
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+  ];
+  const asUtc = Date.UTC(y, mo - 1, d, h, mi, s);
+  // Date.UTC rolls month 13 into next year; a field out of range is a
+  // garbled time, not a date to guess at.
+  const check = new Date(asUtc);
+  if (check.getUTCMonth() !== mo - 1 || check.getUTCDate() !== d || h > 23 || mi > 59 || s > 59) {
+    return null;
+  }
+  // Guess with the offset at that wall time read as UTC, then re-check at
+  // the result (the two differ only across a DST transition).
+  let at = asUtc - nycOffsetMinutes(new Date(asUtc)) * 60_000;
+  at = asUtc - nycOffsetMinutes(new Date(at)) * 60_000;
+  return new Date(at);
+}
+
+/** NYC wall-clock "YYYY-MM-DDTHH:mm:ss" (no offset) for an instant. */
+export function easternWallClock(at: Date): string {
+  const p = nycParts(at);
+  return `${p["year"]}-${p["month"]}-${p["day"]}T${p["hour"]}:${p["minute"]}:${p["second"]}`;
+}
+
+/** ISO 8601 with NYC's own offset ("2026-09-26T18:00:00-04:00") — the one
+ * canonical form model-supplied times are stored and forwarded in. */
+export function easternIso(at: Date): string {
+  const offset = nycOffsetMinutes(at);
+  const sign = offset < 0 ? "-" : "+";
+  const abs = Math.abs(offset);
+  const hh = String(Math.floor(abs / 60)).padStart(2, "0");
+  const mm = String(abs % 60).padStart(2, "0");
+  return `${easternWallClock(at)}${sign}${hh}:${mm}`;
+}

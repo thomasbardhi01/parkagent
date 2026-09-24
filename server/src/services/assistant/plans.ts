@@ -32,6 +32,10 @@ export const singleSpotOptionSchema = z.object({
    * card shows "We'll pay automatically when you park here" and no
    * Confirm. Garages and street-right-now stay confirmable. */
   payOnArrival: z.boolean().optional(),
+  /** SERVER-ATTACHED on garage options from the search cache (model input
+   * ignored), like deepLink: which source the offer came from, so the
+   * card, the handoff note, and the Link merchant name the right site. */
+  provider: z.string().optional(),
   deepLink: z.string().url().optional(),
   recommended: z.boolean().default(false),
 });

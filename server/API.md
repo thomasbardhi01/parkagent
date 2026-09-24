@@ -1340,11 +1340,15 @@ fallback), while `explain_decision` phrasing runs on the cheap
 the plain template sentence if that call fails, so an explanation never
 fails a turn. Every turn writes an `assistant_turn` decisions row with
 the model, summed input/output tokens, model-call count, wall-clock
-latency, and an estimated cost from published per-model list prices.
-`ASSISTANT_DAILY_SPEND_CAP_USD` caps each user's estimated daily model
-spend against those rows (midnight ET, the same boundary as the parking
-caps); a user over it gets `429 assistant_budget_exhausted` *before* any
-paid call is made. Unset → uncapped. The MODEL plans and phrases; the TOOLS enforce policy
+latency, and an estimated cost from published per-model list prices —
+including any call a tool made on its own model (`explain_decision`'s
+phrasing lands in `otherModelCalls` and in the cost).
+`ASSISTANT_DAILY_SPEND_CAP_USD` (default `5`) caps each user's estimated
+daily model spend against those rows (midnight ET, the same boundary as
+the parking caps); a user over it gets `429 assistant_budget_exhausted`
+*before* any paid call is made. The check runs once per turn, so a
+user can end a day over the cap by at most one turn (≤ 8 model calls)
+per request in flight. The MODEL plans and phrases; the TOOLS enforce policy
 (same quoting, caps, and audit services as everything else); **nothing
 books or spends without the user's explicit Confirm/Sign off tap on a
 plan card**, which is the only thing that mints the single-use
@@ -1371,7 +1375,17 @@ payload. Otherwise plain JSON:
 ```
 
 Conversation state persists per user (last 20 turns) keyed by
-`conversation_id`. Rate-limited 20/min — each turn is a paid model call.
+`conversation_id`; another user's id answers `404 conversation_not_found`
+before any model call (the turn would otherwise be saved over their
+transcript). Rate-limited 20/min — each turn is a paid model call.
+
+**Times.** Every time a tool takes (`when`, `starts_at`/`ends_at`,
+`arrival`, a plan's `startsAt`) is read with an explicit offset honored
+and an offset-less `YYYY-MM-DDTHH:mm[:ss]` read as ET wall-clock time —
+never the host's zone, which is UTC on Fly and ET on a dev Mac. An
+unreadable time bounces back to the model (`unreadable_time`), and times
+are forwarded and stored in one canonical form with NYC's offset
+(`2026-09-26T18:00:00-04:00`).
 
 The model's tools: `geocode_place(query, city?)` — resolve a NAMED place
 or area (a street, neighborhood, or landmark) to coordinates, biased hard
@@ -1411,9 +1425,14 @@ garage; price, walk minutes, entry type, exactly one `recommended`,
 optional `lat`/`lng` for the card's mini map) plus an optional
 `destination {lat,lng,label}` and server-attached
 `provenance {provider, searchedAt}`. The server backfills all three from
-the conversation's own grounding (the turn's geocode, street quote, and
-garage search) — models routinely drop optional fields, and the card
-needs them on the stored plan, not in a 10-minute cache;
+the conversation's grounding — derived from the stored transcript (every
+geocode, street quote, and garage search so far), so it survives a
+restart and holds across machines; models routinely drop optional
+fields, and the card needs them on the stored plan. A street option pins
+at the point its own zone was quoted. A garage option must be a
+search_garages result (else `garage_option_ungrounded` back to the
+model): its price, `deepLink`, `provider`, and pin are the search's,
+never model text;
 `itinerary` is 1–12 stops (address, arrival, duration, street|garage
 choice, cost) with `totalUsd` recomputed server-side and refused when it
 busts the remaining daily budget.
@@ -1425,9 +1444,10 @@ busts the remaining daily budget.
 token-gated tools the model faces:
 
 - garage option → `{kind: "garage_handoff", deepLink, paymentSource,
-  linkApproval?, note}` — the app opens the SpotHero deep link in
-  SFSafariViewController; the pass lives in SpotHero. We NEVER automate
-  SpotHero login or checkout.
+  linkApproval?, note}` — the app opens the option's own checkout link
+  (SpotHero or ParkWhiz — `note` names which) in SFSafariViewController;
+  the pass lives in that site's account. We NEVER automate either site's
+  login or checkout.
 - street option → `{kind: "street_confirmed", zoneId, providerZoneNumber,
   durationMinutes, paymentSource, linkApproval?}` — the session itself
   starts through the existing detector → /parked → /session/start flow at
@@ -1436,6 +1456,13 @@ token-gated tools the model faces:
 - itinerary (no optionId) → `{kind: "itinerary_signed_off", itineraryId,
   totalUsd, capUsd, paymentSource, linkApprovals[]}` — the day total is
   re-checked against `daily_cap_usd` at the moment of sign-off.
+
+The token authorizes the TAPPED option only: `book_garage` /
+`start_session` refuse it for any other option id, zone, or duration,
+and claim it with one conditional update (unused and unexpired), so two
+concurrent uses of one token can't both pass. A Link spend request names
+the real payee — the garage's own site, or the city's meter app for a
+street spot.
 
 ### GET /assistant/itineraries · PATCH /assistant/itineraries/:id
 
@@ -1457,6 +1484,9 @@ two read-only implementations, merged by `makeMultiGarageProvider`:
   prefilled deep link: `spothero.com/checkout/{facility_id}?starts=&ends=`,
   which opens THAT facility with the window filled in (verified live
   2026-09-23; the old area-search link only showed the neighborhood).
+  SpotHero reads a window's wall-clock digits and ignores any offset
+  (verified 2026-09-24: `22:00Z` rendered a 10 PM checkout for a 6 PM ET
+  stay), so windows go to it as ET wall-clock time with no offset.
 - **ParkWhizProvider** — the same contract over ParkWhiz's public
   `api.parkwhiz.com/v4/quotes` endpoint, which serves unauthenticated
   JSON at low volume with honest headers (spike verified 2026-09-23; see
@@ -1466,7 +1496,10 @@ two read-only implementations, merged by `makeMultiGarageProvider`:
 
 The merge dedupes by normalized facility address — the same garage is
 often listed by both, and the user should see one row at the cheaper
-price. A provider that fails while another answers shows up in
+price — and returns at most 8 rows, nearest first. Option ids are
+`{provider}-{facilityId}-{windowTag}`: the same facility searched for two
+windows is two offers with two prices and two checkout links, and the
+two providers' numeric facility ids overlap. A provider that fails while another answers shows up in
 `degraded`; only every-provider-failed is a typed search failure.
 
 **Partner status: no API key for either**, so both hand checkout off and

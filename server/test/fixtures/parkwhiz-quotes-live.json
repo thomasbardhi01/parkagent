@@ -1,0 +1,240 @@
+[
+  {
+    "location_id": "61989",
+    "type": "offstreet",
+    "name": "",
+    "quote_type": "transient",
+    "start_time": "2026-09-24T18:00:00.000-04:00",
+    "end_time": "2026-09-24T22:00:00.000-04:00",
+    "distance": {
+      "straight_line": {
+        "meters": 177,
+        "feet": 581
+      }
+    },
+    "purchase_options": [
+      {
+        "id": "0a875832-21e3-4193-9cc5-550897ca6107",
+        "start_time": "2026-09-24T18:00:00.000-04:00",
+        "end_time": "2026-09-24T22:00:00.000-04:00",
+        "price": {
+          "USD": "33.93"
+        },
+        "base_price": {
+          "USD": "29.00"
+        },
+        "space_availability": {
+          "status": "available"
+        },
+        "_links": {
+          "site:purchase": {
+            "href": "/find_and_book/?location_id=61989&start_time=2026-09-24T18:00&end_time=2026-09-24T22:00"
+          },
+          "curies": [
+            {
+              "name": "site",
+              "href": "https://www.parkwhiz.com/{rel}",
+              "templated": true
+            }
+          ]
+        }
+      }
+    ],
+    "_embedded": {
+      "pw:location": {
+        "id": "61989",
+        "name": "Commonwealth Pier Garage",
+        "address1": "1 Seaport Ln.",
+        "city": "Boston",
+        "state": "MA",
+        "postal_code": "02210",
+        "entrances": [
+          {
+            "coordinates": [42.349926645087635, -71.04209303855897]
+          }
+        ],
+        "_links": {
+          "self": {
+            "href": "/locations/61989"
+          },
+          "pw:quotes": {
+            "href": "/quotes?q=location_id:61989&start_time=2026-09-24T18:00&end_time=2026-09-24T22:00"
+          },
+          "pw:reviews": {
+            "href": "/locations/61989/reviews"
+          },
+          "site:purchase": null,
+          "curies": [
+            {
+              "name": "pw",
+              "href": "https://api.parkwhiz.com/v4/{rel}",
+              "templated": true
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "location_id": "11476",
+    "type": "offstreet",
+    "name": "",
+    "quote_type": "transient",
+    "start_time": "2026-09-24T18:00:00.000-04:00",
+    "end_time": "2026-09-24T22:00:00.000-04:00",
+    "distance": {
+      "straight_line": {
+        "meters": 232,
+        "feet": 764
+      }
+    },
+    "purchase_options": [
+      {
+        "id": "95bd0c5f-ee2d-4c89-a0c6-46359e70da0a",
+        "start_time": "2026-09-24T18:00:00.000-04:00",
+        "end_time": "2026-09-24T22:00:00.000-04:00",
+        "price": {
+          "USD": "42.80"
+        },
+        "base_price": {
+          "USD": "40.00"
+        },
+        "space_availability": {
+          "status": "available"
+        },
+        "_links": {
+          "site:purchase": {
+            "href": "/find_and_book/?location_id=11476&start_time=2026-09-24T18:00&end_time=2026-09-24T22:00"
+          },
+          "curies": [
+            {
+              "name": "site",
+              "href": "https://www.parkwhiz.com/{rel}",
+              "templated": true
+            }
+          ]
+        }
+      }
+    ],
+    "_embedded": {
+      "pw:location": {
+        "id": "11476",
+        "name": "Park Lane Seaport Garage",
+        "address1": "55 Park Ln.",
+        "city": "Boston",
+        "state": "MA",
+        "postal_code": "02210",
+        "entrances": [
+          {
+            "coordinates": [42.34835561338564, -71.03894244879486]
+          }
+        ],
+        "_links": {
+          "self": {
+            "href": "/locations/11476"
+          },
+          "pw:quotes": {
+            "href": "/quotes?q=location_id:11476&start_time=2026-09-24T18:00&end_time=2026-09-24T22:00"
+          },
+          "pw:reviews": {
+            "href": "/locations/11476/reviews"
+          },
+          "site:purchase": null,
+          "curies": [
+            {
+              "name": "pw",
+              "href": "https://api.parkwhiz.com/v4/{rel}",
+              "templated": true
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "location_id": "8506",
+    "type": "offstreet",
+    "name": "",
+    "quote_type": "transient",
+    "start_time": "2026-09-24T18:00:00.000-04:00",
+    "end_time": "2026-09-24T22:00:00.000-04:00",
+    "distance": {
+      "straight_line": {
+        "meters": 246,
+        "feet": 807
+      }
+    },
+    "purchase_options": [
+      {
+        "id": "87af072b-444a-4166-af64-30804fc63764",
+        "start_time": "2026-09-24T18:00:00.000-04:00",
+        "end_time": "2026-09-24T22:00:00.000-04:00",
+        "price": {
+          "USD": "32.10"
+        },
+        "base_price": {
+          "USD": "30.00"
+        },
+        "space_availability": {
+          "status": "available"
+        },
+        "_links": {
+          "site:purchase": {
+            "href": "/find_and_book/?location_id=8506&start_time=2026-09-24T18:00&end_time=2026-09-24T22:00"
+          },
+          "curies": [
+            {
+              "name": "site",
+              "href": "https://www.parkwhiz.com/{rel}",
+              "templated": true
+            }
+          ]
+        }
+      }
+    ],
+    "_embedded": {
+      "pw:location": {
+        "id": "8506",
+        "name": "Legal Seafoods - Valet Kiosk",
+        "address1": "270 Northern Ave.",
+        "city": "Boston",
+        "state": "MA",
+        "postal_code": "02210",
+        "entrances": [
+          {
+            "coordinates": [42.348647509474134, -71.03801094694063]
+          }
+        ],
+        "_links": {
+          "self": {
+            "href": "/locations/8506"
+          },
+          "pw:quotes": {
+            "href": "/quotes?q=location_id:8506&start_time=2026-09-24T18:00&end_time=2026-09-24T22:00"
+          },
+          "pw:reviews": {
+            "href": "/locations/8506/reviews"
+          },
+          "site:purchase": null,
+          "curies": [
+            {
+              "name": "pw",
+              "href": "https://api.parkwhiz.com/v4/{rel}",
+              "templated": true
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "location_id": "9999",
+    "purchase_options": [],
+    "_embedded": {
+      "pw:location": {
+        "id": "9999",
+        "name": "No Options"
+      }
+    }
+  }
+]

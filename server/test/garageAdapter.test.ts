@@ -90,7 +90,10 @@ describe("live transient-search shape (Seaport fixture)", () => {
     if (!outcome.ok) throw new Error("unreachable");
     expect(outcome.options).toHaveLength(1);
     expect(outcome.options[0]!.priceUsd).toBe(27.13);
-    expect(outcome.options[0]!.deepLink).toContain("spothero.com/search");
+    // Facility checkout with the window prefilled (verified live
+    // 2026-09-23) — not the area search page.
+    expect(outcome.options[0]!.deepLink).toContain("spothero.com/checkout/10607");
+    expect(outcome.options[0]!.deepLink).toContain(encodeURIComponent("2026-09-21T18:00:00"));
   });
 
   test("the deep link prefills location and window", () => {

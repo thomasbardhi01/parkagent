@@ -73,11 +73,9 @@ const schema = z
     // Unset → no cap. Each turn's cost estimate is logged on its
     // assistant_turn decision row; a user over the cap gets 429.
     ASSISTANT_DAILY_SPEND_CAP_USD: z.coerce.number().positive().optional(),
-    // ParkWhiz (Arrive) v4 API credentials — optional as a pair. Without
-    // them the ParkWhiz garage provider stays disabled and SpotHero is
-    // the only garage source.
-    PARKWHIZ_CLIENT_ID: z.string().min(1).optional(),
-    PARKWHIZ_CLIENT_SECRET: z.string().min(1).optional(),
+    // ParkWhiz is a read-only public search (no credentials — verified
+    // live 2026-09-23); flip to "false" to drop back to SpotHero only.
+    PARKWHIZ_ENABLED: z.enum(["true", "false"]).default("true"),
     // Link wallet for agents (Stripe agentic commerce) — optional as a
     // set: all four present → /link/* live; any missing → 503.
     LINK_CLIENT_ID: z.string().min(1).optional(),
@@ -130,15 +128,6 @@ const schema = z
         code: "custom",
         path: ["GOOGLE_CLIENT_ID"],
         message: "required when GOOGLE_SIGNIN_ENABLED=true (ID token audience)",
-      });
-    }
-    const pwKeys = [env.PARKWHIZ_CLIENT_ID, env.PARKWHIZ_CLIENT_SECRET];
-    const pwSet = pwKeys.filter((k) => k !== undefined).length;
-    if (pwSet === 1) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["PARKWHIZ_CLIENT_ID"],
-        message: "PARKWHIZ_CLIENT_ID and PARKWHIZ_CLIENT_SECRET are a pair — set both or neither",
       });
     }
     // A malformed key must refuse boot, not fail the first link.

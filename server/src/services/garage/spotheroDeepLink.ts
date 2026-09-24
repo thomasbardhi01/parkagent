@@ -54,6 +54,7 @@ function cacheKey(query: GarageSearchQuery): string {
   return `${r(query.lat)},${r(query.lng)}|${query.startsAt}|${query.endsAt}`;
 }
 
+/** The area-level search link — the fallback when no facility id exists. */
 export function spotheroDeepLink(query: {
   lat: number;
   lng: number;
@@ -67,6 +68,17 @@ export function spotheroDeepLink(query: {
     ends: query.endsAt,
   });
   return `https://spothero.com/search?${params.toString()}`;
+}
+
+/** The FACILITY-level checkout link (verified live 2026-09-23:
+ * /checkout/{facility_id}?starts=&ends= renders that facility with the
+ * window prefilled — the search link only showed the area). */
+export function spotheroFacilityLink(
+  facilityId: string,
+  window: { startsAt: string; endsAt: string },
+): string {
+  const params = new URLSearchParams({ starts: window.startsAt, ends: window.endsAt });
+  return `https://spothero.com/checkout/${encodeURIComponent(facilityId)}?${params.toString()}`;
 }
 
 /**
@@ -264,12 +276,16 @@ export function makeSpotHeroProvider(options: SpotHeroOptions = {}): GarageProvi
     if (rows === null) {
       return { ok: false, error: "parse_failed", detail: "no results array in response" };
     }
-    const link = spotheroDeepLink(query);
     const parsed = rows
       .map((raw) => parseSpotHeroResult(raw, query))
       .filter((o): o is NonNullable<typeof o> => o !== null)
       .slice(0, MAX_RESULTS)
-      .map((o) => ({ ...o, provider: "spothero", deepLink: link }));
+      .map((o) => ({
+        ...o,
+        provider: "spothero",
+        // Facility checkout, window prefilled — never just the area map.
+        deepLink: spotheroFacilityLink(o.id, query),
+      }));
     if (rows.length > 0 && parsed.length === 0) {
       // The endpoint answered with rows we can no longer read — say the
       // site changed rather than claiming an empty lot map.

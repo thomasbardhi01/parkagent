@@ -1,21 +1,26 @@
 /**
  * ParkWhiz (Arrive) as a second garage source, behind the same
- * GarageProvider interface as SpotHero. Built from the PUBLIC v4 API docs
- * (developer.parkwhiz.com/v4, read 2026-09-23):
+ * GarageProvider interface as SpotHero — a READ-ONLY public reader, the
+ * spike's finding (verified live 2026-09-23):
  *
- *   POST /v4/oauth/token      grant_type=client_credentials, scope=public
- *   GET  /v4/quotes/?q=coordinates:LAT,LNG distance:MILES
- *        &start_time=ISO&end_time=ISO&option_types=bookable
+ *   GET https://api.parkwhiz.com/v4/quotes/
+ *       ?q=coordinates:LAT,LNG distance:MILES&start_time=ISO&end_time=ISO
  *
- * Each quote carries purchase_options[] (price as {"USD": "15.00"}) and
- * _embedded["pw:location"] (name, address1, distance in miles,
- * coordinates [lat, lng]). DISABLED until PARKWHIZ_CLIENT_ID and
- * PARKWHIZ_CLIENT_SECRET exist (index.ts only wires it when both are
- * set) — until then SpotHero is the only garage source and nothing here
- * runs in prod. The consumer-site deep-link format is TODO-VERIFY
- * against a real account; like SpotHero, checkout stays a hand-off (the
- * v4 POST /bookings flow needs partner approval before canReserve can
- * flip true).
+ * serves unauthenticated JSON at low volume with plain honest headers —
+ * the same endpoint their own site reads (the partner docs describe an
+ * OAuth surface, but public quote reads answer 200 without it). Each
+ * quote row carries purchase_options[] (price {"USD": "33.93"}, dollars
+ * as a string, fees included) and _embedded["pw:location"] (name,
+ * address1, entrances[0].coordinates); distance is
+ * distance.straight_line.meters. The checkout deep link comes from the
+ * API itself: purchase_options[0]._links["site:purchase"].href resolved
+ * against https://www.parkwhiz.com — a facility page with the window
+ * prefilled (verified: it renders the right facility and times).
+ *
+ * Like SpotHero: we never automate their login or checkout, errors are
+ * typed ("the search broke" ≠ "no garages"), never cached, and if they
+ * ever start blocking (401/403/429) the right behavior is the `blocked`
+ * error, not evasion.
  */
 
 import type {
@@ -25,7 +30,8 @@ import type {
   GarageSearchQuery,
 } from "./garageProvider.js";
 
-const DEFAULT_BASE = "https://api.parkwhiz.com/v4";
+const SEARCH_BASE = "https://api.parkwhiz.com/v4/quotes/";
+const SITE_BASE = "https://www.parkwhiz.com";
 const CACHE_TTL_MS = 10 * 60_000;
 const MAX_RESULTS = 8;
 const WALK_M_PER_MIN = 80;
@@ -35,21 +41,26 @@ const METERS_PER_MILE = 1609.34;
 interface Fetcher {
   (
     url: string,
-    init?: { method?: string; headers?: Record<string, string>; body?: string },
-  ): Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
+    init?: { headers?: Record<string, string> },
+  ): Promise<{
+    ok: boolean;
+    status: number;
+    json(): Promise<unknown>;
+  }>;
 }
 
 export interface ParkWhizOptions {
-  clientId: string;
-  clientSecret: string;
   fetcher?: Fetcher;
   baseUrl?: string;
   now?: () => number;
 }
 
-/** One v4 quote row, defensively read: a row that doesn't carry enough
+/** One live quote row, defensively read: a row that doesn't carry enough
  * drops to null, never throws. */
-export function parseParkWhizQuote(raw: unknown): Omit<GarageOption, "deepLink"> | null {
+export function parseParkWhizQuote(
+  raw: unknown,
+  window: { startsAt: string; endsAt: string },
+): GarageOption | null {
   if (typeof raw !== "object" || raw === null) return null;
   const q = raw as Record<string, unknown>;
   const embedded = q["_embedded"] as Record<string, unknown> | undefined;
@@ -62,20 +73,17 @@ export function parseParkWhizQuote(raw: unknown): Omit<GarageOption, "deepLink">
   if (!location || !first) return null;
 
   const priceUsd = extractUsd(first["price"]) ?? extractUsd(first["base_price"]);
-  const id = location["id"] !== undefined ? String(location["id"]) : null;
+  const id =
+    q["location_id"] !== undefined && q["location_id"] !== null
+      ? String(q["location_id"])
+      : location["id"] !== undefined
+        ? String(location["id"])
+        : null;
   const name = typeof location["name"] === "string" ? location["name"] : null;
   if (priceUsd === null || id === null || name === null) return null;
 
-  const distanceMiles = location["distance"];
-  const distanceM =
-    typeof distanceMiles === "number" && Number.isFinite(distanceMiles)
-      ? Math.round(distanceMiles * METERS_PER_MILE)
-      : 0;
-  const coords = location["coordinates"];
-  const [lat, lng] =
-    Array.isArray(coords) && typeof coords[0] === "number" && typeof coords[1] === "number"
-      ? [coords[0], coords[1]]
-      : [undefined, undefined];
+  const distanceM = extractDistanceM(q, location);
+  const coords = extractCoords(location);
   const address = [location["address1"], location["city"]]
     .filter((part): part is string => typeof part === "string" && part.length > 0)
     .join(", ");
@@ -84,16 +92,18 @@ export function parseParkWhizQuote(raw: unknown): Omit<GarageOption, "deepLink">
     provider: "parkwhiz",
     name,
     address,
-    ...(lat !== undefined && lng !== undefined ? { lat, lng } : {}),
+    ...(coords ?? {}),
     priceUsd,
-    distanceM,
-    walkMinutes: distanceM > 0 ? Math.max(1, Math.round(distanceM / WALK_M_PER_MIN)) : 0,
-    // v4 quotes don't state a redemption type the way SpotHero does.
+    distanceM: distanceM ?? 0,
+    walkMinutes:
+      distanceM !== null && distanceM > 0 ? Math.max(1, Math.round(distanceM / WALK_M_PER_MIN)) : 0,
+    // Quote rows don't state a redemption type the way SpotHero does.
     entryType: "unknown",
+    deepLink: extractPurchaseLink(first) ?? fallbackDeepLink(id, window),
   };
 }
 
-/** Price objects are {"USD": "15.00"} — dollars as a string. */
+/** Price objects are {"USD": "33.93"} — dollars as a string. */
 function extractUsd(price: unknown): number | null {
   if (typeof price !== "object" || price === null) return null;
   const usd = (price as Record<string, unknown>)["USD"];
@@ -101,22 +111,67 @@ function extractUsd(price: unknown): number | null {
   return Number.isFinite(value) && value >= 0 ? Math.round(value * 100) / 100 : null;
 }
 
-/** TODO-VERIFY with a real ParkWhiz account: the consumer-site search URL
- * with the window prefilled. Used only as the hand-off link; the search
- * itself is the authenticated v4 API. */
-export function parkwhizDeepLink(query: {
-  lat: number;
-  lng: number;
-  startsAt: string;
-  endsAt: string;
-}): string {
+/** Live shape: distance.straight_line.meters; docs shape (fallback):
+ * location.distance in miles. */
+function extractDistanceM(
+  q: Record<string, unknown>,
+  location: Record<string, unknown>,
+): number | null {
+  const distance = q["distance"];
+  if (typeof distance === "object" && distance !== null) {
+    const straight = (distance as Record<string, unknown>)["straight_line"];
+    if (typeof straight === "object" && straight !== null) {
+      const meters = (straight as Record<string, unknown>)["meters"];
+      if (typeof meters === "number" && Number.isFinite(meters)) return Math.round(meters);
+    }
+  }
+  const miles = location["distance"];
+  if (typeof miles === "number" && Number.isFinite(miles)) {
+    return Math.round(miles * METERS_PER_MILE);
+  }
+  return null;
+}
+
+/** Live shape: entrances[0].coordinates [lat, lng]; docs fallback:
+ * location.coordinates. */
+function extractCoords(location: Record<string, unknown>): { lat: number; lng: number } | null {
+  const fromPair = (pair: unknown): { lat: number; lng: number } | null =>
+    Array.isArray(pair) && typeof pair[0] === "number" && typeof pair[1] === "number"
+      ? { lat: pair[0], lng: pair[1] }
+      : null;
+  const entrances = location["entrances"];
+  if (Array.isArray(entrances) && entrances.length > 0) {
+    const entrance = entrances[0] as Record<string, unknown>;
+    const coords = fromPair(entrance["coordinates"]);
+    if (coords) return coords;
+  }
+  return fromPair(location["coordinates"]);
+}
+
+/** The API's own checkout link: _links["site:purchase"].href, relative to
+ * the site curie (https://www.parkwhiz.com). */
+function extractPurchaseLink(purchaseOption: Record<string, unknown>): string | null {
+  const links = purchaseOption["_links"];
+  if (typeof links !== "object" || links === null) return null;
+  const purchase = (links as Record<string, unknown>)["site:purchase"];
+  if (typeof purchase !== "object" || purchase === null) return null;
+  const href = (purchase as Record<string, unknown>)["href"];
+  if (typeof href !== "string" || href.length === 0) return null;
+  return href.startsWith("http") ? href : `${SITE_BASE}${href}`;
+}
+
+/** Same URL the API links to, built by hand when a row lacks _links
+ * (verified live: renders the facility with the window prefilled). */
+export function fallbackDeepLink(
+  locationId: string,
+  window: { startsAt: string; endsAt: string },
+): string {
   const params = new URLSearchParams({
-    lat: String(query.lat),
-    lng: String(query.lng),
-    start: query.startsAt,
-    end: query.endsAt,
+    location_id: locationId,
+    start_time: window.startsAt,
+    end_time: window.endsAt,
   });
-  return `https://www.parkwhiz.com/search/?${params.toString()}`;
+  return `${SITE_BASE}/find_and_book/?${params.toString()}`;
 }
 
 function cacheKey(query: GarageSearchQuery): string {
@@ -124,34 +179,11 @@ function cacheKey(query: GarageSearchQuery): string {
   return `${r(query.lat)},${r(query.lng)}|${query.startsAt}|${query.endsAt}`;
 }
 
-export function makeParkWhizProvider(options: ParkWhizOptions): GarageProvider {
+export function makeParkWhizProvider(options: ParkWhizOptions = {}): GarageProvider {
   const fetcher: Fetcher = options.fetcher ?? ((url, init) => fetch(url, init));
   const now = options.now ?? Date.now;
-  const base = options.baseUrl ?? DEFAULT_BASE;
+  const base = options.baseUrl ?? SEARCH_BASE;
   const cache = new Map<string, { at: number; options: GarageOption[] }>();
-  let token: { value: string; expiresAtMs: number } | null = null;
-
-  async function accessToken(): Promise<string> {
-    if (token && now() < token.expiresAtMs - 60_000) return token.value;
-    const res = await fetcher(`${base}/oauth/token`, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
-      body: new URLSearchParams({
-        grant_type: "client_credentials",
-        client_id: options.clientId,
-        client_secret: options.clientSecret,
-        scope: "public",
-      }).toString(),
-    });
-    if (!res.ok) throw new Error(`parkwhiz oauth ${res.status}`);
-    const body = (await res.json()) as { access_token?: string; expires_in?: number };
-    if (typeof body.access_token !== "string") throw new Error("parkwhiz oauth: no access_token");
-    token = {
-      value: body.access_token,
-      expiresAtMs: now() + (typeof body.expires_in === "number" ? body.expires_in : 3600) * 1000,
-    };
-    return token.value;
-  }
 
   async function search(query: GarageSearchQuery) {
     const key = cacheKey(query);
@@ -164,26 +196,17 @@ export function makeParkWhizProvider(options: ParkWhizOptions): GarageProvider {
       };
     }
 
-    let bearer: string;
-    try {
-      bearer = await accessToken();
-    } catch (err) {
-      return {
-        ok: false as const,
-        error: "network" as const,
-        detail: err instanceof Error ? err.message.split("\n")[0]! : String(err),
-      };
-    }
     const params = new URLSearchParams({
       q: `coordinates:${query.lat},${query.lng} distance:${SEARCH_RADIUS_MILES}`,
       start_time: query.startsAt,
       end_time: query.endsAt,
-      option_types: "bookable",
     });
     let response: Awaited<ReturnType<Fetcher>>;
     try {
-      response = await fetcher(`${base}/quotes/?${params.toString()}`, {
-        headers: { Authorization: `Bearer ${bearer}`, Accept: "application/json" },
+      response = await fetcher(`${base}?${params.toString()}`, {
+        // Plain, honest headers — the endpoint serves unauthenticated
+        // JSON at low volume; nothing here evades anything.
+        headers: { Accept: "application/json", "User-Agent": "parkagent-prototype/1.0" },
       });
     } catch (err) {
       return {
@@ -193,7 +216,6 @@ export function makeParkWhizProvider(options: ParkWhizOptions): GarageProvider {
       };
     }
     if (response.status === 401 || response.status === 403 || response.status === 429) {
-      token = null; // a stale token re-auths on the next call
       return { ok: false as const, error: "blocked" as const, detail: `HTTP ${response.status}` };
     }
     if (!response.ok) {
@@ -220,12 +242,10 @@ export function makeParkWhizProvider(options: ParkWhizOptions): GarageProvider {
         detail: "expected a quotes array",
       };
     }
-    const link = parkwhizDeepLink(query);
     const parsed = body
-      .map((raw) => parseParkWhizQuote(raw))
+      .map((raw) => parseParkWhizQuote(raw, query))
       .filter((o): o is NonNullable<typeof o> => o !== null)
-      .slice(0, MAX_RESULTS)
-      .map((o) => ({ ...o, deepLink: link }));
+      .slice(0, MAX_RESULTS);
     if (body.length > 0 && parsed.length === 0) {
       return {
         ok: false as const,

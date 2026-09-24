@@ -117,16 +117,12 @@ const stripe =
     : undefined;
 
 // Assistant: the model transports (503 without the key), the garage
-// providers (SpotHero always; ParkWhiz only with credentials, merged and
-// address-deduped), and the Link wallet.
+// providers (SpotHero + ParkWhiz, both read-only public searches, merged
+// and address-deduped; PARKWHIZ_ENABLED=false drops the second), and the
+// Link wallet.
 const garageProviders = [makeSpotHeroProvider()];
-if (env.PARKWHIZ_CLIENT_ID && env.PARKWHIZ_CLIENT_SECRET) {
-  garageProviders.push(
-    makeParkWhizProvider({
-      clientId: env.PARKWHIZ_CLIENT_ID,
-      clientSecret: env.PARKWHIZ_CLIENT_SECRET,
-    }),
-  );
+if (env.PARKWHIZ_ENABLED === "true") {
+  garageProviders.push(makeParkWhizProvider());
 }
 const garage = makeMultiGarageProvider(garageProviders);
 const linkClient =

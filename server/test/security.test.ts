@@ -155,6 +155,49 @@ describe("auth is default-on", () => {
 });
 
 describe("rate limiting", () => {
+  /** 30 garbage refreshes from one client, then one more from each of two
+   * clients. /auth/refresh is limited per IP (it runs before user auth). */
+  async function refreshBurst(onFly: boolean) {
+    const previous = process.env["FLY_APP_NAME"];
+    if (onFly) process.env["FLY_APP_NAME"] = "parkagent-api";
+    else delete process.env["FLY_APP_NAME"];
+    try {
+      // The limiters read the platform at registration.
+      const { app } = makeTestApp({});
+      const refresh = (ip: string) =>
+        app.inject({
+          method: "POST",
+          url: "/auth/refresh",
+          headers: { "fly-client-ip": ip },
+          payload: { refreshToken: "nope", deviceId: "d" },
+        });
+      for (let i = 0; i < 30; i += 1) {
+        expect((await refresh("203.0.113.7")).statusCode).not.toBe(429);
+      }
+      return {
+        sameClient: await refresh("203.0.113.7"),
+        otherClient: await refresh("198.51.100.9"),
+      };
+    } finally {
+      if (previous === undefined) delete process.env["FLY_APP_NAME"];
+      else process.env["FLY_APP_NAME"] = previous;
+    }
+  }
+
+  test("on Fly, per-IP limits key on Fly-Client-IP — one client can't lock out the rest", async () => {
+    // Every request reaches the app from Fly's proxy, so keying on the
+    // socket address made each "per-IP" bucket global.
+    const { sameClient, otherClient } = await refreshBurst(true);
+    expect(sameClient.statusCode).toBe(429);
+    expect(otherClient.statusCode).not.toBe(429);
+  });
+
+  test("off Fly, a caller-supplied Fly-Client-IP is ignored — no dodging the limit", async () => {
+    const { sameClient, otherClient } = await refreshBurst(false);
+    expect(sameClient.statusCode).toBe(429);
+    expect(otherClient.statusCode).toBe(429);
+  });
+
   test("the 31st /parked inside a minute is 429 with Retry-After", async () => {
     const { app } = makeTestApp({ candidates: [STEINWAY_A] });
     for (let i = 0; i < 30; i += 1) {
@@ -208,7 +251,7 @@ describe("rate limiting", () => {
   });
 
   test("limits are per user, not global", async () => {
-    let at = 0;
+    const at = 0;
     const limiter = makeRateLimiter({ max: 1, windowMs: 60_000, now: () => at });
     const codes: number[] = [];
     const reply = {

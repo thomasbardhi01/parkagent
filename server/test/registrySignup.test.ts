@@ -19,13 +19,24 @@ const fixtureFor: Record<string, string> = {
   parknyc: "test/fixtures/signup/parknyc-registration.html",
 };
 
-/** Does the fixture contain an element this (simple) selector matches? */
-function selectorInHtml(selector: string, html: string): boolean {
+/** The opening tag of the element this (simple) selector matches in the
+ * fixture, or null. */
+function matchedTag(selector: string, html: string): string | null {
   const id = /^#([\w-]+)$/.exec(selector);
-  if (id) return new RegExp(`id="${id[1]}"`).test(html);
+  if (id) return new RegExp(`<[a-z]+\\b[^>]*\\bid="${id[1]}"[^>]*>`, "i").exec(html)?.[0] ?? null;
   const named = /^input\[name=['"]?([\w-]+)['"]?\]$/.exec(selector);
-  if (named) return new RegExp(`<input[^>]*name="${named[1]}"`).test(html);
+  if (named) {
+    return new RegExp(`<input\\b[^>]*\\bname="${named[1]}"[^>]*>`, "i").exec(html)?.[0] ?? null;
+  }
   throw new Error(`registry uses a selector shape this test can't check: ${selector}`);
+}
+
+/** The fields the app may type into: plain text-entry inputs. */
+const TYPEABLE = new Set(["text", "email", "tel"]);
+
+function inputType(tag: string): string | null {
+  if (!/^<input\b/i.test(tag)) return null;
+  return (/\btype="([^"]*)"/i.exec(tag)?.[1] ?? "text").toLowerCase();
 }
 
 describe.each(allProviders().map((p): [string, ProviderInfo] => [p.id, p]))(
@@ -35,15 +46,26 @@ describe.each(allProviders().map((p): [string, ProviderInfo] => [p.id, p]))(
 
     test("every prefill selector matches the sign-up fixture", () => {
       for (const { field, selector } of provider.signup.prefill) {
-        expect(selectorInHtml(selector, html), `${field} → ${selector}`).toBe(true);
+        expect(matchedTag(selector, html), `${field} → ${selector}`).not.toBeNull();
       }
     });
 
-    test("prefill never touches checkboxes, passwords, or captcha", () => {
-      // The contract: text inputs only. Assert none of the selectors name
-      // the fixture's password/terms/captcha elements.
+    test("every prefill selector resolves to a text, email, or tel input — nothing else", () => {
+      // The contract, checked on what each selector actually HITS in the
+      // page, not on how the selector is spelled: a name like "pin" or an
+      // id on a checkbox would sail past a word list.
+      for (const { field, selector } of provider.signup.prefill) {
+        const tag = matchedTag(selector, html)!;
+        expect(TYPEABLE.has(inputType(tag) ?? ""), `${field} → ${selector} hits ${tag}`).toBe(true);
+      }
+    });
+
+    test("the fixture's password, checkbox, and hidden inputs are hit by no selector", () => {
+      const untouchable = [...html.matchAll(/<input\b[^>]*>/gi)]
+        .map((m) => m[0])
+        .filter((tag) => !TYPEABLE.has(inputType(tag) ?? ""));
       for (const { selector } of provider.signup.prefill) {
-        expect(selector).not.toMatch(/password|terms|captcha|accept/i);
+        expect(untouchable).not.toContain(matchedTag(selector, html));
       }
     });
 

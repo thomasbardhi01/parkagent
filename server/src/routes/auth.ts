@@ -175,7 +175,11 @@ export function registerAuth(app: FastifyInstance, deps: AppDeps): void {
     const parsed = refreshSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: z.treeifyError(parsed.error) });
 
-    const result = await rotateRefreshToken(service, parsed.data.refreshToken, parsed.data.deviceId);
+    const result = await rotateRefreshToken(
+      service,
+      parsed.data.refreshToken,
+      parsed.data.deviceId,
+    );
     if (!result.ok) return reply.code(401).send({ error: result.code });
     return sessionBody(result.session, false);
   });

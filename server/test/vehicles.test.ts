@@ -11,6 +11,15 @@ const HEADERS = { "x-api-key": API_KEY };
 
 test("GET /me returns the profile; PATCH edits name and phone", async () => {
   const { app, state } = makeTestApp({});
+  // Start from a VERIFIED phone, or "unverified after the edit" would be
+  // the seed's default rather than anything PATCH did.
+  Object.assign(
+    state.users.find((u) => u.id === "u1")!,
+    {
+      phone: "+1 617 555 0199",
+      phoneVerified: true,
+    },
+  );
   const me = await app.inject({ method: "GET", url: "/me", headers: HEADERS });
   expect(me.statusCode).toBe(200);
   expect(me.json().user.name).toBe("Thomas");
@@ -63,6 +72,14 @@ test("vehicles: add, list, edit, remove — scoped to the caller", async () => {
     payload: { label: "mine now" },
   });
   expect(foreignPatch.statusCode).toBe(404);
+  const foreignDelete = await app.inject({
+    method: "DELETE",
+    url: `/me/vehicles/${vehicle.id}`,
+    headers: otherHeaders,
+  });
+  expect(foreignDelete.statusCode).toBe(404);
+  const stillThere = await app.inject({ method: "GET", url: "/me/vehicles", headers: HEADERS });
+  expect(stillThere.json().vehicles.map((v: { id: string }) => v.id)).toEqual([vehicle.id]);
 
   const patched = await app.inject({
     method: "PATCH",

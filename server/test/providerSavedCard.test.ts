@@ -11,9 +11,7 @@ import { API_KEY, makeFakeProviderOps, makeTestApp } from "./helpers.js";
 
 const HEADERS = { "x-api-key": API_KEY };
 
-const COOKIES = [
-  { name: "session", value: "abc", domain: ".ppprk.com", path: "/" },
-];
+const COOKIES = [{ name: "session", value: "abc", domain: ".ppprk.com", path: "/" }];
 
 function link(app: ReturnType<typeof makeTestApp>["app"]) {
   return app.inject({
@@ -68,9 +66,9 @@ test("a failed read never blocks the link — nulls are stored", async () => {
 test("issuing_card users never trigger the saved-card read", async () => {
   let readCalls = 0;
   const { app } = makeTestApp({
+    // The ONE difference from the provider_card test above.
     paymentSource: "issuing_card",
     seedLinkedProvider: false,
-    stripe: undefined,
     providerOps: () =>
       makeFakeProviderOps({
         readSavedCard: async () => {

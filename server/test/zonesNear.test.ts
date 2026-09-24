@@ -7,7 +7,15 @@
 
 import { expect, test } from "vitest";
 
-import { API_KEY, MONDAY_2PM, MONDAY_8PM, makeTestApp } from "./helpers.js";
+import {
+  API_KEY,
+  MONDAY_2PM,
+  MONDAY_8PM,
+  NONADMIN_API_KEY,
+  TEST_JWT_SECRET,
+  makeTestApp,
+} from "./helpers.js";
+import { signAccessToken } from "../src/services/authTokens.js";
 import type { NearbyZone } from "../src/services/zoneLookup.js";
 import {
   makeNearbyZoneFetcher,
@@ -160,10 +168,50 @@ test("bad or missing coordinates are rejected", async () => {
   expect((await get(app, "lat=nope&lng=-71.08")).statusCode).toBe(400);
 });
 
-test("the endpoint needs an api key like every other private route", async () => {
+test("the endpoint needs a credential like every other private route", async () => {
   const { app } = makeTestApp({ nearbyZones: [BOYLSTON] });
   const res = await app.inject({ method: "GET", url: "/zones/near?lat=42.35&lng=-71.08" });
   expect(res.statusCode).toBe(401);
+});
+
+test("the app's Bearer access token reaches it — the map works signed in", async () => {
+  const { app, state } = makeTestApp({ nearbyZones: [BOYLSTON], now: () => new Date(MONDAY_2PM) });
+  const user = state.users.find((u) => u.id === "u1")!;
+  const { token } = signAccessToken(TEST_JWT_SECRET, user, new Date(MONDAY_2PM));
+  const res = await app.inject({
+    method: "GET",
+    url: "/zones/near?lat=42.3503&lng=-71.081",
+    headers: { authorization: `Bearer ${token}` },
+  });
+  expect(res.statusCode).toBe(200);
+  expect(res.json().zones.map((z: { zoneId: string }) => z.zoneId)).toEqual([BOYLSTON.zoneId]);
+});
+
+test("rate-limited per user, whichever credential the user presents", async () => {
+  const { app, state } = makeTestApp({ nearbyZones: [BOYLSTON], now: () => new Date(MONDAY_2PM) });
+  const user = state.users.find((u) => u.id === "u1")!;
+  const { token } = signAccessToken(TEST_JWT_SECRET, user, new Date(MONDAY_2PM));
+  const bearer = { authorization: `Bearer ${token}` };
+  const url = "/zones/near?lat=42.3503&lng=-71.081";
+
+  // 60/min, spent half through the JWT and half through u1's api key: one
+  // bucket, because the limiter keys on the user, not the credential.
+  for (let i = 0; i < 30; i += 1) {
+    expect((await app.inject({ method: "GET", url, headers: bearer })).statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url, headers: HEADERS })).statusCode).toBe(200);
+  }
+  const blocked = await app.inject({ method: "GET", url, headers: bearer });
+  expect(blocked.statusCode).toBe(429);
+  expect(blocked.json()).toEqual({ error: "rate_limited" });
+  expect(Number(blocked.headers["retry-after"])).toBeGreaterThan(0);
+
+  // Another user's map is unaffected.
+  const other = await app.inject({
+    method: "GET",
+    url,
+    headers: { "x-api-key": NONADMIN_API_KEY },
+  });
+  expect(other.statusCode).toBe(200);
 });
 
 test("501 when the deployment has no geometry fetcher wired", async () => {

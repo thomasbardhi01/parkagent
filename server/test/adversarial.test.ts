@@ -146,10 +146,29 @@ describe("/session/start adversarial states", () => {
     const t = makeTestApp({ zones: [NYC_ZONE], seedLinkedProvider: false });
     seedProviderAccount(t.state, { status: "expired" });
     seedParkedEvent(t.state);
-    const res = await post(t.app, "/session/start", { parkedEventId: "pe1", zoneId: NYC_ZONE.zoneId });
+    const res = await post(t.app, "/session/start", {
+      parkedEventId: "pe1",
+      zoneId: NYC_ZONE.zoneId,
+    });
     expect(res.statusCode).toBe(409);
     expect(res.json()).toMatchObject({ error: "provider_not_linked", provider: "parknyc" });
     expect(t.state.decisions.at(-1)!.rule).toBe("provider_not_linked");
+  });
+
+  test("an EXPIRING link still pays — only expired/unlinked refuse", async () => {
+    // The pair to the test above: "expiring" is the health job's early
+    // nudge (cookies die within days), and a `status === "linked"` check
+    // anywhere on the pay path would silently stop paying for it.
+    const t = makeTestApp({ zones: [NYC_ZONE], seedLinkedProvider: false });
+    seedProviderAccount(t.state, { status: "expiring" });
+    seedParkedEvent(t.state);
+    const res = await post(t.app, "/session/start", {
+      parkedEventId: "pe1",
+      zoneId: NYC_ZONE.zoneId,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().sessionId).toEqual(expect.any(String));
+    expect(t.state.decisions.some((d) => d.rule === "provider_not_linked")).toBe(false);
   });
 
   test("a start during a wholly free period is refused, not sent to the executor", async () => {
@@ -158,7 +177,10 @@ describe("/session/start adversarial states", () => {
     // the quote never priced.
     const t = makeTestApp({ zones: [NYC_ZONE], now: () => new Date("2026-01-05T20:00:00-05:00") });
     seedParkedEvent(t.state);
-    const res = await post(t.app, "/session/start", { parkedEventId: "pe1", zoneId: NYC_ZONE.zoneId });
+    const res = await post(t.app, "/session/start", {
+      parkedEventId: "pe1",
+      zoneId: NYC_ZONE.zoneId,
+    });
     expect(res.statusCode).toBe(409);
     expect(res.json()).toMatchObject({ error: "policy_violation", rule: "free_period" });
     expect(t.state.sessions).toHaveLength(0);
@@ -171,7 +193,10 @@ describe("/session/start adversarial states", () => {
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
     let executorCalls = 0;
-    const dry = new DryRunExecutor(() => {}, () => NOW);
+    const dry = new DryRunExecutor(
+      () => {},
+      () => NOW,
+    );
     const slowExecutor: Executor = {
       async startSession(args): Promise<ExecutorResult> {
         executorCalls += 1;
@@ -204,7 +229,10 @@ describe("/session/start adversarial states", () => {
       status: "pending",
       createdAt: new Date(NOW.getTime() - 30 * 60_000),
     });
-    const res = await post(t.app, "/session/start", { parkedEventId: "pe1", zoneId: NYC_ZONE.zoneId });
+    const res = await post(t.app, "/session/start", {
+      parkedEventId: "pe1",
+      zoneId: NYC_ZONE.zoneId,
+    });
     expect(res.statusCode).toBe(200);
     expect(t.state.sessions[0]!.status).toBe("failed");
   });
@@ -213,7 +241,10 @@ describe("/session/start adversarial states", () => {
     const t = makeTestApp({ zones: [NYC_ZONE] });
     seedParkedEvent(t.state);
     seedSession(t.state, { status: "pending", createdAt: NOW });
-    const res = await post(t.app, "/session/start", { parkedEventId: "pe1", zoneId: NYC_ZONE.zoneId });
+    const res = await post(t.app, "/session/start", {
+      parkedEventId: "pe1",
+      zoneId: NYC_ZONE.zoneId,
+    });
     expect(res.statusCode).toBe(409);
     expect(res.json().error).toBe("session_already_active");
   });
@@ -229,7 +260,10 @@ function tickApp() {
   return { ...t, extender };
 }
 
-function tickSession(state: ReturnType<typeof makeTestApp>["state"], overrides: Partial<SessionRow> = {}): SessionRow {
+function tickSession(
+  state: ReturnType<typeof makeTestApp>["state"],
+  overrides: Partial<SessionRow> = {},
+): SessionRow {
   return seedSession(state, {
     status: "active",
     dryRun: true,
@@ -253,7 +287,12 @@ function tickSession(state: ReturnType<typeof makeTestApp>["state"], overrides: 
   });
 }
 
-function addFix(state: ReturnType<typeof makeTestApp>["state"], sessionId: string, distM: number, ageMs: number) {
+function addFix(
+  state: ReturnType<typeof makeTestApp>["state"],
+  sessionId: string,
+  distM: number,
+  ageMs: number,
+) {
   state.locationFixes.push({
     id: `f${state.locationFixes.length + 1}`,
     sessionId,
@@ -315,7 +354,13 @@ describe("extension worker degraded location", () => {
 
   test("pReturnInTime: standing at the car beats the heading buckets", () => {
     expect(
-      pReturnInTime({ heading: "still", walkEtaMin: 0.2, remainingMin: 8, elapsedMin: 80, dwellP50Min: 180 }),
+      pReturnInTime({
+        heading: "still",
+        walkEtaMin: 0.2,
+        remainingMin: 8,
+        elapsedMin: 80,
+        dwellP50Min: 180,
+      }),
     ).toBe(0.98);
   });
 });
@@ -443,7 +488,12 @@ describe("PUT /policy malformed input", () => {
   test("valid JSON with an unknown key is a 400 with zod details", async () => {
     const { app, deps } = makeTestApp({});
     const body = { ...deps.policy.get(), definitely_not_a_key: 1 };
-    const res = await app.inject({ method: "PUT", url: "/policy", headers: HEADERS, payload: body });
+    const res = await app.inject({
+      method: "PUT",
+      url: "/policy",
+      headers: HEADERS,
+      payload: body,
+    });
     expect(res.statusCode).toBe(400);
   });
 });

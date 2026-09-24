@@ -94,11 +94,32 @@ export function registerMe(app: FastifyInstance, deps: AppDeps): void {
     const user = req.authedUser!;
     const db = deps.db;
 
-    // 1. Sessions out everywhere: refresh tokens and push channels gone.
+    // 1. Freeze (never cancel) any issued card — its authorizations must
+    //    keep resolving against a live Stripe object. First, because it is
+    //    the one step that calls out and can fail: a Stripe error here
+    //    leaves the account untouched and the delete safely retryable,
+    //    instead of half torn down with a card still spending.
+    let cardFrozen = false;
+    const holder = await db.issuingCardholder.findUnique({
+      where: { userId: user.id },
+      include: { cards: true },
+    });
+    for (const card of holder?.cards ?? []) {
+      if (card.status === "active" && deps.stripe) {
+        const status = await deps.stripe.setCardStatus(card.stripeCardId, "inactive");
+        await db.issuingCard.update({
+          where: { stripeCardId: card.stripeCardId },
+          data: { status },
+        });
+        cardFrozen = true;
+      }
+    }
+
+    // 2. Sessions out everywhere: refresh tokens and push channels gone.
     await db.refreshToken.deleteMany({ where: { userId: user.id } });
     await db.deviceToken.deleteMany({ where: { userId: user.id } });
 
-    // 2. Provider accounts: unlink and erase the sealed cookie states.
+    // 3. Provider accounts: unlink and erase the sealed cookie states.
     const accounts = await db.providerAccount.findMany({ where: { userId: user.id } });
     await db.providerAccount.updateMany({
       where: { userId: user.id },
@@ -110,21 +131,6 @@ export function registerMe(app: FastifyInstance, deps: AppDeps): void {
         cardLast4: null,
       },
     });
-
-    // 3. Freeze (never cancel) any issued card — its authorizations must
-    //    keep resolving against a live Stripe object.
-    let cardFrozen = false;
-    const holder = await db.issuingCardholder.findUnique({
-      where: { userId: user.id },
-      include: { cards: true },
-    });
-    for (const card of holder?.cards ?? []) {
-      if (card.status === "active" && deps.stripe) {
-        const status = await deps.stripe.setCardStatus(card.stripeCardId, "inactive");
-        await db.issuingCard.update({ where: { stripeCardId: card.stripeCardId }, data: { status } });
-        cardFrozen = true;
-      }
-    }
 
     // 4. Personal data: vehicles (sessions detach first — they are the
     //    money audit and stay), and assistant conversations.
@@ -165,12 +171,12 @@ export function registerMe(app: FastifyInstance, deps: AppDeps): void {
 
   // ----------------------------------------------------------------- Vehicles
 
-  const vehicleBody = (v: {
-    id: string;
-    plate: string;
-    state: string;
-    label: string | null;
-  }) => ({ id: v.id, plate: v.plate, state: v.state, label: v.label });
+  const vehicleBody = (v: { id: string; plate: string; state: string; label: string | null }) => ({
+    id: v.id,
+    plate: v.plate,
+    state: v.state,
+    label: v.label,
+  });
 
   app.get("/me/vehicles", async (req) => {
     const rows = await deps.db.vehicle.findMany({

@@ -206,8 +206,7 @@ export type TopupWalletResult = { ok: true; walletBalanceCents: number | null } 
  * read from its Your Cards screen for display (provider_card users).
  * Nulls mean no card was listed (or details were hidden) — a success. */
 export type ReadSavedCardResult =
-  | { ok: true; brand: string | null; last4: string | null }
-  | ProviderOpError;
+  { ok: true; brand: string | null; last4: string | null } | ProviderOpError;
 
 /**
  * The sensitive card fields the payment form needs, fetched by the SERVER

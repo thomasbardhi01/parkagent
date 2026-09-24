@@ -16,19 +16,49 @@ export interface Jwk {
   e?: string;
 }
 
-export type JwksFetcher = () => Promise<{ keys: Jwk[] }>;
+export type JwksFetcher = (options?: { force?: boolean }) => Promise<{ keys: Jwk[] }>;
 
-/** Fetch-backed JWKS source with a 1-hour cache and a forced refetch when
- * a token names a kid the cache doesn't know (issuer key rotation). */
-export function makeJwksFetcher(url: string): JwksFetcher {
+/** Keys are cached for an hour. */
+export const JWKS_CACHE_MS = 60 * 60 * 1000;
+/** A forced refetch (a token named a kid the cache doesn't know — the
+ * issuer rotated keys) waits at least this long after the last fetch, so
+ * tokens with made-up kids can't turn every sign-in into a JWKS request. */
+export const JWKS_MIN_REFETCH_MS = 60 * 1000;
+
+/** Fetch-backed JWKS source: a 1-hour cache, a real forced refetch on an
+ * unknown kid (it used to hand back the same cache, so an Apple key
+ * rotation failed every sign-in for up to an hour), one fetch in flight at
+ * a time, and a timeout — an issuer that hangs mustn't hang sign-in. */
+export function makeJwksFetcher(
+  url: string,
+  options: { fetchImpl?: typeof fetch; now?: () => number } = {},
+): JwksFetcher {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const now = options.now ?? Date.now;
   let cached: { keys: Jwk[]; at: number } | null = null;
-  return async () => {
-    if (cached && Date.now() - cached.at < 60 * 60 * 1000) return { keys: cached.keys };
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`JWKS fetch failed: ${response.status}`);
-    const body = (await response.json()) as { keys: Jwk[] };
-    cached = { keys: body.keys, at: Date.now() };
-    return { keys: body.keys };
+  let inFlight: Promise<{ keys: Jwk[] }> | null = null;
+
+  const refetch = (): Promise<{ keys: Jwk[] }> => {
+    inFlight ??= (async () => {
+      try {
+        const response = await fetchImpl(url, { signal: AbortSignal.timeout(5000) });
+        if (!response.ok) throw new Error(`JWKS fetch failed: ${response.status}`);
+        const body = (await response.json()) as { keys: Jwk[] };
+        cached = { keys: body.keys, at: now() };
+        return { keys: body.keys };
+      } finally {
+        inFlight = null;
+      }
+    })();
+    return inFlight;
+  };
+
+  return async ({ force = false } = {}) => {
+    const age = cached ? now() - cached.at : Infinity;
+    if (cached && age < JWKS_CACHE_MS && !(force && age >= JWKS_MIN_REFETCH_MS)) {
+      return { keys: cached.keys };
+    }
+    return refetch();
   };
 }
 
@@ -45,14 +75,10 @@ export interface VerifiedIdToken {
 }
 
 export type IdTokenError =
-  | "malformed"
-  | "unknown_key"
-  | "bad_signature"
-  | "wrong_issuer"
-  | "wrong_audience"
-  | "expired";
+  "malformed" | "unknown_key" | "bad_signature" | "wrong_issuer" | "wrong_audience" | "expired";
 
-export type IdTokenResult = { ok: true; token: VerifiedIdToken } | { ok: false; code: IdTokenError };
+export type IdTokenResult =
+  { ok: true; token: VerifiedIdToken } | { ok: false; code: IdTokenError };
 
 interface RawClaims {
   iss?: string;
@@ -99,7 +125,7 @@ export async function verifyIdToken(args: {
   let jwk = jwks.keys.find((k) => k.kid === header.kid);
   if (!jwk) {
     // The issuer may have rotated keys since the cache filled.
-    jwks = await args.fetchKeys();
+    jwks = await args.fetchKeys({ force: true });
     jwk = jwks.keys.find((k) => k.kid === header.kid);
   }
   if (!jwk || jwk.kty !== "RSA" || !jwk.n || !jwk.e) return { ok: false, code: "unknown_key" };
@@ -130,8 +156,7 @@ export async function verifyIdToken(args: {
   }
 
   const name =
-    claims.name ??
-    ([claims.given_name, claims.family_name].filter(Boolean).join(" ") || undefined);
+    claims.name ?? ([claims.given_name, claims.family_name].filter(Boolean).join(" ") || undefined);
   return {
     ok: true,
     token: {

@@ -333,26 +333,36 @@ export interface AppDb {
       where: { id: string };
       data: { rotatedAt?: Date; revokedAt?: Date };
     }): Promise<unknown>;
-    /** Reuse detection's kill switch: revoke every live token in a family. */
-    updateMany(args: {
-      where: { familyId: string; revokedAt: null };
-      data: { revokedAt: Date };
-    }): Promise<{ count: number }>;
+    /** Two shapes: reuse detection's kill switch (revoke every live token
+     * in a family), and rotation's compare-and-set (stamp one token rotated
+     * only if nobody else already has — count 0 means a racing replay). */
+    updateMany(
+      args:
+        | { where: { familyId: string; revokedAt: null }; data: { revokedAt: Date } }
+        | { where: { id: string; rotatedAt: null; revokedAt: null }; data: { rotatedAt: Date } },
+    ): Promise<{ count: number }>;
     deleteMany(args: { where: { userId: string } }): Promise<{ count: number }>;
   };
   emailLoginCode: {
     create(args: {
-      data: { email: string; codeHash: string; expiresAt: Date };
+      data: { email: string; codeHash: string; expiresAt: Date; createdAt?: Date };
     }): Promise<{ id: string }>;
     /** The newest unconsumed code for the address — the one verify checks. */
     findFirst(args: {
       where: { email: string; consumedAt: null };
       orderBy: { createdAt: "desc" };
     }): Promise<EmailLoginCodeRow | null>;
-    update(args: {
-      where: { id: string };
-      data: { attempts?: number; consumedAt?: Date };
-    }): Promise<unknown>;
+    /** Conditional writes, so concurrent verifies can't share an attempt or
+     * both consume the code: claim one attempt while under the cap, and
+     * consume only while unconsumed. count 0 means someone else got there. */
+    updateMany(
+      args:
+        | {
+            where: { id: string; consumedAt: null; attempts: { lt: number } };
+            data: { attempts: { increment: number } };
+          }
+        | { where: { id: string; consumedAt: null }; data: { consumedAt: Date } },
+    ): Promise<{ count: number }>;
     /** Per-email send throttle: codes issued to the address since `gte`. */
     count(args: { where: { email: string; createdAt: { gte: Date } } }): Promise<number>;
   };

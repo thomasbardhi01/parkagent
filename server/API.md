@@ -37,7 +37,10 @@ column in SQL for an existing user). Abuse-prone routes are rate-limited per use
 reads 60/min, `/zones/:zoneId/provider-number` 12/min, `/zones/near` 60/min. The `/auth/*`
 routes run before user auth, so they are limited per IP: email start
 10/15 min, email verify 15/15 min, token exchanges 30/min — plus a
-per-address cap on code sends (see `/auth/email/start`). Unhandled errors
+per-address cap on code sends (see `/auth/email/start`). On Fly the IP is
+the edge's `Fly-Client-IP` (the socket peer is Fly's proxy, which would
+make every "per-IP" bucket global); off Fly that header is ignored, since
+any caller could set it. Unhandled errors
 answer `500 {"error": "internal"}` — details go to the server log only.
 
 ---
@@ -64,8 +67,14 @@ matches (see "Merging"):
 **Merging.** An account is keyed by provider subject first
 (`apple_sub` / `google_sub`), then by **verified** email — so Apple,
 Google, and email sign-ins with the same verified address all resolve to
-one user, and the new subject is attached to it. An unverified email
-never merges (it would let anyone claim an address they don't own).
+one user, and the new subject is attached to it — unless the account
+already has a different subject of that kind, which is kept rather than
+replaced. An unverified IdP email is **not stored at all** (Google, and
+Apple for some managed accounts, can send one): kept in the unique email
+column it would squat the owner's address, who would then either land in
+the squatter's account by email code or collide on the index forever. An
+account found holding an address it never verified gives it up to the
+first sign-in that proves the mailbox.
 
 **Sessions.** A sign-in returns a 15-minute access JWT plus an opaque
 refresh token. Refresh tokens are stored only as
@@ -101,8 +110,10 @@ one but not the other).
 
 `{email}` → `{"ok": true}`, and a 6-digit code is mailed via Resend. The
 code is stored hashed; the plaintext exists only in the email. At most 5
-codes per address per 15 minutes (`429 email_rate_limited`) on top of the
-per-IP limit. `503 {"error": "email_not_configured"}` when
+codes per address per 15 minutes and 10 per 24 hours
+(`429 email_rate_limited`) on top of the per-IP limit — with 5 attempts a
+code, that bounds guessing at one address to 50 a day however many IPs
+ask. `503 {"error": "email_not_configured"}` when
 `RESEND_API_KEY` isn't set; `502 send_failed` when Resend refuses.
 
 The response is identical whether or not the address has an account —
@@ -113,7 +124,10 @@ this endpoint must not become an account-existence oracle.
 `{email, code, deviceId}` → the session body. Wrong code →
 `401 invalid_code`; past 10 minutes → `401 code_expired`; after 5 failed
 attempts the code is burnt and even the right one answers
-`401 too_many_attempts`. A successful verify consumes the code.
+`401 too_many_attempts`. Each attempt is claimed with one conditional
+write before the comparison, so concurrent guesses can't share a count,
+and a successful verify consumes the code the same way (two right answers
+racing get one session).
 
 ### POST /auth/refresh
 
@@ -121,6 +135,10 @@ attempts the code is burnt and even the right one answers
 new refresh token — store both). Failures, all `401`: `invalid_token`
 (unknown or revoked), `token_reused` (already rotated — the family is now
 revoked), `token_expired` (past the 60-day slide), `device_mismatch`.
+Rotation claims the old token with a conditional write, so two requests
+racing with the same token can't both mint a successor; the loser is
+reuse. Clients should sign out only on these `401`s (and `400`/`403`) — a
+`429` or `5xx` is no verdict on the token.
 
 ### POST /auth/logout
 
@@ -158,11 +176,13 @@ its own verification flow.
 
 Irreversible; the app confirms in two steps. In order:
 
-1. refresh tokens deleted (every device signs out) and device tokens
+1. any Issuing card **frozen, never canceled** — a card that has
+   transacted must keep resolving its authorizations. First, because it
+   is the one step that calls out: a Stripe failure answers `500` with
+   the account untouched and the delete safely retryable;
+2. refresh tokens deleted (every device signs out) and device tokens
    deleted (push channels released);
-2. provider accounts unlinked and their **sealed cookie state erased**;
-3. any Issuing card **frozen, never canceled** — a card that has
-   transacted must keep resolving its authorizations;
+3. provider accounts unlinked and their **sealed cookie state erased**;
 4. vehicles and assistant conversations deleted (sessions detach from
    the vehicle but remain — they are the money audit);
 5. the `users` row is **tombstoned**: name becomes "Deleted account",
@@ -1089,7 +1109,10 @@ re-link simply unfreezes-by-setup later.
 Not an endpoint: an in-process job (`jobs/providerHealthTick.ts`) verifies
 every `linked`/`expiring` account headlessly once a day, so a dead or
 dying provider session is fixed on the couch rather than discovered at the
-curb. Per account:
+curb. It also runs 30 s after every boot, and a pass skips any account
+verified in the last 20 hours — so a day of deploys neither re-verifies
+every session against the provider's site nor repeats the same
+"Reconnect" push once per restart. Per account:
 
 | Outcome | Condition | Effect |
 |---|---|---|

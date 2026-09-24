@@ -122,8 +122,23 @@ export async function rotateRefreshToken(
   const user = await deps.db.user.findUnique({ where: { id: row.userId } });
   if (!user || user.deletedAt) return { ok: false, code: "invalid_token" };
 
+  // Claim the rotation atomically. Two requests racing with the same token
+  // both pass the rotatedAt check above; without a conditional write both
+  // would mint a successor and the family would fork, which is exactly the
+  // replay reuse detection exists to catch. The loser is reuse.
+  const claimed = await deps.db.refreshToken.updateMany({
+    where: { id: row.id, rotatedAt: null, revokedAt: null },
+    data: { rotatedAt: now },
+  });
+  if (claimed.count !== 1) {
+    await deps.db.refreshToken.updateMany({
+      where: { familyId: row.familyId, revokedAt: null },
+      data: { revokedAt: now },
+    });
+    return { ok: false, code: "token_reused" };
+  }
+
   const next = generateRefreshToken();
-  await deps.db.refreshToken.update({ where: { id: row.id }, data: { rotatedAt: now } });
   await deps.db.refreshToken.create({
     data: {
       userId: row.userId,
@@ -166,13 +181,18 @@ export const EMAIL_CODE_MAX_ATTEMPTS = 5;
 /** Codes per address per window — a mailbox is not a bell to ring. */
 export const EMAIL_START_MAX_PER_WINDOW = 5;
 export const EMAIL_START_WINDOW_MS = 15 * 60 * 1000;
+/** And per day: with 5 attempts a code, this bounds guessing at any one
+ * address to 50 a day however many IPs the guesser has — against a
+ * 6-digit code that is ~0.005% a day, where the 15-minute cap alone
+ * allowed 2,400 guesses (~0.24% a day). */
+export const EMAIL_START_MAX_PER_DAY = 10;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 const hashCode = (secret: string, email: string, code: string): string =>
   createHash("sha256").update(`${secret}:${email}:${code}`).digest("hex");
 
 export type EmailStartResult =
-  | { ok: true }
-  | { ok: false; code: "email_rate_limited" | "email_not_configured" | "send_failed" };
+  { ok: true } | { ok: false; code: "email_rate_limited" | "email_not_configured" | "send_failed" };
 
 export async function startEmailLogin(deps: AuthDeps, rawEmail: string): Promise<EmailStartResult> {
   if (!deps.emailSender) return { ok: false, code: "email_not_configured" };
@@ -182,6 +202,10 @@ export async function startEmailLogin(deps: AuthDeps, rawEmail: string): Promise
     where: { email, createdAt: { gte: new Date(now.getTime() - EMAIL_START_WINDOW_MS) } },
   });
   if (recent >= EMAIL_START_MAX_PER_WINDOW) return { ok: false, code: "email_rate_limited" };
+  const today = await deps.db.emailLoginCode.count({
+    where: { email, createdAt: { gte: new Date(now.getTime() - DAY_MS) } },
+  });
+  if (today >= EMAIL_START_MAX_PER_DAY) return { ok: false, code: "email_rate_limited" };
 
   // 6 digits, leading zeros allowed, from the CSPRNG — the code is a
   // credential, so Math.random is not acceptable.
@@ -191,6 +215,9 @@ export async function startEmailLogin(deps: AuthDeps, rawEmail: string): Promise
       email,
       codeHash: hashCode(deps.jwtSecret, email, code),
       expiresAt: new Date(now.getTime() + EMAIL_CODE_TTL_MS),
+      // The app's clock, not the database's: the throttle windows above
+      // are measured with it.
+      createdAt: now,
     },
   });
   const sent = await deps.emailSender.sendLoginCode(email, code);
@@ -218,18 +245,27 @@ export async function verifyEmailLogin(
   });
   if (!row) return { ok: false, code: "invalid_code" };
   if (row.expiresAt.getTime() <= now.getTime()) return { ok: false, code: "code_expired" };
-  if (row.attempts >= EMAIL_CODE_MAX_ATTEMPTS) return { ok: false, code: "too_many_attempts" };
+  // Claim an attempt BEFORE comparing, as one conditional write. Reading
+  // `attempts` and writing it back +1 let concurrent guesses all read the
+  // same count, so a burst got far more than five tries at the code.
+  const attemptsBefore = row.attempts;
+  const claimed = await deps.db.emailLoginCode.updateMany({
+    where: { id: row.id, consumedAt: null, attempts: { lt: EMAIL_CODE_MAX_ATTEMPTS } },
+    data: { attempts: { increment: 1 } },
+  });
+  if (claimed.count !== 1) return { ok: false, code: "too_many_attempts" };
   if (row.codeHash !== hashCode(deps.jwtSecret, email, code)) {
-    await deps.db.emailLoginCode.update({
-      where: { id: row.id },
-      data: { attempts: row.attempts + 1 },
-    });
     return {
       ok: false,
-      code: row.attempts + 1 >= EMAIL_CODE_MAX_ATTEMPTS ? "too_many_attempts" : "invalid_code",
+      code: attemptsBefore + 1 >= EMAIL_CODE_MAX_ATTEMPTS ? "too_many_attempts" : "invalid_code",
     };
   }
-  await deps.db.emailLoginCode.update({ where: { id: row.id }, data: { consumedAt: now } });
+  // Consume conditionally too: two right answers racing get one session.
+  const consumed = await deps.db.emailLoginCode.updateMany({
+    where: { id: row.id, consumedAt: null },
+    data: { consumedAt: now },
+  });
+  if (consumed.count !== 1) return { ok: false, code: "invalid_code" };
 
   const found = await findOrCreateByEmail(deps, email);
   const session = await issueSession(deps, found.user, deviceId);
@@ -244,17 +280,14 @@ async function findOrCreateByEmail(
   email: string,
 ): Promise<{ user: UserIdentityRow; created: boolean }> {
   const existing = await deps.db.user.findUnique({ where: { email } });
-  if (existing && !existing.deletedAt) {
-    if (!existing.emailVerified) {
-      // They just proved the mailbox: the flag flips here.
-      const updated = await deps.db.user.update({
-        where: { id: existing.id },
-        data: { emailVerified: true },
-      });
-      return { user: updated, created: false };
-    }
+  if (existing && !existing.deletedAt && existing.emailVerified) {
     return { user: existing, created: false };
   }
+  // An account holding this address UNVERIFIED is not the mailbox owner's
+  // account — handing it over would give the owner someone else's cars and
+  // provider links, and leave that someone able to sign in to what the
+  // owner then adds. Free the address and make the prover their own.
+  await releaseUnverifiedEmail(deps, existing);
   const user = await deps.db.user.create({
     data: { name: nameFromEmail(email), email, emailVerified: true },
   });
@@ -292,30 +325,55 @@ export async function findOrCreateByProviderIdentity(
   );
   if (bySub && !bySub.deletedAt) return { user: bySub, created: false };
 
-  const email = identity.email ? normalizeEmail(identity.email) : null;
-  if (email && identity.emailVerified) {
+  // Only a VERIFIED address is kept at all. Google, and Apple for some
+  // managed accounts, can hand over an email the IdP never verified; stored
+  // in the unique email column, it would squat the real owner's address —
+  // their email sign-in would land in this account, or their verified
+  // Apple sign-in would collide on the unique index and fail forever.
+  const email = identity.email && identity.emailVerified ? normalizeEmail(identity.email) : null;
+  if (email) {
     const byEmail = await deps.db.user.findUnique({ where: { email } });
     if (byEmail && !byEmail.deletedAt && byEmail.emailVerified) {
-      const updated = await deps.db.user.update({
-        where: { id: byEmail.id },
-        data: { [subField]: identity.sub },
-      });
+      // Attach the subject only where the account has none: a DIFFERENT
+      // subject already there stays, rather than being silently replaced
+      // (and ping-ponged on each identity's next sign-in). The verified
+      // address alone is what lets this identity in, as with email codes.
+      const updated = byEmail[subField]
+        ? byEmail
+        : await deps.db.user.update({
+            where: { id: byEmail.id },
+            data: { [subField]: identity.sub },
+          });
       await recordIdentityDecision(deps, byEmail.id, "identity_merged", {
         provider: identity.provider,
+        subjectAttached: !byEmail[subField],
       });
       return { user: updated, created: false };
     }
+    await releaseUnverifiedEmail(deps, byEmail);
   }
 
   const user = await deps.db.user.create({
     data: {
       name: identity.name ?? (email ? nameFromEmail(email) : "Driver"),
-      ...(email ? { email, emailVerified: identity.emailVerified } : {}),
+      ...(email ? { email, emailVerified: true } : {}),
       [subField]: identity.sub,
     },
   });
   await recordIdentityDecision(deps, user.id, "user_created", { via: identity.provider });
   return { user, created: true };
+}
+
+/** A live account holding an address it never verified gives it up, so
+ * the verified owner can have it. None should exist (nothing stores an
+ * unverified address any more); this is the backstop. */
+async function releaseUnverifiedEmail(
+  deps: AuthDeps,
+  holder: UserIdentityRow | null,
+): Promise<void> {
+  if (!holder || holder.deletedAt || holder.emailVerified) return;
+  await deps.db.user.update({ where: { id: holder.id }, data: { email: null } });
+  await recordIdentityDecision(deps, holder.id, "unverified_email_released", {});
 }
 
 /** Identity changes are consequential enough to audit — but the inputs

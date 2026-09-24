@@ -470,6 +470,13 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
         return match ? withSource(match) : null;
       },
       create: async ({ data }) => {
+        // users.email is UNIQUE in Postgres; a fake that let duplicates in
+        // hid a sign-in that would 500 in production.
+        if (data.email && state.users.some((u) => u.email === data.email)) {
+          throw Object.assign(new Error("Unique constraint failed on users.email"), {
+            code: "P2002",
+          });
+        }
         const row = seedUser(`u${state.users.length + 1}`, data.name, false, {
           email: data.email ?? null,
           emailVerified: data.emailVerified ?? false,
@@ -486,7 +493,8 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
         if (data.paymentSource !== undefined) {
           state.userPaymentSources[where.id] = data.paymentSource;
         }
-        const { paymentSource: _ignored, ...rest } = data;
+        const rest = { ...data };
+        delete rest.paymentSource;
         Object.assign(row, rest);
         return withSource(row);
       },
@@ -513,7 +521,13 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
       updateMany: async ({ where, data }) => {
         let count = 0;
         for (const t of state.refreshTokens) {
-          if (t.familyId === where.familyId && t.revokedAt === null) {
+          // Mirrors Prisma: every where-field must match, nulls included,
+          // which is what makes the rotation claim a compare-and-set.
+          const matches =
+            "id" in where
+              ? t.id === where.id && t.rotatedAt === null && t.revokedAt === null
+              : t.familyId === where.familyId && t.revokedAt === null;
+          if (matches) {
             Object.assign(t, data);
             count += 1;
           }
@@ -544,10 +558,19 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
           .reverse()
           .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
           .find((c) => c.email === where.email && c.consumedAt === null) ?? null,
-      update: async ({ where, data }) => {
+      updateMany: async ({ where, data }) => {
         const row = state.emailLoginCodes.find((c) => c.id === where.id);
-        if (row) Object.assign(row, data);
-        return row ?? {};
+        // Every where-field must match, as in Postgres — that is the claim.
+        if (
+          !row ||
+          row.consumedAt !== null ||
+          ("attempts" in where && !(row.attempts < where.attempts.lt))
+        ) {
+          return { count: 0 };
+        }
+        if ("attempts" in data) row.attempts += data.attempts.increment;
+        else row.consumedAt = data.consumedAt;
+        return { count: 1 };
       },
       count: async ({ where }) =>
         state.emailLoginCodes.filter(
@@ -634,9 +657,7 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
           .filter((v) => v.userId === where.userId)
           .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime()),
       create: async ({ data }) => {
-        if (
-          state.vehicles.some((v) => v.plate === data.plate && v.state === data.state)
-        ) {
+        if (state.vehicles.some((v) => v.plate === data.plate && v.state === data.state)) {
           throw Object.assign(new Error("Unique constraint failed: vehicles_plate_state"), {
             code: "P2002",
           });
@@ -890,7 +911,8 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
       updateMany: async ({ where, data }) => {
         let count = 0;
         for (const s of state.sessions) {
-          const hit = "userId" in where ? s.userId === where.userId : s.vehicleId === where.vehicleId;
+          const hit =
+            "userId" in where ? s.userId === where.userId : s.vehicleId === where.vehicleId;
           if (hit) {
             Object.assign(s, data);
             count += 1;

@@ -31,6 +31,13 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 /** Push the reconnect nudge when the session dies within this window. */
 export const EXPIRY_WARNING_MS = 5 * DAY_MS;
 
+/** A pass skips accounts verified more recently than this. The job runs
+ * daily AND 30 s after every boot, and a day of deploys must not re-verify
+ * every session headlessly (real traffic to the provider's site) or send
+ * the same "Reconnect" push once per restart. Just under a day, so the
+ * daily pass still reaches every account. */
+export const RECHECK_AFTER_MS = 20 * 60 * 60 * 1000;
+
 export interface ProviderHealthDeps {
   db: AppDb;
   sendPush: PushSender;
@@ -151,7 +158,11 @@ export function makeProviderHealth(deps: ProviderHealthDeps) {
       const accounts = await deps.db.providerAccount.findMany({
         where: { status: { in: ["linked", "expiring"] } },
       });
-      for (const account of accounts) {
+      const at = now().getTime();
+      const due = accounts.filter(
+        (a) => !a.lastVerifiedAt || at - a.lastVerifiedAt.getTime() >= RECHECK_AFTER_MS,
+      );
+      for (const account of due) {
         try {
           await checkAccount(account);
         } catch (err) {

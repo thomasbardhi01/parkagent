@@ -31,8 +31,7 @@ export type TopupWalletResult = { ok: true; walletBalanceCents: number | null } 
  * Nulls mean the screen showed no card (or hid the details) — that is a
  * success, not an error. Never the PAN. */
 export type ReadSavedCardResult =
-  | { ok: true; brand: string | null; last4: string | null }
-  | ProviderOpError;
+  { ok: true; brand: string | null; last4: string | null } | ProviderOpError;
 
 /**
  * Sensitive card fields for the provider's payment form, fetched from

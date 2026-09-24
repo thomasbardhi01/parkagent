@@ -56,19 +56,4 @@ final class SnapshotUITests: ParkAgentUITestCase {
         scrollTo(app, "diagnostics.apiBase")
         attachScreenshot(of: app, named: "pr-diagnostics-server")
     }
-
-    /// The chip's label is composed ("Boston · No active session"), so an
-    /// equality wait would be brittle.
-    private func waitForLabelContaining(
-        _ element: XCUIElement,
-        _ substring: String,
-        timeout: TimeInterval = 10
-    ) {
-        let predicate = NSPredicate(format: "label CONTAINS %@", substring)
-        let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
-        XCTAssertEqual(
-            XCTWaiter().wait(for: [expectation], timeout: timeout), .completed,
-            "Expected a label containing \"\(substring)\", got \"\(element.label)\""
-        )
-    }
 }

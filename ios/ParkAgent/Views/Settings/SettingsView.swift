@@ -236,9 +236,14 @@ struct SettingsView: View {
         .accessibilityValue(current == source ? "selected" : "not selected")
     }
 
+    /// Whose card pays here. The user's effective city first — including a
+    /// DETECTED one, which the old version ignored, so a Boston user with
+    /// the picker on "Detect automatically" was told "My card on ParkNYC".
+    /// The linked-account fallback reads the city-ordered list, not the
+    /// registry's own order, for the same reason.
     private var providerShortName: String {
-        CityCatalog.providerDisplayName(for: model.cityOverride == "auto" ? nil : model.cityOverride)
-            ?? CityCatalog.providerDisplayName(for: providerAccounts.first(where: \.isLinked)?.city)
+        CityCatalog.providerDisplayName(for: model.effectiveCity)
+            ?? CityCatalog.providerDisplayName(for: orderedAccounts.first(where: \.isLinked)?.city)
             ?? "your parking account"
     }
 

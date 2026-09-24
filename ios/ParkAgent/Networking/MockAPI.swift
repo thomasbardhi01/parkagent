@@ -819,7 +819,10 @@ enum MockFixtures {
         ) ?? .nyc
         switch scenario {
         case .bos:
-            return CityCatalog.center(of: "bos") ?? AppModel.fixtureCoordinate
+            // Boylston St in Back Bay — the block the Boston quote fixtures
+            // are built around. The city centroid would put the phone in
+            // the middle of the Common, where no curb line belongs.
+            return CLLocationCoordinate2D(latitude: 42.3503, longitude: -71.0810)
         case .nyc, .none:
             return AppModel.fixtureCoordinate
         }

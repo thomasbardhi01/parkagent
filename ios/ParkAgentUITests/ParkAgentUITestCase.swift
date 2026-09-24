@@ -119,6 +119,22 @@ class ParkAgentUITestCase: XCTestCase {
         )
     }
 
+    /// Waits until the element's label CONTAINS `substring` — for composed
+    /// labels like the Home chip's "Boston · No active session", where an
+    /// equality wait would be brittle.
+    func waitForLabelContaining(
+        _ element: XCUIElement,
+        _ substring: String,
+        timeout: TimeInterval = 10
+    ) {
+        let predicate = NSPredicate(format: "label CONTAINS %@", substring)
+        let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
+        XCTAssertEqual(
+            XCTWaiter().wait(for: [expectation], timeout: timeout), .completed,
+            "Expected a label containing \"\(substring)\", got \"\(element.label)\""
+        )
+    }
+
     /// Waits until the element's label equals `expected`; XCUIElement has no
     /// built-in "label became X" wait.
     func waitForLabel(of element: XCUIElement, toBe expected: String, timeout: TimeInterval = 5) {

@@ -42,6 +42,25 @@ final class SettingsUITests: ParkAgentUITestCase {
         }
     }
 
+    /// A Boston user must never be told their card is on ParkNYC. The
+    /// payment row used to fall back to the registry's own order (NYC
+    /// first) whenever the city picker sat on "Detect automatically".
+    func testPaymentRowNamesTheDetectedCitysProvider() {
+        let app = launchApp(cityScenario: "bos")
+        // Home detects the city first; the chip is the signal that it did.
+        let chip = element(app, "home.statusChip")
+        XCTAssertTrue(chip.waitForExistence(timeout: 5))
+        waitForLabelContaining(chip, "Boston")
+
+        app.tabBars.buttons["Settings"].tap()
+        let providerRow = element(app, "settings.payment.provider_card")
+        XCTAssertTrue(providerRow.waitForExistence(timeout: 5), "Provider-card row missing")
+        XCTAssertEqual(
+            providerRow.label, "My card on ParkBoston",
+            "The payment row should name the detected city's provider"
+        )
+    }
+
     /// Reset onboarding clears the completion flag and lands back on the flow.
     func testResetOnboardingReturnsToTheFlow() {
         let app = launchApp()

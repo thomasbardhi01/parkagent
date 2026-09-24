@@ -244,8 +244,9 @@ final class AppModel {
 
     /// Manual zone-number entry from the unknown-zone state. The server has
     /// no quote-by-zone-number endpoint yet: the mock fabricates a fixture
-    /// quote so the flow stays walkable in UI tests, and the live path says
-    /// so honestly instead of inventing a price.
+    /// quote so the flow stays walkable in UI tests. The live sheet doesn't
+    /// offer entry at all; the guard stays so nothing can ever put a
+    /// fabricated price in front of a real payment.
     func quoteForManualZone(zoneNumber: String) {
         guard useMockAPI else {
             paymentError = .notImplemented

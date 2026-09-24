@@ -74,7 +74,11 @@ struct LiveAPI: APIClient {
     }
 
     func nearbyZones(lat: Double, lng: Double, radiusM: Double) async throws -> NearbyZonesResponse {
-        try await send("zones/near?lat=\(lat)&lng=\(lng)&radius=\(Int(radiusM.rounded()))")
+        try await send("zones/near", query: [
+            URLQueryItem(name: "lat", value: String(lat)),
+            URLQueryItem(name: "lng", value: String(lng)),
+            URLQueryItem(name: "radius", value: String(Int(radiusM.rounded()))),
+        ])
     }
 
     func health() async throws -> HealthResponse {
@@ -84,7 +88,10 @@ struct LiveAPI: APIClient {
     // MARK: - City & providers
 
     func detectCity(lat: Double, lng: Double) async throws -> CityDetectResponse {
-        try await send("city?lat=\(lat)&lng=\(lng)")
+        try await send("city", query: [
+            URLQueryItem(name: "lat", value: String(lat)),
+            URLQueryItem(name: "lng", value: String(lng)),
+        ])
     }
 
     func providersStatus() async throws -> ProvidersStatusResponse {
@@ -109,8 +116,10 @@ struct LiveAPI: APIClient {
     }
 
     func linkStatus(providerId: String, jobId: String) async throws -> LinkStatusResponse {
-        let escaped = jobId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? jobId
-        return try await send("providers/\(providerId)/link-status?jobId=\(escaped)")
+        try await send(
+            "providers/\(providerId)/link-status",
+            query: [URLQueryItem(name: "jobId", value: jobId)]
+        )
     }
 
     func setupCard(providerId: String) async throws -> SetupCardResponse {
@@ -139,11 +148,10 @@ struct LiveAPI: APIClient {
     }
 
     func cardTransactions(cursor: String?) async throws -> CardTransactionsResponse {
-        var path = "card/transactions"
-        if let cursor, let escaped = cursor.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
-            path += "?cursor=\(escaped)"
-        }
-        return try await send(path)
+        try await send(
+            "card/transactions",
+            query: cursor.map { [URLQueryItem(name: "cursor", value: $0)] } ?? []
+        )
     }
 
     func cardTopup(amountUsd: Double) async throws -> CardFundingResponse {
@@ -321,10 +329,11 @@ struct LiveAPI: APIClient {
 
     private func send<Response: Decodable>(
         _ path: String,
+        query: [URLQueryItem] = [],
         method: String = "GET",
         body: (any Encodable)? = nil
     ) async throws -> Response {
-        var request = URLRequest(url: baseURL.appending(path: path))
+        var request = URLRequest(url: Self.url(base: baseURL, path: path, query: query))
         request.httpMethod = method
         request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
         if let body {
@@ -365,6 +374,36 @@ struct LiveAPI: APIClient {
             throw APIError.server(status: status)
         }
     }
+
+    /// The request URL. A query must come in as items, never folded into
+    /// `path`: `appending(path:)` percent-encodes "?", so "city?lat=…"
+    /// reached the server as the PATH "/city%3Flat=…" — a route 404 on every
+    /// call. City detection, link-job polling, card-transaction paging, and
+    /// the map's curb layer all failed that way on a device (the mock never
+    /// builds a URL, so no simulator run could show it).
+    static func url(base: URL, path: String, query: [URLQueryItem] = []) -> URL {
+        assert(!path.contains("?"), "pass query parameters as `query`, not in the path")
+        let url = base.appending(path: path)
+        guard !query.isEmpty,
+              var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        else { return url }
+        components.percentEncodedQueryItems = query.map { item in
+            URLQueryItem(
+                name: item.name,
+                value: item.value?.addingPercentEncoding(withAllowedCharacters: queryValueAllowed)
+            )
+        }
+        return components.url ?? url
+    }
+
+    /// URLQueryItem leaves "+" alone, and the server's query parser reads a
+    /// bare "+" as a space — which would turn a card-transactions cursor's
+    /// "+00:00" offset into garbage. Encode it (and the pair delimiters).
+    private static let queryValueAllowed: CharacterSet = {
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "+&=")
+        return allowed
+    }()
 
     // API.md: ISO 8601 with offset. The server may or may not include
     // fractional seconds, so decoding tries both. Date.ISO8601FormatStyle is

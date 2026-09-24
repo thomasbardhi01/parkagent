@@ -28,6 +28,14 @@ test("city_overrides resolve fee and ticket cost per city, with fallbacks", () =
   // at the top level any more.
   expect(cityPolicy(DEFAULT_POLICY, "bos")).toEqual({ parkingFeeUsd: 0.35, ticketCostUsd: 40 });
   expect(cityPolicy(DEFAULT_POLICY, "nyc")).toEqual({ parkingFeeUsd: 0.15, ticketCostUsd: 65 });
+  // NYC's shipped fee equals DEFAULT_PARKING_FEE_USD, so the line above
+  // can't tell "read the override" from "fell through to the default".
+  // A fee only the override carries can.
+  const repriced = {
+    ...DEFAULT_POLICY,
+    city_overrides: { ...DEFAULT_POLICY.city_overrides, nyc: { parking_fee_usd: 0.27 } },
+  };
+  expect(cityPolicy(repriced, "nyc").parkingFeeUsd).toBe(0.27);
   // No overrides at all → the top-level ticket cost and the default fee.
   const bare = { ...DEFAULT_POLICY };
   delete (bare as Record<string, unknown>)["city_overrides"];
@@ -44,14 +52,18 @@ test("city_overrides resolve fee and ticket cost per city, with fallbacks", () =
 
 test("a pre-migration document still resolves through the deprecated fee", () => {
   // policy.json files written before the fee moved under city_overrides keep
-  // working: the top-level key is accepted and used as the fallback.
+  // working: the top-level key is accepted and used as the fallback. The
+  // legacy value is deliberately NOT the default (0.15), or this would pass
+  // with the fallback deleted.
   const legacy = {
     ...DEFAULT_POLICY,
-    parknyc_fee_usd: 0.15,
+    parknyc_fee_usd: 0.2,
     city_overrides: { bos: { parking_fee_usd: 0.35, ticket_cost_usd: 40 } },
   };
+  expect(DEFAULT_PARKING_FEE_USD).not.toBe(0.2);
   expect(policySchema.safeParse(legacy).success).toBe(true);
-  expect(cityPolicy(legacy, "nyc")).toEqual({ parkingFeeUsd: 0.15, ticketCostUsd: 65 });
+  expect(cityPolicy(legacy, "nyc")).toEqual({ parkingFeeUsd: 0.2, ticketCostUsd: 65 });
+  // A city's own override still wins over the legacy top-level key.
   expect(cityPolicy(legacy, "bos")).toEqual({ parkingFeeUsd: 0.35, ticketCostUsd: 40 });
 });
 

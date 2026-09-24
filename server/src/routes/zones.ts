@@ -17,7 +17,6 @@ import { z } from "zod";
 import type { AppDeps } from "../app.js";
 import { isEnforcedAt, todaysIntervals } from "../services/hours.js";
 import { makeRateLimiter } from "../services/rateLimit.js";
-import { NEARBY_ZONE_LIMIT } from "../services/zoneLookup.js";
 
 /** The map layer's window. Capped hard: this is a PostGIS read per call. */
 const MAX_NEAR_RADIUS_M = 400;
@@ -56,12 +55,12 @@ export function registerZones(app: FastifyInstance, deps: AppDeps): void {
     }
     const { lat, lng, radius } = parsed.data;
     const at = deps.now ? deps.now() : new Date();
-    const zones = await deps.findNearbyZones({ lat, lng, radiusM: radius });
+    const { zones, truncated } = await deps.findNearbyZones({ lat, lng, radiusM: radius });
     return {
       radiusM: radius,
       at: at.toISOString(),
       // Truncation would read as "nothing more is metered here", so say it.
-      truncated: zones.length >= NEARBY_ZONE_LIMIT,
+      truncated,
       zones: zones.map((zone) => ({
         zoneId: zone.zoneId,
         city: zone.city,

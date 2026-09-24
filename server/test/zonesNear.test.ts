@@ -9,7 +9,11 @@ import { expect, test } from "vitest";
 
 import { API_KEY, MONDAY_2PM, MONDAY_8PM, makeTestApp } from "./helpers.js";
 import type { NearbyZone } from "../src/services/zoneLookup.js";
-import { parseMultiLineString } from "../src/services/zoneLookup.js";
+import {
+  makeNearbyZoneFetcher,
+  NEARBY_ZONE_LIMIT,
+  parseMultiLineString,
+} from "../src/services/zoneLookup.js";
 
 const HEADERS = { "x-api-key": API_KEY };
 
@@ -96,6 +100,48 @@ test("after the posted end, the same zone is free now", async () => {
   expect(body.zones[0].enforcedNow).toBe(false);
   // The windows still show — the card says when it starts charging again.
   expect(body.zones[0].todayHours).toEqual([{ start: "08:00", end: "20:00" }]);
+});
+
+test("a capped layer says so", async () => {
+  const { app } = makeTestApp({ nearbyZones: [BOYLSTON], nearbyTruncated: true });
+  const body = (await get(app, "lat=42.3503&lng=-71.081")).json();
+  expect(body.truncated).toBe(true);
+  expect(body.zones).toHaveLength(1);
+});
+
+test("the fetcher decides truncation on raw rows, before undrawable ones are dropped", async () => {
+  // One row more than the ceiling came back, and one of the rows has no
+  // drawable centerline. Counting after the drop (ceiling - 1 zones) used
+  // to report "not truncated" for a layer the LIMIT had cut short.
+  const row = (i: number, centerline: string | null) => ({
+    zone_id: `bos-${i}`,
+    city: "bos",
+    provider_zone_number: "",
+    street: null,
+    rate_first_hour: 3.75,
+    rate_additional_hour: 3.75,
+    max_stay_minutes: 120,
+    hours_json: [],
+    contains_point: false,
+    distance_m: i,
+    centerline_json: centerline,
+  });
+  const line = '{"type":"LineString","coordinates":[[-71.08,42.35],[-71.07,42.36]]}';
+  const rows = Array.from({ length: NEARBY_ZONE_LIMIT + 1 }, (_, i) =>
+    row(i, i === 3 ? null : line),
+  );
+  const fetch = makeNearbyZoneFetcher({ $queryRaw: async <T>() => rows as T });
+  const result = await fetch({ lat: 42.35, lng: -71.08, radiusM: 250 });
+  expect(result.truncated).toBe(true);
+  // The ceiling's worth of rows, minus the one that can't be drawn.
+  expect(result.zones).toHaveLength(NEARBY_ZONE_LIMIT - 1);
+  expect(result.zones.some((z) => z.zoneId === "bos-3")).toBe(false);
+
+  // Exactly at the ceiling is complete, not truncated.
+  const exact = makeNearbyZoneFetcher({
+    $queryRaw: async <T>() => rows.slice(0, NEARBY_ZONE_LIMIT) as T,
+  });
+  expect((await exact({ lat: 42.35, lng: -71.08, radiusM: 250 })).truncated).toBe(false);
 });
 
 test("radius defaults, and is capped at 400 m", async () => {

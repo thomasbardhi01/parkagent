@@ -154,7 +154,9 @@ struct AssistantSheetView: View {
             Text("Find a spot, or plan a day.")
                 .font(.bodyTextSemibold)
                 .foregroundStyle(Color.textPrimary)
-            Text("Try: “Park me near the MFA at 2 for two hours” or “Plan my Boston day: coffee at 9, client at 10, lunch at 12.”")
+            // No city or landmark in the examples: an NYC user was being
+            // offered a Boston museum and "my Boston day".
+            Text("Try: “Park me near the museum at 2 for two hours” or “Plan my day: coffee at 9, client at 10, lunch at 12.”")
                 .font(.secondaryText)
                 .foregroundStyle(Color.textSecondary)
         }

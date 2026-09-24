@@ -1061,6 +1061,8 @@ export function makeTestApp(options: {
   candidates?: Candidate[];
   /** What GET /zones/near draws; absent leaves the route's 501 seam open. */
   nearbyZones?: NearbyZone[];
+  /** Whether the fake geometry fetcher reports hitting its ceiling. */
+  nearbyTruncated?: boolean;
   policy?: Partial<Policy>;
   envDryRun?: boolean;
   now?: () => Date;
@@ -1115,7 +1117,10 @@ export function makeTestApp(options: {
     },
   };
   const findCandidates = async () => options.candidates ?? [];
-  const findNearbyZones = async () => options.nearbyZones ?? [];
+  const findNearbyZones = async () => ({
+    zones: options.nearbyZones ?? [],
+    truncated: options.nearbyTruncated ?? false,
+  });
   const policyService = makePolicyService(options.policy, options.envDryRun ?? true);
   const linkWallet = new LinkWallet({
     db,

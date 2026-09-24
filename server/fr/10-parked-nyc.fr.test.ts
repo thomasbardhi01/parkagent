@@ -23,6 +23,7 @@ import {
   NYC_AUTOPAY,
   NYC_PRICEY,
   parkedBody,
+  policyFeeUsd,
 } from "./client.js";
 
 const AFTERNOON = mostRecentEasternAt(14, 0);
@@ -84,7 +85,8 @@ describe("FR-2 NYC zone resolution", () => {
     );
     expect(Math.abs(meter - recomputed)).toBeLessThanOrEqual(0.01);
     expect(Math.abs(total - (meter + fee))).toBeLessThanOrEqual(0.005);
-    expect(fee).toBeGreaterThan(0); // NYC per-city fee applies when the meter charges
+    // The fee is NYC's own, from the live policy — not merely non-zero.
+    expect(fee).toBe(policyFeeUsd(policy, "nyc"));
   });
 
   it("FR-2 GET /city places the same point in NYC with the ParkNYC provider", async () => {

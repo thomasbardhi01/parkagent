@@ -5,11 +5,22 @@ struct HomeView: View {
     @Environment(AppModel.self) private var model
     @Environment(PermissionsManager.self) private var permissions
     @Namespace private var sessionZoom
-    /// Set in .task from the user's location (falling back to the detected
-    /// city), so the map never opens on a hardcoded city.
+    /// Set once from the car, else the user's location (followed), else the
+    /// detected city — the map never opens on a hardcoded city.
     @State private var camera: MapCameraPosition = .automatic
-    /// Follow the user until they pan; the locate-me button turns it back on.
-    @State private var following = true
+    /// Initial centering runs once per Home lifetime. `.task` re-runs on
+    /// every tab return and navigation pop, which snapped the map back to
+    /// the car after the user had moved it.
+    @State private var didCenter = false
+    /// Keep the camera on the phone as it moves, until the user pans or
+    /// zooms (MapKit marks that `positionedByUser`); locate-me turns it
+    /// back on. Live API only — the mock has no real location. It used to
+    /// be a flag that only changed the icon; the camera never moved.
+    ///
+    /// Not MapKit's `.userLocation` position: that follows, but at its own
+    /// ~2 km zoom, above `curbZoomSpan`, so no curb line ever drew while
+    /// following (seen in the simulator).
+    @State private var following = false
     /// Live map window, for the curb-layer fetch and the zoom gate.
     @State private var visibleRegion: MKCoordinateRegion?
     @State private var curbZones: [NearbyZone] = []
@@ -71,7 +82,12 @@ struct HomeView: View {
                 ActiveSessionView()
                     .zoomDestination(id: sessionId, in: sessionZoom)
             }
-            .task { await centerCamera() }
+            .task {
+                guard !didCenter else { return }
+                didCenter = true
+                await centerCamera()
+            }
+            .task(id: following) { await followPhone() }
         }
     }
 
@@ -107,13 +123,14 @@ struct HomeView: View {
                 MapScaleView()
                 MapCompass()
             }
+            .onChange(of: camera) { _, position in
+                // Any pan or pinch is the user taking the wheel.
+                if position.positionedByUser { following = false }
+            }
             .onMapCameraChange(frequency: .onEnd) { context in
                 visibleRegion = context.region
                 Task { await refreshCurbLayer(for: context.region) }
             }
-            // A drag is the user taking the wheel: stop following so the map
-            // stays where they put it.
-            .simultaneousGesture(DragGesture().onChanged { _ in following = false })
             .onTapGesture { point in
                 guard let coordinate = proxy.convert(point, from: .local) else { return }
                 selectZone(at: coordinate)
@@ -138,39 +155,84 @@ struct HomeView: View {
         .accessibilityIdentifier("home.locateMeButton")
     }
 
-    /// The car's spot if it's parked, else where the phone is, else the
-    /// detected city — never a fixed city constant.
+    /// The car's spot if it's parked; else follow the phone, falling back to
+    /// the detected city while there is no fix (or no permission) — never a
+    /// fixed city constant.
     private func centerCamera() async {
-        var center = model.carCoordinate
-        if center == nil {
-            center = await currentCoordinate()
+        var known = model.carCoordinate
+        if let car = known {
+            camera = .region(MKCoordinateRegion(center: car, span: Self.streetSpan))
+        } else if model.useMockAPI {
+            // The mock has no real location: it answers from the city
+            // scenario so the simulator and UI tests are deterministic.
+            let phone = MockFixtures.currentCoordinate()
+            known = phone
+            camera = .region(MKCoordinateRegion(center: phone, span: Self.streetSpan))
+        } else {
+            // The city until a fix arrives (or when location is off).
+            camera = cityPosition
+            known = await OneShotLocation.request()
+            if let phone = known {
+                camera = .region(MKCoordinateRegion(center: phone, span: Self.streetSpan))
+                following = true
+            }
         }
-        let resolved = center
-            ?? CityCatalog.center(of: model.effectiveCity)
-            ?? CityCatalog.fallbackCenter
-        camera = .region(MKCoordinateRegion(center: resolved, span: Self.streetSpan))
 
-        // Name the city in the chip on a fresh install, without waiting for
-        // the first park to be the thing that tells us where we are.
-        if model.detectedCity == nil, let center {
-            _ = await model.detectCity(lat: center.latitude, lng: center.longitude)
+        // Name the city in the chip at launch, without waiting for the
+        // first park to tell us where we are. Every launch, not only a
+        // fresh install: the detected city persists, so someone who drove
+        // from one covered city to the other was shown the old one.
+        if let known {
+            _ = await model.detectCity(lat: known.latitude, lng: known.longitude)
         }
     }
 
-    /// Where the phone is. The mock answers from the city scenario so the
-    /// simulator and UI tests are deterministic.
-    private func currentCoordinate() async -> CLLocationCoordinate2D? {
-        model.useMockAPI ? MockFixtures.currentCoordinate() : await OneShotLocation.request()
+    /// The detected (or chosen) city at street zoom — what the map shows
+    /// until a location fix arrives.
+    private var cityPosition: MapCameraPosition {
+        .region(MKCoordinateRegion(
+            center: CityCatalog.center(of: model.effectiveCity) ?? CityCatalog.fallbackCenter,
+            span: Self.streetSpan
+        ))
     }
 
     private static let streetSpan = MKCoordinateSpan(latitudeDelta: 0.006, longitudeDelta: 0.006)
 
     /// Locate-me: back to the user, following again.
     private func locateMe() async {
-        following = true
-        guard let coordinate = await currentCoordinate() else { return }
+        let phone = model.useMockAPI ? MockFixtures.currentCoordinate() : await OneShotLocation.request()
+        guard let phone else { return }
         withAnimation(Motion.settle) {
-            camera = .region(MKCoordinateRegion(center: coordinate, span: Self.streetSpan))
+            camera = .region(MKCoordinateRegion(center: phone, span: Self.streetSpan))
+        }
+        following = !model.useMockAPI
+    }
+
+    /// Moving this far from the map's center re-centers it while following;
+    /// less is GPS jitter not worth a camera move.
+    private static let followSlackM: Double = 15
+
+    /// While following, keep the camera on the phone at the current zoom.
+    /// The task is keyed on `following`, so turning it off (or leaving
+    /// Home) cancels it and stops the location updates.
+    private func followPhone() async {
+        guard following, !model.useMockAPI else { return }
+        do {
+            for try await update in CLLocationUpdate.liveUpdates() {
+                guard following else { return }
+                guard let phone = update.location?.coordinate else { continue }
+                if let shown = visibleRegion, distance(shown.center, phone) < Self.followSlackM {
+                    continue
+                }
+                withAnimation(Motion.settle) {
+                    camera = .region(MKCoordinateRegion(
+                        center: phone,
+                        span: visibleRegion?.span ?? Self.streetSpan
+                    ))
+                }
+            }
+        } catch {
+            // Updates ended (cancelled, or location went away): nothing to follow.
         }
     }
 
@@ -202,14 +264,28 @@ struct HomeView: View {
         if let last = curbFetchedAt, distance(last, region.center) < Self.curbRefetchDistanceM {
             return
         }
+        // Claim the window before awaiting: MapKit sends a burst of camera
+        // changes at launch, and each one used to fire the same query.
+        curbFetchedAt = region.center
         // Half the window's height in metres, clamped to the server's cap.
         let radius = min(400, max(120, region.span.latitudeDelta * 111_320 / 2))
         guard let response = try? await model.api.nearbyZones(
             lat: region.center.latitude,
             lng: region.center.longitude,
             radiusM: radius
-        ) else { return }
-        curbFetchedAt = region.center
+        ) else {
+            // Release the claim (if no newer fetch took it) so the next
+            // camera change retries this window.
+            if let claimed = curbFetchedAt, distance(claimed, region.center) < 1 { curbFetchedAt = nil }
+            return
+        }
+        // Each camera change starts its own fetch; one for a window the
+        // user has since left (or zoomed out of) must not paint over it.
+        if let current = visibleRegion,
+           current.span.latitudeDelta > Self.curbZoomSpan
+            || distance(current.center, region.center) >= Self.curbRefetchDistanceM {
+            return
+        }
         curbZones = response.zones
         curbTruncated = response.truncated
         // A reloaded layer may not contain the tapped zone any more.
@@ -218,24 +294,15 @@ struct HomeView: View {
         }
     }
 
-    /// The tapped curb line: nearest polyline vertex within a tolerance that
-    /// scales with zoom, so a fat finger still lands on a thin line.
+    /// The tapped curb line: nearest line SEGMENT within a tolerance that
+    /// scales with zoom, so a fat finger still lands on a thin line (see
+    /// CurbHitTest for why segments, not vertices).
     private func selectZone(at coordinate: CLLocationCoordinate2D) {
         guard !curbZones.isEmpty else { return }
         let tolerance = max(25, (visibleRegion?.span.latitudeDelta ?? 0.006) * 111_320 * 0.04)
-        var best: (zone: NearbyZone, distance: Double)?
-        for zone in curbZones {
-            for line in zone.polylines {
-                for point in line {
-                    let metres = distance(point, coordinate)
-                    if metres <= tolerance, metres < (best?.distance ?? .greatestFiniteMagnitude) {
-                        best = (zone, metres)
-                    }
-                }
-            }
-        }
+        let hit = CurbHitTest.nearestZone(to: coordinate, in: curbZones, toleranceM: tolerance)
         withAnimation(Motion.settle) {
-            selectedZone = best?.zone
+            selectedZone = hit
         }
     }
 

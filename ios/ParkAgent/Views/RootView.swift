@@ -1,9 +1,12 @@
 import SwiftUI
 
 struct RootView: View {
-    /// Set when the user finishes the flow. On a REAL launch it is only a
-    /// this-session latch — the next launch re-derives the truth below —
-    /// but UI tests (-skipOnboarding) rely on it to land on Home.
+    /// Set when the user finishes the flow. It never drives the gate
+    /// forward — finishing calls back (`onComplete`), because a returning
+    /// user the gate sends back into onboarding already has it set, and
+    /// re-setting a true value fires no change. A real launch re-derives
+    /// the truth below; UI tests (-skipOnboarding) read it directly, and
+    /// Diagnostics' reset clears it to re-run the gate.
     @AppStorage("hasOnboarded") private var hasOnboarded = false
     @State private var model = AppModel()
     @State private var permissions = PermissionsManager()
@@ -26,27 +29,23 @@ struct RootView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(Color.appBackground)
             case .onboarding(let step):
-                OnboardingView(startAt: step)
+                OnboardingView(startAt: step) { gate = .ready }
             case .ready:
                 MainTabView()
             }
         }
         .environment(model)
         .environment(permissions)
-        .task {
-            await model.loadPolicy()
-            await evaluateGate()
-        }
+        // Independent: the gate needs no policy, and waiting on one network
+        // call before starting the next only lengthens the launch spinner.
+        .task { await model.loadPolicy() }
+        .task { await evaluateGate() }
         .onChange(of: hasOnboarded) { _, onboarded in
-            if onboarded {
-                // The flow's own completion; re-derived from truth next launch.
-                gate = .ready
-            } else {
-                // Diagnostics' Reset onboarding cleared it: back through the
-                // gate, which now finds the vehicle and city missing.
-                gate = .checking
-                Task { await evaluateGate() }
-            }
+            // Diagnostics' Reset onboarding cleared it: back through the
+            // gate, which now finds the vehicle and city missing.
+            guard !onboarded else { return }
+            gate = .checking
+            Task { await evaluateGate() }
         }
         .onChange(of: gate) { _, gate in
             if gate == .ready { model.startBackgroundWork() }
@@ -56,9 +55,19 @@ struct RootView: View {
     private func evaluateGate() async {
         guard gate == .checking else { return }
         // UI tests run against the mock with no OS permission grants; they
-        // opt in/out of onboarding explicitly via -skipOnboarding.
+        // opt in/out of onboarding explicitly via -skipOnboarding. A saved
+        // step with the flag already set is a returning user re-entering
+        // the flow (what the real gate does when a link lapses), which a
+        // test reaches with -onboardingStep and the default -skipOnboarding.
         if LaunchOverrides.uiTesting {
-            gate = hasOnboarded ? .ready : .onboarding(savedOrFirstStep)
+            if !hasOnboarded {
+                gate = .onboarding(savedOrFirstStep)
+            } else if let saved = UserDefaults.standard.object(forKey: OnboardingStep.defaultsKey) as? Int,
+                      let step = OnboardingStep(rawValue: saved) {
+                gate = .onboarding(step)
+            } else {
+                gate = .ready
+            }
             return
         }
         if let missing = await firstMissingStep() {
@@ -97,12 +106,37 @@ struct RootView: View {
         // "Somewhere else": the flow finishes without a provider to link.
         guard let providerId = CityCatalog.providerId(for: city) else { return nil }
 
-        // The server's truth about the provider link. Unreachable server →
-        // land on Home, where the connectivity error is shown; never trap
-        // the user in onboarding over a network blip.
-        guard let status = try? await model.api.providersStatus() else { return nil }
-        let linked = status.providers.first { $0.id == providerId }?.isLinked ?? false
+        // The server's truth about the provider link. Unreachable or slow
+        // server → land on Home, where the connectivity error is shown;
+        // never trap the user in onboarding (or on a spinner) over a
+        // network blip.
+        guard let linked = await providerLinked(providerId) else { return nil }
         return linked ? nil : .linkProvider
+    }
+
+    /// How long the launch gate waits on the server before giving up and
+    /// landing on Home. URLSession's own timeout is 60 s — on one bar of
+    /// signal in a garage that was a minute of spinner.
+    private static let linkCheckTimeout: Duration = .seconds(4)
+
+    /// Whether the provider is linked, or nil when the server didn't
+    /// answer in time (or at all).
+    private func providerLinked(_ providerId: String) async -> Bool? {
+        let api = model.api
+        let timeout = Self.linkCheckTimeout
+        return await withTaskGroup(of: Bool?.self) { group in
+            group.addTask {
+                guard let status = try? await api.providersStatus() else { return nil }
+                return status.providers.first { $0.id == providerId }?.isLinked ?? false
+            }
+            group.addTask {
+                try? await Task.sleep(for: timeout)
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
     }
 }
 

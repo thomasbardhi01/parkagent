@@ -100,7 +100,14 @@ export interface NearbyZone extends Candidate {
   centerline: number[][][];
 }
 
-export type NearbyZoneFetcher = (query: LookupQuery) => Promise<NearbyZone[]>;
+export interface NearbyZones {
+  zones: NearbyZone[];
+  /** More zones matched than the ceiling allowed. Decided on the raw rows,
+   * before undrawable ones are dropped, so a dropped row can't hide it. */
+  truncated: boolean;
+}
+
+export type NearbyZoneFetcher = (query: LookupQuery) => Promise<NearbyZones>;
 
 /** Hard ceiling on what one /zones/near call may draw. */
 export const NEARBY_ZONE_LIMIT = 150;
@@ -194,8 +201,9 @@ export function makeNearbyZoneFetcher(db: RawQuerier): NearbyZoneFetcher {
       WHERE ST_DWithin(z.centerline, pt.g, ${radiusDeg})
         AND ST_DWithin(z.centerline::geography, pt.g::geography, ${radiusM})
       ORDER BY distance_m
-      LIMIT ${NEARBY_ZONE_LIMIT}`;
-    return rows.flatMap((row) => {
+      LIMIT ${NEARBY_ZONE_LIMIT + 1}`;
+    const truncated = rows.length > NEARBY_ZONE_LIMIT;
+    const zones = rows.slice(0, NEARBY_ZONE_LIMIT).flatMap((row) => {
       const centerline = parseMultiLineString(row.centerline_json);
       // A zone we can't draw is not worth sending to a map.
       if (centerline.length === 0) return [];
@@ -215,6 +223,7 @@ export function makeNearbyZoneFetcher(db: RawQuerier): NearbyZoneFetcher {
         },
       ];
     });
+    return { zones, truncated };
   };
 }
 

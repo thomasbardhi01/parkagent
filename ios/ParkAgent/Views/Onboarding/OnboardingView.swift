@@ -28,13 +28,19 @@ struct OnboardingView: View {
     /// The effective city chosen in step 4 ("nyc" | "bos" | "other").
     @AppStorage("selectedCity") private var selectedCity = ""
     @State private var step: OnboardingStep
+    /// Tells RootView the flow is finished. A callback, not the flag: a
+    /// returning user sent back through the flow already has
+    /// `hasOnboarded` set, so setting it again changes nothing anyone can
+    /// observe — they were left on the Done screen.
+    private let onComplete: () -> Void
 
     /// RootView's truth gate decides where the flow starts (the first
     /// missing step); with no explicit start, resume from the persisted
     /// step of an abandoned run.
-    init(startAt: OnboardingStep? = nil) {
+    init(startAt: OnboardingStep? = nil, onComplete: @escaping () -> Void = {}) {
         let saved = UserDefaults.standard.integer(forKey: OnboardingStep.defaultsKey)
         _step = State(initialValue: startAt ?? OnboardingStep(rawValue: saved) ?? .welcome)
+        self.onComplete = onComplete
     }
 
     var body: some View {
@@ -106,6 +112,7 @@ struct OnboardingView: View {
     private func complete() {
         UserDefaults.standard.removeObject(forKey: OnboardingStep.defaultsKey)
         hasOnboarded = true
+        onComplete()
     }
 }
 

@@ -13,6 +13,8 @@
 import { createPrivateKey, sign } from "node:crypto";
 import { connect, constants as h2 } from "node:http2";
 
+import { providerById } from "../providers/registry.js";
+
 // The push types the iOS app handles (see API.md).
 export type PushType =
   | "session_started"
@@ -182,6 +184,11 @@ export const PUSH_TEST_TYPES = [
 
 export type PushTestType = (typeof PUSH_TEST_TYPES)[number];
 
+/** The samples describe one Boston park (zone 456 on Boylston), so their
+ * provider is Boston's — named from the registry like every real push. */
+const SAMPLE_PROVIDER = providerById("passport");
+const SAMPLE_PROVIDER_NAME = SAMPLE_PROVIDER?.displayName ?? "your parking account";
+
 /** Build a labeled sample of one push type for the delivery test. */
 export function samplePush(type: PushTestType, now: Date): Push {
   const expires = new Date(now.getTime() + 30 * 60_000);
@@ -209,10 +216,13 @@ export function samplePush(type: PushTestType, now: Date): Push {
         zoneNumber: "456",
         what: "pay",
         code: "payment_declined",
-        providerName: "ParkBoston",
+        providerName: SAMPLE_PROVIDER_NAME,
       });
     case "provider_relink":
-      return providerRelinkPush({ provider: "passport", displayName: "ParkBoston" });
+      return providerRelinkPush({
+        provider: SAMPLE_PROVIDER?.id ?? "passport",
+        displayName: SAMPLE_PROVIDER_NAME,
+      });
   }
 }
 

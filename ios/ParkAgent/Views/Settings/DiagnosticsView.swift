@@ -234,8 +234,13 @@ struct DiagnosticsView: View {
                 LabeledContent("Commit", value: health.commit)
                     .accessibilityIdentifier("diagnostics.commit")
                 LabeledContent("Built", value: health.builtAt)
-                LabeledContent("Dry run", value: health.dryRun ? "On — no money moves" : "OFF — real money")
-                    .foregroundStyle(health.dryRun ? Color.textPrimary : Color.danger)
+                // Effective dry run is env DRY_RUN OR the policy's dry_run;
+                // /health only echoes the env half, so a server with the env
+                // off but the policy on read "OFF — real money" when nothing
+                // could move. GET /policy carries the effective value.
+                let dryRun = model.policyResponse?.dryRun ?? health.dryRun
+                LabeledContent("Dry run", value: dryRun ? "On — no money moves" : "OFF — real money")
+                    .foregroundStyle(dryRun ? Color.textPrimary : Color.danger)
             } else if healthFailed {
                 Text(model.liveAPIUnavailable
                     ? "No API_BASE_URL/API_KEY in Config.xcconfig."

@@ -623,8 +623,12 @@ export interface AppDb {
       userId: string | null;
       createdAt: Date;
     } | null>;
-    /** The /admin/summary read: today's decisions, oldest first. */
-    findMany(args: { where: { createdAt: { gte: Date } } }): Promise<
+    /** The /admin/summary read (today's decisions, oldest first) and the
+     * assistant daily-spend sum (userId + kind narrow it; the fake db
+     * ignores them, so callers re-filter in JS). */
+    findMany(args: {
+      where: { createdAt: { gte: Date }; userId?: string; kind?: string };
+    }): Promise<
       {
         kind: string;
         rule: string;

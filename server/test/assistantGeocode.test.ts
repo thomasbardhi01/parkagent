@@ -150,6 +150,120 @@ describe("geocode_place resolves the named area, biased to our cities", () => {
     const out = await tools.execute(CTX, "geocode_place", { query: "Newbury Street" });
     expect(out.result).toMatchObject({ error: "geocoding_unavailable" });
   });
+
+  test("the phone's metro is the default bias when the model names no city", async () => {
+    const seen: (string | undefined)[] = [];
+    const recorder: GeocoderProvider = {
+      async geocode(q) {
+        seen.push(q.city);
+        return { ok: true, results: [PLACES["fenway"]!] };
+      },
+    };
+    const { tools } = toolsWith({ geocoder: recorder });
+    // A phone in Boston (Back Bay): the query is biased "bos".
+    await tools.execute({ ...CTX, location: { lat: 42.3505, lng: -71.08 } }, "geocode_place", {
+      query: "fenway",
+    });
+    // The model's explicit choice still wins over the phone.
+    await tools.execute({ ...CTX, location: { lat: 42.3505, lng: -71.08 } }, "geocode_place", {
+      query: "fenway",
+      city: "nyc",
+    });
+    // No phone location, no explicit city: unbiased.
+    await tools.execute(CTX, "geocode_place", { query: "fenway" });
+    expect(seen).toEqual(["bos", "nyc", undefined]);
+  });
+});
+
+describe("plan cards carry destination, coordinates, and provenance", () => {
+  test("propose_plan backfills what the model dropped, from this conversation's grounding", async () => {
+    const { tools, state } = toolsWith({ geocoder: fakeGeocoder(), garage: fakeGarage() });
+    const anchor = PLACES["newbury street"]!;
+    await tools.execute(CTX, "geocode_place", { query: "newbury street" });
+    await tools.execute(CTX, "search_garages", {
+      lat: anchor.lat,
+      lng: anchor.lng,
+      starts_at: "2026-09-23T15:00:00-04:00",
+      ends_at: "2026-09-23T17:00:00-04:00",
+      within_m: 600,
+    });
+    // The model proposes without destination, provenance, or coords —
+    // the usual case for optional schema fields.
+    const out = await tools.execute(CTX, "propose_plan", {
+      plan: {
+        kind: "single_spot",
+        options: [
+          {
+            id: "g-near",
+            type: "garage",
+            label: "Garage near",
+            detail: "",
+            priceUsd: 15,
+            durationMinutes: 120,
+            garageOptionId: "near",
+            recommended: true,
+          },
+        ],
+      },
+    });
+    expect(out.endTurn).toBeDefined();
+    const plan = out.endTurn!.plan as {
+      destination?: { lat: number; lng: number; label: string };
+      provenance?: { provider: string; searchedAt: string };
+    };
+    expect(plan.destination).toMatchObject({ label: "Newbury Street, Back Bay" });
+    expect(plan.destination!.lat).toBeCloseTo(anchor.lat, 4);
+    expect(plan.provenance).toMatchObject({ provider: "spothero" });
+    expect(plan.provenance!.searchedAt).toBe(NOW().toISOString());
+    // The stored row carries the same enriched plan.
+    expect(state.assistantPlans).toHaveLength(1);
+  });
+
+  test("street options pin at the quoted point", async () => {
+    const { tools } = toolsWith({
+      candidates: [
+        {
+          zoneId: "bos-newbury-a",
+          city: "bos",
+          providerZoneNumber: "789",
+          rateFirstHourUsd: 3.75,
+          rateAdditionalHourUsd: 3.75,
+          maxStayMinutes: 120,
+          hours: [
+            { days: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"], start: "08:00", end: "20:00" },
+          ],
+          distanceM: 5,
+          containsPoint: true,
+        },
+      ],
+    });
+    await tools.execute(CTX, "quote_street", {
+      lat: 42.3503,
+      lng: -71.0811,
+      duration_minutes: 60,
+      when: "2026-09-23T15:00:00-04:00",
+    });
+    const out = await tools.execute(CTX, "propose_plan", {
+      plan: {
+        kind: "single_spot",
+        options: [
+          {
+            id: "s1",
+            type: "street",
+            label: "Street — Zone 789",
+            detail: "",
+            priceUsd: 3.75,
+            durationMinutes: 60,
+            zoneId: "bos-newbury-a",
+            recommended: true,
+          },
+        ],
+      },
+    });
+    const option = (out.endTurn!.plan as { options: { lat?: number; lng?: number }[] }).options[0]!;
+    expect(option.lat).toBeCloseTo(42.3503, 4);
+    expect(option.lng).toBeCloseTo(-71.0811, 4);
+  });
 });
 
 describe("garage options for a named area are all within 600 m of it", () => {
@@ -174,6 +288,46 @@ describe("garage options for a named area are all within 600 m of it", () => {
     for (const o of result.options) {
       expect(o.distanceM).toBeLessThanOrEqual(600);
     }
+  });
+
+  test("when everything is too far, the result names the nearest distance instead of 'none'", async () => {
+    // Both options beyond 600 m: nearest at 800 m, another at 1500 m.
+    const farOnly: GarageProvider = {
+      id: "spothero",
+      canReserve: false,
+      async search({ lat, lng }) {
+        return {
+          ok: true,
+          fromCache: false,
+          options: [garageAt("near-ish", lat, lng, 800), garageAt("far", lat, lng, 1500)],
+        };
+      },
+      optionById: () => null,
+      book: async () => {
+        throw new Error("not used");
+      },
+    };
+    const { tools } = toolsWith({ geocoder: fakeGeocoder(), garage: farOnly });
+    const out = await tools.execute(CTX, "search_garages", {
+      lat: 42.3503,
+      lng: -71.0811,
+      starts_at: "2026-09-23T15:00:00-04:00",
+      ends_at: "2026-09-23T17:00:00-04:00",
+      within_m: 600,
+    });
+    const result = out.result as {
+      options: GarageOption[];
+      droppedForDistance?: number;
+      nearestBeyondM?: number;
+      instruction?: string;
+    };
+    expect(result.options).toHaveLength(0);
+    expect(result.droppedForDistance).toBe(2);
+    // ±1 m for the metres→degrees round trip.
+    expect(result.nearestBeyondM).toBeGreaterThanOrEqual(799);
+    expect(result.nearestBeyondM).toBeLessThanOrEqual(801);
+    expect(result.instruction).toContain("nearest is about");
+    expect(result.instruction).toContain("do not say none were found");
   });
 
   test("without within_m the far option is kept (phone-location searches don't clip)", async () => {
@@ -272,6 +426,30 @@ describe("NominatimGeocoder bias and box filtering (offline, fake fetch)", () =>
       for (const r of out.results) expect(r.city).toBe("bos");
       expect(out.results[0]!.displayName).toContain("Newbury Street");
     }
+  });
+
+  test("a biased search that finds nothing falls through to the other metro", async () => {
+    // The bos-viewbox query returns nothing; the nyc query finds Times
+    // Square. The bias orders the search, it doesn't blind it.
+    let call = 0;
+    const geo = new NominatimGeocoder({
+      fetchFn: (async () => {
+        call += 1;
+        const rows =
+          call === 1
+            ? []
+            : [{ lat: "40.7580", lon: "-73.9855", display_name: "Times Square, Manhattan, NYC" }];
+        return new Response(JSON.stringify(rows), { status: 200 });
+      }) as unknown as typeof fetch,
+      now: NOW,
+    });
+    const out = await geo.geocode({ query: "Times Square", city: "bos" });
+    expect(out.ok).toBe(true);
+    if (out.ok) {
+      expect(out.results).toHaveLength(1);
+      expect(out.results[0]!.city).toBe("nyc");
+    }
+    expect(call).toBe(2);
   });
 
   test("a transport failure returns ok:false, never throws", async () => {

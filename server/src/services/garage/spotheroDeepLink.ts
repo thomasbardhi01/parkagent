@@ -14,7 +14,12 @@
  * right behavior is the `blocked` error, not evasion.
  */
 
-import type { GarageBooking, GarageOption, GarageProvider, GarageSearchQuery } from "./garageProvider.js";
+import type {
+  GarageBooking,
+  GarageOption,
+  GarageProvider,
+  GarageSearchQuery,
+} from "./garageProvider.js";
 
 const SEARCH_BASE = "https://api.spothero.com/v2/search/transient";
 const CACHE_TTL_MS = 10 * 60_000;
@@ -28,7 +33,10 @@ export type GarageSearchOutcome =
   | { ok: false; error: GarageSearchError; detail: string };
 
 interface Fetcher {
-  (url: string, init?: { headers?: Record<string, string> }): Promise<{
+  (
+    url: string,
+    init?: { headers?: Record<string, string> },
+  ): Promise<{
     ok: boolean;
     status: number;
     json(): Promise<unknown>;
@@ -84,15 +92,28 @@ export function parseSpotHeroResult(
   if (id === null || name === null || priceUsd === null) return null;
 
   const distanceM = extractDistanceM(r, common, origin);
+  const coords = extractCoords(common);
   return {
     id,
     name,
     address: extractAddress(common) ?? "",
+    ...(coords ?? {}),
     priceUsd,
     distanceM: distanceM ?? 0,
     walkMinutes: distanceM !== null ? Math.max(1, Math.round(distanceM / WALK_M_PER_MIN)) : 0,
     entryType: extractEntryType(r, common),
   };
+}
+
+/** The facility's own point (addresses[0] in the live shape) — map pins
+ * and the recomputed named-area distance guard both want it. */
+function extractCoords(common: Record<string, unknown>): { lat: number; lng: number } | null {
+  const addresses = common["addresses"];
+  const first = Array.isArray(addresses) ? (addresses[0] as Record<string, unknown>) : undefined;
+  const lat = first?.["latitude"] ?? common["latitude"];
+  const lng = first?.["longitude"] ?? common["longitude"];
+  if (typeof lat === "number" && typeof lng === "number") return { lat, lng };
+  return null;
 }
 
 function firstString(...candidates: unknown[]): string | null {
@@ -157,8 +178,7 @@ function extractEntryType(r: Record<string, unknown>, common: Record<string, unk
   const rates = r["rates"];
   if (Array.isArray(rates) && rates.length > 0) {
     const transient = (rates[0] as Record<string, unknown>)["transient"] as
-      | Record<string, unknown>
-      | undefined;
+      Record<string, unknown> | undefined;
     const redemption = transient?.["redemption_type"];
     if (typeof redemption === "string" && redemption.length > 0) return redemption;
   }
@@ -176,7 +196,8 @@ function haversineM(aLat: number, aLng: number, bLat: number, bLng: number): num
   const dLat = toRad(bLat - aLat);
   const dLng = toRad(bLng - aLng);
   const s =
-    Math.sin(dLat / 2) ** 2 + Math.cos(toRad(aLat)) * Math.cos(toRad(bLat)) * Math.sin(dLng / 2) ** 2;
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(aLat)) * Math.cos(toRad(bLat)) * Math.sin(dLng / 2) ** 2;
   return 2 * R * Math.asin(Math.sqrt(s));
 }
 
@@ -276,7 +297,9 @@ export function makeSpotHeroProvider(options: SpotHeroOptions = {}): GarageProvi
       if (option) {
         return { kind: "deeplink_handoff", option, deepLink: option.deepLink };
       }
-      throw new Error(`unknown garage option ${optionId} (search first — options expire with the cache)`);
+      throw new Error(
+        `unknown garage option ${optionId} (search first — options expire with the cache)`,
+      );
     },
   };
 }

@@ -14,7 +14,8 @@ import { coveredCitiesSentence } from "../../providers/registry.js";
 import { explainDecision } from "../explanations.js";
 import type { GarageProvider } from "../garage/garageProvider.js";
 import type { GeocoderProvider } from "./geocoder.js";
-import { metersBetween } from "./geocoder.js";
+import { metersBetween, metroForPoint } from "./geocoder.js";
+import type { ModelClient } from "./loop.js";
 import type { HoursInterval } from "../hours.js";
 import type { LinkWallet } from "../link/linkWallet.js";
 import type { PolicyService } from "../policy.js";
@@ -37,6 +38,9 @@ export interface AssistantDeps {
    * the phone location directly. */
   geocoder?: GeocoderProvider | undefined;
   linkWallet?: LinkWallet | undefined;
+  /** The cheap EXPLAIN_MODEL transport. Absent → explain_decision returns
+   * the plain template sentence unphrased. */
+  explainModel?: ModelClient | undefined;
   now?: (() => Date) | undefined;
 }
 
@@ -265,8 +269,35 @@ export function groundStreetOptions(
   return { ok: true, options: grounded };
 }
 
+/** What this conversation's grounding tools last produced — propose_plan
+ * re-attaches it so cards carry coordinates and provenance even when the
+ * model dropped them (optional schema fields usually are dropped). */
+interface ConversationGrounding {
+  geocode?: { lat: number; lng: number; label: string };
+  streetQuote?: { lat: number; lng: number };
+  garageSearch?: { provider: string; searchedAt: string };
+}
+
+const MAX_GROUNDING_ENTRIES = 500;
+
 export class AssistantTools {
+  /** Keyed by conversationId; oldest evicted past the cap. */
+  private readonly grounding = new Map<string, ConversationGrounding>();
+
   constructor(private readonly deps: AssistantDeps) {}
+
+  private groundingFor(conversationId: string): ConversationGrounding {
+    let entry = this.grounding.get(conversationId);
+    if (!entry) {
+      entry = {};
+      if (this.grounding.size >= MAX_GROUNDING_ENTRIES) {
+        const oldest = this.grounding.keys().next().value;
+        if (oldest !== undefined) this.grounding.delete(oldest);
+      }
+      this.grounding.set(conversationId, entry);
+    }
+    return entry;
+  }
 
   private now(): Date {
     return this.deps.now?.() ?? new Date();
@@ -365,7 +396,10 @@ export class AssistantTools {
       };
     }
     const cityRaw = input["city"];
-    const city = cityRaw === "nyc" || cityRaw === "bos" ? cityRaw : undefined;
+    // Bias order: the model's explicit choice, else the metro the phone
+    // is in — "Newbury Street" from a Boston phone searches Boston first.
+    const phoneMetro = ctx.location ? metroForPoint(ctx.location.lat, ctx.location.lng) : null;
+    const city = cityRaw === "nyc" || cityRaw === "bos" ? cityRaw : (phoneMetro ?? undefined);
     const outcome = await this.deps.geocoder.geocode({ query, ...(city ? { city } : {}) }, 3);
     if (!outcome.ok) {
       await this.audit(ctx, "geocode_place", input, "geocode_error", { reason: outcome.reason });
@@ -391,6 +425,14 @@ export class AssistantTools {
       count: outcome.results.length,
       top: outcome.results[0],
     });
+    const top = outcome.results[0]!;
+    // Remember the resolved place so propose_plan can pin it as the
+    // card's destination even when the model drops the optional field.
+    this.groundingFor(ctx.conversationId).geocode = {
+      lat: top.lat,
+      lng: top.lng,
+      label: top.displayName,
+    };
     return { result: { found: true, results: outcome.results } };
   }
 
@@ -440,29 +482,52 @@ export class AssistantTools {
     // coordinates when it carries them so the guard can't be fooled.
     let options = outcome.options;
     let droppedFar = 0;
+    let nearestBeyondM: number | null = null;
     if (withinM !== null && Number.isFinite(withinM)) {
-      const near = options.filter((o) => {
-        const withCoords = o as typeof o & { lat?: number; lng?: number };
-        const d =
-          typeof withCoords.lat === "number" && typeof withCoords.lng === "number"
-            ? metersBetween(anchorLat, anchorLng, withCoords.lat, withCoords.lng)
-            : o.distanceM;
-        return d <= withinM;
-      });
-      droppedFar = options.length - near.length;
-      options = near;
+      const measured = options.map((o) => ({
+        option: o,
+        d:
+          typeof o.lat === "number" && typeof o.lng === "number"
+            ? metersBetween(anchorLat, anchorLng, o.lat, o.lng)
+            : o.distanceM,
+      }));
+      const near = measured.filter((m) => m.d <= withinM);
+      const far = measured.filter((m) => m.d > withinM);
+      droppedFar = far.length;
+      if (far.length > 0) {
+        nearestBeyondM = Math.round(Math.min(...far.map((m) => m.d)));
+      }
+      options = near.map((m) => m.option);
     }
+    const searchedAt = this.now().toISOString();
+    this.groundingFor(ctx.conversationId).garageSearch = {
+      provider: this.deps.garage.id,
+      searchedAt,
+    };
     await this.audit(ctx, "search_garages", input, "ok", {
       provider: this.deps.garage.id,
       count: options.length,
       fromCache: outcome.fromCache,
       ...(withinM !== null ? { withinM, droppedFar } : {}),
+      ...(outcome.degraded?.length ? { degraded: outcome.degraded } : {}),
     });
     return {
       result: {
         provider: this.deps.garage.id,
+        searchedAt,
         options,
         ...(droppedFar > 0 ? { droppedForDistance: droppedFar } : {}),
+        // How far the closest too-far garage is, so the model can say
+        // "the nearest is about 900 m away" instead of "none found".
+        ...(nearestBeyondM !== null ? { nearestBeyondM } : {}),
+        ...(options.length === 0 && droppedFar > 0
+          ? {
+              instruction: `No garage within ${withinM} m of that place; the nearest is about ${nearestBeyondM} m away. Tell the user that distance — do not say none were found.`,
+            }
+          : {}),
+        // Providers that failed while others answered — mention reduced
+        // coverage when it matters.
+        ...(outcome.degraded?.length ? { degraded: outcome.degraded } : {}),
       },
     };
   }
@@ -526,6 +591,8 @@ export class AssistantTools {
       ...(zone.termsSource === "observed" ? { termsSource: "observed" } : {}),
     });
     (ctx.streetQuotes ??= []).push({ zoneId: zone.zoneId, costUsd: price.totalUsd });
+    // The quoted point becomes the street option's map pin.
+    this.groundingFor(ctx.conversationId).streetQuote = { lat, lng };
     return { result };
   }
 
@@ -654,23 +721,46 @@ export class AssistantTools {
       // payOnArrival is OURS to decide, never the model's: a street
       // option starting more than 15 minutes out cannot be confirmed
       // now (meters run from payment) — the detector pays on arrival.
-      // Garage options get their deepLink re-attached from the search
-      // cache when the model dropped it (the schema is optional and
-      // models often omit it) — the card and a late confirm both need
-      // it on the stored plan, not in a 10-minute in-memory cache.
+      // Garage options get their deepLink and coordinates re-attached
+      // from the search cache when the model dropped them (the schema is
+      // optional and models often omit them) — the card and a late
+      // confirm both need them on the stored plan, not in a 10-minute
+      // in-memory cache. Street options pin at the quoted point, and the
+      // plan carries destination + provenance from this conversation's
+      // grounding when the model left them off.
       const at = this.now().getTime();
+      const grounding = this.groundingFor(ctx.conversationId);
       plan = {
         ...plan,
         options: plan.options.map((o) => {
           if (o.type !== "street") {
             const cached = this.deps.garage.optionById(o.garageOptionId ?? o.id);
             const deepLink = o.deepLink ?? cached?.deepLink;
-            return { ...o, payOnArrival: false, ...(deepLink ? { deepLink } : {}) };
+            const lat = o.lat ?? cached?.lat;
+            const lng = o.lng ?? cached?.lng;
+            return {
+              ...o,
+              payOnArrival: false,
+              ...(deepLink ? { deepLink } : {}),
+              ...(lat !== undefined && lng !== undefined ? { lat, lng } : {}),
+            };
           }
           const starts = o.startsAt ? new Date(o.startsAt).getTime() : Number.NaN;
           const future = Number.isFinite(starts) && starts - at > 15 * 60_000;
-          return { ...o, payOnArrival: future };
+          const pin = grounding.streetQuote;
+          return {
+            ...o,
+            payOnArrival: future,
+            ...(o.lat === undefined && pin ? { lat: pin.lat, lng: pin.lng } : {}),
+          };
         }),
+        ...(plan.destination === undefined && grounding.geocode
+          ? { destination: grounding.geocode }
+          : {}),
+        // Provenance is server truth, never model text.
+        ...(plan.options.some((o) => o.type === "garage") && grounding.garageSearch
+          ? { provenance: grounding.garageSearch }
+          : {}),
       };
     }
     const planId = randomUUID();
@@ -817,8 +907,32 @@ export class AssistantTools {
       await this.audit(ctx, "explain_decision", input, "not_found", {});
       return { result: { error: "no such decision (or it belongs to another user)" } };
     }
-    const text = explainDecision(row);
-    await this.audit(ctx, "explain_decision", input, "ok", {});
+    const template = explainDecision(row);
+    // Phrasing runs on the cheap EXPLAIN_MODEL; the template is the
+    // factual floor — a phrasing failure falls back to it, and the model
+    // is told to add nothing the template doesn't say.
+    let text = template;
+    if (this.deps.explainModel) {
+      try {
+        const phrased = await this.deps.explainModel.create({
+          system:
+            "Rewrite the given parking-decision record as one or two friendly plain-English sentences. State only facts present in the input — never add, guess, or soften facts. No preamble.",
+          messages: [{ role: "user", content: template }],
+          maxTokens: 300,
+        });
+        const joined = phrased.content
+          .filter((b): b is { type: "text"; text: string } => b.type === "text")
+          .map((b) => b.text)
+          .join(" ")
+          .trim();
+        if (joined.length > 0) text = joined;
+      } catch {
+        // Fall back to the template — an explanation must never fail the turn.
+      }
+    }
+    await this.audit(ctx, "explain_decision", input, "ok", {
+      phrased: text !== template,
+    });
     return { result: { explanation: text } };
   }
 }

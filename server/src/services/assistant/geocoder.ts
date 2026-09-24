@@ -141,11 +141,18 @@ export class NominatimGeocoder implements GeocoderProvider {
     if (cached && this.now().getTime() - cached.at < NominatimGeocoder.TTL_MS) {
       return { ok: true, results: cached.results.slice(0, limit) };
     }
-    // Which metros to try: the biased one only, else every covered one.
-    const cities: MetroCity[] = q.city ? [q.city] : SEARCH_ORDER;
+    // Which metros to try: the biased one FIRST and alone if it matches;
+    // the other covered metros only as a fallback, so a street name from a
+    // phone in one city stays there but a landmark in another still
+    // resolves. Unbiased: every covered one.
+    const cities: MetroCity[] = q.city
+      ? [q.city, ...SEARCH_ORDER.filter((c) => c !== q.city)]
+      : SEARCH_ORDER;
     const all: GeocodeResult[] = [];
     try {
       for (const city of cities) {
+        // Biased search: stop at the first metro that matched.
+        if (q.city && all.length > 0) break;
         const rows = await this.queryCity(q.query, city);
         for (const row of rows) {
           const lat = Number(row.lat);

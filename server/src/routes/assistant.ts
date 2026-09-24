@@ -19,7 +19,7 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 
 import type { AppDeps } from "../app.js";
-import { runAssistantTurn } from "../services/assistant/loop.js";
+import { assistantSpendTodayUsd, runAssistantTurn } from "../services/assistant/loop.js";
 import type { AssistantResult } from "../services/assistant/loop.js";
 import { CONFIRMATION_TTL_MS } from "../services/assistant/tools.js";
 import { itineraryStopSchema, itineraryTotalUsd } from "../services/assistant/plans.js";
@@ -73,6 +73,33 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
     const conversationId = body.conversation_id ?? `conv_${randomUUID()}`;
     const text = (body.text ?? body.transcript)!;
 
+    // Per-user daily model-spend cap (estimated from logged token usage).
+    // Checked before the paid call, refused with the numbers on record.
+    if (deps.assistantDailySpendCapUsd !== undefined) {
+      const spentUsd = await assistantSpendTodayUsd(deps.db, user.id, now());
+      if (spentUsd >= deps.assistantDailySpendCapUsd) {
+        await deps.db.decision.create({
+          data: {
+            kind: "assistant_turn",
+            inputs: { conversationId },
+            rule: "daily_spend_cap",
+            outcome: {
+              refused: true,
+              spentUsd: Math.round(spentUsd * 10_000) / 10_000,
+              capUsd: deps.assistantDailySpendCapUsd,
+              estimatedCostUsd: 0,
+            },
+            userId: user.id,
+          },
+        });
+        return reply.code(429).send({
+          error: "assistant_budget_exhausted",
+          spentUsd: Math.round(spentUsd * 100) / 100,
+          capUsd: deps.assistantDailySpendCapUsd,
+        });
+      }
+    }
+
     const wantsStream = (req.headers.accept ?? "").includes("text/event-stream");
     let result: AssistantResult;
     if (wantsStream) {
@@ -91,6 +118,9 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
           text,
           location: body.location,
           onText: (delta) => sseWrite(reply, "text", { delta }),
+          // The plan gets its own event the moment propose_plan lands, so
+          // the card renders before the reply text settles.
+          onPlan: (plan) => sseWrite(reply, "plan", plan),
           now: deps.now,
         });
         sseWrite(reply, "done", {

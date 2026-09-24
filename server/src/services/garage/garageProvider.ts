@@ -23,6 +23,10 @@ export interface GarageOption {
   provider: string;
   name: string;
   address: string;
+  /** Facility coordinates when the provider reports them — plan-card map
+   * pins and the recomputed distance guard both read these. */
+  lat?: number;
+  lng?: number;
   priceUsd: number;
   distanceM: number;
   walkMinutes: number;
@@ -58,9 +62,16 @@ export interface GarageProvider {
   readonly canReserve: boolean;
   /** Typed outcome: "the search broke" (blocked | parse_failed |
    * network) is a different fact from "no garages" ({ok, options: []})
-   * and the assistant must never conflate them. */
+   * and the assistant must never conflate them. A multi-provider search
+   * where SOME providers failed reports them in `degraded` — partial
+   * results with an honest asterisk, never silently narrower coverage. */
   search(query: GarageSearchQuery): Promise<
-    | { ok: true; options: GarageOption[]; fromCache: boolean }
+    | {
+        ok: true;
+        options: GarageOption[];
+        fromCache: boolean;
+        degraded?: { provider: string; error: string }[];
+      }
     | { ok: false; error: "blocked" | "parse_failed" | "network"; detail: string }
   >;
   /** A recently searched option by id (cache lookup, no side effects);

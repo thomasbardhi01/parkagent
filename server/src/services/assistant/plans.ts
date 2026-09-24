@@ -22,6 +22,11 @@ export const singleSpotOptionSchema = z.object({
   garageOptionId: z.string().optional(),
   /** ISO start of the stay; how the server tells "now" from "later". */
   startsAt: z.string().optional(),
+  /** Where the option physically is — the card's mini map pin. The server
+   * re-attaches these from the garage cache / the street quote when the
+   * model drops them. */
+  lat: z.number().gte(-90).lte(90).optional(),
+  lng: z.number().gte(-180).lte(180).optional(),
   /** SERVER-COMPUTED on street options (model input ignored): a future
    * meter can't be started now — the detector pays at the curb, so the
    * card shows "We'll pay automatically when you park here" and no
@@ -35,6 +40,18 @@ export const singleSpotPlanSchema = z.object({
   kind: z.literal("single_spot"),
   /** ≤3 options; exactly one may carry the recommended badge. */
   options: z.array(singleSpotOptionSchema).min(1).max(3),
+  /** The place the user asked about (geocoded) — the map's destination
+   * pin. The server backfills it from the turn's geocode when omitted. */
+  destination: z
+    .object({
+      lat: z.number().gte(-90).lte(90),
+      lng: z.number().gte(-180).lte(180),
+      label: z.string().max(120),
+    })
+    .optional(),
+  /** SERVER-ATTACHED: where garage results came from and when the search
+   * ran, so the card can say "From SpotHero · checked 2:05 PM". */
+  provenance: z.object({ provider: z.string(), searchedAt: z.string() }).optional(),
   note: z.string().max(400).optional(),
 });
 
@@ -64,10 +81,7 @@ export const itineraryPlanSchema = z.object({
   note: z.string().max(400).optional(),
 });
 
-export const planSchema = z.discriminatedUnion("kind", [
-  singleSpotPlanSchema,
-  itineraryPlanSchema,
-]);
+export const planSchema = z.discriminatedUnion("kind", [singleSpotPlanSchema, itineraryPlanSchema]);
 
 export type SingleSpotOption = z.infer<typeof singleSpotOptionSchema>;
 export type SingleSpotPlan = z.infer<typeof singleSpotPlanSchema>;

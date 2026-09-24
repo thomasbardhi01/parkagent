@@ -1304,6 +1304,10 @@ export function makeTestApp(options: {
   seedLinkedProvider?: boolean;
   /** Scripted assistant transport; absent → /assistant/message 503s. */
   assistantModel?: ModelClient;
+  /** Scripted EXPLAIN_MODEL transport for explain_decision phrasing. */
+  explainModel?: ModelClient;
+  /** ASSISTANT_DAILY_SPEND_CAP_USD equivalent; unset → uncapped. */
+  assistantDailySpendCapUsd?: number;
   /** Garage search fake; default returns no results and hits no network. */
   garage?: GarageProvider;
   /** Named-place geocoder fake; default resolves nothing (geocode_place
@@ -1364,6 +1368,7 @@ export function makeTestApp(options: {
     garage,
     ...(options.geocoder ? { geocoder: options.geocoder } : {}),
     linkWallet,
+    ...(options.explainModel ? { explainModel: options.explainModel } : {}),
     now,
   });
   const auth: AuthConfig = {
@@ -1389,6 +1394,9 @@ export function makeTestApp(options: {
     ...(options.stripe ? { stripe: options.stripe } : {}),
     ...(options.assistantModel ? { assistantModel: options.assistantModel } : {}),
     assistantTools,
+    ...(options.assistantDailySpendCapUsd !== undefined
+      ? { assistantDailySpendCapUsd: options.assistantDailySpendCapUsd }
+      : {}),
     linkWallet,
     ...(options.issuingLive !== undefined ? { issuingLive: options.issuingLive } : {}),
     ...(options.apnsDelivery ? { apnsDelivery: options.apnsDelivery } : {}),

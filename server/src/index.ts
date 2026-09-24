@@ -28,7 +28,10 @@ import {
 import { makePendingSessionCheck } from "./services/pendingSession.js";
 import { PolicyService, snapshotPolicy } from "./services/policy.js";
 import { makeAnthropicModelClient } from "./services/assistant/anthropicClient.js";
+import { resolveAssistantModels } from "./services/assistant/loop.js";
 import { AssistantTools } from "./services/assistant/tools.js";
+import { makeMultiGarageProvider } from "./services/garage/multiProvider.js";
+import { makeParkWhizProvider } from "./services/garage/parkwhiz.js";
 import { makeSpotHeroProvider } from "./services/garage/spotheroDeepLink.js";
 import { NominatimGeocoder } from "./services/assistant/geocoder.js";
 import { makeLinkHttpClient } from "./services/link/linkClient.js";
@@ -113,9 +116,19 @@ const stripe =
       })
     : undefined;
 
-// Assistant: the model transport (503 without the key), the SpotHero
-// deep-link garage provider, and the Link wallet.
-const garage = makeSpotHeroProvider();
+// Assistant: the model transports (503 without the key), the garage
+// providers (SpotHero always; ParkWhiz only with credentials, merged and
+// address-deduped), and the Link wallet.
+const garageProviders = [makeSpotHeroProvider()];
+if (env.PARKWHIZ_CLIENT_ID && env.PARKWHIZ_CLIENT_SECRET) {
+  garageProviders.push(
+    makeParkWhizProvider({
+      clientId: env.PARKWHIZ_CLIENT_ID,
+      clientSecret: env.PARKWHIZ_CLIENT_SECRET,
+    }),
+  );
+}
+const garage = makeMultiGarageProvider(garageProviders);
 const linkClient =
   env.LINK_CLIENT_ID && env.LINK_CLIENT_SECRET && env.LINK_PUBLISHABLE_KEY && env.LINK_REDIRECT_URI
     ? makeLinkHttpClient({
@@ -127,8 +140,14 @@ const linkClient =
       })
     : undefined;
 const linkWallet = new LinkWallet({ db, stateCrypto, linkClient });
+// Model routing: ASSISTANT_MODEL (→ ANTHROPIC_MODEL → sonnet) runs the
+// tool loop; EXPLAIN_MODEL (haiku) phrases explanations.
+const models = resolveAssistantModels(env);
 const assistantModel = env.ANTHROPIC_API_KEY
-  ? makeAnthropicModelClient(env.ANTHROPIC_API_KEY, env.ANTHROPIC_MODEL)
+  ? makeAnthropicModelClient(env.ANTHROPIC_API_KEY, models.assistant)
+  : undefined;
+const explainModel = env.ANTHROPIC_API_KEY
+  ? makeAnthropicModelClient(env.ANTHROPIC_API_KEY, models.explain)
   : undefined;
 const findCandidates = makeCandidateFetcher(prisma);
 // The map's curb layer (GET /zones/near) — same prefilter, plus geometry.
@@ -143,6 +162,7 @@ const assistantTools = new AssistantTools({
   garage,
   geocoder,
   linkWallet,
+  ...(explainModel ? { explainModel } : {}),
 });
 
 // Identity: Sign in with Apple always on. Email codes and Google each sit
@@ -188,6 +208,9 @@ const app = buildApp({
   authenticate: makeAuthenticate(db, env.API_KEY_PEPPER, env.AUTH_JWT_SECRET),
   ...(assistantModel ? { assistantModel } : {}),
   assistantTools,
+  ...(env.ASSISTANT_DAILY_SPEND_CAP_USD !== undefined
+    ? { assistantDailySpendCapUsd: env.ASSISTANT_DAILY_SPEND_CAP_USD }
+    : {}),
   linkWallet,
   executorFor,
   sendPush,

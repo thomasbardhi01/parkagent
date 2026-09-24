@@ -21,7 +21,7 @@ export function makeAnthropicModelClient(
         model,
         max_tokens: args.maxTokens,
         system: args.system,
-        tools: args.tools as Anthropic.Tool[],
+        ...(args.tools ? { tools: args.tools as Anthropic.Tool[] } : {}),
         messages: args.messages as Anthropic.MessageParam[],
       });
       if (onText) {
@@ -35,7 +35,15 @@ export function makeAnthropicModelClient(
           content.push({ type: "tool_use", id: block.id, name: block.name, input: block.input });
         }
       }
-      return { content, stopReason: message.stop_reason ?? "end_turn" };
+      return {
+        content,
+        stopReason: message.stop_reason ?? "end_turn",
+        model: message.model,
+        usage: {
+          inputTokens: message.usage.input_tokens,
+          outputTokens: message.usage.output_tokens,
+        },
+      };
     },
   };
 }

@@ -55,9 +55,10 @@ struct SettingsView: View {
 
                 #if DEBUG
                 Section {
-                    Toggle("Use mock API", isOn: $model.useMockAPI)
-                        .accessibilityIdentifier("settings.mockToggle")
                     if model.useMockAPI {
+                        Text("Mock API — this launch was started with the UI-test argument.")
+                            .font(.captionText)
+                            .foregroundStyle(Color.textSecondary)
                         Picker("Mock scenario", selection: $mockScenario) {
                             ForEach(MockScenario.allCases) { scenario in
                                 Text(scenario.label).tag(scenario.rawValue)
@@ -84,7 +85,7 @@ struct SettingsView: View {
                         .accessibilityIdentifier("settings.cityScenarioPicker")
                     }
                     if model.liveAPIUnavailable {
-                        Text("Live API is not configured — add API_BASE_URL and API_KEY to Config.xcconfig. Using the mock instead.")
+                        Text("Live API is not configured — add API_BASE_URL and API_KEY to Config.xcconfig and reinstall. Nothing will load until then.")
                             .font(.captionText)
                             .foregroundStyle(Color.warningGold)
                     }

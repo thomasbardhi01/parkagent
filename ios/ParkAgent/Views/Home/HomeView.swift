@@ -25,6 +25,20 @@ struct HomeView: View {
             .overlay(alignment: .top) {
                 VStack(spacing: Spacing.half) {
                     statusChip
+                    if model.liveAPIUnavailable {
+                        ErrorBanner(
+                            icon: "exclamationmark.triangle.fill",
+                            title: "Not connected to ParkAgent",
+                            message: "The live API isn't configured — add API_BASE_URL and API_KEY to Config.xcconfig and reinstall."
+                        )
+                    } else if model.policyLoadFailed {
+                        ErrorBanner(
+                            title: "Can't reach the ParkAgent server",
+                            message: "Nothing loads until the connection is back.",
+                            retryTitle: "Retry",
+                            retry: { Task { await model.loadPolicy() } }
+                        )
+                    }
                     if permissions.locationDenied {
                         PermissionBanner()
                     }

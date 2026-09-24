@@ -8,19 +8,16 @@ import Observation
 @Observable
 final class AppModel {
     private(set) var api: any APIClient
-    /// Set when the mock is active because the live API is unconfigured
-    /// rather than chosen.
+    /// Set when API_BASE_URL/API_KEY are missing from Config.xcconfig. The
+    /// app stays on `UnconfiguredAPI` (every call fails with a real error)
+    /// — there is no silent fallback to fixtures.
     private(set) var liveAPIUnavailable = false
 
     let detector = ParkDetector()
     let reporter = LocationReporter()
 
-    var useMockAPI: Bool {
-        didSet {
-            UserDefaults.standard.set(useMockAPI, forKey: "useMockAPI")
-            rebuildAPI()
-        }
-    }
+    /// Launch-time only (UI tests and previews); see LaunchOverrides.
+    let useMockAPI: Bool
 
     var policyResponse: PolicyResponse?
     var policyLoadFailed = false
@@ -147,18 +144,17 @@ final class AppModel {
     static let fixtureCoordinate = CLLocationCoordinate2D(latitude: 40.7784, longitude: -73.9818)
 
     init() {
-        #if DEBUG
-        let mock = UserDefaults.standard.object(forKey: "useMockAPI") as? Bool ?? true
-        #else
-        let mock = false
-        #endif
+        let mock = LaunchOverrides.useMockAPI
         useMockAPI = mock
         if mock {
             api = MockAPI()
         } else if let live = LiveAPI.fromConfig() {
             api = live
         } else {
-            api = MockAPI()
+            // Missing Config.xcconfig values are an error the user sees
+            // (Home banner via liveAPIUnavailable), never a quiet switch
+            // onto fixtures.
+            api = UnconfiguredAPI()
             liveAPIUnavailable = true
         }
         if mock { seedMockHistory() }
@@ -170,19 +166,6 @@ final class AppModel {
            let lng = defaults.object(forKey: "carLng") as? Double {
             carCoordinate = CLLocationCoordinate2D(latitude: lat, longitude: lng)
         }
-    }
-
-    private func rebuildAPI() {
-        liveAPIUnavailable = false
-        if useMockAPI {
-            api = MockAPI()
-        } else if let live = LiveAPI.fromConfig() {
-            api = live
-        } else {
-            api = MockAPI()
-            liveAPIUnavailable = true
-        }
-        PushManager.shared.activate(api: api)
     }
 
     // MARK: - Background plumbing
@@ -257,9 +240,14 @@ final class AppModel {
     }
 
     /// Manual zone-number entry from the unknown-zone state. The server has
-    /// no quote-by-zone-number endpoint yet, so this fabricates a fixture
-    /// quote; the live path needs a Phase 5+ endpoint.
+    /// no quote-by-zone-number endpoint yet: the mock fabricates a fixture
+    /// quote so the flow stays walkable in UI tests, and the live path says
+    /// so honestly instead of inventing a price.
     func quoteForManualZone(zoneNumber: String) {
+        guard useMockAPI else {
+            paymentError = .notImplemented
+            return
+        }
         pendingParked = MockFixtures.singleQuote(zoneNumber: zoneNumber)
     }
 

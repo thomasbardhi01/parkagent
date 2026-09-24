@@ -44,8 +44,12 @@ final class AccountUITests: ParkAgentUITestCase {
         // Back on the sheet, the row shows the new name.
         let profileRow = element(app, "account.profileRow")
         XCTAssertTrue(profileRow.waitForExistence(timeout: 5))
+        // The whole new name, not a fragment: "Tom" alone passes or fails
+        // on the coincidence that "Thomas" doesn't contain it, which is
+        // spelling luck rather than a discriminator. Only a successful
+        // save can produce "Tom Bardhi".
         XCTAssertTrue(
-            profileRow.label.contains("Tom"),
+            profileRow.label.contains("Tom Bardhi"),
             "Profile row should show the saved name, got: \(profileRow.label)"
         )
     }
@@ -109,8 +113,11 @@ final class AccountUITests: ParkAgentUITestCase {
 
         let row = scrollTo(app, "account.provider.parknyc")
         XCTAssertTrue(row.waitForExistence(timeout: 5), "ParkNYC row missing")
+        // The masked FORM, not just the digits: only ProviderAccountStatus
+        // .maskedCard emits "•••• 4242", whereas a bare "4242" could come
+        // from anything the row ever grows (a zone number, a balance).
         XCTAssertTrue(
-            row.label.contains("4242"),
+            row.label.contains("•••• 4242"),
             "Connected account should show the masked card, got: \(row.label)"
         )
     }

@@ -38,8 +38,15 @@ struct RootView: View {
             await evaluateGate()
         }
         .onChange(of: hasOnboarded) { _, onboarded in
-            // The flow's own completion; re-derived from truth next launch.
-            if onboarded { gate = .ready }
+            if onboarded {
+                // The flow's own completion; re-derived from truth next launch.
+                gate = .ready
+            } else {
+                // Diagnostics' Reset onboarding cleared it: back through the
+                // gate, which now finds the vehicle and city missing.
+                gate = .checking
+                Task { await evaluateGate() }
+            }
         }
         .onChange(of: gate) { _, gate in
             if gate == .ready { model.startBackgroundWork() }

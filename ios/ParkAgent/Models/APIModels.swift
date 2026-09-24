@@ -438,6 +438,15 @@ struct TopupIntentResponse: Codable, Sendable {
     var dryRun: Bool
 }
 
+/// GET /health — unauthenticated; the Diagnostics screen shows which build
+/// the phone is actually talking to.
+struct HealthResponse: Codable, Sendable {
+    var ok: Bool
+    var dryRun: Bool
+    var commit: String
+    var builtAt: String
+}
+
 // MARK: - Map layer (server/API.md "GET /zones/near")
 
 struct NearbyZonesResponse: Codable, Sendable {

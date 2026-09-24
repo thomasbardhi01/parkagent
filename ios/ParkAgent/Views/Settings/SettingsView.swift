@@ -3,11 +3,11 @@ import SwiftUI
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @Environment(PermissionsManager.self) private var permissions
-    @AppStorage(MockScenario.defaultsKey) private var mockScenario = MockScenario.singleQuote.rawValue
-    @AppStorage(CardMockScenario.defaultsKey) private var cardScenario = CardMockScenario.ready.rawValue
-    @AppStorage(ProviderMockScenario.defaultsKey) private var providerScenario = ProviderMockScenario.linked.rawValue
-    @AppStorage(CityMockScenario.defaultsKey) private var cityScenarioRaw = CityMockScenario.nyc.rawValue
     @AppStorage(AppearanceSetting.defaultsKey) private var appearanceRaw = AppearanceSetting.system.rawValue
+    /// Five taps on the version number reveal the Diagnostics link (DEBUG
+    /// only). Not persisted: it re-hides on the next launch.
+    @State private var versionTaps = 0
+    @State private var diagnosticsUnlocked = false
 
     @State private var providerAccounts: [ProviderAccountStatus] = []
     /// nil until the first load answers, so the failure copy never flashes
@@ -53,57 +53,8 @@ struct SettingsView: View {
                     }
                 }
 
-                #if DEBUG
-                Section {
-                    if model.useMockAPI {
-                        Text("Mock API — this launch was started with the UI-test argument.")
-                            .font(.captionText)
-                            .foregroundStyle(Color.textSecondary)
-                        Picker("Mock scenario", selection: $mockScenario) {
-                            ForEach(MockScenario.allCases) { scenario in
-                                Text(scenario.label).tag(scenario.rawValue)
-                            }
-                        }
-                        .accessibilityIdentifier("settings.scenarioPicker")
-                        Picker("Card scenario", selection: $cardScenario) {
-                            ForEach(CardMockScenario.allCases) { scenario in
-                                Text(scenario.label).tag(scenario.rawValue)
-                            }
-                        }
-                        .accessibilityIdentifier("settings.cardScenarioPicker")
-                        Picker("Provider scenario", selection: $providerScenario) {
-                            ForEach(ProviderMockScenario.allCases) { scenario in
-                                Text(scenario.label).tag(scenario.rawValue)
-                            }
-                        }
-                        .accessibilityIdentifier("settings.providerScenarioPicker")
-                        Picker("City scenario", selection: $cityScenarioRaw) {
-                            ForEach(CityMockScenario.allCases) { scenario in
-                                Text(scenario.label).tag(scenario.rawValue)
-                            }
-                        }
-                        .accessibilityIdentifier("settings.cityScenarioPicker")
-                    }
-                    if model.liveAPIUnavailable {
-                        Text("Live API is not configured — add API_BASE_URL and API_KEY to Config.xcconfig and reinstall. Nothing will load until then.")
-                            .font(.captionText)
-                            .foregroundStyle(Color.warningGold)
-                    }
-                    LabeledContent("API base", value: AppConfig.apiBaseURL?.absoluteString ?? "not set")
-                    NavigationLink("Debug menu") { DebugMenuView() }
-                        .accessibilityIdentifier("settings.debugMenuLink")
-                } header: {
-                    Text("Developer")
-                } footer: {
-                    Text("Debug builds only. Scenario applies to the next simulated park.")
-                }
-                #endif
-
                 Section("About") {
-                    LabeledContent(
-                        "Version",
-                        value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
-                    )
+                    versionRow
                 }
             }
             .navigationTitle("Settings")
@@ -146,6 +97,39 @@ struct SettingsView: View {
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("settings.view")
         }
+    }
+
+    // MARK: - About / hidden Diagnostics
+
+    /// Five taps on the version number opens Diagnostics. Deliberately
+    /// undiscoverable — nothing in the user-facing UI hints at it — and
+    /// compiled out of Release builds entirely.
+    @ViewBuilder
+    private var versionRow: some View {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—"
+        LabeledContent("Version", value: "\(version) (\(build))")
+            .contentShape(Rectangle())
+            .onTapGesture { registerVersionTap() }
+            .accessibilityIdentifier("settings.versionRow")
+
+        #if DEBUG
+        if diagnosticsUnlocked {
+            NavigationLink("Diagnostics") { DiagnosticsView() }
+                .accessibilityIdentifier("settings.diagnosticsLink")
+        }
+        #endif
+    }
+
+    private func registerVersionTap() {
+        #if DEBUG
+        versionTaps += 1
+        if versionTaps >= 5 {
+            versionTaps = 0
+            withAnimation { diagnosticsUnlocked = true }
+            Haptics.success()
+        }
+        #endif
     }
 
     // MARK: - City

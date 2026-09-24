@@ -27,6 +27,9 @@ protocol APIClient: Sendable {
     /// capped server-side at 400 m.
     func nearbyZones(lat: Double, lng: Double, radiusM: Double) async throws -> NearbyZonesResponse
 
+    /// GET /health — which server build the phone is talking to (Diagnostics).
+    func health() async throws -> HealthResponse
+
     // City & provider accounts (server/API.md "GET /city", "Provider accounts").
     func detectCity(lat: Double, lng: Double) async throws -> CityDetectResponse
     func providersStatus() async throws -> ProvidersStatusResponse

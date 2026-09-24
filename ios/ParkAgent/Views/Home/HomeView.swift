@@ -383,7 +383,9 @@ struct HomeView: View {
             }
 
             #if DEBUG
-            if model.useMockAPI && model.activeSession == nil {
+            // UI tests drive parks from here; a real user reaches "simulate"
+            // only through the hidden Diagnostics screen.
+            if LaunchOverrides.uiTesting && model.activeSession == nil {
                 Button("Simulate park") {
                     Task { await model.simulatePark() }
                 }

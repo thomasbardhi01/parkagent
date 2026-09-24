@@ -5,7 +5,7 @@ final class ParkFlowUITests: ParkAgentUITestCase {
     /// "Not parked here" dismisses.
     func testSimulatedParkShowsQuoteSheet() {
         let app = launchApp(scenario: "singleQuote")
-        simulateParkViaDebugMenu(app)
+        simulateParkViaDiagnostics(app)
 
         XCTAssertTrue(app.staticTexts["Zone 110436"].exists, "Zone number missing")
         XCTAssertTrue(app.staticTexts["$5.00 first hr, $8.25 after"].exists, "Rate ladder missing")
@@ -26,7 +26,7 @@ final class ParkFlowUITests: ParkAgentUITestCase {
     /// until one side is chosen.
     func testTwoCandidatesRequireSelectionBeforePay() {
         let app = launchApp(scenario: "twoCandidates")
-        simulateParkViaDebugMenu(app)
+        simulateParkViaDiagnostics(app)
 
         let nearest = element(app, "parkedSheet.candidate.110436")
         let other = element(app, "parkedSheet.candidate.110437")
@@ -83,7 +83,7 @@ final class ParkFlowUITests: ParkAgentUITestCase {
         XCTAssertTrue(app.staticTexts["Zone 81234"].exists, "Session should carry the saved number")
 
         // Second park at the block: the stored number makes it automatic.
-        simulateParkViaDebugMenu(app)
+        simulateParkViaDiagnostics(app)
         XCTAssertTrue(
             element(app, "parkedSheet.payButton").waitForExistence(timeout: 5),
             "Second park should offer plain Pay"
@@ -165,7 +165,7 @@ final class ParkFlowUITests: ParkAgentUITestCase {
     /// resubmits for a quote.
     func testUnknownZoneManualEntryResubmits() {
         let app = launchApp(scenario: "unknownZone")
-        simulateParkViaDebugMenu(app)
+        simulateParkViaDiagnostics(app)
 
         let field = element(app, "parkedSheet.zoneField")
         XCTAssertTrue(field.waitForExistence(timeout: 5), "Zone-number field missing")

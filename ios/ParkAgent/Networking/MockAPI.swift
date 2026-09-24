@@ -265,6 +265,11 @@ struct MockAPI: APIClient {
         return MockFixtures.nearbyZones(around: (lat: lat, lng: lng), radiusM: radiusM)
     }
 
+    func health() async throws -> HealthResponse {
+        try await pause()
+        return HealthResponse(ok: true, dryRun: true, commit: "mock", builtAt: "mock")
+    }
+
     // MARK: - City & providers
 
     func detectCity(lat: Double, lng: Double) async throws -> CityDetectResponse {

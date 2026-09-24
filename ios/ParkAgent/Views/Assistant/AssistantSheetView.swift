@@ -88,9 +88,11 @@ struct AssistantSheetView: View {
                         value: model.proposedPlan?.planId
                     )
                 }
-                // New content starts pinned to the newest message rather
-                // than the top of the transcript.
-                .defaultScrollAnchor(.bottom)
+                // No .defaultScrollAnchor(.bottom) here: pinning the whole
+                // scroll view to the bottom re-lays-out a tall plan card
+                // under the reader's finger (it moved the Sign off button
+                // out from under a tap). The explicit scrollTo below is
+                // what keeps the newest message in view.
                 .onChange(of: model.messages) {
                     withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
                 }

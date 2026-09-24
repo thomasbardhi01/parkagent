@@ -149,12 +149,18 @@ struct HomeView: View {
             ?? CityCatalog.center(of: model.effectiveCity)
             ?? CityCatalog.fallbackCenter
         camera = .region(MKCoordinateRegion(center: resolved, span: Self.streetSpan))
+
+        // Name the city in the chip on a fresh install, without waiting for
+        // the first park to be the thing that tells us where we are.
+        if model.detectedCity == nil, let center {
+            _ = await model.detectCity(lat: center.latitude, lng: center.longitude)
+        }
     }
 
-    /// Where the phone is. The mock answers with the fixture point so the
+    /// Where the phone is. The mock answers from the city scenario so the
     /// simulator and UI tests are deterministic.
     private func currentCoordinate() async -> CLLocationCoordinate2D? {
-        model.useMockAPI ? AppModel.fixtureCoordinate : await OneShotLocation.request()
+        model.useMockAPI ? MockFixtures.currentCoordinate() : await OneShotLocation.request()
     }
 
     private static let streetSpan = MKCoordinateSpan(latitudeDelta: 0.006, longitudeDelta: 0.006)

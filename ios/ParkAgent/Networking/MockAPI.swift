@@ -1,3 +1,4 @@
+import CoreLocation
 import Foundation
 
 /// Which canned `/parked` outcome the mock serves. Persisted so the Settings
@@ -806,6 +807,23 @@ enum MockFixtures {
     }
 
     // MARK: - Map fixtures
+
+    /// Where the mock says the phone is: the city scenario's center, so a
+    /// `-cityScenario bos` launch sees a Boston map rather than the NYC
+    /// quote fixtures' coordinate. `@MainActor` because the NYC fallback is
+    /// AppModel's fixture point, which is main-actor isolated.
+    @MainActor
+    static func currentCoordinate() -> CLLocationCoordinate2D {
+        let scenario = CityMockScenario(
+            rawValue: UserDefaults.standard.string(forKey: CityMockScenario.defaultsKey) ?? ""
+        ) ?? .nyc
+        switch scenario {
+        case .bos:
+            return CityCatalog.center(of: "bos") ?? AppModel.fixtureCoordinate
+        case .nyc, .none:
+            return AppModel.fixtureCoordinate
+        }
+    }
 
     /// Curb lines for the map layer: a short grid of block faces around the
     /// point, half of them currently free, so the two colors and the tapped

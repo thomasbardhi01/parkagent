@@ -235,8 +235,9 @@ function num(v: unknown): number {
 }
 
 /** Fill each street option's missing zoneId from the conversation's
- * quotes: the only zone quoted, else the only zone quoted at the
- * option's price. Anything else is ambiguous — the model must say which. */
+ * quotes: a quoted zone the option's id names (prod's sonnet-5 put the
+ * zone there), else the only zone quoted, else the only zone quoted at
+ * the option's price. Anything else is ambiguous — the model must say. */
 export function groundStreetOptions(
   options: SingleSpotOption[],
   quotes: StreetQuote[],
@@ -251,7 +252,13 @@ export function groundStreetOptions(
     const atPrice = new Set(
       quotes.filter((q) => Math.abs(q.costUsd - option.priceUsd) < 0.005).map((q) => q.zoneId),
     );
-    const zoneId = zones.size === 1 ? [...zones][0] : atPrice.size === 1 ? [...atPrice][0] : null;
+    const zoneId = zones.has(option.id)
+      ? option.id
+      : zones.size === 1
+        ? [...zones][0]
+        : atPrice.size === 1
+          ? [...atPrice][0]
+          : null;
     if (!zoneId) return { ok: false, optionId: option.id };
     grounded.push({ ...option, zoneId });
   }

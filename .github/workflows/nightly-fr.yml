@@ -33,6 +33,8 @@ concurrency:
 jobs:
   fr:
     runs-on: ubuntu-latest
+    env:
+      FR_API_BASE: ${{ inputs.base || 'https://parkagent-api.fly.dev' }}
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
@@ -49,11 +51,27 @@ jobs:
           pnpm -C executor exec playwright install --with-deps chromium
           pnpm -C executor test
 
+      # Which build the suite is about to test. A run dispatched right
+      # after a merge tests the PREVIOUS deploy until CI's deploy job lands
+      # (nightly 36015007755 did exactly that), so the report says so.
+      - name: Deployed build
+        id: deployed
+        if: always() && steps.executor.conclusion != 'cancelled'
+        run: |
+          commit=$(curl -fsS --max-time 20 "$FR_API_BASE/health" \
+            | node -pe 'JSON.parse(require("fs").readFileSync(0, "utf8")).commit' 2>/dev/null \
+            || echo unknown)
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          if [ "$commit" = unknown ]; then
+            echo "::warning::couldn't read the deployed commit from $FR_API_BASE/health"
+          elif [ "$commit" != "$GITHUB_SHA" ]; then
+            echo "::warning::$FR_API_BASE runs $commit, not this run's $GITHUB_SHA — its deploy hasn't landed"
+          fi
+
       - name: FR suite against the live API (dry run)
         id: frsuite
         if: always() && steps.executor.conclusion != 'cancelled'
         env:
-          FR_API_BASE: ${{ inputs.base || 'https://parkagent-api.fly.dev' }}
           FR_API_KEY: ${{ secrets.FR_API_KEY }}
           # Relative to server/; see vitest.fr.config.ts for why this is
           # an env var and not --reporter flags.
@@ -63,6 +81,9 @@ jobs:
       - name: Build report
         id: report
         if: always()
+        env:
+          FR_DEPLOYED_COMMIT: ${{ steps.deployed.outputs.commit }}
+          FR_TESTS_COMMIT: ${{ github.sha }}
         run: |
           cd server
           node fr/report.mjs fr-report.json fr-summary.md

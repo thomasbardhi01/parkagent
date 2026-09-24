@@ -106,6 +106,21 @@ If ParkWhiz ever starts answering 401/403/429, the adapter returns the
 typed `blocked` error — that's their call and our stop, not a thing to
 work around.
 
+## What it looks like
+
+Captured from the UI-test run (`ParkAgentUITests/AssistantUITests`,
+iPhone 17 Pro, mock API):
+
+| | |
+|---|---|
+| ![Hero card and alternatives](assistant-v2/assistant-hero-and-rows.png) | ![Future street option](assistant-v2/assistant-future-street.png) |
+| The recommended option as one hero card with the only coral action; alternatives as compact rows, one expanded showing its neutral Choose; the mini map pins the destination (dark) and the options (coral = recommended). | A street option for a future time: "Pays automatically when you park", no button — the detector pays at the curb. The garage alternative is still choosable. |
+
+![Itinerary](assistant-v2/assistant-itinerary-reordered.png)
+
+The day after reordering stop 2 above stop 1: numbered stops on the map,
+per-stop cost, day total against the cap, one Sign off.
+
 ## Repro
 
 The sweep script lives in the session scratchpad

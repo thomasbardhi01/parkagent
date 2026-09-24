@@ -279,6 +279,27 @@ export function parkedBody(
   };
 }
 
+/**
+ * The pay-by-app fee the active policy sets for a city, resolved the way
+ * API.md documents it: `city_overrides.<city>.parking_fee_usd`, else the
+ * deprecated top-level `parknyc_fee_usd` (accepted for one release). A quote
+ * whose fee isn't this number is reading the wrong key — asserting only
+ * `fee > 0` couldn't tell, because the server's last-resort default happens
+ * to equal NYC's fee.
+ */
+export function policyFeeUsd(policy: Record<string, unknown>, city: "nyc" | "bos"): number {
+  const overrides = policy["city_overrides"] as
+    Record<string, { parking_fee_usd?: unknown } | undefined> | undefined;
+  const fee = overrides?.[city]?.parking_fee_usd ?? policy["parknyc_fee_usd"];
+  if (typeof fee !== "number") {
+    throw new Error(
+      `FR: the active policy sets no pay-by-app fee for ${city} ` +
+        `(city_overrides.${city}.parking_fee_usd) — was migrate:policy-fee applied?`,
+    );
+  }
+  return fee;
+}
+
 /** Ladder pricing as API.md documents it: first 60 charged minutes at the
  * first-hour rate, the rest at the additional-hour rate, prorated, rounded
  * half-up once. Used to check a live quote is self-consistent. */

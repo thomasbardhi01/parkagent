@@ -20,6 +20,7 @@ import {
   gate,
   mostRecentEasternAt,
   parkedBody,
+  policyFeeUsd,
 } from "./client.js";
 
 const AFTERNOON = mostRecentEasternAt(14, 0);
@@ -30,8 +31,10 @@ const SUNDAY = easternWeekday(AFTERNOON) === "Sun";
 const BOUNDARY = mostRecentEasternAt(19, 30);
 const BOUNDARY_SUNDAY = easternWeekday(BOUNDARY) === "Sun";
 
+let policy: Record<string, unknown>;
+
 beforeAll(async () => {
-  await gate();
+  policy = (await gate())["policy"] as Record<string, unknown>;
 });
 
 async function parkAt456(): Promise<Record<string, unknown>> {
@@ -82,7 +85,9 @@ describe("FR-3 / FR-20 Boston resolution with a provider number", () => {
     const meter = quote["meterUsd"] as number;
     const fee = quote["feeUsd"] as number;
     expect(Math.abs((quote["totalUsd"] as number) - (meter + fee))).toBeLessThanOrEqual(0.005);
-    if (meter === 0) expect(fee).toBe(0);
+    // A charging stay carries Boston's own fee from the live policy (not
+    // NYC's, not a default); a free stay carries none.
+    expect(fee).toBe(meter === 0 ? 0 : policyFeeUsd(policy, "bos"));
     if (!SUNDAY) expect(meter).toBeGreaterThan(0);
   });
 });

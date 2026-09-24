@@ -258,9 +258,27 @@ struct ParkingDetectedSheet: View {
 
     @ViewBuilder
     private var unknownZone: some View {
-        let zoneNumberName = CityCatalog.providerDisplayName(for: model.effectiveCity)
-            .map { "\($0) zone number" } ?? "pay-by-app zone number"
+        let providerName = CityCatalog.providerDisplayName(for: model.effectiveCity)
         header("No meter zone found here")
+        if model.useMockAPI {
+            manualZoneEntry(zoneNumberName: providerName.map { "\($0) zone number" } ?? "pay-by-app zone number")
+        } else {
+            // The server has no quote-by-zone-number endpoint yet, so on
+            // the live API an entry field here led only to a "session
+            // payment lands in a later phase" screen claiming the server
+            // had quoted the zone. Say what is true instead.
+            Text("ParkAgent doesn't have this block's meters yet, so it can't quote or pay here. Pay at the meter or in \(providerName ?? "your parking app") for now.")
+                .font(.secondaryText)
+                .foregroundStyle(Color.textSecondary)
+                .accessibilityIdentifier("parkedSheet.unknownZoneLive")
+            Spacer(minLength: 0)
+            dismissButton
+        }
+    }
+
+    /// Mock only (UI tests): type the meter's number for a fixture quote.
+    @ViewBuilder
+    private func manualZoneEntry(zoneNumberName: String) -> some View {
         Text("If you can see a \(zoneNumberName) on the meter, enter it to get a quote.")
             .font(.secondaryText)
             .foregroundStyle(Color.textSecondary)

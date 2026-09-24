@@ -113,6 +113,13 @@ final class SpeechRecognizerTests: XCTestCase {
     /// arrives on a background queue, and a main-actor-isolated closure
     /// traps there under Swift 6. The bridge must accept a callback fired
     /// from ANY queue without trapping and still resume correctly.
+    ///
+    /// Scope, honestly: this pins the BRIDGE's contract. It does not drive
+    /// `start()`'s real call site (that shows a system prompt), so it would
+    /// still pass if someone inlined `SFSpeechRecognizer.requestAuthorization`
+    /// back into the @MainActor method. What keeps the call site safe is
+    /// structural: the bridge's parameters are `@Sendable`, and a
+    /// `@Sendable` closure never inherits the enclosing actor's isolation.
     func testAuthorizationCallbackOnBackgroundQueueDoesNotTrap() async {
         let granted = await SpeechRecognizer.bridgeAuthorization { done in
             DispatchQueue.global(qos: .userInitiated).async {

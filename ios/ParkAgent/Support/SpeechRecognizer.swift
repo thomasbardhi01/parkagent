@@ -54,12 +54,42 @@ final class SpeechRecognizer {
     /// tap in that window must not double-install the audio tap (an
     /// uncatchable AVFoundation exception).
     private var isStarting = false
+    /// Set when stop() lands DURING that startup window. stop() can't tear
+    /// down a session that doesn't exist yet (state is still .idle, so it
+    /// returns early), so start() checks this at each resume point and
+    /// bails out instead — otherwise dismissing the sheet while the
+    /// permission alert is up installs a tap and activates the .record
+    /// session for a view that's already gone, leaving the mic hot and
+    /// other apps ducked until the next launch.
+    private var startCancelled = false
     /// Tests inject a scenario directly; the UserDefaults path is for UI
     /// tests only and is gated on the -uiTesting launch flag.
     private let scenarioOverride: SpeechMockScenario?
+    /// The permission gate (speech + mic), injectable so a test can hold
+    /// it suspended and exercise a dismissal while the alert is up.
+    private let requestPermissions: @Sendable () async -> Bool
 
-    init(scenarioOverride: SpeechMockScenario? = nil) {
+    init(
+        scenarioOverride: SpeechMockScenario? = nil,
+        requestPermissions: (@Sendable () async -> Bool)? = nil
+    ) {
         self.scenarioOverride = scenarioOverride
+        self.requestPermissions = requestPermissions ?? Self.systemPermissions
+    }
+
+    /// The real prompts: speech recognition, then the microphone. The
+    /// speech ask goes through the nonisolated bridge, never a closure
+    /// formed in this @MainActor context: SFSpeechRecognizer calls its
+    /// handler on a background queue, and an isolation-inheriting closure
+    /// traps there under Swift 6 the moment the user taps Allow.
+    private static let systemPermissions: @Sendable () async -> Bool = {
+        let speechGranted = await SpeechRecognizer.bridgeAuthorization { done in
+            SFSpeechRecognizer.requestAuthorization { status in
+                done(status == .authorized)
+            }
+        }
+        let micGranted = await AVAudioApplication.requestRecordPermission()
+        return speechGranted && micGranted
     }
 
     func acknowledge() {
@@ -69,6 +99,7 @@ final class SpeechRecognizer {
     func start() async {
         guard state != .listening, !isStarting else { return }
         isStarting = true
+        startCancelled = false
         defer { isStarting = false }
         transcript = ""
         words = []
@@ -83,17 +114,11 @@ final class SpeechRecognizer {
             return
         }
 
-        // Through the nonisolated bridge, never a closure formed in this
-        // @MainActor context: SFSpeechRecognizer calls its handler on a
-        // background queue, and an isolation-inheriting closure traps there
-        // under Swift 6 the moment the user taps Allow.
-        let speechGranted = await Self.bridgeAuthorization { done in
-            SFSpeechRecognizer.requestAuthorization { status in
-                done(status == .authorized)
-            }
-        }
-        let micGranted = await AVAudioApplication.requestRecordPermission()
-        guard speechGranted, micGranted else {
+        let granted = await requestPermissions()
+        // The sheet may have been dismissed while the alert was up. Bail
+        // before touching the audio session.
+        if startCancelled { return }
+        guard granted else {
             state = .denied
             return
         }
@@ -206,6 +231,10 @@ final class SpeechRecognizer {
     /// Stop listening (tap or watchdog); the transcript is handed off via
     /// `finishedTranscript`, never sent.
     func stop() {
+        // A stop during startup has no session to tear down yet — mark it
+        // so start() aborts at its next resume point instead of bringing
+        // up a mic nobody is watching.
+        if isStarting { startCancelled = true }
         guard state == .listening else { return }
         scriptedRun?.cancel()
         scriptedRun = nil

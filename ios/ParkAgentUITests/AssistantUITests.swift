@@ -39,7 +39,7 @@ final class AssistantUITests: ParkAgentUITestCase {
         XCTAssertTrue(element(app, "assistant.emptyState").exists)
         ask(app, "Park me near the MFA for 90 minutes")
 
-        // The plan streams in: three option cards, one recommended badge.
+        // The plan streams in: one hero, one recommended badge.
         XCTAssertTrue(element(app, "assistant.singleSpotPlan").waitForExistence(timeout: 10))
         XCTAssertEqual(app.staticTexts.matching(identifier: "Recommended").count, 1)
 
@@ -52,12 +52,88 @@ final class AssistantUITests: ParkAgentUITestCase {
         attachScreenshot(of: app, named: "assistant-street-confirmed")
     }
 
+    /// The results layout: ONE hero with the only coral action, the rest
+    /// as compact rows that stay collapsed until tapped, a mini map, and
+    /// the SpotHero note once under the list.
+    func testHeroCardIsTheOnlyActionAndRowsExpandOnTap() {
+        let app = openAssistant("singleSpot")
+        ask(app, "Park me near the MFA for 90 minutes")
+        XCTAssertTrue(element(app, "assistant.singleSpotPlan").waitForExistence(timeout: 10))
+
+        // Exactly one Confirm on screen: the hero's. The alternatives
+        // offer a neutral Choose, and only once expanded.
+        XCTAssertTrue(element(app, "assistant.confirm.opt-street").exists)
+        XCTAssertEqual(
+            app.buttons.matching(
+                NSPredicate(format: "identifier BEGINSWITH 'assistant.confirm.'")
+            ).count,
+            1,
+            "Only the hero card may carry a coral action"
+        )
+
+        // The alternatives are compact rows, collapsed.
+        let garageRow = element(app, "assistant.optionRow.opt-garage")
+        XCTAssertTrue(garageRow.exists)
+        XCTAssertTrue(element(app, "assistant.optionRow.opt-garage-2").exists)
+        XCTAssertFalse(
+            element(app, "assistant.choose.opt-garage").exists,
+            "A collapsed row shows no button"
+        )
+
+        // Tap expands it and reveals the neutral Choose.
+        garageRow.tap()
+        let choose = element(app, "assistant.choose.opt-garage")
+        XCTAssertTrue(choose.waitForExistence(timeout: 3))
+
+        // Provenance is stated once, with the source named.
+        let note = element(app, "assistant.providerNote")
+        XCTAssertTrue(note.exists)
+        XCTAssertTrue(note.label.contains("SpotHero"), "got: \(note.label)")
+        XCTAssertTrue(element(app, "assistant.planMap").exists)
+        attachScreenshot(of: app, named: "assistant-hero-and-rows")
+
+        // Tapping the row again collapses it — one row open at a time.
+        garageRow.tap()
+        XCTAssertFalse(choose.waitForExistence(timeout: 2))
+    }
+
+    /// A street option for a FUTURE time is not confirmable: the detector
+    /// pays at the curb, so the card says so and offers no button.
+    func testFutureStreetOptionOffersNoButton() {
+        let app = openAssistant("futureStreet")
+        ask(app, "garage near Fenway at 7 Saturday")
+        XCTAssertTrue(element(app, "assistant.singleSpotPlan").waitForExistence(timeout: 10))
+
+        let autoPay = element(app, "assistant.autoPayNote.opt-street-later")
+        XCTAssertTrue(autoPay.exists)
+        XCTAssertTrue(
+            autoPay.label.contains("Pays automatically when you park"),
+            "got: \(autoPay.label)"
+        )
+        XCTAssertFalse(
+            element(app, "assistant.confirm.opt-street-later").exists,
+            "A future meter must not offer a Confirm"
+        )
+        // The garage alternative is still choosable.
+        element(app, "assistant.optionRow.opt-garage-fenway").tap()
+        XCTAssertTrue(
+            element(app, "assistant.choose.opt-garage-fenway").waitForExistence(timeout: 3)
+        )
+        attachScreenshot(of: app, named: "assistant-future-street")
+    }
+
     func testGarageConfirmOpensDeepLink() {
         let app = openAssistant("singleSpot")
         ask(app, "garage near fenway")
         XCTAssertTrue(element(app, "assistant.singleSpotPlan").waitForExistence(timeout: 10))
 
-        element(app, "assistant.confirm.opt-garage").tap()
+        // The garage is an alternative now: expand its row, then Choose.
+        // The row settles with a spring, so wait for the button rather
+        // than racing the animation.
+        element(app, "assistant.optionRow.opt-garage").tap()
+        let choose = element(app, "assistant.choose.opt-garage")
+        XCTAssertTrue(choose.waitForExistence(timeout: 5))
+        choose.tap()
         // The deep link "opened" (probe in uiTesting mode) as SpotHero…
         let probe = element(app, "assistant.externalLinkProbe")
         XCTAssertTrue(probe.waitForExistence(timeout: 5))
@@ -80,11 +156,25 @@ final class AssistantUITests: ParkAgentUITestCase {
         }
         XCTAssertTrue(element(app, "assistant.dayTotal").label.contains("$40.40"))
 
-        // Reorder stop 2 above stop 1 through its menu.
+        // Reorder: stop 2 moves above stop 1. The rows drag in the list;
+        // the menu drives it deterministically here (a synthesized drag on
+        // a reorder handle is famously flaky in XCTest).
+        let firstBefore = element(app, "assistant.stopRow.stop-1")
+        let secondBefore = element(app, "assistant.stopRow.stop-2")
+        XCTAssertLessThan(
+            firstBefore.frame.minY, secondBefore.frame.minY,
+            "Stop 1 starts above stop 2"
+        )
         element(app, "assistant.stopMenu.stop-2").tap()
         app.buttons["Move up"].tap()
         let firstRow = element(app, "assistant.stopRow.stop-2")
         XCTAssertTrue(firstRow.exists)
+        // The order actually changed on screen, not just in the model.
+        XCTAssertLessThan(
+            firstRow.frame.minY, element(app, "assistant.stopRow.stop-1").frame.minY,
+            "Stop 2 is now above stop 1"
+        )
+        attachScreenshot(of: app, named: "assistant-itinerary-reordered")
 
         element(app, "assistant.signOffButton").tap()
         let done = app.staticTexts.containing(
@@ -125,6 +215,57 @@ final class AssistantUITests: ParkAgentUITestCase {
             app.staticTexts.containing(NSPredicate(format: "label CONTAINS 'Link wallet'"))
                 .firstMatch.exists
         )
+    }
+
+    /// The empty state offers starters in the user's city, and tapping one
+    /// asks it without typing.
+    func testSuggestedPromptChipsAskDirectly() {
+        let app = openAssistant("singleSpot")
+        let chips = app.buttons.matching(identifier: "assistant.promptChip")
+        XCTAssertGreaterThan(chips.count, 0, "The empty state offers starters")
+        attachScreenshot(of: app, named: "assistant-empty-state")
+        let chip = chips.element(boundBy: 0)
+        let asked = chip.label
+        chip.tap()
+
+        // The tap sent it: the question appears as the user's message and
+        // the empty state is gone.
+        let userMessage = app.staticTexts.containing(
+            NSPredicate(format: "label CONTAINS %@", asked)
+        ).firstMatch
+        XCTAssertTrue(userMessage.waitForExistence(timeout: 5))
+        XCTAssertFalse(element(app, "assistant.emptyState").exists)
+    }
+
+    /// Sending puts the keyboard away and keeps the newest reply on screen.
+    func testKeyboardDismissesOnSendAndNewestReplyStaysVisible() {
+        let app = openAssistant("singleSpot")
+        let field = element(app, "assistant.inputField")
+        field.tap()
+        field.typeText("Park me near the MFA for 90 minutes")
+        XCTAssertTrue(app.keyboards.firstMatch.exists, "Keyboard is up while typing")
+
+        element(app, "assistant.sendButton").tap()
+        // The keyboard goes away so the reply and its card own the screen.
+        XCTAssertTrue(
+            waitForDisappearance(app.keyboards.firstMatch, timeout: 5),
+            "The keyboard should dismiss on send"
+        )
+
+        // The plan card lands and is actually on screen, not below the fold.
+        let plan = element(app, "assistant.singleSpotPlan")
+        XCTAssertTrue(plan.waitForExistence(timeout: 10))
+        let hero = element(app, "assistant.confirm.opt-street")
+        XCTAssertTrue(hero.waitForExistence(timeout: 5))
+        XCTAssertTrue(hero.isHittable, "The newest reply's action must be reachable")
+    }
+
+    private func waitForDisappearance(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while element.exists && Date() < deadline {
+            usleep(200_000)
+        }
+        return !element.exists
     }
 
     func testRefusesNonParkingTopics() {

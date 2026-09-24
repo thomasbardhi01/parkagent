@@ -96,6 +96,11 @@ final class AssistantModel {
                 switch event {
                 case .delta(let delta):
                     messages[assistantIndex].text += delta
+                case .plan(let plan):
+                    // Its own event: the card renders as soon as the plan
+                    // is ready, without waiting for the reply to settle.
+                    messages[assistantIndex].planId = plan.planId
+                    proposedPlan = plan
                 case .done(let reply):
                     conversationId = reply.conversationId
                     messages[assistantIndex].text = reply.reply

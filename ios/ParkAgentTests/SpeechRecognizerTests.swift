@@ -136,6 +136,54 @@ final class SpeechRecognizerTests: XCTestCase {
         XCTAssertFalse(denied)
     }
 
+    /// Dismissing the sheet while the permission alert is up: stop() has
+    /// no session to tear down (state is still .idle, so it returns
+    /// early), and without the startCancelled flag start() would resume
+    /// and bring up a mic for a view that's gone — leaving the .record
+    /// session active and other apps ducked.
+    func testStopDuringPermissionPromptAbortsTheStart() async {
+        let gate = PermissionGate()
+        let speech = SpeechRecognizer(
+            scenarioOverride: nil,
+            requestPermissions: { await gate.wait() }
+        )
+        let started = Task { await speech.start() }
+
+        await waitUntil("the permission prompt to be reached") { gate.isWaiting }
+        XCTAssertEqual(speech.state, .idle, "Still idle while the alert is up")
+
+        speech.stop() // the sheet is dismissed
+        gate.grant(true) // the user then allows it — too late
+        await started.value
+
+        XCTAssertEqual(speech.state, .idle, "A cancelled start must not begin listening")
+        XCTAssertNil(speech.finishedTranscript)
+    }
+
+    /// The same flag must not leak into the next attempt on the SAME
+    /// recognizer. The retry is answered "denied" so it never reaches the
+    /// real audio path: `.denied` is only reachable past the cancellation
+    /// check, so a leaked flag would leave the state at `.idle` instead.
+    func testStartAfterACancelledStartStillWorks() async {
+        let gate = PermissionGate()
+        let speech = SpeechRecognizer(
+            scenarioOverride: nil,
+            requestPermissions: { await gate.wait() }
+        )
+        let cancelled = Task { await speech.start() }
+        await waitUntil("the permission prompt") { gate.isWaiting }
+        speech.stop()
+        gate.grant(true)
+        await cancelled.value
+        XCTAssertEqual(speech.state, .idle)
+
+        let retry = Task { await speech.start() }
+        await waitUntil("the retry's permission prompt") { gate.isWaiting }
+        gate.grant(false)
+        await retry.value
+        XCTAssertEqual(speech.state, .denied, "The retry must run past the cancellation check")
+    }
+
     /// The persisted -speechScenario key must be inert outside UI-test
     /// launches — it rewires the REAL recognizer, unlike the MockAPI keys.
     func testDefaultsScenarioIsGatedOnUITesting() {
@@ -147,6 +195,38 @@ final class SpeechRecognizerTests: XCTestCase {
             SpeechMockScenario.fromDefaults(),
             "A leftover speechScenario default must never reach a normal launch"
         )
+    }
+}
+
+/// A permission prompt a test can hold open: `wait()` suspends until
+/// `grant()` answers, so a dismissal can land in between.
+private final class PermissionGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Bool, Never>?
+    private var waiting = false
+
+    var isWaiting: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return waiting
+    }
+
+    func wait() async -> Bool {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            self.continuation = continuation
+            waiting = true
+            lock.unlock()
+        }
+    }
+
+    func grant(_ granted: Bool) {
+        lock.lock()
+        let continuation = self.continuation
+        self.continuation = nil
+        waiting = false
+        lock.unlock()
+        continuation?.resume(returning: granted)
     }
 }
 

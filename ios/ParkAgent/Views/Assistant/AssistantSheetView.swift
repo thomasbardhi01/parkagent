@@ -62,7 +62,7 @@ struct AssistantSheetView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: Spacing.unit) {
                         if model.messages.isEmpty {
-                            emptyState
+                            emptyState(model)
                         }
                         ForEach(model.messages) { message in
                             MessageBubble(message: message)
@@ -91,11 +91,17 @@ struct AssistantSheetView: View {
                 // No .defaultScrollAnchor(.bottom) here: pinning the whole
                 // scroll view to the bottom re-lays-out a tall plan card
                 // under the reader's finger (it moved the Sign off button
-                // out from under a tap). The explicit scrollTo below is
-                // what keeps the newest message in view.
-                .onChange(of: model.messages) {
-                    withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
-                }
+                // out from under a tap). The explicit scrollTo calls below
+                // are what keep the newest message in view.
+                //
+                // A flick through the transcript puts the keyboard away.
+                .scrollDismissesKeyboard(.interactively)
+                // The newest reply stays visible through all three things
+                // that grow it: a new bubble, the reply streaming in, and
+                // the plan card landing underneath it.
+                .onChange(of: model.messages) { scrollToBottom(proxy) }
+                .onChange(of: model.messages.last?.text) { scrollToBottom(proxy) }
+                .onChange(of: model.proposedPlan?.planId) { scrollToBottom(proxy) }
                 // The keyboard rising used to cover the reply that just
                 // arrived: SwiftUI shrinks the scroll view but keeps the
                 // offset, so follow it back down.
@@ -105,7 +111,7 @@ struct AssistantSheetView: View {
                         // One hop after the keyboard's frame change, or the
                         // scroll lands at the pre-keyboard bottom.
                         try? await Task.sleep(for: .milliseconds(350))
-                        withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
+                        scrollToBottom(proxy)
                     }
                 }
             }
@@ -149,20 +155,49 @@ struct AssistantSheetView: View {
         }
     }
 
-    private var emptyState: some View {
-        VStack(alignment: .leading, spacing: Spacing.half) {
-            Text("Find a spot, or plan a day.")
-                .font(.bodyTextSemibold)
-                .foregroundStyle(Color.textPrimary)
-            // No city or landmark in the examples: an NYC user was being
-            // offered a Boston museum and "my Boston day".
-            Text("Try: “Park me near the museum at 2 for two hours” or “Plan my day: coffee at 9, client at 10, lunch at 12.”")
-                .font(.secondaryText)
-                .foregroundStyle(Color.textSecondary)
+    private func scrollToBottom(_ proxy: ScrollViewProxy) {
+        withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
+    }
+
+    @ViewBuilder
+    private func emptyState(_ model: AssistantModel) -> some View {
+        VStack(alignment: .leading, spacing: Spacing.unit) {
+            VStack(alignment: .leading, spacing: Spacing.half) {
+                Text("Find a spot, or plan a day.")
+                    .font(.bodyTextSemibold)
+                    .foregroundStyle(Color.textPrimary)
+                Text("Ask in your own words — a place, a time, how long.")
+                    .font(.secondaryText)
+                    .foregroundStyle(Color.textSecondary)
+            }
+            // Starters in the user's own city: real streets and landmarks
+            // beat a generic example at showing what this understands.
+            FlowLayout(spacing: Spacing.half) {
+                ForEach(CityCatalog.assistantStarters(for: appModel.effectiveCity), id: \.self) { prompt in
+                    Button {
+                        inputFocused = false
+                        Task { await model.send(prompt) }
+                    } label: {
+                        Text(prompt)
+                            .font(.captionText)
+                            .foregroundStyle(Color.textPrimary)
+                            .padding(.horizontal, Spacing.unit)
+                            .padding(.vertical, Spacing.half)
+                            .background(Color.appBackground)
+                            .clipShape(Capsule())
+                            .overlay(Capsule().strokeBorder(Color.separator, lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("assistant.promptChip")
+                }
+            }
         }
         .padding(Spacing.unit)
         .frame(maxWidth: .infinity, alignment: .leading)
         .cardStyle()
+        // .contain keeps the chips queryable — an identifier alone would
+        // publish the card as one element and hide them.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("assistant.emptyState")
     }
 
@@ -254,10 +289,14 @@ struct AssistantSheetView: View {
                 .background(Color.surface)
                 .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
                 .focused($inputFocused)
+                .submitLabel(.send)
                 .accessibilityIdentifier("assistant.inputField")
-                .onSubmit { Task { await model.send() } }
+                .onSubmit { send(model) }
 
             Button {
+                // Dictating and typing compete for the same field; put the
+                // keyboard away before the mic opens.
+                inputFocused = false
                 if speech.state == .listening {
                     // Stop only — the transcript lands in the field via
                     // finishedTranscript, editable before the user sends.
@@ -276,7 +315,7 @@ struct AssistantSheetView: View {
             .accessibilityIdentifier("assistant.micButton")
 
             Button {
-                Task { await model.send() }
+                send(model)
             } label: {
                 Image(systemName: "arrow.up.circle.fill")
                     .font(.system(size: 28))
@@ -295,6 +334,13 @@ struct AssistantSheetView: View {
         // the bar. It still lets the living wash show, just not the text.
         .background(.regularMaterial)
         .overlay(alignment: .top) { Divider() }
+    }
+
+    /// Send and put the keyboard away: the reply and its card need the
+    /// screen more than the field does.
+    private func send(_ model: AssistantModel) {
+        inputFocused = false
+        Task { await model.send() }
     }
 }
 

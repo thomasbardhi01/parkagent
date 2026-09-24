@@ -495,6 +495,14 @@ struct LiveAPI: APIClient {
                                 if let delta = try? Self.decoder.decode(Delta.self, from: data) {
                                     continuation.yield(.delta(delta.delta))
                                 }
+                            case "plan":
+                                // The plan lands before the reply settles;
+                                // a malformed one must not kill the stream.
+                                if let plan = try? Self.decoder.decode(
+                                    AssistantReply.ProposedPlan.self, from: data
+                                ) {
+                                    continuation.yield(.plan(plan))
+                                }
                             case "done":
                                 let reply = try Self.decoder.decode(AssistantReply.self, from: data)
                                 continuation.yield(.done(reply))

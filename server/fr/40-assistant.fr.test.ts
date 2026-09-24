@@ -66,9 +66,11 @@ describe("FR-21 / FR-23 single spot for a named place", () => {
       expect(option["priceUsd"] as number).toBeGreaterThanOrEqual(0);
       expect((option["durationMinutes"] as number) > 0).toBe(true);
       if (option["type"] === "street") {
-        // FR-26: a street option must be grounded in a quoted zone.
-        expect(typeof option["zoneId"]).toBe("string");
-        expect((option["zoneId"] as string).startsWith("bos")).toBe(true);
+        // FR-26: a street option must be grounded in a quoted zone. The
+        // option rides along so a failure names the shape prod sent.
+        const sent = `street option: ${JSON.stringify(option)}`;
+        expect(typeof option["zoneId"], sent).toBe("string");
+        expect((option["zoneId"] as string).startsWith("bos"), sent).toBe(true);
       }
       if (typeof option["walkMinutes"] === "number") {
         // The 600 m named-area guarantee (unit-pinned) shows up here as a

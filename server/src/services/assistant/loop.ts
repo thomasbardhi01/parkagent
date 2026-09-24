@@ -13,7 +13,7 @@ import type { AppDb } from "../../db.js";
 import { coveredCitiesSentence } from "../../providers/registry.js";
 import type { AssistantPlanBody } from "./plans.js";
 import { TOOL_DEFINITIONS } from "./tools.js";
-import type { AssistantTools, ToolContext } from "./tools.js";
+import type { AssistantTools, StreetQuote, ToolContext } from "./tools.js";
 
 /** Overridden by the ANTHROPIC_MODEL env var (see env.ts). */
 export const DEFAULT_ASSISTANT_MODEL = "claude-haiku-4-5-20251001";
@@ -195,6 +195,9 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
     userId: args.userId,
     conversationId: args.conversationId,
     location: args.location,
+    // Earlier turns' quotes count: "go ahead and propose" after a
+    // clarifying question proposes what the previous turn quoted.
+    streetQuotes: streetQuotesIn(history),
   };
 
   const segments: string[] = [];
@@ -265,6 +268,29 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
   });
 
   return { conversationId: args.conversationId, reply, plan };
+}
+
+/** The street quotes in a stored transcript: every quote_street result
+ * that found a zone. A result whose tool_use was trimmed away is skipped. */
+export function streetQuotesIn(turns: ModelTurn[]): StreetQuote[] {
+  const quoteCalls = new Set<string>();
+  const found: StreetQuote[] = [];
+  for (const turn of turns) {
+    if (typeof turn.content === "string") continue;
+    for (const block of turn.content) {
+      if (block.type === "tool_use" && block.name === "quote_street") quoteCalls.add(block.id);
+      if (block.type !== "tool_result" || !quoteCalls.has(block.tool_use_id)) continue;
+      try {
+        const r = JSON.parse(block.content) as Record<string, unknown>;
+        if (r["found"] === true && typeof r["zoneId"] === "string") {
+          found.push({ zoneId: r["zoneId"], costUsd: Number(r["costUsd"] ?? 0) });
+        }
+      } catch {
+        // Not JSON — not a quote.
+      }
+    }
+  }
+  return found;
 }
 
 function captureQuotes(quotes: QuoteContext, tool: string, input: unknown, result: unknown): void {

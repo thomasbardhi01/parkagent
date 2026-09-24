@@ -55,10 +55,10 @@ jobs:
         env:
           FR_API_BASE: ${{ inputs.base || 'https://parkagent-api.fly.dev' }}
           FR_API_KEY: ${{ secrets.FR_API_KEY }}
-        run: >
-          pnpm -C server test:fr --
-          --reporter=default
-          --reporter=json --outputFile.json=fr-report.json
+          # Relative to server/; see vitest.fr.config.ts for why this is
+          # an env var and not --reporter flags.
+          FR_REPORT_JSON: fr-report.json
+        run: pnpm -C server test:fr
 
       - name: Build report
         id: report

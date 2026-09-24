@@ -1,3 +1,4 @@
+import CoreLocation
 import Foundation
 
 // Wire types mirroring server/API.md. Field names match the JSON exactly;
@@ -435,6 +436,53 @@ struct TopupIntentResponse: Codable, Sendable {
     var paymentIntentId: String?
     /// True → no PaymentIntent exists; nothing can ever charge.
     var dryRun: Bool
+}
+
+// MARK: - Map layer (server/API.md "GET /zones/near")
+
+struct NearbyZonesResponse: Codable, Sendable {
+    var radiusM: Double
+    var at: Date
+    /// True → the server hit its zone ceiling; there is more metered street
+    /// here than came back.
+    var truncated: Bool
+    var zones: [NearbyZone]
+}
+
+struct NearbyZone: Codable, Sendable, Identifiable, Equatable {
+    var zoneId: String
+    var city: String
+    var providerZoneNumber: String
+    var street: String?
+    var rateFirstHourUsd: Double
+    var rateAdditionalHourUsd: Double
+    var maxStayMinutes: Int?
+    var distanceM: Double
+    /// What the curb line's color means: paying now vs free now.
+    var enforcedNow: Bool
+    var todayHours: [TodayInterval]
+    var hours: [EnforcementHours]
+    /// GeoJSON MultiLineString coordinates: [[[lng, lat], …], …].
+    var centerline: [[[Double]]]
+
+    var id: String { zoneId }
+
+    struct TodayInterval: Codable, Sendable, Equatable {
+        var start: String
+        var end: String
+    }
+
+    /// The centerline as drawable polylines. GeoJSON is (lng, lat); a
+    /// swapped pair here would put Boston in the Indian Ocean.
+    var polylines: [[CLLocationCoordinate2D]] {
+        centerline.map { line in
+            line.compactMap { point in
+                guard point.count >= 2 else { return nil }
+                return CLLocationCoordinate2D(latitude: point[1], longitude: point[0])
+            }
+        }
+        .filter { $0.count >= 2 }
+    }
 }
 
 struct LocationReport: Codable, Sendable {

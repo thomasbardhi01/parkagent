@@ -27,7 +27,7 @@ unknown paths 401 too. Authorization on top: `users.is_admin` gates
 `403 {"error": "forbidden"}` (`create:user -- --admin`, or flip the
 column in SQL for an existing user). Abuse-prone routes are rate-limited per user
 (429 + `Retry-After`): `/parked` 30/min, provider writes 10/min, provider
-reads 60/min, `/zones/:zoneId/provider-number` 12/min. Unhandled errors
+reads 60/min, `/zones/:zoneId/provider-number` 12/min, `/zones/near` 60/min. Unhandled errors
 answer `500 {"error": "internal"}` — details go to the server log only.
 
 ## Dry run
@@ -210,6 +210,52 @@ zone's city wins even from home, km away from a meter. Read-only — no
 
 Nowhere near any metered zone → `200` with all three fields null ("we're
 not there yet"). Errors: `400` bad query, `401` bad key.
+
+---
+
+## GET /zones/near?lat&lng&radius
+
+The map's curb layer: every metered zone whose centerline is within
+`radius` metres of the point, with the geometry to draw it and the terms to
+label it. `radius` is optional (default 250 m) and **capped at 400 m** — a
+PostGIS read runs per call, so the window stays small and the route is
+rate-limited at 60/min.
+
+```json
+{
+  "radiusM": 250,
+  "at": "2026-01-05T19:00:00.000Z",
+  "truncated": false,
+  "zones": [
+    {
+      "zoneId": "bos-boylston-st-e-d-819305",
+      "city": "bos",
+      "providerZoneNumber": "81234",
+      "street": "BOYLSTON ST",
+      "rateFirstHourUsd": 3.75,
+      "rateAdditionalHourUsd": 3.75,
+      "maxStayMinutes": 120,
+      "distanceM": 12.3,
+      "enforcedNow": true,
+      "todayHours": [{ "start": "08:00", "end": "20:00" }],
+      "hours": [{ "days": ["Mon"], "start": "08:00", "end": "20:00" }],
+      "centerline": [[[-71.0812, 42.3502], [-71.0805, 42.3504]]]
+    }
+  ]
+}
+```
+
+`centerline` is GeoJSON MultiLineString coordinates (`[[[lng, lat], …], …]`),
+simplified to about 2 m — invisible at street zoom, and it keeps a few
+hundred lines small on the wire. `enforcedNow` is what the map colors by
+(paying now vs free now) and `todayHours` is what the tapped-zone card
+shows; a zone with nothing posted reads as enforced all day, exactly as the
+quote path treats it. `truncated: true` means the 150-zone ceiling was hit —
+there is more metered street here than was returned.
+
+Errors: `400` bad or missing coordinates (or `radius` over the cap), `401`
+bad key, `429` rate limited, `501 {"error": "zone_geometry_unavailable"}` on
+a deployment with no geometry fetcher wired.
 
 ---
 

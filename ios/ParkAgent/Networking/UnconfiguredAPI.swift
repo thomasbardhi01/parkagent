@@ -19,6 +19,10 @@ struct UnconfiguredAPI: APIClient {
     func paymentSource() async throws -> PaymentSourceResponse { throw failure }
     func updatePaymentSource(_ source: PaymentSource) async throws -> PaymentSourceResponse { throw failure }
 
+    func nearbyZones(lat: Double, lng: Double, radiusM: Double) async throws -> NearbyZonesResponse {
+        throw failure
+    }
+
     func detectCity(lat: Double, lng: Double) async throws -> CityDetectResponse { throw failure }
     func providersStatus() async throws -> ProvidersStatusResponse { throw failure }
     func linkProvider(

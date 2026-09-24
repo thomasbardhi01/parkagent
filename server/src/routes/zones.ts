@@ -15,7 +15,19 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
 import type { AppDeps } from "../app.js";
+import { isEnforcedAt, todaysIntervals } from "../services/hours.js";
 import { makeRateLimiter } from "../services/rateLimit.js";
+import { NEARBY_ZONE_LIMIT } from "../services/zoneLookup.js";
+
+/** The map layer's window. Capped hard: this is a PostGIS read per call. */
+const MAX_NEAR_RADIUS_M = 400;
+const DEFAULT_NEAR_RADIUS_M = 250;
+
+const nearQuerySchema = z.object({
+  lat: z.coerce.number().min(-90).max(90),
+  lng: z.coerce.number().min(-180).max(180),
+  radius: z.coerce.number().positive().max(MAX_NEAR_RADIUS_M).default(DEFAULT_NEAR_RADIUS_M),
+});
 
 const bodySchema = z.object({
   // Loose on purpose: Passport zone numbers are short digit strings — the
@@ -29,6 +41,45 @@ export function registerZones(app: FastifyInstance, deps: AppDeps): void {
   // Number reports change what the executor types at the provider; nobody
   // legitimately reports more than a few blocks a minute.
   const limit = makeRateLimiter({ max: 12, windowMs: 60_000 });
+
+  // The map's curb layer: what's metered around a point, with the geometry
+  // to draw it. Read-only and cheap per call, but it is a PostGIS query per
+  // pan, so it is both radius-capped and rate-limited.
+  const nearLimit = makeRateLimiter({ max: 60, windowMs: 60_000 });
+  app.get("/zones/near", { preHandler: nearLimit }, async (req, reply) => {
+    if (!deps.findNearbyZones) {
+      return reply.code(501).send({ error: "zone_geometry_unavailable" });
+    }
+    const parsed = nearQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: z.treeifyError(parsed.error) });
+    }
+    const { lat, lng, radius } = parsed.data;
+    const at = deps.now ? deps.now() : new Date();
+    const zones = await deps.findNearbyZones({ lat, lng, radiusM: radius });
+    return {
+      radiusM: radius,
+      at: at.toISOString(),
+      // Truncation would read as "nothing more is metered here", so say it.
+      truncated: zones.length >= NEARBY_ZONE_LIMIT,
+      zones: zones.map((zone) => ({
+        zoneId: zone.zoneId,
+        city: zone.city,
+        providerZoneNumber: zone.providerZoneNumber,
+        street: zone.street,
+        rateFirstHourUsd: zone.rateFirstHourUsd,
+        rateAdditionalHourUsd: zone.rateAdditionalHourUsd,
+        maxStayMinutes: zone.maxStayMinutes,
+        distanceM: Math.round(zone.distanceM * 10) / 10,
+        // What the map colors by: paying now vs free now.
+        enforcedNow: isEnforcedAt(zone.hours, at),
+        /** Today's posted windows, for the tapped-zone card. */
+        todayHours: todaysIntervals(zone.hours, at),
+        hours: zone.hours,
+        centerline: zone.centerline,
+      })),
+    };
+  });
   app.post("/zones/:zoneId/provider-number", { preHandler: limit }, async (req, reply) => {
     const parsed = bodySchema.safeParse(req.body);
     if (!parsed.success) {

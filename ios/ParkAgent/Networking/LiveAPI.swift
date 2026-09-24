@@ -73,6 +73,10 @@ struct LiveAPI: APIClient {
         )
     }
 
+    func nearbyZones(lat: Double, lng: Double, radiusM: Double) async throws -> NearbyZonesResponse {
+        try await send("zones/near?lat=\(lat)&lng=\(lng)&radius=\(Int(radiusM.rounded()))")
+    }
+
     // MARK: - City & providers
 
     func detectCity(lat: Double, lng: Double) async throws -> CityDetectResponse {

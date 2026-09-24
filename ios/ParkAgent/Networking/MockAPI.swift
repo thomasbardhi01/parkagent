@@ -260,6 +260,11 @@ struct MockAPI: APIClient {
         try await pause()
     }
 
+    func nearbyZones(lat: Double, lng: Double, radiusM: Double) async throws -> NearbyZonesResponse {
+        try await pause()
+        return MockFixtures.nearbyZones(around: (lat: lat, lng: lng), radiusM: radiusM)
+    }
+
     // MARK: - City & providers
 
     func detectCity(lat: Double, lng: Double) async throws -> CityDetectResponse {
@@ -793,6 +798,55 @@ enum MockFixtures {
 
     static func extensionPrice(minutes: Int, additionalHour: Double = 8.25) -> Double {
         round2(Double(minutes) / 60 * additionalHour)
+    }
+
+    // MARK: - Map fixtures
+
+    /// Curb lines for the map layer: a short grid of block faces around the
+    /// point, half of them currently free, so the two colors and the tapped
+    /// -zone card are both walkable without a server.
+    static func nearbyZones(
+        around point: (lat: Double, lng: Double),
+        radiusM: Double
+    ) -> NearbyZonesResponse {
+        // ~0.0009° of latitude is about 100 m; enough spread to see distinct
+        // lines at street zoom.
+        let step = 0.0009
+        let zones = (0..<6).map { index -> NearbyZone in
+            let row = Double(index / 2)
+            let side = Double(index % 2)
+            let lat = point.lat + (row - 1) * step
+            let lng = point.lng + (side - 0.5) * step
+            let enforced = index % 3 != 2
+            return NearbyZone(
+                zoneId: "mock-zone-\(index)",
+                city: point.lat > 41 ? "bos" : "nyc",
+                providerZoneNumber: "8\(1230 + index)",
+                street: ["BOYLSTON ST", "NEWBURY ST", "HANOVER ST"][index % 3],
+                rateFirstHourUsd: 3.75,
+                rateAdditionalHourUsd: 3.75,
+                maxStayMinutes: 120,
+                distanceM: Double(index) * 35 + 12,
+                enforcedNow: enforced,
+                todayHours: enforced
+                    ? [NearbyZone.TodayInterval(start: "08:00", end: "20:00")]
+                    : [NearbyZone.TodayInterval(start: "08:00", end: "12:00")],
+                hours: [
+                    EnforcementHours(
+                        days: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
+                        start: "08:00",
+                        end: enforced ? "20:00" : "12:00"
+                    )
+                ],
+                centerline: [[[lng, lat], [lng + step * 0.8, lat + step * 0.15]]]
+            )
+        }
+        return NearbyZonesResponse(
+            radiusM: radiusM,
+            at: AppClock.now,
+            truncated: false,
+            zones: zones
+        )
     }
 
     // MARK: - Card fixtures

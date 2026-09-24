@@ -39,7 +39,7 @@ import { DryRunExecutor } from "../src/services/executor.js";
 import type { Policy } from "../src/services/policy.js";
 import { PolicyService } from "../src/services/policy.js";
 import type { StripeGateway } from "../src/services/stripeGateway.js";
-import type { Candidate } from "../src/services/zoneLookup.js";
+import type { Candidate, NearbyZone } from "../src/services/zoneLookup.js";
 
 export const API_KEY = "test-key";
 /** A second, non-admin user's key — for authorization (403) tests. */
@@ -1059,6 +1059,8 @@ export function seedProviderAccount(
 
 export function makeTestApp(options: {
   candidates?: Candidate[];
+  /** What GET /zones/near draws; absent leaves the route's 501 seam open. */
+  nearbyZones?: NearbyZone[];
   policy?: Partial<Policy>;
   envDryRun?: boolean;
   now?: () => Date;
@@ -1113,6 +1115,7 @@ export function makeTestApp(options: {
     },
   };
   const findCandidates = async () => options.candidates ?? [];
+  const findNearbyZones = async () => options.nearbyZones ?? [];
   const policyService = makePolicyService(options.policy, options.envDryRun ?? true);
   const linkWallet = new LinkWallet({
     db,
@@ -1133,6 +1136,7 @@ export function makeTestApp(options: {
     db,
     policy: policyService,
     findCandidates,
+    findNearbyZones,
     authenticate: makeAuthenticate(db, TEST_PEPPER),
     executorFor: () => options.executor ?? dryRunExecutor,
     sendPush: async (userId, push) => {

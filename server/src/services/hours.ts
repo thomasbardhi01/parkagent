@@ -67,6 +67,24 @@ export function enforcementProfile(hours: HoursInterval[], from: Date, minutes: 
 }
 
 /**
+ * The posted intervals that apply on the local day containing `at`, as
+ * plain "HH:MM"-"HH:MM" pairs — what the map card shows for "today".
+ * Empty hours (nothing posted) yields one all-day interval, matching how
+ * isEnforcedAt reads them.
+ */
+export function todaysIntervals(
+  hours: HoursInterval[],
+  at: Date,
+): { start: string; end: string }[] {
+  if (hours.length === 0) return [{ start: "00:00", end: "24:00" }];
+  const { weekday } = nycWeekdayAndMinute(at);
+  return hours
+    .filter((interval) => interval.days.includes(weekday))
+    .map((interval) => ({ start: interval.start, end: interval.end }))
+    .sort((a, b) => toMinute(a.start) - toMinute(b.start));
+}
+
+/**
  * Start of the NYC calendar day containing `at`, as a UTC instant — the
  * window for daily-cap accounting. Derived by subtracting the local
  * wall-clock time; off by an hour on the two DST-transition days, which is

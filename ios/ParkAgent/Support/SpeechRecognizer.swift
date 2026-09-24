@@ -83,9 +83,13 @@ final class SpeechRecognizer {
             return
         }
 
-        let speechGranted = await withCheckedContinuation { continuation in
+        // Through the nonisolated bridge, never a closure formed in this
+        // @MainActor context: SFSpeechRecognizer calls its handler on a
+        // background queue, and an isolation-inheriting closure traps there
+        // under Swift 6 the moment the user taps Allow.
+        let speechGranted = await Self.bridgeAuthorization { done in
             SFSpeechRecognizer.requestAuthorization { status in
-                continuation.resume(returning: status == .authorized)
+                done(status == .authorized)
             }
         }
         let micGranted = await AVAudioApplication.requestRecordPermission()
@@ -111,10 +115,10 @@ final class SpeechRecognizer {
             try session.setCategory(.record, mode: .measurement, options: .duckOthers)
             try session.setActive(true, options: .notifyOthersOnDeactivation)
             let input = audioEngine.inputNode
-            let format = input.outputFormat(forBus: 0)
-            input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
-                request.append(buffer)
-                let level = Self.normalizedLevel(of: buffer)
+            // The tap block runs on a realtime audio thread — installed via
+            // the nonisolated helper so it never inherits main-actor
+            // isolation (same trap class as the authorization handler).
+            Self.installLevelTap(on: input, request: request) { [weak self] level in
                 Task { @MainActor [weak self] in self?.ingest(level: level) }
             }
             tapInstalled = true
@@ -136,16 +140,66 @@ final class SpeechRecognizer {
         state = .listening
         lastActivityAt = Date()
         startSilenceWatchdog()
-        task = recognizer.recognitionTask(with: request) { [weak self] result, error in
-            Task { @MainActor in
+        // Result handler arrives on a Speech-framework queue — same
+        // nonisolated treatment; only Sendable strings hop to the actor.
+        task = Self.startRecognition(recognizer: recognizer, request: request) { [weak self] transcript, finished in
+            Task { @MainActor [weak self] in
                 guard let self else { return }
-                if let result {
-                    self.ingest(transcript: result.bestTranscription.formattedString)
+                if let transcript {
+                    self.ingest(transcript: transcript)
                 }
-                if error != nil || (result?.isFinal ?? false) {
+                if finished {
                     self.stop()
                 }
             }
+        }
+    }
+
+    // MARK: - Off-main framework callbacks
+
+    /// Bridges a callback-style permission ask into async. `nonisolated`
+    /// with `@Sendable` closures on purpose: the framework may invoke the
+    /// handler on any queue, and a non-Sendable closure formed inside this
+    /// @MainActor class inherits main-actor isolation — under Swift 6 that
+    /// traps when called off-main (reproduced twice on device with
+    /// SFSpeechRecognizer.requestAuthorization). Kept generic so the unit
+    /// test can fire the callback from a background queue.
+    nonisolated static func bridgeAuthorization(
+        _ request: @escaping @Sendable (@escaping @Sendable (Bool) -> Void) -> Void
+    ) async -> Bool {
+        await withCheckedContinuation { continuation in
+            request { granted in
+                continuation.resume(returning: granted)
+            }
+        }
+    }
+
+    /// Installs the level/feed tap from a nonisolated context so the block
+    /// carries no actor isolation onto the realtime audio thread.
+    private nonisolated static func installLevelTap(
+        on input: AVAudioInputNode,
+        request: SFSpeechAudioBufferRecognitionRequest,
+        onLevel: @escaping @Sendable (Double) -> Void
+    ) {
+        let format = input.outputFormat(forBus: 0)
+        input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
+            request.append(buffer)
+            onLevel(normalizedLevel(of: buffer))
+        }
+    }
+
+    /// Starts the recognition task from a nonisolated context; only the
+    /// (Sendable) transcript string and a finished flag cross back.
+    private nonisolated static func startRecognition(
+        recognizer: SFSpeechRecognizer,
+        request: SFSpeechAudioBufferRecognitionRequest,
+        onUpdate: @escaping @Sendable (String?, Bool) -> Void
+    ) -> SFSpeechRecognitionTask {
+        recognizer.recognitionTask(with: request) { result, error in
+            onUpdate(
+                result.map { $0.bestTranscription.formattedString },
+                error != nil || (result?.isFinal ?? false)
+            )
         }
     }
 

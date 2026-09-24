@@ -102,6 +102,26 @@ final class SpeechRecognizerTests: XCTestCase {
         XCTAssertEqual(unavailable.state, .idle)
     }
 
+    /// The device crash class behind #2: the speech-authorization handler
+    /// arrives on a background queue, and a main-actor-isolated closure
+    /// traps there under Swift 6. The bridge must accept a callback fired
+    /// from ANY queue without trapping and still resume correctly.
+    func testAuthorizationCallbackOnBackgroundQueueDoesNotTrap() async {
+        let granted = await SpeechRecognizer.bridgeAuthorization { done in
+            DispatchQueue.global(qos: .userInitiated).async {
+                done(true)
+            }
+        }
+        XCTAssertTrue(granted)
+
+        let denied = await SpeechRecognizer.bridgeAuthorization { done in
+            DispatchQueue.global(qos: .background).async {
+                done(false)
+            }
+        }
+        XCTAssertFalse(denied)
+    }
+
     /// The persisted -speechScenario key must be inert outside UI-test
     /// launches — it rewires the REAL recognizer, unlike the MockAPI keys.
     func testDefaultsScenarioIsGatedOnUITesting() {

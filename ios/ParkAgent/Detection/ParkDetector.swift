@@ -82,10 +82,14 @@ final class ParkDetector: NSObject, CLLocationManagerDelegate {
             }
         }
 
+        // queue: .main, not nil — AVAudioSession posts this on a background
+        // thread, and the non-Sendable block below inherits this class's
+        // @MainActor isolation, which traps off-main under Swift 6 (the
+        // same class of crash as the speech-authorization handler).
         routeChangeObserver = NotificationCenter.default.addObserver(
             forName: AVAudioSession.routeChangeNotification,
             object: nil,
-            queue: nil
+            queue: .main
         ) { [weak self] note in
             guard
                 let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,

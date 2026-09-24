@@ -29,9 +29,12 @@ struct OnboardingView: View {
     @AppStorage("selectedCity") private var selectedCity = ""
     @State private var step: OnboardingStep
 
-    init() {
+    /// RootView's truth gate decides where the flow starts (the first
+    /// missing step); with no explicit start, resume from the persisted
+    /// step of an abandoned run.
+    init(startAt: OnboardingStep? = nil) {
         let saved = UserDefaults.standard.integer(forKey: OnboardingStep.defaultsKey)
-        _step = State(initialValue: OnboardingStep(rawValue: saved) ?? .welcome)
+        _step = State(initialValue: startAt ?? OnboardingStep(rawValue: saved) ?? .welcome)
     }
 
     var body: some View {

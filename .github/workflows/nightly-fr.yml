@@ -9,6 +9,9 @@
 # Secrets:
 #   FR_API_KEY — api key of the DEDICATED FR user on prod
 #                (pnpm -C server create:fr-user against the prod DB).
+#   FLY_API_TOKEN — (optional; CI's deploy token) lets the run mint FR-32's
+#                throwaway session inside the prod machine. Without it, or
+#                if minting fails, those four tests skip; nothing goes red.
 # The report artifact and the issue use the built-in GITHUB_TOKEN.
 
 name: nightly-fr
@@ -67,6 +70,37 @@ jobs:
           elif [ "$commit" != "$GITHUB_SHA" ]; then
             echo "::warning::$FR_API_BASE runs $commit, not this run's $GITHUB_SHA — its deploy hasn't landed"
           fi
+
+      # FR-32's session-lifecycle tests (rotation, reuse detection, DELETE
+      # /me) need a real refresh session. Without a real Apple or email
+      # sign-in the only way to mint one is an admin script run where
+      # prod's own DB and JWT secret live — never an API route, so there
+      # is no sign-in backdoor. The suite deletes the throwaway it gets.
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+        if: always() && steps.executor.conclusion != 'cancelled' && env.FR_API_BASE == 'https://parkagent-api.fly.dev'
+        continue-on-error: true
+      - name: Mint the FR-32 throwaway session
+        if: always() && steps.executor.conclusion != 'cancelled' && env.FR_API_BASE == 'https://parkagent-api.fly.dev'
+        continue-on-error: true
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          if [ -z "$FLY_API_TOKEN" ]; then
+            echo "::notice::FLY_API_TOKEN not set; FR-32 session tests will skip"
+            exit 0
+          fi
+          line=$(flyctl ssh console -a parkagent-api \
+            -C "node dist/scripts/create-fr-throwaway.js" 2>/dev/null \
+            | grep '^{"userId"' | tail -1 || true)
+          if [ -z "$line" ]; then
+            echo "::warning::couldn't mint the FR-32 throwaway; its session tests will skip"
+            exit 0
+          fi
+          # Mask before anything could print them (an assertion diff).
+          for field in refreshToken accessToken; do
+            echo "::add-mask::$(node -pe "JSON.parse(process.argv[1]).$field" "$line")"
+          done
+          echo "FR_THROWAWAY_SESSION=$line" >> "$GITHUB_ENV"
 
       - name: FR suite against the live API (dry run)
         id: frsuite

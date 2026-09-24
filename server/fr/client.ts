@@ -16,6 +16,10 @@
  *  - The suite never calls PUT /policy, /session/extend|stop, any /card
  *    route, or a real provider link — nothing here can change the spending
  *    contract or touch a provider account.
+ *  - DELETE /me is never sent with the FR key (frFetch refuses it): only a
+ *    throwaway session's bearer, through sessionFetch, may delete — and
+ *    sessionFetch never carries the key, so a lost bearer can't fall back
+ *    to deleting the FR user every later nightly depends on.
  */
 
 export const BASE = (process.env["FR_API_BASE"] ?? "https://parkagent-api.fly.dev").replace(
@@ -46,11 +50,18 @@ function fetchCause(err: unknown): { code: string | undefined; message: string }
   };
 }
 
+type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+
 export async function frFetch(
-  method: "GET" | "POST" | "PUT" | "DELETE",
+  method: Method,
   path: string,
   payload?: unknown,
 ): Promise<FrResponse> {
+  if (method === "DELETE" && path.split("?")[0] === "/me") {
+    throw new Error(
+      "FR: refusing DELETE /me with the FR key — that would delete the FR user itself.",
+    );
+  }
   if (!KEY) {
     throw new Error(
       "FR_API_KEY is not set. Create the dedicated FR user with " +
@@ -92,15 +103,67 @@ export async function frFetch(
       await new Promise((resolve) => setTimeout(resolve, (retryAfter + 1) * 1000));
       continue;
     }
-    const text = await res.text();
-    let body: Record<string, unknown>;
-    try {
-      body = text ? (JSON.parse(text) as Record<string, unknown>) : {};
-    } catch {
-      body = { raw: text };
-    }
-    return { status: res.status, body };
+    return { status: res.status, body: await readBody(res) };
   }
+}
+
+async function readBody(res: Response): Promise<Record<string, unknown>> {
+  const text = await res.text();
+  try {
+    return text ? (JSON.parse(text) as Record<string, unknown>) : {};
+  } catch {
+    return { raw: text };
+  }
+}
+
+/**
+ * A request as an app SESSION — a bearer access token, or nothing at all
+ * for the public /auth/* routes. Never sends x-api-key, by construction:
+ * the FR-32 tests delete their throwaway account, and a request that lost
+ * its bearer must fail 401, not fall back to the FR user.
+ */
+export async function sessionFetch(
+  method: Method,
+  path: string,
+  options: { bearer?: string; payload?: unknown } = {},
+): Promise<FrResponse> {
+  const { bearer, payload } = options;
+  if (method === "DELETE" && path === "/me" && !bearer) {
+    throw new Error("FR: DELETE /me needs the throwaway's bearer token");
+  }
+  const res = await fetch(`${BASE}${path}`, {
+    method,
+    headers: {
+      ...(bearer ? { authorization: `Bearer ${bearer}` } : {}),
+      ...(payload !== undefined ? { "content-type": "application/json" } : {}),
+    },
+    ...(payload !== undefined ? { body: JSON.stringify(payload) } : {}),
+  });
+  return { status: res.status, body: await readBody(res) };
+}
+
+/** A session minted by `pnpm -C server create:fr-throwaway` (an admin
+ * script run where the target's secrets live — never an API route). */
+export interface ThrowawaySession {
+  userId: string;
+  deviceId: string;
+  refreshToken: string;
+  accessToken: string;
+}
+
+/** FR_THROWAWAY_SESSION, parsed; null when the run didn't mint one. */
+export function throwawaySession(): ThrowawaySession | null {
+  const raw = process.env["FR_THROWAWAY_SESSION"]?.trim();
+  if (!raw) return null;
+  const parsed = JSON.parse(raw) as Partial<ThrowawaySession>;
+  for (const key of ["userId", "deviceId", "refreshToken", "accessToken"] as const) {
+    if (typeof parsed[key] !== "string" || parsed[key] === "") {
+      throw new Error(
+        `FR_THROWAWAY_SESSION is missing ${key} — paste the script's JSON line whole`,
+      );
+    }
+  }
+  return parsed as ThrowawaySession;
 }
 
 let gatePromise: Promise<Record<string, unknown>> | null = null;

@@ -212,4 +212,22 @@ final class OnboardingUITests: ParkAgentUITestCase {
         element(app, "onboarding.finishButton").tap()
         XCTAssertTrue(app.tabBars.buttons["Home"].waitForExistence(timeout: 5))
     }
+
+    /// A returning user the gate sends back into onboarding (a lapsed
+    /// provider link, a revoked permission) already has hasOnboarded set.
+    /// Finishing must land on Home. It used to leave them on Done: the flow
+    /// signalled completion by setting a flag that was already true, so
+    /// RootView saw no change.
+    func testReturningUserFinishingOnboardingLandsOnHome() {
+        // The default -skipOnboarding sets the flag; -onboardingStep 9
+        // (done) is the gate having found something missing.
+        let app = launchApp(onboardingStep: 9)
+
+        XCTAssertTrue(element(app, "onboarding.done").waitForExistence(timeout: 5))
+        element(app, "onboarding.goHomeButton").tap()
+        XCTAssertTrue(
+            element(app, "home.statusChip").waitForExistence(timeout: 5),
+            "Finishing onboarding left a returning user on the Done screen"
+        )
+    }
 }

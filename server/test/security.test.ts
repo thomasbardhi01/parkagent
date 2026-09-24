@@ -6,7 +6,15 @@
 import { describe, expect, test } from "vitest";
 
 import { makeRateLimiter } from "../src/services/rateLimit.js";
-import { API_KEY, STEINWAY_A, makeTestApp, parkedBody } from "./helpers.js";
+import { signAccessToken } from "../src/services/authTokens.js";
+import {
+  API_KEY,
+  MONDAY_2PM,
+  STEINWAY_A,
+  TEST_JWT_SECRET,
+  makeTestApp,
+  parkedBody,
+} from "./helpers.js";
 
 const HEADERS = { "x-api-key": API_KEY, "content-type": "application/json" };
 
@@ -40,10 +48,28 @@ const ROUTES: { method: "GET" | "POST" | "PUT"; url: string }[] = [
   { method: "POST", url: "/providers/parknyc/setup-card" },
   { method: "POST", url: "/providers/parknyc/unlink" },
   { method: "POST", url: "/providers/parknyc/topup" },
+  { method: "GET", url: "/me" },
+  { method: "PATCH", url: "/me" },
+  { method: "DELETE", url: "/me" },
+  { method: "GET", url: "/me/vehicles" },
+  { method: "POST", url: "/me/vehicles" },
+  { method: "PATCH", url: "/me/vehicles/v1" },
+  { method: "DELETE", url: "/me/vehicles/v1" },
+];
+
+/** The sign-in surface: public by necessity — the credential is in the
+ * body, so there is nothing to present in a header yet. */
+const PUBLIC_AUTH_ROUTES = [
+  "/auth/apple",
+  "/auth/google",
+  "/auth/email/start",
+  "/auth/email/verify",
+  "/auth/refresh",
+  "/auth/logout",
 ];
 
 describe("auth is default-on", () => {
-  test.each(ROUTES)("$method $url 401s without a key", async ({ method, url }) => {
+  test.each(ROUTES)("$method $url 401s without a credential", async ({ method, url }) => {
     const { app } = makeTestApp({});
     const res = await app.inject({ method, url, payload: method === "GET" ? undefined : {} });
     expect(res.statusCode).toBe(401);
@@ -68,6 +94,63 @@ describe("auth is default-on", () => {
     // 503 stripe_not_configured — the route ran; a 401 would mean the
     // api-key hook wrongly gated it.
     expect(res.statusCode).toBe(503);
+  });
+
+  test.each(PUBLIC_AUTH_ROUTES)("%s is reachable signed out", async (url) => {
+    const { app } = makeTestApp({});
+    const res = await app.inject({ method: "POST", url, payload: {} });
+    // The route RAN: 400 (the empty body failed validation) or, for
+    // /auth/google, 403 (the flag is off, checked before the body). Only a
+    // 401 would be wrong — that would mean the auth hook gated the way in
+    // to authenticating.
+    expect([400, 403]).toContain(res.statusCode);
+  });
+
+  test("a garbage bearer token is rejected, not ignored", async () => {
+    const { app } = makeTestApp({});
+    // Falling through to the api-key branch on a bad bearer would let a
+    // caller present both and have the key silently win.
+    for (const authorization of [
+      "Bearer not-a-jwt",
+      "Bearer a.b.c",
+      "Bearer ",
+      `Bearer ${Buffer.from('{"alg":"none"}').toString("base64url")}.e30.`,
+    ]) {
+      const res = await app.inject({
+        method: "GET",
+        url: "/me",
+        headers: { authorization, "x-api-key": API_KEY },
+      });
+      expect(res.statusCode, authorization).toBe(401);
+    }
+  });
+
+  test("a valid bearer token authenticates without any api key", async () => {
+    const { app, state } = makeTestApp({});
+    const user = state.users.find((u) => u.id === "u1")!;
+    const { token } = signAccessToken(TEST_JWT_SECRET, user, new Date(MONDAY_2PM));
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/me",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().user.id).toBe("u1");
+  });
+
+  test("a tombstoned user's still-valid token stops working at once", async () => {
+    const { app, state } = makeTestApp({});
+    const user = state.users.find((u) => u.id === "u1")!;
+    const { token } = signAccessToken(TEST_JWT_SECRET, user, new Date(MONDAY_2PM));
+    user.deletedAt = new Date(MONDAY_2PM);
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/me",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(res.statusCode).toBe(401);
   });
 });
 

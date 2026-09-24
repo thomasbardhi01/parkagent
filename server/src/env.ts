@@ -33,6 +33,26 @@ const schema = z
     // base64: `openssl rand -base64 32`. Without it provider linking is
     // off (503) and real executor calls fail typed.
     PROVIDER_STATE_KEY: z.string().min(1).optional(),
+    // Signs the 15-minute access JWTs and peppers refresh-token hashes.
+    // Any string ≥ 32 chars: `openssl rand -base64 32`. Rotating it signs
+    // everyone out (access tokens fail verify; refresh hashes stop
+    // matching) — they sign in again.
+    AUTH_JWT_SECRET: z.string().min(32),
+    // Sign in with Apple audience — the app's bundle id.
+    APPLE_AUDIENCE: z.string().min(1).default("com.thomasbardhi.parkagent"),
+    // Resend (resend.com) sends the email sign-in codes. Without a key,
+    // POST /auth/email/start answers 503 (Apple sign-in still works).
+    RESEND_API_KEY: z.string().min(1).optional(),
+    // The From header on sign-in mail; the domain must be verified in
+    // Resend (and registered with Apple's private email relay so codes
+    // reach @privaterelay.appleid.com addresses).
+    RESEND_FROM: z.string().min(1).default("ParkAgent <sign-in@parkagent.app>"),
+    // Google Sign-In is off by default (App Store rule: offering Google
+    // requires offering Sign in with Apple too — we lead with Apple).
+    GOOGLE_SIGNIN_ENABLED: z.enum(["true", "false"]).default("false"),
+    // OAuth client id the Google ID tokens must be issued to; required
+    // when GOOGLE_SIGNIN_ENABLED=true.
+    GOOGLE_CLIENT_ID: z.string().min(1).optional(),
     // Plate of the vehicle to park when a session doesn't name one.
     PARKNYC_PLATE: z.string().min(1).optional(),
     // The assistant's model access; without it /assistant/* answers 503.
@@ -74,6 +94,15 @@ const schema = z
         path: ["LINK_CLIENT_ID"],
         message:
           "LINK_CLIENT_ID, LINK_CLIENT_SECRET, LINK_PUBLISHABLE_KEY, and LINK_REDIRECT_URI are a set — set all four or none",
+      });
+    }
+    // Google Sign-In without a client id would accept tokens minted for
+    // anyone's app — refuse to run half-configured.
+    if (env.GOOGLE_SIGNIN_ENABLED === "true" && !env.GOOGLE_CLIENT_ID) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["GOOGLE_CLIENT_ID"],
+        message: "required when GOOGLE_SIGNIN_ENABLED=true (ID token audience)",
       });
     }
     // A malformed key must refuse boot, not fail the first link.

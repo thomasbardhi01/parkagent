@@ -33,6 +33,12 @@ test("nearest NYC zone → nyc + ParkNYC, with the caller's link status", async 
       displayName: "ParkNYC",
       loginUrl: expect.stringContaining("flowbirdapp.com"),
       cookieDomains: ["nyc.flowbirdapp.com", "flowbirdapp.com"],
+      // Link-or-create metadata rides along for onboarding's Connect step.
+      signup: expect.objectContaining({
+        mode: "form",
+        url: expect.stringContaining("flowbirdapp.com"),
+        prefill: expect.arrayContaining([expect.objectContaining({ field: "plate" })]),
+      }),
       status: "linked",
       linked: true,
     },

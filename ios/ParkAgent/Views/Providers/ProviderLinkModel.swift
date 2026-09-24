@@ -33,6 +33,13 @@ final class ProviderLinkModel {
     let providerId: String
     private(set) var stage: Stage = .loading
     private(set) var provider: ProviderAccountStatus?
+    /// What the app will type into the provider's own page so the user
+    /// doesn't enter their details twice. Text inputs only — see
+    /// ProviderSignupPrefill.swift for the hard limits.
+    private(set) var prefill = ProviderPrefillValues()
+    /// The card the PROVIDER account already has on file, learned at link
+    /// time (provider_card users) — "Visa •••• 4242" on the done screen.
+    private(set) var providerCard: String?
     /// Whether the user pays with the ParkAgent card at all. provider_card
     /// users (the default) link without touching the account's payment
     /// method, so no consent question arises and no card is prepared.
@@ -54,22 +61,54 @@ final class ProviderLinkModel {
         guard stage == .loading else { return }
         do {
             let status = try await api.providersStatus()
-            if let match = status.providers.first(where: { $0.id == providerId }) {
-                provider = match
-                stage = .intro
-            } else {
+            guard let match = status.providers.first(where: { $0.id == providerId }) else {
                 stage = .unavailable
+                return
             }
+            provider = match
+            // Everything the provider's own page may ask for that we
+            // already know. A failure here just means less prefill.
+            let vehicle = try? await api.vehicles().first
+            let me = try? await api.me()
+            prefill = ProviderPrefillValues.from(
+                user: me?.user,
+                vehicle: vehicle,
+                zip: UserDefaults.standard.string(forKey: "profile.zip")
+            )
+            stage = .intro
         } catch {
             stage = .unavailable
         }
     }
 
+    /// The script the web view injects, or nil when we know nothing worth
+    /// typing (or the server sent no signup metadata).
+    func prefillScript() -> String? {
+        guard let fields = provider?.signup?.prefill, !prefill.isEmpty else { return nil }
+        return ProviderPrefillScript.javaScript(fields: fields, values: prefill)
+    }
+
+    /// Sign-in and sign-up start at the same place for Passport; ParkNYC
+    /// has a separate registration panel.
+    func startURL(creatingAccount: Bool) -> URL? {
+        let raw = creatingAccount
+            ? (provider?.signup?.url ?? provider?.loginUrl)
+            : provider?.loginUrl
+        return raw.flatMap(URL.init(string:))
+    }
+
+    /// Whether the user said they have no account yet — the web view then
+    /// starts on the provider's sign-up page instead of its sign-in one.
+    /// For Passport the two are the same screen, so it changes nothing but
+    /// the wording.
+    private(set) var creatingAccount = false
+
     /// Continue from the intro: for ParkAgent-card users, make sure the
     /// card exists (lazy creation, idempotent — a failure surfaces later as
-    /// a typed no_card with retry), then open the provider's login page.
+    /// a typed no_card with retry), then open the provider's page.
     /// provider_card users never need a card prepared.
-    func startSignIn(api: any APIClient) {
+    func startSignIn(api: any APIClient, creatingAccount: Bool = false) {
+        self.creatingAccount = creatingAccount
         stage = .signIn
         if consentCardSetup {
             Task { _ = try? await api.prepareCard() }
@@ -91,6 +130,9 @@ final class ProviderLinkModel {
                 setUpCard: consentCardSetup,
                 consent: consentCardSetup
             )
+            if let last4 = response.cardLast4 {
+                providerCard = "\(response.cardBrand ?? "Card") •••• \(last4)"
+            }
             if let jobId = response.jobId {
                 stage = .addingCard
                 await poll(jobId: jobId, api: api)

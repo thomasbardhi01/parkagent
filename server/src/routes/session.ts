@@ -14,7 +14,7 @@ import { z } from "zod";
 
 import type { AppDeps } from "../app.js";
 import type { SessionRow } from "../db.js";
-import { cityForZone, providerForCity } from "../providers/registry.js";
+import { cityForZone, providerForCity, providerStatusUsable } from "../providers/registry.js";
 import { freePeriodPush, paymentFailedPush, sessionStartedPush } from "../services/apns.js";
 import type { HoursInterval } from "../services/hours.js";
 import { priceStay } from "../services/quote.js";
@@ -113,7 +113,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
       const account = await deps.db.providerAccount.findUnique({
         where: { userId_provider: { userId: user.id, provider: provider.id } },
       });
-      if (!account || account.status !== "linked") {
+      if (!account || !providerStatusUsable(account.status)) {
         const decision = await deps.db.decision.create({
           data: {
             kind: "session_start",

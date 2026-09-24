@@ -60,8 +60,8 @@ struct ProviderLinkStagesView: View {
         case .unavailable:
             unavailable
         case .intro:
-            LinkIntroView(link: link) {
-                link.startSignIn(api: model.api)
+            LinkIntroView(link: link) { creatingAccount in
+                link.startSignIn(api: model.api, creatingAccount: creatingAccount)
             }
         case .signIn:
             signIn
@@ -71,6 +71,7 @@ struct ProviderLinkStagesView: View {
             LinkDoneView(
                 providerName: providerName,
                 cardSetUp: link.consentCardSetup,
+                providerCard: link.providerCard,
                 dryRun: dryRun,
                 onDone: onDone
             )
@@ -106,7 +107,7 @@ struct ProviderLinkStagesView: View {
     private var signIn: some View {
         if let provider = link.provider {
             if model.useMockAPI {
-                MockProviderLoginView(provider: provider) {
+                MockProviderLoginView(provider: provider, creatingAccount: link.creatingAccount) {
                     Task {
                         await link.cookiesCaptured(
                             MockFixtures.linkCookies(for: provider.id),
@@ -114,8 +115,15 @@ struct ProviderLinkStagesView: View {
                         )
                     }
                 }
-            } else if let url = URL(string: provider.loginUrl) {
-                ProviderLoginWebView(url: url, cookieDomains: provider.cookieDomains) { cookies in
+            } else if let url = link.startURL(creatingAccount: link.creatingAccount) {
+                ProviderLoginWebView(
+                    url: url,
+                    cookieDomains: provider.cookieDomains,
+                    // Types what we already know into the provider's empty
+                    // text inputs; codes, PINs, terms, and captcha stay the
+                    // user's (ProviderSignupPrefill.swift).
+                    prefillScript: link.prefillScript()
+                ) { cookies in
                     Task { await link.cookiesCaptured(cookies, api: model.api) }
                 }
                 .ignoresSafeArea(edges: .bottom)
@@ -126,10 +134,13 @@ struct ProviderLinkStagesView: View {
     }
 }
 
-/// Step one: what is about to happen, and the card consent.
+/// Step one: what is about to happen, the card consent, and — for anyone
+/// without an account yet — the sign-up door. Both doors lead to the
+/// provider's own page; only the starting URL and the wording differ.
 private struct LinkIntroView: View {
     @Bindable var link: ProviderLinkModel
-    let onContinue: () -> Void
+    /// `true` when the user says they have no account yet.
+    let onContinue: (Bool) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.unit) {
@@ -137,12 +148,17 @@ private struct LinkIntroView: View {
             Image(systemName: "link.circle.fill")
                 .font(.system(size: 56))
                 .foregroundStyle(Color.actionCoral)
-            Text("Sign in to \(providerName)")
+            Text("Connect \(providerName)")
                 .font(.numeral)
                 .foregroundStyle(Color.textPrimary)
-            Text("You'll sign in on \(providerName)'s own page. We never see your password — only the signed-in session, which stays sealed on the server.")
+            Text(oneLiner)
                 .font(.bodyText)
                 .foregroundStyle(Color.textSecondary)
+                .accessibilityIdentifier("link.introNote")
+
+            if !link.prefill.isEmpty {
+                prefillNote
+            }
 
             if link.usesParkAgentCard {
                 consentRow
@@ -151,9 +167,16 @@ private struct LinkIntroView: View {
             }
 
             Spacer()
-            Button("Continue") { onContinue() }
+            Button(primaryLabel) { onContinue(false) }
                 .buttonStyle(.primary)
                 .accessibilityIdentifier("link.continueButton")
+            // Passport's sign-in and sign-up are one screen, so a second
+            // button there would be a lie. ParkNYC gets a real one.
+            if !isPasswordless {
+                Button("I don't have an account yet") { onContinue(true) }
+                    .buttonStyle(.secondary)
+                    .accessibilityIdentifier("link.createAccountButton")
+            }
         }
         .padding(Spacing.unitAndHalf)
         .accessibilityElement(children: .contain)
@@ -162,6 +185,36 @@ private struct LinkIntroView: View {
 
     private var providerName: String {
         link.provider?.displayName ?? "your provider"
+    }
+
+    private var isPasswordless: Bool {
+        link.provider?.signup?.isPasswordless ?? false
+    }
+
+    private var primaryLabel: String {
+        isPasswordless ? "Continue" : "I have an account"
+    }
+
+    /// One sentence, from the server registry when it sent one.
+    private var oneLiner: String {
+        link.provider?.signup?.note
+            ?? "You'll sign in on \(providerName)'s own page. We never see your password — only the signed-in session, which stays sealed on the server."
+    }
+
+    private var prefillNote: some View {
+        HStack(alignment: .top, spacing: Spacing.unit) {
+            Image(systemName: "wand.and.sparkles")
+                .font(.system(size: 22))
+                .foregroundStyle(Color.textSecondary)
+            Text("We'll fill in what we already know. You'll finish the code, terms, and anything else yourself.")
+                .font(.secondaryText)
+                .foregroundStyle(Color.textPrimary)
+                .multilineTextAlignment(.leading)
+        }
+        .padding(Spacing.unit)
+        .background(Color.surface)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
+        .accessibilityIdentifier("link.prefillNote")
     }
 
     private var consentRow: some View {
@@ -234,6 +287,8 @@ private struct LinkProgressView: View {
 private struct LinkDoneView: View {
     let providerName: String
     let cardSetUp: Bool
+    /// "Visa •••• 4242" when we could read the provider account's own card.
+    let providerCard: String?
     let dryRun: Bool
     let onDone: () -> Void
 
@@ -243,15 +298,14 @@ private struct LinkDoneView: View {
             Image(systemName: "checkmark.circle.fill")
                 .font(.system(size: 56))
                 .foregroundStyle(Color.success)
-            Text("\(providerName) is linked")
+            Text("\(providerName) is connected")
                 .font(.bodyTextSemibold)
                 .foregroundStyle(Color.textPrimary)
-            Text(cardSetUp
-                ? "Your ParkAgent card now pays for parking there."
-                : "Linked without changing the account's payment method.")
+            Text(doneDetail)
                 .font(.secondaryText)
                 .foregroundStyle(Color.textSecondary)
                 .multilineTextAlignment(.center)
+                .accessibilityIdentifier("link.doneDetail")
             if dryRun {
                 Text("Dry run — the provider account was not touched.")
                     .font(.captionTextSemibold)
@@ -265,6 +319,18 @@ private struct LinkDoneView: View {
         .padding(Spacing.unitAndHalf)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("link.done")
+    }
+
+    /// Say which card will actually be charged when we know it — that is
+    /// the one thing someone wants confirmed after connecting.
+    private var doneDetail: String {
+        if cardSetUp {
+            return "Your ParkAgent card now pays for parking there."
+        }
+        if let providerCard {
+            return "\(providerCard) on your \(providerName) account keeps paying. We never change it."
+        }
+        return "The card on your \(providerName) account keeps paying. We never change it."
     }
 }
 
@@ -301,6 +367,7 @@ private struct LinkFailedView: View {
 /// the whole flow is walkable on the simulator and in UI tests.
 private struct MockProviderLoginView: View {
     let provider: ProviderAccountStatus
+    let creatingAccount: Bool
     let onSignIn: () -> Void
 
     var body: some View {
@@ -309,19 +376,24 @@ private struct MockProviderLoginView: View {
             Image(systemName: "globe")
                 .font(.system(size: 44))
                 .foregroundStyle(Color.textSecondary)
-            Text("\(provider.displayName) sign-in (mock)")
+            Text("\(provider.displayName) \(creatingAccount ? "sign-up" : "sign-in") (mock)")
                 .font(.bodyTextSemibold)
                 .foregroundStyle(Color.textPrimary)
-            Text("The real flow opens \(provider.loginUrl) in a web view and captures the session cookies once you sign in.")
+                .accessibilityIdentifier("link.mockTitle")
+            Text("The real flow opens \(startURL) in a web view, prefills what we know, and captures the session cookies once you're signed in.")
                 .font(.captionText)
                 .foregroundStyle(Color.textSecondary)
                 .multilineTextAlignment(.center)
             Spacer()
-            Button("Sign in") { onSignIn() }
+            Button(creatingAccount ? "Create account" : "Sign in") { onSignIn() }
                 .buttonStyle(.primary)
                 .accessibilityIdentifier("link.mockSignInButton")
         }
         .padding(Spacing.unitAndHalf)
+    }
+
+    private var startURL: String {
+        creatingAccount ? (provider.signup?.url ?? provider.loginUrl) : provider.loginUrl
     }
 }
 

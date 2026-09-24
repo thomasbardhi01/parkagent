@@ -9,26 +9,196 @@ USD as a decimal number of dollars (e.g. `7.28`).
 
 ## Authentication
 
-Every endpoint except `GET /health` requires the header:
+Two credentials authenticate a request, tried in this order:
 
-    x-api-key: <users.api_key>
+1. **`Authorization: Bearer <jwt>`** — the app's 15-minute access token,
+   HS256 over `AUTH_JWT_SECRET`. This is how every user-facing client
+   authenticates; see "Identity & sessions" below. The user row is re-read
+   per request, so a deleted account's still-valid JWT stops working
+   immediately.
+2. **`x-api-key: <users.api_key>`** — admin and scripts only now. Keys are
+   created with `pnpm -C server create:user -- --name <name>`, printed
+   exactly once; at rest the `users` table holds only
+   `SHA-256(API_KEY_PEPPER:key)` plus an 8-char identification prefix (the
+   pepper is a server env secret, so a DB dump alone can't validate keys).
+   Existing plaintext rows are converted by
+   `pnpm -C server migrate:api-keys`.
 
-Unknown or missing key → `401 {"error": "unauthorized"}`. Keys are created
-with `pnpm -C server create:user -- --name <name>`, printed exactly once;
-at rest the `users` table holds only `SHA-256(API_KEY_PEPPER:key)` plus an
-8-char identification prefix (the pepper is a server env secret, so a DB
-dump alone can't validate keys). Existing plaintext rows are converted by
-`pnpm -C server migrate:api-keys`.
+Unknown or missing credential → `401 {"error": "unauthorized"}`.
 
 Auth is an app-level hook with a public allowlist (`/health`,
-`/webhooks/stripe` — the Stripe signature is that route's auth), so
-unknown paths 401 too. Authorization on top: `users.is_admin` gates
-`PUT /policy` and everything under `/admin/` — any other valid key gets
+`/webhooks/stripe` — the Stripe signature is that route's auth,
+`/link/callback`, and all of `/auth/*` — the credential is in the body),
+so unknown paths 401 too. Authorization on top: `users.is_admin` gates
+`PUT /policy` and everything under `/admin/` — any other valid caller gets
 `403 {"error": "forbidden"}` (`create:user -- --admin`, or flip the
 column in SQL for an existing user). Abuse-prone routes are rate-limited per user
 (429 + `Retry-After`): `/parked` 30/min, provider writes 10/min, provider
-reads 60/min, `/zones/:zoneId/provider-number` 12/min, `/zones/near` 60/min. Unhandled errors
+reads 60/min, `/zones/:zoneId/provider-number` 12/min, `/zones/near` 60/min. The `/auth/*`
+routes run before user auth, so they are limited per IP: email start
+10/15 min, email verify 15/15 min, token exchanges 30/min — plus a
+per-address cap on code sends (see `/auth/email/start`). Unhandled errors
 answer `500 {"error": "internal"}` — details go to the server log only.
+
+---
+
+## Identity & sessions
+
+Anyone can sign up: the first successful sign-in creates the account.
+Three ways in, all landing on the same user when the verified email
+matches (see "Merging"):
+
+- **Sign in with Apple** — the app sends Apple's identity token; the
+  server verifies it against Apple's JWKS (`appleid.apple.com/auth/keys`),
+  checking signature, issuer, audience (`APPLE_AUDIENCE`, the bundle id)
+  and expiry. Private-relay addresses
+  (`…@privaterelay.appleid.com`) are stored like any other verified
+  address — which means the sending domain must be registered with
+  Apple's private email relay or sign-in codes to those users bounce.
+- **Email one-time code** — 6 digits, 10-minute expiry, 5 attempts,
+  delivered by Resend.
+- **Google** — behind `GOOGLE_SIGNIN_ENABLED` (default off). The App
+  Store requires offering Sign in with Apple wherever Google is offered,
+  which we do; Apple is the primary button either way.
+
+**Merging.** An account is keyed by provider subject first
+(`apple_sub` / `google_sub`), then by **verified** email — so Apple,
+Google, and email sign-ins with the same verified address all resolve to
+one user, and the new subject is attached to it. An unverified email
+never merges (it would let anyone claim an address they don't own).
+
+**Sessions.** A sign-in returns a 15-minute access JWT plus an opaque
+refresh token. Refresh tokens are stored only as
+`SHA-256(AUTH_JWT_SECRET:token)`, bound to the `deviceId` the client
+minted, with a **60-day sliding** expiry (each rotation restarts it).
+Every refresh **rotates**: the presented token is retired and a sibling
+in the same *family* replaces it. Presenting an already-rotated token is
+replay — the entire family is revoked and every descendant stops working,
+so a stolen token costs the thief and the victim the session, not just
+the victim.
+
+### POST /auth/apple
+
+```json
+{ "identityToken": "eyJ…", "deviceId": "…", "fullName": {"givenName": "Thomas", "familyName": "B"} }
+```
+
+`fullName` is optional and only ever sent once: Apple hands the name to
+the **app** on first sign-in, never in the token, so the client forwards
+it or it is lost. Response is the session body (below). A token that
+fails any check → `401 {"error": "invalid_identity_token", "code": …}`
+(`malformed`, `unknown_key`, `bad_signature`, `wrong_issuer`,
+`wrong_audience`, `expired`).
+
+### POST /auth/google
+
+`{idToken, deviceId}` → the same session body. `403
+{"error": "google_signin_disabled"}` unless `GOOGLE_SIGNIN_ENABLED=true`
+(which also requires `GOOGLE_CLIENT_ID` — the server refuses to boot with
+one but not the other).
+
+### POST /auth/email/start
+
+`{email}` → `{"ok": true}`, and a 6-digit code is mailed via Resend. The
+code is stored hashed; the plaintext exists only in the email. At most 5
+codes per address per 15 minutes (`429 email_rate_limited`) on top of the
+per-IP limit. `503 {"error": "email_not_configured"}` when
+`RESEND_API_KEY` isn't set; `502 send_failed` when Resend refuses.
+
+The response is identical whether or not the address has an account —
+this endpoint must not become an account-existence oracle.
+
+### POST /auth/email/verify
+
+`{email, code, deviceId}` → the session body. Wrong code →
+`401 invalid_code`; past 10 minutes → `401 code_expired`; after 5 failed
+attempts the code is burnt and even the right one answers
+`401 too_many_attempts`. A successful verify consumes the code.
+
+### POST /auth/refresh
+
+`{refreshToken, deviceId}` → a fresh session body (new access token AND
+new refresh token — store both). Failures, all `401`: `invalid_token`
+(unknown or revoked), `token_reused` (already rotated — the family is now
+revoked), `token_expired` (past the 60-day slide), `device_mismatch`.
+
+### POST /auth/logout
+
+`{refreshToken}` → `{"ok": true}`. Revokes the token's whole family.
+Unknown tokens are a no-op: signing out must never fail.
+
+### Session body
+
+```json
+{
+  "accessToken": "eyJ…",
+  "accessExpiresAt": "2026-09-23T18:15:00.000Z",
+  "refreshToken": "…",
+  "user": {
+    "id": "…", "name": "Thomas", "email": "thomas@example.com",
+    "emailVerified": true, "phone": null, "phoneVerified": false,
+    "appleLinked": true, "googleLinked": false
+  },
+  "created": true
+}
+```
+
+`created` is true when this sign-in made the account — the app runs
+onboarding on true and goes straight Home on false.
+
+### GET /me · PATCH /me
+
+`GET` → `{user, paymentSource, issuingLive}`. `PATCH {name?, phone?}`
+edits the profile and returns `{user}`. Changing the phone clears
+`phoneVerified` (there is no SMS verification flow yet). The email is
+**not** editable here: it is the sign-in identity, and moving it needs
+its own verification flow.
+
+### DELETE /me
+
+Irreversible; the app confirms in two steps. In order:
+
+1. refresh tokens deleted (every device signs out) and device tokens
+   deleted (push channels released);
+2. provider accounts unlinked and their **sealed cookie state erased**;
+3. any Issuing card **frozen, never canceled** — a card that has
+   transacted must keep resolving its authorizations;
+4. vehicles and assistant conversations deleted (sessions detach from
+   the vehicle but remain — they are the money audit);
+5. the `users` row is **tombstoned**: name becomes "Deleted account",
+   `email`/`phone`/`apple_sub`/`google_sub`/api-key columns are nulled,
+   and `deleted_at` is stamped.
+
+The row survives on purpose: `decisions` is a non-negotiable ledger with
+a `user_id` on every row, so the id must stay valid — what goes is the
+person behind it. A tombstoned row never authenticates (the bearer hook
+rejects `deleted_at`), and its freed email/Apple subject make a **new**
+account on the next sign-in. `200 {"ok": true, "deleted": true}`, plus a
+`decisions` row (kind `account_delete`).
+
+### Vehicles
+
+`GET /me/vehicles` → `{vehicles: [{id, plate, state, label}]}`.
+`POST /me/vehicles {plate, state, label?}` → `{vehicle}`.
+`PATCH /me/vehicles/:id` (same fields, all optional) → `{vehicle}`.
+`DELETE /me/vehicles/:id` → `{ok: true}` — the vehicle's sessions detach
+rather than disappear.
+
+Plates are normalized upper-case and are unique by `(plate, state)`
+across **all** users (one car, one account): a collision answers
+`409 {"error": "plate_taken"}`. A vehicle that isn't the caller's answers
+`404 vehicle_not_found` — never 403, which would confirm it exists.
+
+### Migration: attaching an identity to an existing user
+
+    pnpm -C server attach-identity -- --user <id> --email <e> [--apple-sub <s>]
+
+Stores the email as **verified** on that user (the owner asserting the
+mailbox is theirs), so the first Apple or email sign-in with that address
+merges onto the existing account and its whole history instead of
+creating a new one. `--apple-sub` links the Apple identity outright. The
+script refuses when the email or subject already belongs to someone else,
+and writes an `auth_identity` decisions row.
 
 ## Dry run
 
@@ -202,11 +372,17 @@ zone's city wins even from home, km away from a meter. Read-only — no
     "displayName": "ParkNYC",          // provider covers the city
     "loginUrl": "https://…",
     "cookieDomains": ["nyc.flowbirdapp.com", "flowbirdapp.com"],
+    "signup": { "url": "…", "mode": "form", "note": "…", "prefill": [ … ] },
     "status": "linked",
     "linked": true
   }
 }
 ```
+
+`signup` is the link-or-create block (see "Provider accounts"), so
+onboarding's Connect step can offer both doors and prefill the
+provider's own page. `linked` is true for `expiring` accounts too — they
+still pay.
 
 Nowhere near any metered zone → `200` with all three fields null ("we're
 not there yet"). Errors: `400` bad query, `401` bad key.
@@ -767,6 +943,35 @@ none — with each provider's display name, login URL for the app's web
 view, and the cookie domains that constitute a session (`ppprk.com` and
 `paywithpassport.com` for ParkBoston).
 
+Each registry entry also carries a `signup` block — the **link-or-create**
+metadata for a user who has no provider account yet:
+
+```json
+"signup": {
+  "url": "https://bostonma.ppprk.com/park/",
+  "mode": "passwordless",
+  "note": "Sign in or sign up on ParkBoston's own page — we never see a password; there isn't one.",
+  "prefill": [{ "field": "emailOrPhone", "selector": "#regEmail" }]
+}
+```
+
+`mode` is `passwordless` (ParkBoston: one screen for both sign-in and
+sign-up — T&C accept, an emailed/texted code, then a 4-digit PIN) or
+`form` (ParkNYC's registration panel). `prefill` tells the app which
+profile values to type into which inputs on the provider's own page, so
+nobody enters their name, email, phone, ZIP, or plate twice.
+
+**The limits are the point.** The app fills **text inputs only**, only
+ones that are still **empty**, and never submits. It never ticks a terms
+checkbox, never answers a verification code or PIN, and never touches a
+captcha — the user is present on the provider's page and finishes it.
+Provider accounts are never created without the user, and provider
+passwords are never stored (ParkBoston has none at all). ParkNYC's
+selectors are DRAFTED against the recorded panel's naming convention and
+marked TODO-verify; `test/fixtures/signup/*.html` and
+`test/registrySignup.test.ts` hold the registry and the fixtures together
+so a live recording can't update one without the other.
+
 Session state (the cookies the app captures after the user signs in inside
 the web view) is sealed with AES-256-GCM under the `PROVIDER_STATE_KEY`
 secret and stored in `provider_accounts`; it is never logged and never
@@ -803,8 +1008,17 @@ sign-in screen → `409 {"error": "verification_failed", "code": "auth_expired"}
 On success the sealed state is upserted (`status: "linked"`) and:
 
 ```json
-{ "status": "linked", "walletBalanceCents": 1250, "jobId": "…" }
+{ "status": "linked", "walletBalanceCents": 1250, "cardBrand": "Visa", "cardLast4": "4242", "jobId": "…" }
 ```
+
+`cardBrand`/`cardLast4` are the card the **provider account already has
+on file**, read from its Your Cards screen at link time so the app can
+show which card will actually be charged ("Visa •••• 4242"). Read only
+for `provider_card` users (issuing_card users are having ours installed
+instead), best effort — a failed read stores nulls and never blocks the
+link — and display-only: the PAN is never requested, returned, or
+stored. The decision records presence only (`savedCardSeen`), never
+digits.
 
 `jobId` is non-null when `set_up_card`: verification passed, so the card
 setup runs immediately as a background job (the executor takes seconds).
@@ -827,12 +1041,18 @@ yours.
 Every registry provider merged with the caller's account:
 
 ```json
-{ "providers": [ { "id": "parknyc", "city": "nyc", "cityDisplayName": "New York City", "displayName": "ParkNYC", "loginUrl": "https://…", "cookieDomains": ["nyc.flowbirdapp.com", "flowbirdapp.com"], "status": "linked", "linkedAt": "…", "lastVerifiedAt": "…", "cardAdded": true, "walletBalanceCents": 1250 } ] }
+{ "providers": [ { "id": "parknyc", "city": "nyc", "cityDisplayName": "New York City", "displayName": "ParkNYC", "loginUrl": "https://…", "cookieDomains": ["nyc.flowbirdapp.com", "flowbirdapp.com"], "signup": { … }, "status": "linked", "linkedAt": "…", "lastVerifiedAt": "…", "cardAdded": true, "cardBrand": "Visa", "cardLast4": "4242", "walletBalanceCents": 1250 } ] }
 ```
 
 `cookieDomains` is the registry's session-domain list — the app's link web
 view watches them to know when the user has signed in before capturing
-cookies.
+cookies. `signup` is the link-or-create block described above.
+
+`status` is `linked` | `expiring` | `expired` | `unlinked`. **`expiring`
+still pays** — the health job saw the session cookies dying soon and
+asked for a reconnect early; everything that accepts `linked` accepts it
+too (`providerStatusUsable` in the registry). Only `expired` and
+`unlinked` refuse.
 
 ### POST /providers/:provider/setup-card
 
@@ -861,7 +1081,27 @@ never canceled: a card that has transacted keeps its ledger, and a
 re-link simply unfreezes-by-setup later.
 
 `200 {"ok": true, "cardRemoval": "removed" | "failed:…" | "skipped", "cardFrozen": true}`;
-`404 not_linked` when there is nothing to unlink.
+`404 not_linked` when there is nothing to unlink. The stored display card
+(`cardBrand`/`cardLast4`) is cleared too.
+
+### Provider session health (daily job)
+
+Not an endpoint: an in-process job (`jobs/providerHealthTick.ts`) verifies
+every `linked`/`expiring` account headlessly once a day, so a dead or
+dying provider session is fixed on the couch rather than discovered at the
+curb. Per account:
+
+| Outcome | Condition | Effect |
+|---|---|---|
+| `verified` | cookies work, expiry far off | `lastVerifiedAt` refreshed; an `expiring` account that recovered returns to `linked` |
+| `expiring` | cookies work, but the earliest cookie expiry is **within 5 days** | status → `expiring` (still pays) + a `provider_relink` push ("Reconnect ParkBoston") carrying the deep link |
+| `expired` | `auth_expired`, no stored state, or state that won't decrypt (rotated key) | status → `expired` + the same push |
+| `check_failed` | any other executor error (`network`, `ui_changed`, …) | **nothing changes** — a transient failure is not evidence the session died; tomorrow's run retries |
+
+Cookies with no expiry at all (session cookies) never trigger the warning
+— they die with the browser, not the clock. Every outcome writes a
+`decisions` row (kind `provider_health`): the check decides whether to
+nag a human, and nags must be auditable.
 
 ### POST /providers/:provider/topup
 

@@ -76,6 +76,9 @@ enum ProviderMockScenario: String, CaseIterable, Identifiable, Sendable {
     case notLinked
     /// The ParkNYC session died; re-link required.
     case expired
+    /// The health job saw ParkNYC's cookies dying soon: still pays, but
+    /// the Account sheet asks for a reconnect.
+    case expiring
     /// Nothing linked, and the chained card-setup job fails once —
     /// exercises the failed-link retry path.
     case linkFails
@@ -89,6 +92,7 @@ enum ProviderMockScenario: String, CaseIterable, Identifiable, Sendable {
         case .linked: "ParkNYC linked"
         case .notLinked: "Not linked"
         case .expired: "Link expired"
+        case .expiring: "Link expiring soon"
         case .linkFails: "Card setup fails once"
         }
     }
@@ -114,14 +118,42 @@ enum CityMockScenario: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// In-memory fixtures shaped by server/API.md. The default in DEBUG so every
-/// screen is walkable on the simulator without a server or motion data.
+/// Which canned sign-in behavior the mock serves. UI tests drive the
+/// welcome screen through this (a real Apple sheet can't be automated).
+enum AuthMockScenario: String, CaseIterable, Identifiable, Sendable {
+    /// Every sign-in succeeds and returns an existing account.
+    case returning
+    /// Every sign-in succeeds and reports `created`. Where either lands is
+    /// the onboarding gate's call, not this flag's.
+    case newUser
+    /// The email code is always wrong — exercises the retry copy.
+    case badCode
+    /// Apple sign-in fails verification server-side.
+    case appleFails
+
+    static let defaultsKey = "authScenario"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .returning: "Returning user"
+        case .newUser: "New user"
+        case .badCode: "Wrong email code"
+        case .appleFails: "Apple sign-in fails"
+        }
+    }
+}
+
+/// In-memory fixtures shaped by server/API.md, for UI tests and previews
+/// only: a launch opts in with `-useMockAPI YES` and nothing persists it.
 struct MockAPI: APIClient {
     private let store = MockSessionStore()
     private let cardStore = MockCardStore()
     private let providerStore = MockProviderStore()
     private let policyStore = MockPolicyStore()
     private let zoneStore = MockZoneNumberStore()
+    private let profileStore = MockProfileStore()
 
     private var scenario: MockScenario {
         MockScenario(rawValue: UserDefaults.standard.string(forKey: MockScenario.defaultsKey) ?? "")
@@ -137,6 +169,108 @@ struct MockAPI: APIClient {
     private var cityScenario: CityMockScenario {
         CityMockScenario(rawValue: UserDefaults.standard.string(forKey: CityMockScenario.defaultsKey) ?? "")
             ?? .nyc
+    }
+
+    private var authScenario: AuthMockScenario {
+        AuthMockScenario(rawValue: UserDefaults.standard.string(forKey: AuthMockScenario.defaultsKey) ?? "")
+            ?? .returning
+    }
+
+    // MARK: - Identity
+
+    func signInWithApple(
+        identityToken: String,
+        deviceId: String,
+        fullName: (given: String?, family: String?)?
+    ) async throws -> AuthSession {
+        try await pause()
+        if authScenario == .appleFails {
+            throw APIError.refused(code: "invalid_identity_token")
+        }
+        let name = [fullName?.given, fullName?.family]
+            .compactMap { $0 }
+            .joined(separator: " ")
+        return await profileStore.session(
+            named: name.isEmpty ? nil : name,
+            email: "thomas@example.com",
+            appleLinked: true,
+            created: authScenario == .newUser
+        )
+    }
+
+    func signInWithGoogle(idToken: String, deviceId: String) async throws -> AuthSession {
+        try await pause()
+        return await profileStore.session(
+            named: nil,
+            email: "thomas@example.com",
+            googleLinked: true,
+            created: authScenario == .newUser
+        )
+    }
+
+    func startEmailSignIn(email: String) async throws {
+        try await pause()
+    }
+
+    func verifyEmailSignIn(email: String, code: String, deviceId: String) async throws -> AuthSession {
+        try await pause()
+        if authScenario == .badCode {
+            throw APIError.refused(code: "invalid_code")
+        }
+        return await profileStore.session(
+            named: nil,
+            email: email,
+            created: authScenario == .newUser
+        )
+    }
+
+    func logout(refreshToken: String) async throws {
+        try await pause()
+    }
+
+    func me() async throws -> MeResponse {
+        try await pause()
+        return MeResponse(
+            user: await profileStore.user(),
+            paymentSource: PaymentSource.stored,
+            issuingLive: UserDefaults.standard.bool(forKey: "issuingLive")
+        )
+    }
+
+    func updateMe(name: String?, phone: String?) async throws -> AuthUser {
+        try await pause()
+        return await profileStore.update(name: name, phone: phone)
+    }
+
+    func deleteAccount() async throws {
+        try await pause()
+    }
+
+    // MARK: - Vehicles
+
+    func vehicles() async throws -> [VehicleSummary] {
+        try await pause()
+        return await profileStore.vehicles()
+    }
+
+    func addVehicle(plate: String, state: String, label: String?) async throws -> VehicleSummary {
+        try await pause()
+        return try await profileStore.addVehicle(plate: plate, state: state, label: label)
+    }
+
+    func updateVehicle(
+        id: String,
+        plate: String?,
+        state: String?,
+        label: String?
+    ) async throws -> VehicleSummary {
+        try await pause()
+        return try await profileStore.updateVehicle(id: id, plate: plate, state: state, label: label)
+    }
+
+    func removeVehicle(id: String) async throws {
+        try await pause()
+        await profileStore.removeVehicle(id: id)
     }
 
     func parked(_ request: ParkedRequest) async throws -> ParkedResponse {
@@ -320,7 +454,13 @@ struct MockAPI: APIClient {
             setUpCard: setUpCard,
             failsFirstSetup: providerScenario == .linkFails
         )
-        return ProviderLinkResponse(status: "linked", walletBalanceCents: 1250, jobId: jobId)
+        return ProviderLinkResponse(
+            status: "linked",
+            walletBalanceCents: 1250,
+            cardBrand: "Visa",
+            cardLast4: "4242",
+            jobId: jobId
+        )
     }
 
     func linkStatus(providerId: String, jobId: String) async throws -> LinkStatusResponse {
@@ -510,6 +650,7 @@ private actor MockProviderStore {
         case .linked: return "linked"
         case .notLinked, .linkFails: return "unlinked"
         case .expired: return providerId == "parknyc" ? "expired" : "unlinked"
+        case .expiring: return providerId == "parknyc" ? "expiring" : "unlinked"
         }
     }
 
@@ -557,6 +698,91 @@ private actor MockProviderStore {
         return ["parknyc", "passport"]
             .filter { $0 != providerId }
             .contains { status(of: $0, scenario: scenario) == "linked" }
+    }
+}
+
+/// The signed-in profile and garage for the mock: sign-in mints a session,
+/// the Account sheet edits it, and vehicle changes stick for the app run.
+private actor MockProfileStore {
+    private var profile = AuthUser(
+        id: "mock-user",
+        name: "Thomas",
+        email: "thomas@example.com",
+        emailVerified: true,
+        phone: nil,
+        phoneVerified: false,
+        appleLinked: false,
+        googleLinked: false
+    )
+    private var garage: [VehicleSummary] = [
+        VehicleSummary(id: "mock-v1", plate: "ABC1234", state: "NY", label: nil)
+    ]
+    private var nextVehicle = 2
+
+    func session(
+        named name: String? = nil,
+        email: String,
+        appleLinked: Bool = false,
+        googleLinked: Bool = false,
+        created: Bool
+    ) -> AuthSession {
+        if let name { profile.name = name }
+        profile.email = email
+        profile.emailVerified = true
+        if appleLinked { profile.appleLinked = true }
+        if googleLinked { profile.googleLinked = true }
+        return AuthSession(
+            accessToken: "mock-access-token",
+            accessExpiresAt: AppClock.now.addingTimeInterval(15 * 60),
+            refreshToken: "mock-refresh-token",
+            user: profile,
+            created: created
+        )
+    }
+
+    func user() -> AuthUser { profile }
+
+    func update(name: String?, phone: String?) -> AuthUser {
+        if let name { profile.name = name }
+        profile.phone = phone
+        profile.phoneVerified = false
+        return profile
+    }
+
+    func vehicles() -> [VehicleSummary] { garage }
+
+    func addVehicle(plate: String, state: String, label: String?) throws -> VehicleSummary {
+        let normalized = plate.uppercased()
+        guard !garage.contains(where: { $0.plate == normalized && $0.state == state.uppercased() })
+        else { throw APIError.refused(code: "plate_taken") }
+        let vehicle = VehicleSummary(
+            id: "mock-v\(nextVehicle)",
+            plate: normalized,
+            state: state.uppercased(),
+            label: label
+        )
+        nextVehicle += 1
+        garage.append(vehicle)
+        return vehicle
+    }
+
+    func updateVehicle(
+        id: String,
+        plate: String?,
+        state: String?,
+        label: String?
+    ) throws -> VehicleSummary {
+        guard let index = garage.firstIndex(where: { $0.id == id }) else {
+            throw APIError.server(status: 404)
+        }
+        if let plate { garage[index].plate = plate.uppercased() }
+        if let state { garage[index].state = state.uppercased() }
+        garage[index].label = label
+        return garage[index]
+    }
+
+    func removeVehicle(id: String) {
+        garage.removeAll { $0.id == id }
     }
 }
 
@@ -725,12 +951,38 @@ enum MockFixtures {
                 ? "https://bostonma.ppprk.com/park/"
                 : "https://my.nyc.flowbirdapp.com/#/Parking?panel=login",
             status: status,
-            linked: status == "linked"
+            linked: status == "linked" || status == "expiring",
+            signup: providerSignup(id: id)
         )
+    }
+
+    /// The registry's link-or-create block (see registry.ts `signup`).
+    static func providerSignup(id: String) -> ProviderSignup {
+        id == "passport"
+            ? ProviderSignup(
+                url: "https://bostonma.ppprk.com/park/",
+                mode: "passwordless",
+                note: "Sign in or sign up on ParkBoston's own page — we never see a password; there isn't one.",
+                prefill: [SignupPrefillField(field: "emailOrPhone", selector: "#regEmail")]
+            )
+            : ProviderSignup(
+                url: "https://my.nyc.flowbirdapp.com/#/Parking?panel=register",
+                mode: "form",
+                note: "Create your ParkNYC account on ParkNYC's own page — we never see your password.",
+                prefill: [
+                    SignupPrefillField(field: "firstName", selector: "input[name='firstName']"),
+                    SignupPrefillField(field: "lastName", selector: "input[name='lastName']"),
+                    SignupPrefillField(field: "email", selector: "input[name='email']"),
+                    SignupPrefillField(field: "phone", selector: "input[name='phoneNumber']"),
+                    SignupPrefillField(field: "zip", selector: "input[name='zipCode']"),
+                    SignupPrefillField(field: "plate", selector: "input[name='licensePlate']"),
+                ]
+            )
     }
 
     static func providerStatus(id: String, status: String, cardAdded: Bool) -> ProviderAccountStatus {
         let base = parkedProvider(id: id, status: status)
+        let usable = status == "linked" || status == "expiring"
         return ProviderAccountStatus(
             id: base.id,
             city: base.city,
@@ -740,11 +992,15 @@ enum MockFixtures {
             cookieDomains: base.city == "bos"
                 ? ["ppprk.com", "paywithpassport.com"]
                 : ["nyc.flowbirdapp.com", "flowbirdapp.com"],
+            signup: base.signup,
             status: status,
-            linkedAt: status == "linked" ? AppClock.now : nil,
-            lastVerifiedAt: status == "linked" ? AppClock.now : nil,
+            linkedAt: usable ? AppClock.now : nil,
+            lastVerifiedAt: usable ? AppClock.now : nil,
             cardAdded: cardAdded,
-            walletBalanceCents: status == "linked" ? 1250 : nil
+            // What the provider account's own Your Cards screen showed.
+            cardBrand: usable ? "Visa" : nil,
+            cardLast4: usable ? "4242" : nil,
+            walletBalanceCents: usable ? 1250 : nil
         )
     }
 

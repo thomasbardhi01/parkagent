@@ -9,7 +9,11 @@ import type {
 
 import type { AppDb } from "./db.js";
 import { registerAdmin } from "./routes/admin.js";
+import { registerAuth } from "./routes/auth.js";
 import { hashApiKey } from "./services/apiKeys.js";
+import { verifyAccessToken } from "./services/authTokens.js";
+import type { EmailSender } from "./services/emailer.js";
+import type { IdTokenResult } from "./services/idToken.js";
 import { registerCard } from "./routes/card.js";
 import { registerCity } from "./routes/city.js";
 import { registerDevice } from "./routes/device.js";
@@ -41,9 +45,23 @@ declare module "fastify" {
   }
 }
 
+/** Everything /auth/* needs. The token verifiers are injectable so tests
+ * sign with their own keys; index.ts wires the real JWKS-backed ones. */
+export interface AuthConfig {
+  jwtSecret: string;
+  /** Absent → POST /auth/email/start answers 503. */
+  emailSender?: EmailSender | undefined;
+  verifyAppleToken: (token: string, now: Date) => Promise<IdTokenResult>;
+  /** Absent → POST /auth/google answers 403 google_signin_disabled. */
+  verifyGoogleToken?: ((token: string, now: Date) => Promise<IdTokenResult>) | undefined;
+}
+
 export interface AppDeps {
   db: AppDb;
   policy: PolicyService;
+  /** Identity + sessions; absent → /auth/* answers 503 and bearer tokens
+   * never authenticate (api keys still do). */
+  auth?: AuthConfig;
   findCandidates: CandidateFetcher;
   /** The map layer's geometry read (GET /zones/near); absent → that route
    * 501s. Separate from findCandidates because the pay path never needs
@@ -81,14 +99,42 @@ export interface AppDeps {
   now?: () => Date;
 }
 
-/** x-api-key → SHA-256(pepper:key) → users.api_key_hash. Everything but
- * /health and /webhooks/stripe sits behind this — enforced app-wide by an
- * onRequest hook in buildApp, so a route forgotten from an allowlist
+/** Two credentials authenticate a request, tried in this order:
+ *
+ *  1. `Authorization: Bearer <jwt>` — the app's 15-minute access token
+ *     (AUTH_JWT_SECRET). The user row is re-read so a deleted account's
+ *     still-valid JWT stops working immediately.
+ *  2. `x-api-key` → SHA-256(pepper:key) → users.api_key_hash — the owner's
+ *     admin key and scripts; user-facing clients use JWTs now.
+ *
+ * Everything but the PUBLIC_PATHS sits behind this — enforced app-wide by
+ * an onRequest hook in buildApp, so a route forgotten from an allowlist
  * fails closed, never open. Rows still carrying a plaintext api_key (the
  * pre-migration state) do NOT authenticate — run
  * `pnpm -C server migrate:api-keys` first. */
-export function makeAuthenticate(db: AppDb, pepper: string): preHandlerHookHandler {
+export function makeAuthenticate(
+  db: AppDb,
+  pepper: string,
+  jwtSecret?: string,
+  now: () => Date = () => new Date(),
+): preHandlerHookHandler {
   return async (req: FastifyRequest, reply: FastifyReply) => {
+    const bearer = req.headers.authorization;
+    if (jwtSecret && typeof bearer === "string" && bearer.startsWith("Bearer ")) {
+      const claims = verifyAccessToken(jwtSecret, bearer.slice(7), now());
+      if (claims) {
+        const user = await db.user.findUnique({
+          where: { id: claims.sub },
+          select: { id: true, name: true, isAdmin: true, deletedAt: true },
+        });
+        if (user && !user.deletedAt) {
+          req.authedUser = { id: user.id, name: user.name, isAdmin: user.isAdmin };
+          return;
+        }
+      }
+      return reply.code(401).send({ error: "unauthorized" });
+    }
+
     const key = req.headers["x-api-key"];
     // select is load-bearing: nothing beyond id/name should ride on the
     // request, one careless spread away from a response body.
@@ -102,13 +148,24 @@ export function makeAuthenticate(db: AppDb, pepper: string): preHandlerHookHandl
     if (!user) {
       return reply.code(401).send({ error: "unauthorized" });
     }
-    req.authedUser = user;
+    req.authedUser = { id: user.id, name: user.name, isAdmin: user.isAdmin };
   };
 }
 
-/** Reachable without an api key: health probes, and the Stripe webhook
- * (its signature is the auth). Everything else 401s by default. */
-const PUBLIC_PATHS = new Set(["/health", "/webhooks/stripe", "/link/callback"]);
+/** Reachable without a session: health probes, the Stripe webhook (its
+ * signature is the auth), the Link OAuth callback, and the /auth/* surface
+ * (the credential is in the body). Everything else 401s by default. */
+const PUBLIC_PATHS = new Set([
+  "/health",
+  "/webhooks/stripe",
+  "/link/callback",
+  "/auth/apple",
+  "/auth/google",
+  "/auth/email/start",
+  "/auth/email/verify",
+  "/auth/refresh",
+  "/auth/logout",
+]);
 
 /** 403 unless the authenticated user is an admin. Guards mutations of the
  * shared policy and everything under /admin/ — authorization on top of
@@ -178,6 +235,7 @@ export function buildApp(deps?: AppDeps): FastifyInstance {
     builtAt: process.env["BUILD_TIME"] ?? "dev",
   }));
   if (deps) {
+    registerAuth(app, deps);
     registerParked(app, deps);
     registerCity(app, deps);
     registerZones(app, deps);

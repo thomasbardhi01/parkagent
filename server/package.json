@@ -17,6 +17,7 @@
     "stripe:trigger": "tsx src/scripts/stripe-trigger.ts",
     "migrate:api-keys": "tsx src/scripts/migrate-api-keys.ts",
     "migrate:policy-fee": "tsx src/scripts/migrate-policy-fee.ts",
+    "attach-identity": "tsx src/scripts/attach-identity.ts",
     "load:zone-numbers": "tsx src/scripts/load-zone-numbers.ts"
   },
   "license": "UNLICENSED",

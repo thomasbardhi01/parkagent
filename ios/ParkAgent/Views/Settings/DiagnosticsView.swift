@@ -241,9 +241,10 @@ struct DiagnosticsView: View {
                 let dryRun = model.policyResponse?.dryRun ?? health.dryRun
                 LabeledContent("Dry run", value: dryRun ? "On — no money moves" : "OFF — real money")
                     .foregroundStyle(dryRun ? Color.textPrimary : Color.danger)
+                    .accessibilityIdentifier("diagnostics.dryRun")
             } else if healthFailed {
                 Text(model.liveAPIUnavailable
-                    ? "No API_BASE_URL/API_KEY in Config.xcconfig."
+                    ? "No API_BASE_URL in Config.xcconfig."
                     : "Couldn't reach /health.")
                     .font(.captionTextSemibold)
                     .foregroundStyle(Color.warningGold)

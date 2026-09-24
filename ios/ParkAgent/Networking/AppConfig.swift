@@ -1,15 +1,16 @@
 import Foundation
 
 /// Build-time configuration, injected via Config.xcconfig -> Info.plist.
-/// Lets the app point at localhost, Fly, or a teammate's machine without code changes.
+/// Lets the app point at localhost, Fly, or a teammate's machine without
+/// code changes.
+///
+/// There is no API key here any more: the app authenticates as the signed-in
+/// user with a JWT from the Keychain (see AuthStore). API keys are the
+/// server's admin/script credential now.
 enum AppConfig {
     static var apiBaseURL: URL? {
         guard let raw = infoString("API_BASE_URL") else { return nil }
         return URL(string: raw)
-    }
-
-    static var apiKey: String? {
-        infoString("API_KEY")
     }
 
     /// Stripe publishable key (pk_test_…), needed only for the live Apple

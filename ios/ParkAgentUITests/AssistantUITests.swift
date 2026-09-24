@@ -14,6 +14,8 @@ final class AssistantUITests: ParkAgentUITestCase {
             "-useMockAPI", "YES",
             "-uiTesting", "YES",
             "-skipOnboarding", "YES",
+            // Auth gates the app now: start past the welcome screen.
+            "-signedIn", "YES",
             "-fixedNow", Self.fixedNow,
             "-assistantScenario", assistantScenario,
         ]
@@ -141,14 +143,16 @@ final class AssistantUITests: ParkAgentUITestCase {
         XCTAssertTrue(element(app, "assistant.errorRow").waitForExistence(timeout: 10))
     }
 
-    func testSettingsConnectLinkWallet() {
+    /// The Link-wallet row now lives in the Account sheet (the Settings
+    /// tab is gone); the flow it drives is unchanged.
+    func testAccountSheetConnectsLinkWallet() {
         let app = openAssistant("singleSpot", linkScenario: "disconnected")
         app.buttons["Done"].tap()
-        app.tabBars.buttons["Settings"].tap()
-        let connect = element(app, "settings.linkConnectButton")
+        openAccountSheet(app)
+        let connect = scrollTo(app, "account.linkConnectButton")
         XCTAssertTrue(connect.waitForExistence(timeout: 5))
         connect.tap()
         // Mock connects instantly; the row flips to Connected + Disconnect.
-        XCTAssertTrue(element(app, "settings.linkDisconnectButton").waitForExistence(timeout: 5))
+        XCTAssertTrue(element(app, "account.linkDisconnectButton").waitForExistence(timeout: 5))
     }
 }

@@ -4,6 +4,30 @@ import Foundation
 /// simulator and previews; `LiveAPI` talks to the Fastify server. Nothing
 /// outside Networking/ should construct URLRequests.
 protocol APIClient: Sendable {
+    // Identity (server/API.md "Authentication"). These are the only calls
+    // that work signed out; everything else needs the access token.
+    func signInWithApple(
+        identityToken: String,
+        deviceId: String,
+        fullName: (given: String?, family: String?)?
+    ) async throws -> AuthSession
+    func signInWithGoogle(idToken: String, deviceId: String) async throws -> AuthSession
+    func startEmailSignIn(email: String) async throws
+    func verifyEmailSignIn(email: String, code: String, deviceId: String) async throws -> AuthSession
+    func logout(refreshToken: String) async throws
+
+    /// The signed-in profile, and editing it.
+    func me() async throws -> MeResponse
+    func updateMe(name: String?, phone: String?) async throws -> AuthUser
+    /// Two-step confirmed in the UI; irreversible on the server.
+    func deleteAccount() async throws
+
+    // Vehicles (Account sheet).
+    func vehicles() async throws -> [VehicleSummary]
+    func addVehicle(plate: String, state: String, label: String?) async throws -> VehicleSummary
+    func updateVehicle(id: String, plate: String?, state: String?, label: String?) async throws -> VehicleSummary
+    func removeVehicle(id: String) async throws
+
     func parked(_ request: ParkedRequest) async throws -> ParkedResponse
     /// The zone number the driver read off the meter (needsZoneNumber flow).
     func reportZoneNumber(zoneId: String, number: String) async throws -> ZoneNumberReportResponse
@@ -79,8 +103,9 @@ protocol APIClient: Sendable {
 }
 
 enum APIError: Error, LocalizedError {
-    /// API_BASE_URL or API_KEY missing from Config.xcconfig.
+    /// API_BASE_URL missing from Config.xcconfig.
     case notConfigured
+    /// 401 that a token refresh could not rescue — the session is gone.
     case unauthorized
     case invalidRequest(String)
     /// 501 — the session and location endpoints are Phase 5 stubs.
@@ -95,8 +120,8 @@ enum APIError: Error, LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .notConfigured: "The live API is not configured. Add API_BASE_URL and API_KEY to Config.xcconfig."
-        case .unauthorized: "The server rejected this API key."
+        case .notConfigured: "The live API is not configured. Add API_BASE_URL to Config.xcconfig."
+        case .unauthorized: "Your session expired. Sign in again."
         case .invalidRequest(let detail): "The server rejected the request: \(detail)"
         case .notImplemented: "This part of the server is not built yet."
         case .server(let status): "The server returned an error (\(status))."
@@ -121,6 +146,16 @@ enum APIError: Error, LocalizedError {
         case "consent_required": "Card setup needs your consent first."
         case "provider_linking_not_configured": "The server is not set up for account linking yet."
         case "issuing_not_live": "The ParkAgent card isn't available yet — coming soon."
+        case "invalid_code": "That code doesn't match. Check it and try again."
+        case "code_expired": "That code expired. Send a new one."
+        case "too_many_attempts": "Too many tries. Send a new code."
+        case "email_rate_limited": "Too many codes requested. Wait a few minutes."
+        case "email_not_configured": "Email sign-in isn't set up on this server yet."
+        case "send_failed": "We couldn't send the email. Try again."
+        case "invalid_identity_token": "That sign-in didn't verify. Try again."
+        case "google_signin_disabled": "Google sign-in isn't enabled."
+        case "plate_taken": "That plate is already registered."
+        case "auth_not_configured": "This server isn't set up for sign-in yet."
         default: "The server refused the request (\(code))."
         }
     }

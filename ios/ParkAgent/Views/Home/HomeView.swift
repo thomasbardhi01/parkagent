@@ -3,8 +3,11 @@ import SwiftUI
 
 struct HomeView: View {
     @Environment(AppModel.self) private var model
+    @Environment(AuthModel.self) private var auth
     @Environment(PermissionsManager.self) private var permissions
     @Namespace private var sessionZoom
+    /// The Account sheet — everything the Settings tab used to hold.
+    @State private var accountPresented = false
     /// Set once from the car, else the user's location (followed), else the
     /// detected city — the map never opens on a hardcoded city.
     @State private var camera: MapCameraPosition = .automatic
@@ -48,7 +51,7 @@ struct HomeView: View {
                         ErrorBanner(
                             icon: "exclamationmark.triangle.fill",
                             title: "Not connected to ParkAgent",
-                            message: "The live API isn't configured — add API_BASE_URL and API_KEY to Config.xcconfig and reinstall."
+                            message: "The live API isn't configured — add API_BASE_URL to Config.xcconfig and reinstall."
                         )
                     } else if model.policyLoadFailed {
                         ErrorBanner(
@@ -88,6 +91,20 @@ struct HomeView: View {
                 await centerCamera()
             }
             .task(id: following) { await followPhone() }
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        accountPresented = true
+                    } label: {
+                        AccountAvatar(name: auth.user?.name ?? "")
+                    }
+                    .accessibilityIdentifier("home.accountButton")
+                    .accessibilityLabel("Account")
+                }
+            }
+            .sheet(isPresented: $accountPresented) {
+                AccountSheetView()
+            }
         }
     }
 

@@ -1,0 +1,29 @@
+<!--
+  ParkNYC (Flowbird) registration panel — DRAFTED, TODO-verify against a
+  live `record` run of my.nyc.flowbirdapp.com/#/Parking?panel=register.
+  This fixture encodes the same drafted assumptions as the registry's
+  prefill selectors (src/providers/registry.ts), and the registrySignup
+  test holds the two together: when the live recording lands, update BOTH
+  or the test fails. The user completes the password, verification code,
+  terms checkbox, and any captcha themselves — the app only types text.
+-->
+<!doctype html>
+<html>
+  <body>
+    <div class="registration-panel">
+      <h2>Create your ParkNYC account</h2>
+      <form name="registration">
+        <input name="firstName" type="text" placeholder="First name" />
+        <input name="lastName" type="text" placeholder="Last name" />
+        <input name="email" type="email" placeholder="Email address" />
+        <input name="phoneNumber" type="tel" placeholder="Mobile number" />
+        <input name="zipCode" type="text" placeholder="ZIP code" />
+        <input name="licensePlate" type="text" placeholder="License plate" />
+        <input name="password" type="password" placeholder="Password" />
+        <input name="terms" type="checkbox" />
+        <div class="captcha-placeholder">[captcha]</div>
+        <button type="submit">Create account</button>
+      </form>
+    </div>
+  </body>
+</html>

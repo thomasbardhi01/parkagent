@@ -146,6 +146,11 @@ export interface ProviderAccountRow {
   linkedAt: Date | null;
   lastVerifiedAt: Date | null;
   cardAdded: boolean;
+  /** provider_card display info read off the provider's Your Cards screen
+   * at link time — brand + last4 only, never the PAN. Optional so
+   * pre-existing fakes stay valid. */
+  cardBrand?: string | null;
+  cardLast4?: string | null;
   walletBalanceCents: number | null;
   createdAt: Date;
 }
@@ -156,6 +161,8 @@ export interface ProviderAccountWrite {
   linkedAt?: Date;
   lastVerifiedAt?: Date;
   cardAdded?: boolean;
+  cardBrand?: string | null;
+  cardLast4?: string | null;
   walletBalanceCents?: number | null;
 }
 
@@ -217,19 +224,137 @@ export interface LinkSpendRequestRow {
   createdAt: Date;
 }
 
+/** The identity view of a users row. Callers that pass `select` must only
+ * read the fields they selected — the type is the union of what any caller
+ * may ask for, not a promise that every field came back. */
+export interface UserIdentityRow {
+  id: string;
+  name: string;
+  isAdmin: boolean;
+  paymentSource: string;
+  email: string | null;
+  emailVerified: boolean;
+  phone: string | null;
+  phoneVerified: boolean;
+  appleSub: string | null;
+  googleSub: string | null;
+  deletedAt: Date | null;
+  createdAt: Date;
+}
+
+export interface UserUpdate {
+  name?: string;
+  paymentSource?: string;
+  email?: string | null;
+  emailVerified?: boolean;
+  phone?: string | null;
+  phoneVerified?: boolean;
+  appleSub?: string | null;
+  googleSub?: string | null;
+  deletedAt?: Date;
+  apiKey?: null;
+  apiKeyHash?: null;
+  apiKeyPrefix?: null;
+}
+
+export interface RefreshTokenRow {
+  id: string;
+  userId: string;
+  familyId: string;
+  tokenHash: string;
+  deviceId: string;
+  expiresAt: Date;
+  rotatedAt: Date | null;
+  revokedAt: Date | null;
+  createdAt: Date;
+}
+
+export interface EmailLoginCodeRow {
+  id: string;
+  email: string;
+  codeHash: string;
+  expiresAt: Date;
+  attempts: number;
+  consumedAt: Date | null;
+  createdAt: Date;
+}
+
+export interface VehicleRow {
+  id: string;
+  userId: string;
+  plate: string;
+  state: string;
+  label: string | null;
+  createdAt: Date;
+}
+
 export interface AppDb {
   user: {
     findUnique(args: {
-      where: { apiKeyHash: string } | { id: string };
-      /** Always pass this: without it the runtime row carries the key
-       * hash and prefix, one spread away from a response body. */
-      select?: { id?: true; name?: true; isAdmin?: true; paymentSource?: true };
-    }): Promise<{ id: string; name: string; isAdmin: boolean; paymentSource: string } | null>;
+      where:
+        | { apiKeyHash: string }
+        | { id: string }
+        | { email: string }
+        | { appleSub: string }
+        | { googleSub: string };
+      /** Always pass this on auth-path reads: without it the runtime row
+       * carries the key hash and prefix, one spread away from a response
+       * body. Read only the fields you selected. */
+      select?: Partial<Record<keyof UserIdentityRow, true>>;
+    }): Promise<UserIdentityRow | null>;
+    create(args: {
+      data: {
+        name: string;
+        email?: string;
+        emailVerified?: boolean;
+        phone?: string;
+        appleSub?: string;
+        googleSub?: string;
+      };
+    }): Promise<UserIdentityRow>;
     update(args: {
       where: { id: string };
-      data: { paymentSource: string };
-      select: { paymentSource: true };
-    }): Promise<{ paymentSource: string }>;
+      data: UserUpdate;
+      select?: Partial<Record<keyof UserIdentityRow, true>>;
+    }): Promise<UserIdentityRow>;
+  };
+  refreshToken: {
+    create(args: {
+      data: {
+        userId: string;
+        familyId: string;
+        tokenHash: string;
+        deviceId: string;
+        expiresAt: Date;
+      };
+    }): Promise<{ id: string }>;
+    findUnique(args: { where: { tokenHash: string } }): Promise<RefreshTokenRow | null>;
+    update(args: {
+      where: { id: string };
+      data: { rotatedAt?: Date; revokedAt?: Date };
+    }): Promise<unknown>;
+    /** Reuse detection's kill switch: revoke every live token in a family. */
+    updateMany(args: {
+      where: { familyId: string; revokedAt: null };
+      data: { revokedAt: Date };
+    }): Promise<{ count: number }>;
+    deleteMany(args: { where: { userId: string } }): Promise<{ count: number }>;
+  };
+  emailLoginCode: {
+    create(args: {
+      data: { email: string; codeHash: string; expiresAt: Date };
+    }): Promise<{ id: string }>;
+    /** The newest unconsumed code for the address — the one verify checks. */
+    findFirst(args: {
+      where: { email: string; consumedAt: null };
+      orderBy: { createdAt: "desc" };
+    }): Promise<EmailLoginCodeRow | null>;
+    update(args: {
+      where: { id: string };
+      data: { attempts?: number; consumedAt?: Date };
+    }): Promise<unknown>;
+    /** Per-email send throttle: codes issued to the address since `gte`. */
+    count(args: { where: { email: string; createdAt: { gte: Date } } }): Promise<number>;
   };
   zone: {
     findUnique(args: { where: { zoneId: string } }): Promise<ZoneTermsRow | null>;
@@ -280,12 +405,25 @@ export interface AppDb {
     }): Promise<ZoneTermsObservedRow>;
   };
   vehicle: {
-    /** The session's vehicle: the caller's first saved plate (two-user
-     * prototype — one vehicle each). */
+    /** The session's vehicle: the caller's first saved plate. */
     findFirst(args: {
       where: { userId: string };
       orderBy: { createdAt: "asc" };
     }): Promise<{ id: string; plate: string; state: string } | null>;
+    findUnique(args: { where: { id: string } }): Promise<VehicleRow | null>;
+    findMany(args: {
+      where: { userId: string };
+      orderBy: { createdAt: "asc" };
+    }): Promise<VehicleRow[]>;
+    create(args: {
+      data: { userId: string; plate: string; state: string; label?: string | null };
+    }): Promise<VehicleRow>;
+    update(args: {
+      where: { id: string };
+      data: { plate?: string; state?: string; label?: string | null };
+    }): Promise<VehicleRow>;
+    delete(args: { where: { id: string } }): Promise<unknown>;
+    deleteMany(args: { where: { userId: string } }): Promise<{ count: number }>;
   };
   parkedEvent: {
     create(args: {
@@ -315,6 +453,7 @@ export interface AppDb {
       create: { id: string; userId: string; turns: unknown };
       update: { turns: unknown };
     }): Promise<unknown>;
+    deleteMany(args: { where: { userId: string } }): Promise<{ count: number }>;
   };
   assistantPlan: {
     create(args: {
@@ -491,7 +630,9 @@ export interface AppDb {
     findUnique(args: {
       where: { userId_provider: { userId: string; provider: string } };
     }): Promise<ProviderAccountRow | null>;
-    findMany(args: { where: { userId: string } }): Promise<ProviderAccountRow[]>;
+    findMany(args: {
+      where: { userId: string } | { status: { in: string[] } };
+    }): Promise<ProviderAccountRow[]>;
     upsert(args: {
       where: { userId_provider: { userId: string; provider: string } };
       create: { userId: string; provider: string; status: string } & ProviderAccountWrite;
@@ -501,6 +642,11 @@ export interface AppDb {
       where: { userId_provider: { userId: string; provider: string } };
       data: ProviderAccountWrite;
     }): Promise<ProviderAccountRow>;
+    /** Account deletion: unlink everything and drop the sealed states. */
+    updateMany(args: {
+      where: { userId: string };
+      data: ProviderAccountWrite;
+    }): Promise<{ count: number }>;
   };
   issuingCardholder: {
     findUnique(args: { where: { userId: string }; include: { cards: true } }): Promise<{
@@ -599,6 +745,12 @@ export interface AppDb {
     findUnique(args: { where: { id: string } }): Promise<SessionRow | null>;
     findFirst(args: { where: SessionWhere }): Promise<SessionRow | null>;
     findMany(args: { where: SessionWhere }): Promise<SessionRow[]>;
+    /** Vehicle/account deletion: detach sessions from vehicles being
+     * deleted (sessions themselves stay — they are the money audit). */
+    updateMany(args: {
+      where: { userId: string } | { vehicleId: string };
+      data: { vehicleId: null };
+    }): Promise<{ count: number }>;
   };
   sessionEvent: {
     create(args: {
@@ -645,6 +797,7 @@ export interface AppDb {
       where: { userId: string };
     }): Promise<{ id: string; token: string; environment: string }[]>;
     delete(args: { where: { id: string } }): Promise<unknown>;
+    deleteMany(args: { where: { userId: string } }): Promise<{ count: number }>;
   };
   policySnapshot: {
     findFirst(args: {

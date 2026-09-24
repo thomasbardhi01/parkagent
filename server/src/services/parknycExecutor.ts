@@ -17,7 +17,7 @@
  */
 
 import type { AppDb } from "../db.js";
-import { cityForZone, providerForCity } from "../providers/registry.js";
+import { cityForZone, providerForCity, providerStatusUsable } from "../providers/registry.js";
 import type { ProviderId } from "../providers/registry.js";
 import { providerRelinkPush } from "./apns.js";
 import type { PushSender } from "./apns.js";
@@ -170,6 +170,7 @@ export function makeProviderOpsFactory(options: ParkNycOptions): ProviderOpsFact
       setupCard: (card) => guard((ops) => ops.setupCard(card)),
       removeCard: (last4) => guard((ops) => ops.removeCard(last4)),
       topupWallet: (amountUsd) => guard((ops) => ops.topupWallet(amountUsd)),
+      readSavedCard: () => guard((ops) => ops.readSavedCard()),
     };
   };
 }
@@ -223,7 +224,7 @@ export function makeUserExecutorProvider(config: UserExecutorProviderConfig): Ex
         const account = await config.db.providerAccount.findUnique({
           where: { userId_provider: { userId: ctx.userId, provider: provider.id } },
         });
-        if (!account || account.status !== "linked" || !account.stateEncrypted) {
+        if (!account || !providerStatusUsable(account.status) || !account.stateEncrypted) {
           return {
             ok: false,
             code: "auth_expired",

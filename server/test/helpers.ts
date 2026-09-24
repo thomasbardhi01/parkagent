@@ -10,16 +10,20 @@ import { join } from "node:path";
 
 import type { FastifyInstance } from "fastify";
 
-import type { AppDeps } from "../src/app.js";
+import type { AppDeps, AuthConfig } from "../src/app.js";
 import { buildApp, makeAuthenticate } from "../src/app.js";
 import { hashApiKey } from "../src/services/apiKeys.js";
 import type {
   AppDb,
+  EmailLoginCodeRow,
   ItineraryRow,
   LinkSpendRequestRow,
   ProviderAccountRow,
+  RefreshTokenRow,
   SessionRow,
   SessionWhere,
+  UserIdentityRow,
+  VehicleRow,
   ZoneNumberImportRow,
   ZoneNumberReportRow,
   ZoneTermsObservedRow,
@@ -46,6 +50,8 @@ export const API_KEY = "test-key";
 export const NONADMIN_API_KEY = "test-key-two";
 /** The pepper every test app hashes keys with (see makeAuthenticate). */
 export const TEST_PEPPER = "test-pepper-16-chars-min";
+/** Signs test access JWTs and peppers refresh/code hashes (≥ 32 chars). */
+export const TEST_JWT_SECRET = "test-jwt-secret-32-chars-minimum-ok";
 
 // Monday 2026-01-05, 14:00 EST — mid-afternoon, meters running.
 export const MONDAY_2PM = "2026-01-05T14:00:00-05:00";
@@ -217,6 +223,11 @@ export interface FakeIssuingAuthorizationRow {
 export interface FakeDbState {
   /** Per-user payment source ("provider_card" default when absent). */
   userPaymentSources: Record<string, string>;
+  /** Full identity rows. Seeded with u1 (Thomas, admin) and u2 (Ana);
+   * auth tests create more through the routes. */
+  users: UserIdentityRow[];
+  refreshTokens: RefreshTokenRow[];
+  emailLoginCodes: EmailLoginCodeRow[];
   parkedEvents: FakeParkedEvent[];
   decisions: {
     kind: string;
@@ -261,7 +272,7 @@ export interface FakeDbState {
   zoneNumberReports: ZoneNumberReportRow[];
   zoneNumberImports: ZoneNumberImportRow[];
   zoneTermsObserved: ZoneTermsObservedRow[];
-  vehicles: { id: string; userId: string; plate: string; state: string; createdAt: Date }[];
+  vehicles: VehicleRow[];
   processedTopups: { paymentIntentId: string; amountUsd: number; userId: string | null }[];
   conversations: { id: string; userId: string; turns: unknown }[];
   assistantPlans: {
@@ -355,9 +366,33 @@ function matchesSessionWhere(s: SessionRow, where: SessionWhere): boolean {
   return true;
 }
 
+const seedUser = (
+  id: string,
+  name: string,
+  isAdmin: boolean,
+  overrides: Partial<UserIdentityRow> = {},
+): UserIdentityRow => ({
+  id,
+  name,
+  isAdmin,
+  paymentSource: "provider_card",
+  email: null,
+  emailVerified: false,
+  phone: null,
+  phoneVerified: false,
+  appleSub: null,
+  googleSub: null,
+  deletedAt: null,
+  createdAt: new Date(MONDAY_2PM),
+  ...overrides,
+});
+
 export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
   const state: FakeDbState = {
     userPaymentSources: {},
+    users: [seedUser("u1", "Thomas", true), seedUser("u2", "Ana", false)],
+    refreshTokens: [],
+    emailLoginCodes: [],
     parkedEvents: [],
     decisions: [],
     snapshots: [],
@@ -406,33 +441,118 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
   });
   const accountKey = (userId: string, provider: string) =>
     state.providerAccounts.find((a) => a.userId === userId && a.provider === provider);
+  // Payment source keeps living in userPaymentSources (older tests seed
+  // it there); reads merge it over the identity row.
+  const withSource = (row: UserIdentityRow): UserIdentityRow => ({
+    ...row,
+    paymentSource: state.userPaymentSources[row.id] ?? row.paymentSource,
+  });
   const db: AppDb = {
     user: {
       // Auth looks up by hash now — mirror prod: only the peppered hashes
       // match. u1 is the owner/admin; u2 exercises the 403 paths.
       findUnique: async ({ where }) => {
-        const sourceFor = (id: string) => state.userPaymentSources[id] ?? "provider_card";
         if ("apiKeyHash" in where) {
           if (where.apiKeyHash === hashApiKey(TEST_PEPPER, API_KEY)) {
-            return { id: "u1", name: "Thomas", isAdmin: true, paymentSource: sourceFor("u1") };
+            return withSource(state.users.find((u) => u.id === "u1")!);
           }
           if (where.apiKeyHash === hashApiKey(TEST_PEPPER, NONADMIN_API_KEY)) {
-            return { id: "u2", name: "Ana", isAdmin: false, paymentSource: sourceFor("u2") };
+            return withSource(state.users.find((u) => u.id === "u2")!);
           }
           return null;
         }
-        if (where.id === "u1") {
-          return { id: "u1", name: "Thomas", isAdmin: true, paymentSource: sourceFor("u1") };
-        }
-        if (where.id === "u2") {
-          return { id: "u2", name: "Ana", isAdmin: false, paymentSource: sourceFor("u2") };
-        }
-        return null;
+        const match = state.users.find((u) => {
+          if ("id" in where) return u.id === where.id;
+          if ("email" in where) return u.email === where.email;
+          if ("appleSub" in where) return u.appleSub === where.appleSub;
+          return u.googleSub === where.googleSub;
+        });
+        return match ? withSource(match) : null;
+      },
+      create: async ({ data }) => {
+        const row = seedUser(`u${state.users.length + 1}`, data.name, false, {
+          email: data.email ?? null,
+          emailVerified: data.emailVerified ?? false,
+          phone: data.phone ?? null,
+          appleSub: data.appleSub ?? null,
+          googleSub: data.googleSub ?? null,
+        });
+        state.users.push(row);
+        return row;
       },
       update: async ({ where, data }) => {
-        state.userPaymentSources[where.id] = data.paymentSource;
-        return { paymentSource: data.paymentSource };
+        const row = state.users.find((u) => u.id === where.id);
+        if (!row) throw new Error(`fake user.update: no user ${where.id}`);
+        if (data.paymentSource !== undefined) {
+          state.userPaymentSources[where.id] = data.paymentSource;
+        }
+        const { paymentSource: _ignored, ...rest } = data;
+        Object.assign(row, rest);
+        return withSource(row);
       },
+    },
+    refreshToken: {
+      create: async ({ data }) => {
+        const row: RefreshTokenRow = {
+          id: `rt${state.refreshTokens.length + 1}`,
+          rotatedAt: null,
+          revokedAt: null,
+          createdAt: new Date(MONDAY_2PM),
+          ...data,
+        };
+        state.refreshTokens.push(row);
+        return { id: row.id };
+      },
+      findUnique: async ({ where }) =>
+        state.refreshTokens.find((t) => t.tokenHash === where.tokenHash) ?? null,
+      update: async ({ where, data }) => {
+        const row = state.refreshTokens.find((t) => t.id === where.id);
+        if (row) Object.assign(row, data);
+        return row ?? {};
+      },
+      updateMany: async ({ where, data }) => {
+        let count = 0;
+        for (const t of state.refreshTokens) {
+          if (t.familyId === where.familyId && t.revokedAt === null) {
+            Object.assign(t, data);
+            count += 1;
+          }
+        }
+        return { count };
+      },
+      deleteMany: async ({ where }) => {
+        const before = state.refreshTokens.length;
+        state.refreshTokens = state.refreshTokens.filter((t) => t.userId !== where.userId);
+        return { count: before - state.refreshTokens.length };
+      },
+    },
+    emailLoginCode: {
+      create: async ({ data }) => {
+        const row: EmailLoginCodeRow = {
+          id: `elc${state.emailLoginCodes.length + 1}`,
+          attempts: 0,
+          consumedAt: null,
+          createdAt: new Date(MONDAY_2PM),
+          ...data,
+        };
+        state.emailLoginCodes.push(row);
+        return { id: row.id };
+      },
+      // Newest first; insertion order breaks the fixed-clock timestamp tie.
+      findFirst: async ({ where }) =>
+        [...state.emailLoginCodes]
+          .reverse()
+          .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+          .find((c) => c.email === where.email && c.consumedAt === null) ?? null,
+      update: async ({ where, data }) => {
+        const row = state.emailLoginCodes.find((c) => c.id === where.id);
+        if (row) Object.assign(row, data);
+        return row ?? {};
+      },
+      count: async ({ where }) =>
+        state.emailLoginCodes.filter(
+          (c) => c.email === where.email && c.createdAt >= where.createdAt.gte,
+        ).length,
     },
     zone: {
       findUnique: async ({ where }) => state.zones.find((z) => z.zoneId === where.zoneId) ?? null,
@@ -508,6 +628,55 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
         [...state.vehicles]
           .filter((v) => v.userId === where.userId)
           .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())[0] ?? null,
+      findUnique: async ({ where }) => state.vehicles.find((v) => v.id === where.id) ?? null,
+      findMany: async ({ where }) =>
+        state.vehicles
+          .filter((v) => v.userId === where.userId)
+          .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime()),
+      create: async ({ data }) => {
+        if (
+          state.vehicles.some((v) => v.plate === data.plate && v.state === data.state)
+        ) {
+          throw Object.assign(new Error("Unique constraint failed: vehicles_plate_state"), {
+            code: "P2002",
+          });
+        }
+        const row: VehicleRow = {
+          id: `v${state.vehicles.length + 1}`,
+          label: data.label ?? null,
+          createdAt: new Date(MONDAY_2PM),
+          ...data,
+        };
+        state.vehicles.push(row);
+        return row;
+      },
+      update: async ({ where, data }) => {
+        const row = state.vehicles.find((v) => v.id === where.id);
+        if (!row) throw new Error(`fake vehicle.update: no vehicle ${where.id}`);
+        const nextPlate = data.plate ?? row.plate;
+        const nextState = data.state ?? row.state;
+        if (
+          state.vehicles.some(
+            (v) => v.id !== row.id && v.plate === nextPlate && v.state === nextState,
+          )
+        ) {
+          throw Object.assign(new Error("Unique constraint failed: vehicles_plate_state"), {
+            code: "P2002",
+          });
+        }
+        Object.assign(row, data);
+        return row;
+      },
+      delete: async ({ where }) => {
+        const i = state.vehicles.findIndex((v) => v.id === where.id);
+        if (i >= 0) state.vehicles.splice(i, 1);
+        return {};
+      },
+      deleteMany: async ({ where }) => {
+        const before = state.vehicles.length;
+        state.vehicles = state.vehicles.filter((v) => v.userId !== where.userId);
+        return { count: before - state.vehicles.length };
+      },
     },
     parkedEvent: {
       create: async ({ data }) => {
@@ -525,6 +694,11 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
         if (existing) Object.assign(existing, update);
         else state.conversations.push({ ...create });
         return {};
+      },
+      deleteMany: async ({ where }) => {
+        const before = state.conversations.length;
+        state.conversations = state.conversations.filter((c) => c.userId !== where.userId);
+        return { count: before - state.conversations.length };
       },
     },
     assistantPlan: {
@@ -713,6 +887,17 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
       findFirst: async ({ where }) =>
         state.sessions.find((s) => matchesSessionWhere(s, where)) ?? null,
       findMany: async ({ where }) => state.sessions.filter((s) => matchesSessionWhere(s, where)),
+      updateMany: async ({ where, data }) => {
+        let count = 0;
+        for (const s of state.sessions) {
+          const hit = "userId" in where ? s.userId === where.userId : s.vehicleId === where.vehicleId;
+          if (hit) {
+            Object.assign(s, data);
+            count += 1;
+          }
+        }
+        return { count };
+      },
     },
     sessionEvent: {
       create: async ({ data }) => {
@@ -754,12 +939,29 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
         if (i >= 0) state.deviceTokens.splice(i, 1);
         return {};
       },
+      deleteMany: async ({ where }) => {
+        const before = state.deviceTokens.length;
+        state.deviceTokens = state.deviceTokens.filter((t) => t.userId !== where.userId);
+        return { count: before - state.deviceTokens.length };
+      },
     },
     providerAccount: {
       findUnique: async ({ where }) =>
         accountKey(where.userId_provider.userId, where.userId_provider.provider) ?? null,
       findMany: async ({ where }) =>
-        state.providerAccounts.filter((a) => a.userId === where.userId),
+        state.providerAccounts.filter((a) =>
+          "userId" in where ? a.userId === where.userId : where.status.in.includes(a.status),
+        ),
+      updateMany: async ({ where, data }) => {
+        let count = 0;
+        for (const a of state.providerAccounts) {
+          if (a.userId === where.userId) {
+            Object.assign(a, data);
+            count += 1;
+          }
+        }
+        return { count };
+      },
       upsert: async ({ where, create, update }) => {
         const existing = accountKey(where.userId_provider.userId, where.userId_provider.provider);
         if (existing) {
@@ -1014,6 +1216,7 @@ export function makeFakeProviderOps(
     setupCard: async () => ({ ok: true }),
     removeCard: async () => ({ ok: true }),
     topupWallet: async () => ({ ok: true, walletBalanceCents: 3250 }),
+    readSavedCard: async () => ({ ok: true, brand: "Visa", last4: "4242" }),
     ...overrides,
   };
 }
@@ -1028,6 +1231,7 @@ export function seedVehicle(
     userId: "u1",
     plate: "ABC123",
     state: "MA",
+    label: null,
     createdAt: new Date(MONDAY_2PM),
     ...overrides,
   };
@@ -1092,6 +1296,9 @@ export function makeTestApp(options: {
   /** Reporting APNs delivery for the admin push-test endpoint; absent →
    * that endpoint answers 503. */
   apnsDelivery?: AppDeps["apnsDelivery"];
+  /** Override pieces of the auth config (fake verifiers, an email-sender
+   * capture). The default verifies nothing — auth tests inject their own. */
+  auth?: Partial<AuthConfig>;
 }): TestApp {
   const { db, state } = makeFakeDb();
   if (options.paymentSource) {
@@ -1137,12 +1344,20 @@ export function makeTestApp(options: {
     linkWallet,
     now,
   });
+  const auth: AuthConfig = {
+    jwtSecret: TEST_JWT_SECRET,
+    // Default: reject every provider token; auth tests inject verifiers
+    // that check real signatures against their own generated keys.
+    verifyAppleToken: async () => ({ ok: false, code: "bad_signature" }),
+    ...options.auth,
+  };
   const deps: AppDeps = {
     db,
     policy: policyService,
     findCandidates,
     findNearbyZones,
-    authenticate: makeAuthenticate(db, TEST_PEPPER),
+    auth,
+    authenticate: makeAuthenticate(db, TEST_PEPPER, TEST_JWT_SECRET, now),
     executorFor: () => options.executor ?? dryRunExecutor,
     sendPush: async (userId, push) => {
       pushes.push({ userId, push });

@@ -27,11 +27,13 @@ import type {
   ExecutorError,
   ExecutorResult,
   ProviderOpResult,
+  ReadSavedCardResult,
   StorageStateValue,
   TopupWalletResult,
   VerifyAccountResult,
   ZoneResolution,
 } from "../types.js";
+import { parseSavedCardLabel } from "../savedCard.js";
 import { captureUnexpectedScreen } from "./capture.js";
 import { classifyFailure } from "./classify.js";
 import { parseAmountUsd, parseConfirmation, parseExpiresAt } from "./parse.js";
@@ -615,5 +617,39 @@ export class ParkNycClient {
     });
     if (!flow.ok) return flow;
     return { ok: true, walletBalanceCents: flow.amountUsd >= 0 ? flow.amountUsd : null };
+  }
+
+  /** Read the account's own saved card off Payment Methods, for display
+   * (provider_card users). Drafted blind like the other account flows
+   * (TODO-verify on a `record` run); no card visible is a success with
+   * nulls, and nothing is clicked. */
+  async readSavedCard(): Promise<ReadSavedCardResult> {
+    const opened = await this.open();
+    if ("ok" in opened) return opened;
+    const { page } = opened;
+
+    let label: string | null = null;
+    const flow = await this.run("read saved card", page, async () => {
+      await page.goto(URLS.paymentMethods);
+      await this.step("payment-methods", page);
+      if (await this.atSignInScreen(page)) {
+        return this.fail(
+          page,
+          "auth_expired",
+          "ParkNYC asked to sign in; cookies are not a session",
+        );
+      }
+      const row = selectors.payment.savedCardText(page);
+      const listed = await row
+        .waitFor({ state: "visible", timeout: 5_000 })
+        .then(() => true)
+        .catch(() => false);
+      if (listed) {
+        label = (await row.innerText().catch(() => "")).replace(/\s+/g, " ").trim() || null;
+      }
+      return { ok: true, providerSessionId: "read-card", expiresAt: new Date(), amountUsd: 0 };
+    });
+    if (!flow.ok) return flow;
+    return { ok: true, ...(label ? parseSavedCardLabel(label) : { brand: null, last4: null }) };
   }
 }

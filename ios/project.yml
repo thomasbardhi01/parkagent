@@ -51,8 +51,9 @@ targets:
       properties:
         # Surfaced from Config.xcconfig so the app can point at localhost, Fly,
         # or a teammate's machine without a code change. Read via AppConfig.
+        # There is no API_KEY any more: the app authenticates as the
+        # signed-in user with a JWT from the Keychain (see AuthStore).
         API_BASE_URL: $(API_BASE_URL)
-        API_KEY: $(API_KEY)
         STRIPE_PUBLISHABLE_KEY: $(STRIPE_PUBLISHABLE_KEY)
 
         CFBundleDisplayName: ParkAgent
@@ -100,6 +101,11 @@ targets:
       properties:
         aps-environment: development
         com.apple.developer.usernotifications.time-sensitive: true
+        # Sign in with Apple — the welcome screen's primary action. Also
+        # needs the capability enabled on the App ID in the Apple Developer
+        # portal (see the PR checklist).
+        com.apple.developer.applesignin:
+          - Default
         # Apple Pay top-ups (see API.md "Apple Pay setup" for the one-time
         # merchant-ID + Stripe certificate dance).
         com.apple.developer.in-app-payments:

@@ -1,14 +1,207 @@
 import Foundation
 
-/// URLSession client for the Fastify server. Auth is the x-api-key header;
-/// see server/API.md for the contract.
+/// URLSession client for the Fastify server. Auth is the signed-in user's
+/// 15-minute access token as `Authorization: Bearer …`; a 401 triggers one
+/// silent refresh through the AuthStore and a single retry. See
+/// server/API.md for the contract.
 struct LiveAPI: APIClient {
     let baseURL: URL
-    let apiKey: String
+    /// Supplies the current access token and performs the refresh. Weakly
+    /// captured by the app so the client stays a value type.
+    let tokens: TokenSource
 
-    static func fromConfig() -> LiveAPI? {
-        guard let url = AppConfig.apiBaseURL, let key = AppConfig.apiKey else { return nil }
-        return LiveAPI(baseURL: url, apiKey: key)
+    /// The AuthStore seam, as plain closures so LiveAPI stays Sendable.
+    struct TokenSource: Sendable {
+        var current: @Sendable () async -> String?
+        var refresh: @Sendable (String?) async -> String?
+
+        /// Sign-in calls and the mock need no tokens.
+        static let none = TokenSource(current: { nil }, refresh: { _ in nil })
+    }
+
+    static func fromConfig(tokens: TokenSource) -> LiveAPI? {
+        guard let url = AppConfig.apiBaseURL else { return nil }
+        return LiveAPI(baseURL: url, tokens: tokens)
+    }
+
+    // MARK: - Identity
+
+    func signInWithApple(
+        identityToken: String,
+        deviceId: String,
+        fullName: (given: String?, family: String?)?
+    ) async throws -> AuthSession {
+        struct Name: Encodable {
+            let givenName: String?
+            let familyName: String?
+        }
+        struct Body: Encodable {
+            let identityToken: String
+            let deviceId: String
+            let fullName: Name?
+        }
+        return try await send(
+            "auth/apple",
+            method: "POST",
+            body: Body(
+                identityToken: identityToken,
+                deviceId: deviceId,
+                fullName: fullName.map { Name(givenName: $0.given, familyName: $0.family) }
+            ),
+            authenticated: false
+        )
+    }
+
+    func signInWithGoogle(idToken: String, deviceId: String) async throws -> AuthSession {
+        try await send(
+            "auth/google",
+            method: "POST",
+            body: ["idToken": idToken, "deviceId": deviceId],
+            authenticated: false
+        )
+    }
+
+    func startEmailSignIn(email: String) async throws {
+        struct Ignored: Decodable {}
+        let _: Ignored = try await send(
+            "auth/email/start",
+            method: "POST",
+            body: ["email": email],
+            authenticated: false
+        )
+    }
+
+    func verifyEmailSignIn(email: String, code: String, deviceId: String) async throws -> AuthSession {
+        try await send(
+            "auth/email/verify",
+            method: "POST",
+            body: ["email": email, "code": code, "deviceId": deviceId],
+            authenticated: false
+        )
+    }
+
+    /// The rotation itself. Not on the APIClient protocol: only AuthStore
+    /// calls it, through a bare client, so it can never recurse into the
+    /// token source it is refreshing.
+    ///
+    /// The distinction matters: `.rejected` means the refresh token is
+    /// genuinely dead (rotated away, revoked, expired) and the user must
+    /// sign in again; `.unreachable` is a flaky network, which must leave
+    /// the session alone so a subway ride doesn't sign anyone out.
+    func refreshSession(refreshToken: String, deviceId: String) async -> RefreshOutcome {
+        do {
+            let session: AuthSession = try await send(
+                "auth/refresh",
+                method: "POST",
+                body: ["refreshToken": refreshToken, "deviceId": deviceId],
+                authenticated: false
+            )
+            return .refreshed(session)
+        } catch APIError.transport {
+            return .unreachable
+        } catch APIError.server {
+            // 5xx is the server having a bad day, not a verdict on the token.
+            return .unreachable
+        } catch {
+            return .rejected
+        }
+    }
+
+    enum RefreshOutcome: Sendable {
+        case refreshed(AuthSession)
+        /// The token is dead; sign out.
+        case rejected
+        /// Could not ask; keep the session and try again later.
+        case unreachable
+    }
+
+    func logout(refreshToken: String) async throws {
+        struct Ignored: Decodable {}
+        let _: Ignored = try await send(
+            "auth/logout",
+            method: "POST",
+            body: ["refreshToken": refreshToken],
+            authenticated: false
+        )
+    }
+
+    func me() async throws -> MeResponse {
+        try await send("me")
+    }
+
+    func updateMe(name: String?, phone: String?) async throws -> AuthUser {
+        struct Body: Encodable {
+            let name: String?
+            let phone: String?
+        }
+        struct Response: Decodable {
+            let user: AuthUser
+        }
+        let response: Response = try await send(
+            "me",
+            method: "PATCH",
+            body: Body(name: name, phone: phone)
+        )
+        return response.user
+    }
+
+    func deleteAccount() async throws {
+        struct Ignored: Decodable {}
+        let _: Ignored = try await send("me", method: "DELETE")
+    }
+
+    // MARK: - Vehicles
+
+    func vehicles() async throws -> [VehicleSummary] {
+        struct Response: Decodable {
+            let vehicles: [VehicleSummary]
+        }
+        let response: Response = try await send("me/vehicles")
+        return response.vehicles
+    }
+
+    func addVehicle(plate: String, state: String, label: String?) async throws -> VehicleSummary {
+        struct Body: Encodable {
+            let plate: String
+            let state: String
+            let label: String?
+        }
+        struct Response: Decodable {
+            let vehicle: VehicleSummary
+        }
+        let response: Response = try await send(
+            "me/vehicles",
+            method: "POST",
+            body: Body(plate: plate, state: state, label: label)
+        )
+        return response.vehicle
+    }
+
+    func updateVehicle(
+        id: String,
+        plate: String?,
+        state: String?,
+        label: String?
+    ) async throws -> VehicleSummary {
+        struct Body: Encodable {
+            let plate: String?
+            let state: String?
+            let label: String?
+        }
+        struct Response: Decodable {
+            let vehicle: VehicleSummary
+        }
+        let response: Response = try await send(
+            "me/vehicles/\(id)",
+            method: "PATCH",
+            body: Body(plate: plate, state: state, label: label)
+        )
+        return response.vehicle
+    }
+
+    func removeVehicle(id: String) async throws {
+        struct Ignored: Decodable {}
+        let _: Ignored = try await send("me/vehicles/\(id)", method: "DELETE")
     }
 
     func parked(_ request: ParkedRequest) async throws -> ParkedResponse {
@@ -236,7 +429,7 @@ struct LiveAPI: APIClient {
             }
         }
         let baseURL = baseURL
-        let apiKey = apiKey
+        let tokens = tokens
         let body = MessageBody(
             text: text,
             conversation_id: conversationId,
@@ -244,19 +437,32 @@ struct LiveAPI: APIClient {
         )
         return AsyncThrowingStream { continuation in
             let task = Task {
-                var request = URLRequest(url: baseURL.appending(path: "assistant/message"))
-                request.httpMethod = "POST"
-                request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
-                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-                request.httpBody = try Self.encoder.encode(body)
-                do {
+                let encoded = try Self.encoder.encode(body)
+                func open(_ token: String?) async throws -> (URLSession.AsyncBytes, Int) {
+                    var request = URLRequest(url: Self.url(base: baseURL, path: "assistant/message"))
+                    request.httpMethod = "POST"
+                    if let token {
+                        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                    }
+                    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                    request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+                    request.httpBody = encoded
                     let (bytes, response) = try await URLSession.shared.bytes(for: request)
-                    let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                    return (bytes, (response as? HTTPURLResponse)?.statusCode ?? 0)
+                }
+                do {
+                    let token = await tokens.current()
+                    var (bytes, status) = try await open(token)
+                    // Same silent-refresh contract as the plain transport.
+                    if status == 401, let refreshed = await tokens.refresh(token) {
+                        (bytes, status) = try await open(refreshed)
+                    }
                     guard (200..<300).contains(status) else {
                         throw status == 503
                             ? APIError.refused(code: "assistant_not_configured")
-                            : APIError.server(status: status)
+                            : status == 401
+                                ? APIError.unauthorized
+                                : APIError.server(status: status)
                     }
                     // SSE frames: "event: <name>" then "data: <json>".
                     var event = ""
@@ -327,18 +533,43 @@ struct LiveAPI: APIClient {
 
     private struct Refusal: Decodable { let error: String }
 
+    /// One round trip. `authenticated` requests carry the access token and,
+    /// on a 401, refresh once and retry exactly once — the AuthStore makes
+    /// concurrent refreshes collapse into a single rotation.
     private func send<Response: Decodable>(
         _ path: String,
         query: [URLQueryItem] = [],
         method: String = "GET",
-        body: (any Encodable)? = nil
+        body: (any Encodable)? = nil,
+        authenticated: Bool = true
     ) async throws -> Response {
-        var request = URLRequest(url: Self.url(base: baseURL, path: path, query: query))
+        let encodedBody = try body.map { try Self.encoder.encode($0) }
+        let token = authenticated ? await tokens.current() : nil
+        let url = Self.url(base: baseURL, path: path, query: query)
+        do {
+            return try await perform(url, method: method, body: encodedBody, token: token)
+        } catch APIError.unauthorized where authenticated {
+            guard let refreshed = await tokens.refresh(token) else {
+                throw APIError.unauthorized
+            }
+            return try await perform(url, method: method, body: encodedBody, token: refreshed)
+        }
+    }
+
+    private func perform<Response: Decodable>(
+        _ url: URL,
+        method: String,
+        body: Data?,
+        token: String?
+    ) async throws -> Response {
+        var request = URLRequest(url: url)
         request.httpMethod = method
-        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        if let token {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
         if let body {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.httpBody = try Self.encoder.encode(body)
+            request.httpBody = body
         }
 
         let data: Data
@@ -355,13 +586,22 @@ struct LiveAPI: APIClient {
             do {
                 return try Self.decoder.decode(Response.self, from: data)
             } catch {
+                // A 200 with an empty body is normal for {ok:true} routes
+                // the caller decodes as an empty struct.
+                if let empty = EmptyResponse() as? Response, data.isEmpty { return empty }
                 throw APIError.transport(error)
             }
         case 400:
             throw APIError.invalidRequest(String(data: data, encoding: .utf8) ?? "bad request")
         case 401:
+            // The sign-in routes answer 401 with a typed reason
+            // (invalid_code, token_reused, …) worth showing the user.
+            if let refusal = try? Self.decoder.decode(Refusal.self, from: data),
+               refusal.error != "unauthorized" {
+                throw APIError.refused(code: refusal.error)
+            }
             throw APIError.unauthorized
-        case 409, 503:
+        case 403, 409, 429, 502, 503:
             // Named refusals carry {"error": "<code>"} (dry_run,
             // funding_unavailable, session_already_active, …).
             if let refusal = try? Self.decoder.decode(Refusal.self, from: data) {
@@ -404,6 +644,9 @@ struct LiveAPI: APIClient {
         allowed.remove(charactersIn: "+&=")
         return allowed
     }()
+
+    /// Stand-in for routes whose body the caller ignores.
+    private struct EmptyResponse: Decodable {}
 
     // API.md: ISO 8601 with offset. The server may or may not include
     // fractional seconds, so decoding tries both. Date.ISO8601FormatStyle is

@@ -1,10 +1,33 @@
 import Foundation
 
-/// The client the app runs on when Config.xcconfig has no API_BASE_URL /
-/// API_KEY. Every call fails with `.notConfigured`, so each screen shows its
-/// real error state — the app never silently substitutes fixtures.
+/// The client the app runs on when Config.xcconfig has no API_BASE_URL.
+/// Every call fails with `.notConfigured`, so each screen shows its real
+/// error state — the app never silently substitutes fixtures. Signed out,
+/// that is the welcome screen's sign-in failure; signed in, Home's banner.
 struct UnconfiguredAPI: APIClient {
     private var failure: APIError { .notConfigured }
+
+    func signInWithApple(
+        identityToken: String,
+        deviceId: String,
+        fullName: (given: String?, family: String?)?
+    ) async throws -> AuthSession { throw failure }
+    func signInWithGoogle(idToken: String, deviceId: String) async throws -> AuthSession { throw failure }
+    func startEmailSignIn(email: String) async throws { throw failure }
+    func verifyEmailSignIn(email: String, code: String, deviceId: String) async throws -> AuthSession {
+        throw failure
+    }
+    func logout(refreshToken: String) async throws { throw failure }
+    func me() async throws -> MeResponse { throw failure }
+    func updateMe(name: String?, phone: String?) async throws -> AuthUser { throw failure }
+    func deleteAccount() async throws { throw failure }
+
+    func vehicles() async throws -> [VehicleSummary] { throw failure }
+    func addVehicle(plate: String, state: String, label: String?) async throws -> VehicleSummary { throw failure }
+    func updateVehicle(id: String, plate: String?, state: String?, label: String?) async throws -> VehicleSummary {
+        throw failure
+    }
+    func removeVehicle(id: String) async throws { throw failure }
 
     func parked(_ request: ParkedRequest) async throws -> ParkedResponse { throw failure }
     func reportZoneNumber(zoneId: String, number: String) async throws -> ZoneNumberReportResponse { throw failure }

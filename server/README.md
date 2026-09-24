@@ -29,12 +29,27 @@ exported variable wins over `.env`:
 
     pnpm -C server create:user -- --name Thomas [--plate ABC1234 --state NY]
 
-Creates a user (and optionally a vehicle) and prints the api key **once**;
-the app sends it as the `x-api-key` header. Only
-`SHA-256(API_KEY_PEPPER:key)` and an 8-char identification prefix are
+Creates a user (and optionally a vehicle) and prints the api key **once**.
+Only `SHA-256(API_KEY_PEPPER:key)` and an 8-char identification prefix are
 stored — losing the printed key means minting a new one. Run it with the
 prod URL exported to mint a prod key (the pepper must match the server's
 `API_KEY_PEPPER` Fly secret).
+
+API keys are the **admin and script** credential now: the app signs users
+in (Sign in with Apple / an emailed code) and authenticates with a bearer
+JWT, so a phone never carries a key. Use `--admin` for a key that may
+`PUT /policy` and read `/admin/*`.
+
+### attach-identity
+
+    pnpm -C server attach-identity -- --user <id> --email <e> [--apple-sub <s>]
+
+Gives an existing script-created user a real sign-in identity, so the
+owner's account and history carry over instead of a second account
+appearing at first sign-in. The email is stored **verified** (this command
+is you asserting the mailbox is yours), which is what makes the first
+Apple or email sign-in merge onto it. Refuses when the address or Apple
+subject already belongs to someone else.
 
 ### migrate:api-keys
 

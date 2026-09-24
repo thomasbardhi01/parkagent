@@ -11,6 +11,7 @@
  */
 
 import type { AppDb } from "../db.js";
+import { providerStatusUsable } from "../providers/registry.js";
 import type { ProviderInfo } from "../providers/registry.js";
 import { providerRelinkPush } from "./apns.js";
 import type { PushSender } from "./apns.js";
@@ -201,7 +202,7 @@ export async function runSetupCard(
   const account = await deps.db.providerAccount.findUnique({
     where: { userId_provider: { userId, provider: provider.id } },
   });
-  if (!account || account.status !== "linked" || !account.stateEncrypted) {
+  if (!account || !providerStatusUsable(account.status) || !account.stateEncrypted) {
     await decide("auth_expired", { ok: false });
     return {
       ok: false,

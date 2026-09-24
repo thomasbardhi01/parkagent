@@ -24,9 +24,9 @@ final class SnapshotUITests: ParkAgentUITestCase {
         XCTAssertTrue(element(app, "card.view").waitForExistence(timeout: 5))
         attachScreenshot(of: app, named: "card-\(appearance)")
 
-        app.tabBars.buttons["Settings"].tap()
-        XCTAssertTrue(element(app, "settings.view").waitForExistence(timeout: 5))
-        attachScreenshot(of: app, named: "settings-\(appearance)")
+        openAccountSheet(app)
+        attachScreenshot(of: app, named: "account-\(appearance)")
+        element(app, "account.doneButton").tap()
 
         // The parked sheet is the money screen; capture it too.
         simulateParkFromHome(app)

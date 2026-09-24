@@ -72,6 +72,14 @@ and your `DEVELOPMENT_TEAM` filled in; the file is gitignored and holds
 `API_BASE_URL` and `API_KEY`, which reach the app through Info.plist via
 `AppConfig`.
 
+The app talks to the **live API on every build**, Debug included. `MockAPI`
+activates only for a launch carrying `-useMockAPI YES` (the UI tests) or
+inside a SwiftUI preview, and the choice is never persisted — a missing
+`API_BASE_URL`/`API_KEY` produces a visible error state, never a silent
+swap to fixtures. Developer tools live in `Settings/DiagnosticsView.swift`,
+reached by tapping the version number in Settings → About five times and
+compiled out of Release.
+
 Maps use MapKit for now; Mapbox is a possible later swap and nothing outside
 the map views should depend on MapKit types.
 
@@ -125,6 +133,8 @@ before any customer use. Details: `executor/README.md`.
 ## Commands
 - `pnpm -C server dev`         start the API locally
 - `pnpm -C server prisma migrate dev`   apply migrations
+- `pnpm -C server migrate:policy-fee`   move parknyc_fee_usd into city_overrides
+- `./scripts/check-city-neutral.sh`     fail on hardcoded city/provider names
 - `pnpm -C executor run login`     headed browser; sign in to ParkNYC once, save auth state
 - `pnpm -C executor run record`    record a real ParkNYC flow (HAR/trace/screens) to fixtures/
 - `pnpm -C executor run build`     compile (server build needs its d.ts first)

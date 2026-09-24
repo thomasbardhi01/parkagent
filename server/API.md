@@ -1330,10 +1330,21 @@ ui_changed screenshots).
 
 ## Assistant
 
-The conversational surface: one Claude tool-use loop (model from the
-`ANTHROPIC_MODEL` env var, default `claude-haiku-4-5-20251001`) that
-does exactly two jobs — find one spot, or plan
-a multi-stop day. The MODEL plans and phrases; the TOOLS enforce policy
+The conversational surface: one Claude tool-use loop that does exactly
+two jobs — find one spot, or plan a multi-stop day.
+
+**Model routing.** The loop runs on `ASSISTANT_MODEL` (default
+`claude-sonnet-5`; the legacy `ANTHROPIC_MODEL` is still honored as a
+fallback), while `explain_decision` phrasing runs on the cheap
+`EXPLAIN_MODEL` (default `claude-haiku-4-5-20251001`) — and falls back to
+the plain template sentence if that call fails, so an explanation never
+fails a turn. Every turn writes an `assistant_turn` decisions row with
+the model, summed input/output tokens, model-call count, wall-clock
+latency, and an estimated cost from published per-model list prices.
+`ASSISTANT_DAILY_SPEND_CAP_USD` caps each user's estimated daily model
+spend against those rows (midnight ET, the same boundary as the parking
+caps); a user over it gets `429 assistant_budget_exhausted` *before* any
+paid call is made. Unset → uncapped. The MODEL plans and phrases; the TOOLS enforce policy
 (same quoting, caps, and audit services as everything else); **nothing
 books or spends without the user's explicit Confirm/Sign off tap on a
 plan card**, which is the only thing that mints the single-use
@@ -1345,9 +1356,11 @@ writes a decisions row (kinds `assistant_tool`, `assistant_plan`,
 ### POST /assistant/message
 
 `{text | transcript, conversation_id?, location?{lat,lng}}` → one
-assistant turn. With `Accept: text/event-stream` the reply streams as SSE
-(`text` events carry `{delta}`, one final `done` event carries the full
-payload); otherwise plain JSON:
+assistant turn. With `Accept: text/event-stream` the reply streams as SSE:
+`text` events carry `{delta}`; a `plan` event carries
+`{planId, plan}` the moment `propose_plan` lands, so the card renders
+before the reply text settles; one final `done` event carries the full
+payload. Otherwise plain JSON:
 
 ```json
 {
@@ -1370,7 +1383,13 @@ fallback). Requires a geocoder (Nominatim; without one the tool answers
 `geocoding_unavailable`). `search_garages(area, window, budget, within_m?)`
 — pass `within_m: 600` for a named-area search so every option is
 walkable from the place; farther options are dropped and counted
-(`droppedForDistance`). `quote_street(lat, lng, duration, when)` — now
+(`droppedForDistance`), the guard recomputing distance from each
+facility's own coordinates rather than trusting the provider's number.
+When everything is dropped the result carries `nearestBeyondM` so the
+reply says how far the closest one actually is instead of "none found",
+and `searchedAt` + the provider id ride along as the card's provenance.
+A multi-provider search where some providers failed reports them in
+`degraded` — partial coverage, said out loud. `quote_street(lat, lng, duration, when)` — now
 applies provider-observed terms (`zone_terms_observed`) the same way
 `/parked` and session start do, so a named-area quote matches what the
 curb actually charges (result carries `termsSource: "observed"` when a
@@ -1381,9 +1400,20 @@ driver-reported term overrode the dataset). `build_itinerary(stops[])`,
 live token), `get_history(days)`, `explain_decision(id)` (plain-language
 rendering of a decisions row via `services/explanations.ts`).
 
+`geocode_place` biases to the phone's own metro when the model names no
+city (an explicit `city` still wins), and the geocoder falls THROUGH to
+the other metro when the biased one has no match — the bias orders the
+search, it never blinds it.
+
 Plan shapes (zod-validated at the tool boundary — see
 `services/assistant/plans.ts`): `single_spot` is ≤3 options (street or
-garage; price, walk minutes, entry type, exactly one `recommended`);
+garage; price, walk minutes, entry type, exactly one `recommended`,
+optional `lat`/`lng` for the card's mini map) plus an optional
+`destination {lat,lng,label}` and server-attached
+`provenance {provider, searchedAt}`. The server backfills all three from
+the conversation's own grounding (the turn's geocode, street quote, and
+garage search) — models routinely drop optional fields, and the card
+needs them on the stored plan, not in a 10-minute cache;
 `itinerary` is 1–12 stops (address, arrival, duration, street|garage
 choice, cost) with `totalUsd` recomputed server-side and refused when it
 busts the remaining daily budget.
@@ -1417,17 +1447,37 @@ garage links, payment source) across the edit. The itinerary worker
 inside a stop's window, and marks the day `done` when the last window
 passes.
 
-### SpotHero (garage provider)
+### Garage providers (SpotHero + ParkWhiz)
 
 `services/garage/` — a provider-agnostic `GarageProvider` interface with
-one implementation today: **SpotHeroDeepLinkProvider** (read-only search
-over the public search endpoint, 10-minute cache, ≤8 options; checkout
-is a prefilled deep link the user finishes in SpotHero). **Partner
-status: no API key.** When SpotHero Partner API access arrives, a
+two read-only implementations, merged by `makeMultiGarageProvider`:
+
+- **SpotHeroDeepLinkProvider** — read-only search over the public
+  transient-search endpoint, 10-minute cache, ≤8 options. Checkout is a
+  prefilled deep link: `spothero.com/checkout/{facility_id}?starts=&ends=`,
+  which opens THAT facility with the window filled in (verified live
+  2026-09-23; the old area-search link only showed the neighborhood).
+- **ParkWhizProvider** — the same contract over ParkWhiz's public
+  `api.parkwhiz.com/v4/quotes` endpoint, which serves unauthenticated
+  JSON at low volume with honest headers (spike verified 2026-09-23; see
+  `docs/assistant-verification.md`). Checkout is the API's own
+  `site:purchase` link. `PARKWHIZ_ENABLED=false` drops back to SpotHero
+  alone.
+
+The merge dedupes by normalized facility address — the same garage is
+often listed by both, and the user should see one row at the cheaper
+price. A provider that fails while another answers shows up in
+`degraded`; only every-provider-failed is a typed search failure.
+
+**Partner status: no API key for either**, so both hand checkout off and
+`canReserve` is false. When partner API access arrives for either, a
 `PartnerApiProvider` implements the same interface and exactly three
 things change: `canReserve` flips true, `book()` returns
 `{kind: "reserved", confirmationId}` instead of a deep-link handoff, and
-the confirm response stops saying "the pass lives in SpotHero". The
+the confirm response stops saying "the pass lives in SpotHero". If either
+site ever starts refusing these reads (401/403/429), the adapters return
+the typed `blocked` error — that is their call and our stop, never
+something to work around. The
 adapter also carries the documented **Shared Payment Token seam**
 (`garageProvider.ts`): if a garage provider ever accepts Stripe SPTs, the
 reserved-booking path is where an SPT checkout would go — no parking

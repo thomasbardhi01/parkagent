@@ -730,6 +730,10 @@ export class AssistantTools {
       // grounding when the model left them off.
       const at = this.now().getTime();
       const grounding = this.groundingFor(ctx.conversationId);
+      // Which sources the SURFACED options actually came from — with two
+      // providers merged, the aggregate search id ("spothero+parkwhiz")
+      // would credit a source whose option didn't make the card.
+      const shownProviders = new Set<string>();
       plan = {
         ...plan,
         options: plan.options.map((o) => {
@@ -738,6 +742,7 @@ export class AssistantTools {
             const deepLink = o.deepLink ?? cached?.deepLink;
             const lat = o.lat ?? cached?.lat;
             const lng = o.lng ?? cached?.lng;
+            if (cached?.provider) shownProviders.add(cached.provider);
             return {
               ...o,
               payOnArrival: false,
@@ -759,7 +764,14 @@ export class AssistantTools {
           : {}),
         // Provenance is server truth, never model text.
         ...(plan.options.some((o) => o.type === "garage") && grounding.garageSearch
-          ? { provenance: grounding.garageSearch }
+          ? {
+              provenance: {
+                ...grounding.garageSearch,
+                ...(shownProviders.size > 0
+                  ? { provider: [...shownProviders].sort().join("+") }
+                  : {}),
+              },
+            }
           : {}),
       };
     }

@@ -219,6 +219,92 @@ describe("plan cards carry destination, coordinates, and provenance", () => {
     expect(state.assistantPlans).toHaveLength(1);
   });
 
+  test("provenance credits only the sources whose options made the card", async () => {
+    // A merged search returns one option from each provider; the plan
+    // surfaces only the SpotHero one, so ParkWhiz must not be credited.
+    const merged: GarageProvider = {
+      id: "parkwhiz+spothero",
+      canReserve: false,
+      async search({ lat, lng }) {
+        return {
+          ok: true,
+          fromCache: false,
+          options: [
+            { ...garageAt("sh-1", lat, lng, 200), provider: "spothero" },
+            { ...garageAt("pw-1", lat, lng, 250), provider: "parkwhiz" },
+          ],
+        };
+      },
+      optionById: (id) =>
+        id === "sh-1"
+          ? { ...garageAt("sh-1", 42.3503, -71.0811, 200), provider: "spothero" }
+          : id === "pw-1"
+            ? { ...garageAt("pw-1", 42.3503, -71.0811, 250), provider: "parkwhiz" }
+            : null,
+      book: async () => {
+        throw new Error("not used");
+      },
+    };
+    const { tools } = toolsWith({ garage: merged });
+    await tools.execute(CTX, "search_garages", {
+      lat: 42.3503,
+      lng: -71.0811,
+      starts_at: "2026-09-23T15:00:00-04:00",
+      ends_at: "2026-09-23T17:00:00-04:00",
+    });
+    const out = await tools.execute(CTX, "propose_plan", {
+      plan: {
+        kind: "single_spot",
+        options: [
+          {
+            id: "g1",
+            type: "garage",
+            label: "Garage sh-1",
+            detail: "",
+            priceUsd: 15,
+            durationMinutes: 120,
+            garageOptionId: "sh-1",
+            recommended: true,
+          },
+        ],
+      },
+    });
+    const plan = out.endTurn!.plan as { provenance?: { provider: string } };
+    expect(plan.provenance?.provider).toBe("spothero");
+
+    // Both shown → both credited, in a stable order.
+    const both = await tools.execute(CTX, "propose_plan", {
+      plan: {
+        kind: "single_spot",
+        options: [
+          {
+            id: "g1",
+            type: "garage",
+            label: "Garage sh-1",
+            detail: "",
+            priceUsd: 15,
+            durationMinutes: 120,
+            garageOptionId: "sh-1",
+            recommended: true,
+          },
+          {
+            id: "g2",
+            type: "garage",
+            label: "Garage pw-1",
+            detail: "",
+            priceUsd: 16,
+            durationMinutes: 120,
+            garageOptionId: "pw-1",
+            recommended: false,
+          },
+        ],
+      },
+    });
+    expect((both.endTurn!.plan as { provenance?: { provider: string } }).provenance?.provider).toBe(
+      "parkwhiz+spothero",
+    );
+  });
+
   test("street options pin at the quoted point", async () => {
     const { tools } = toolsWith({
       candidates: [

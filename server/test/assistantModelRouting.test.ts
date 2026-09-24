@@ -148,6 +148,55 @@ describe("per-turn accounting on the decisions table", () => {
     expect(outcome["proposedPlan"]).toBe(true);
   });
 
+  test("a turn that dies mid-flight still bills what it already spent", async () => {
+    // One good call, then the provider blows up. Those tokens are spent
+    // either way and must count against the cap, not escape it.
+    let call = 0;
+    const flaky: ModelClient = {
+      async create() {
+        call += 1;
+        if (call === 1) {
+          return {
+            content: [
+              {
+                type: "tool_use",
+                id: "t1",
+                name: "quote_street",
+                input: {
+                  lat: 40.7784,
+                  lng: -73.9819,
+                  duration_minutes: 90,
+                  when: "2026-01-05T14:00:00-05:00",
+                },
+              },
+            ],
+            stopReason: "tool_use",
+            model: "claude-sonnet-5",
+            usage: { inputTokens: 900, outputTokens: 100 },
+          };
+        }
+        throw new Error("upstream 529");
+      },
+    };
+    const t = makeTestApp({ candidates: [STEINWAY_A], assistantModel: flaky });
+    const res = await t.app.inject({
+      method: "POST",
+      url: "/assistant/message",
+      headers: { ...HEADERS, accept: "text/event-stream" },
+      payload: { text: "spot near the museum" },
+    });
+    // The client is told the turn failed…
+    expect(res.body).toContain("assistant_failed");
+    // …and the spend is still on the record.
+    const turn = t.state.decisions.find((d) => d.kind === "assistant_turn")!;
+    expect(turn).toBeDefined();
+    const outcome = turn.outcome as Record<string, unknown>;
+    expect(outcome["inputTokens"]).toBe(900);
+    expect(outcome["outputTokens"]).toBe(100);
+    expect(outcome["estimatedCostUsd"]).toBeGreaterThan(0);
+    expect(outcome["proposedPlan"]).toBe(false);
+  });
+
   test("over the daily cap the turn is refused 429 before any model call", async () => {
     const model = scriptedModel(quoteThenPropose());
     const t = makeTestApp({

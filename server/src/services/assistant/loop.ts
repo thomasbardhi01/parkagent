@@ -272,83 +272,89 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
   let modelId = "unknown";
   let modelCalls = 0;
 
-  for (let iteration = 0; iteration < MAX_LOOP_ITERATIONS; iteration += 1) {
-    const response = await args.model.create(
-      { system: SYSTEM_PROMPT, messages, tools: TOOL_DEFINITIONS, maxTokens: MAX_TOKENS },
-      args.onText,
-    );
-    modelCalls += 1;
-    if (response.model) modelId = response.model;
-    inputTokens += response.usage?.inputTokens ?? 0;
-    outputTokens += response.usage?.outputTokens ?? 0;
-    for (const block of response.content) {
-      if (block.type === "text") segments.push(block.text);
-    }
-    const toolUses = response.content.filter(
-      (b): b is Extract<ModelContentBlock, { type: "tool_use" }> => b.type === "tool_use",
-    );
-    messages.push({ role: "assistant", content: response.content });
-
-    if (response.stopReason !== "tool_use" || toolUses.length === 0) {
-      // The turn is ending in prose. If it quoted anything, that's the
-      // prod bug: first re-prompt once, then synthesize the plan from
-      // the tool results ourselves — a quote never stays un-actionable.
-      const hasQuotes = quotes.street !== null || quotes.garages.length > 0;
-      if (plan === null && hasQuotes && !reminded) {
-        reminded = true;
-        messages.push({ role: "user", content: PROPOSE_PLAN_REMINDER });
-        continue;
+  // The accounting row is written in the `finally` below: a turn that
+  // dies mid-flight (provider error, timeout) has still SPENT the tokens
+  // it spent, and those must count against the daily cap rather than
+  // escaping it.
+  try {
+    for (let iteration = 0; iteration < MAX_LOOP_ITERATIONS; iteration += 1) {
+      const response = await args.model.create(
+        { system: SYSTEM_PROMPT, messages, tools: TOOL_DEFINITIONS, maxTokens: MAX_TOKENS },
+        args.onText,
+      );
+      modelCalls += 1;
+      if (response.model) modelId = response.model;
+      inputTokens += response.usage?.inputTokens ?? 0;
+      outputTokens += response.usage?.outputTokens ?? 0;
+      for (const block of response.content) {
+        if (block.type === "text") segments.push(block.text);
       }
-      break;
+      const toolUses = response.content.filter(
+        (b): b is Extract<ModelContentBlock, { type: "tool_use" }> => b.type === "tool_use",
+      );
+      messages.push({ role: "assistant", content: response.content });
+
+      if (response.stopReason !== "tool_use" || toolUses.length === 0) {
+        // The turn is ending in prose. If it quoted anything, that's the
+        // prod bug: first re-prompt once, then synthesize the plan from
+        // the tool results ourselves — a quote never stays un-actionable.
+        const hasQuotes = quotes.street !== null || quotes.garages.length > 0;
+        if (plan === null && hasQuotes && !reminded) {
+          reminded = true;
+          messages.push({ role: "user", content: PROPOSE_PLAN_REMINDER });
+          continue;
+        }
+        break;
+      }
+
+      const results: { type: "tool_result"; tool_use_id: string; content: string }[] = [];
+      for (const use of toolUses) {
+        const outcome = await args.tools.execute(ctx, use.name, use.input);
+        captureQuotes(quotes, use.name, use.input, outcome.result);
+        results.push({
+          type: "tool_result",
+          tool_use_id: use.id,
+          content: JSON.stringify(outcome.result),
+        });
+        if (outcome.endTurn) plan = outcome.endTurn;
+      }
+      messages.push({ role: "user", content: results });
+      // propose_plan ends the turn: the card carries the plan; anything
+      // more the model wanted to say waits for the user's next message.
+      if (plan) break;
     }
 
-    const results: { type: "tool_result"; tool_use_id: string; content: string }[] = [];
-    for (const use of toolUses) {
-      const outcome = await args.tools.execute(ctx, use.name, use.input);
-      captureQuotes(quotes, use.name, use.input, outcome.result);
-      results.push({
-        type: "tool_result",
-        tool_use_id: use.id,
-        content: JSON.stringify(outcome.result),
-      });
-      if (outcome.endTurn) plan = outcome.endTurn;
+    // The model was reminded and still didn't propose: build the plan from
+    // its own quotes, through the same validated/audited tool.
+    if (plan === null && (quotes.street !== null || quotes.garages.length > 0)) {
+      const synthesized = synthesizePlan(quotes);
+      if (synthesized) {
+        const outcome = await args.tools.execute(ctx, "propose_plan", { plan: synthesized });
+        if (outcome.endTurn) plan = outcome.endTurn;
+      }
     }
-    messages.push({ role: "user", content: results });
-    // propose_plan ends the turn: the card carries the plan; anything
-    // more the model wanted to say waits for the user's next message.
-    if (plan) break;
-  }
-
-  // The model was reminded and still didn't propose: build the plan from
-  // its own quotes, through the same validated/audited tool.
-  if (plan === null && (quotes.street !== null || quotes.garages.length > 0)) {
-    const synthesized = synthesizePlan(quotes);
-    if (synthesized) {
-      const outcome = await args.tools.execute(ctx, "propose_plan", { plan: synthesized });
-      if (outcome.endTurn) plan = outcome.endTurn;
-    }
-  }
-  if (plan) args.onPlan?.(plan);
-
-  // What this turn cost and how long it took, on the record next to the
-  // tool calls it drove. The daily spend cap reads these rows back.
-  await args.db.decision.create({
-    data: {
-      kind: "assistant_turn",
-      inputs: { conversationId: args.conversationId },
-      rule: "turn_complete",
-      outcome: {
-        model: modelId,
-        modelCalls,
-        inputTokens,
-        outputTokens,
-        latencyMs: Date.now() - startedMs,
-        estimatedCostUsd: estimateCostUsd(modelId, inputTokens, outputTokens),
-        proposedPlan: plan !== null,
+    if (plan) args.onPlan?.(plan);
+  } finally {
+    // What this turn cost and how long it took, on the record next to the
+    // tool calls it drove. The daily spend cap reads these rows back.
+    await args.db.decision.create({
+      data: {
+        kind: "assistant_turn",
+        inputs: { conversationId: args.conversationId },
+        rule: "turn_complete",
+        outcome: {
+          model: modelId,
+          modelCalls,
+          inputTokens,
+          outputTokens,
+          latencyMs: Date.now() - startedMs,
+          estimatedCostUsd: estimateCostUsd(modelId, inputTokens, outputTokens),
+          proposedPlan: plan !== null,
+        },
+        userId: args.userId,
       },
-      userId: args.userId,
-    },
-  });
+    });
+  }
 
   const reply = scrubVerbalConfirm(joinReplySegments(segments), plan !== null);
 

@@ -29,9 +29,12 @@ struct OnboardingView: View {
     @AppStorage("selectedCity") private var selectedCity = ""
     @State private var step: OnboardingStep
 
-    init() {
+    /// RootView's truth gate decides where the flow starts (the first
+    /// missing step); with no explicit start, resume from the persisted
+    /// step of an abandoned run.
+    init(startAt: OnboardingStep? = nil) {
         let saved = UserDefaults.standard.integer(forKey: OnboardingStep.defaultsKey)
-        _step = State(initialValue: OnboardingStep(rawValue: saved) ?? .welcome)
+        _step = State(initialValue: startAt ?? OnboardingStep(rawValue: saved) ?? .welcome)
     }
 
     var body: some View {
@@ -338,8 +341,14 @@ private struct OnboardingCityStep: View {
                     .accessibilityIdentifier("onboarding.cityUnknown")
             }
 
-            cityOption("nyc", label: "New York City", detail: "ParkNYC")
-            cityOption("bos", label: "Boston", detail: "ParkBoston")
+            // From the catalog, alphabetical — the flow has no home city.
+            ForEach(CityCatalog.allByDisplayName, id: \.self) { city in
+                cityOption(
+                    city,
+                    label: CityCatalog.displayName(city) ?? city,
+                    detail: CityCatalog.providerDisplayName(for: city)
+                )
+            }
             cityOption("other", label: "Somewhere else", detail: nil)
 
             Spacer()
@@ -408,7 +417,7 @@ private struct OnboardingElsewhereStep: View {
             Text("We're not there yet")
                 .font(.numeral)
                 .foregroundStyle(Color.textPrimary)
-            Text("ParkAgent pays meters in New York City and Boston for now. You can still browse the app, and pick a city later in Settings when you're in one.")
+            Text("ParkAgent pays meters in \(CityCatalog.supportedCitiesSentence) for now. You can still browse the app, and pick a city later in Settings when you're in one.")
                 .font(.bodyText)
                 .foregroundStyle(Color.textSecondary)
                 .multilineTextAlignment(.center)

@@ -3,11 +3,14 @@ import SwiftUI
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @Environment(PermissionsManager.self) private var permissions
-    @AppStorage(MockScenario.defaultsKey) private var mockScenario = MockScenario.singleQuote.rawValue
-    @AppStorage(CardMockScenario.defaultsKey) private var cardScenario = CardMockScenario.ready.rawValue
-    @AppStorage(ProviderMockScenario.defaultsKey) private var providerScenario = ProviderMockScenario.linked.rawValue
-    @AppStorage(CityMockScenario.defaultsKey) private var cityScenarioRaw = CityMockScenario.nyc.rawValue
     @AppStorage(AppearanceSetting.defaultsKey) private var appearanceRaw = AppearanceSetting.system.rawValue
+    #if DEBUG
+    /// Five taps on the version number reveal the Diagnostics link. Not
+    /// persisted: it re-hides on the next launch, and neither property
+    /// exists in a Release build.
+    @State private var versionTaps = 0
+    @State private var diagnosticsUnlocked = false
+    #endif
 
     @State private var providerAccounts: [ProviderAccountStatus] = []
     /// nil until the first load answers, so the failure copy never flashes
@@ -53,58 +56,15 @@ struct SettingsView: View {
                     }
                 }
 
-                #if DEBUG
-                Section {
-                    Toggle("Use mock API", isOn: $model.useMockAPI)
-                        .accessibilityIdentifier("settings.mockToggle")
-                    if model.useMockAPI {
-                        Picker("Mock scenario", selection: $mockScenario) {
-                            ForEach(MockScenario.allCases) { scenario in
-                                Text(scenario.label).tag(scenario.rawValue)
-                            }
-                        }
-                        .accessibilityIdentifier("settings.scenarioPicker")
-                        Picker("Card scenario", selection: $cardScenario) {
-                            ForEach(CardMockScenario.allCases) { scenario in
-                                Text(scenario.label).tag(scenario.rawValue)
-                            }
-                        }
-                        .accessibilityIdentifier("settings.cardScenarioPicker")
-                        Picker("Provider scenario", selection: $providerScenario) {
-                            ForEach(ProviderMockScenario.allCases) { scenario in
-                                Text(scenario.label).tag(scenario.rawValue)
-                            }
-                        }
-                        .accessibilityIdentifier("settings.providerScenarioPicker")
-                        Picker("City scenario", selection: $cityScenarioRaw) {
-                            ForEach(CityMockScenario.allCases) { scenario in
-                                Text(scenario.label).tag(scenario.rawValue)
-                            }
-                        }
-                        .accessibilityIdentifier("settings.cityScenarioPicker")
-                    }
-                    if model.liveAPIUnavailable {
-                        Text("Live API is not configured — add API_BASE_URL and API_KEY to Config.xcconfig. Using the mock instead.")
-                            .font(.captionText)
-                            .foregroundStyle(Color.warningGold)
-                    }
-                    LabeledContent("API base", value: AppConfig.apiBaseURL?.absoluteString ?? "not set")
-                    NavigationLink("Debug menu") { DebugMenuView() }
-                        .accessibilityIdentifier("settings.debugMenuLink")
-                } header: {
-                    Text("Developer")
-                } footer: {
-                    Text("Debug builds only. Scenario applies to the next simulated park.")
-                }
-                #endif
-
                 Section("About") {
-                    LabeledContent(
-                        "Version",
-                        value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
-                    )
+                    versionRow
                 }
             }
+            // Form paints its own grouped background; hiding it lets the
+            // tab root's opaque background show through instead of the two
+            // fighting during a tab transition.
+            .scrollContentBackground(.hidden)
+            .tabScreen()
             .navigationTitle("Settings")
             .tint(.actionCoral)
             .refreshable {
@@ -119,7 +79,9 @@ struct SettingsView: View {
                     set: { if !$0 { relinkProviderId = nil } }
                 )
             ) {
-                ProviderLinkFlowView(providerId: relinkProviderId ?? "parknyc") {
+                // The ?? "" is unreachable (the cover only presents with an
+                // id); an empty id just lands on the flow's unavailable state.
+                ProviderLinkFlowView(providerId: relinkProviderId ?? "") {
                     Task { await loadProviders() }
                 }
             }
@@ -145,6 +107,39 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: - About / hidden Diagnostics
+
+    /// Five taps on the version number opens Diagnostics. Deliberately
+    /// undiscoverable — nothing in the user-facing UI hints at it — and
+    /// compiled out of Release builds entirely.
+    @ViewBuilder
+    private var versionRow: some View {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—"
+        LabeledContent("Version", value: "\(version) (\(build))")
+            .contentShape(Rectangle())
+            .onTapGesture { registerVersionTap() }
+            .accessibilityIdentifier("settings.versionRow")
+
+        #if DEBUG
+        if diagnosticsUnlocked {
+            NavigationLink("Diagnostics") { DiagnosticsView() }
+                .accessibilityIdentifier("settings.diagnosticsLink")
+        }
+        #endif
+    }
+
+    private func registerVersionTap() {
+        #if DEBUG
+        versionTaps += 1
+        if versionTaps >= 5 {
+            versionTaps = 0
+            withAnimation { diagnosticsUnlocked = true }
+            Haptics.success()
+        }
+        #endif
+    }
+
     // MARK: - City
 
     private var citySection: some View {
@@ -154,8 +149,9 @@ struct SettingsView: View {
                 set: { model.cityOverride = $0 }
             )) {
                 Text("Detect automatically").tag("auto")
-                Text("New York City").tag("nyc")
-                Text("Boston").tag("bos")
+                ForEach(CityCatalog.allByDisplayName, id: \.self) { city in
+                    Text(CityCatalog.displayName(city) ?? city).tag(city)
+                }
                 Text("Somewhere else").tag("other")
             }
             .accessibilityIdentifier("settings.cityPicker")
@@ -163,7 +159,7 @@ struct SettingsView: View {
             Text("City")
         } footer: {
             Text(model.cityDisplayName.map { "Paying \($0) meters." }
-                ?? "No supported city detected — meters run in New York City and Boston for now.")
+                ?? "No supported city detected — meters run in \(CityCatalog.supportedCitiesSentence) for now.")
         }
     }
 
@@ -240,9 +236,14 @@ struct SettingsView: View {
         .accessibilityValue(current == source ? "selected" : "not selected")
     }
 
+    /// Whose card pays here. The user's effective city first — including a
+    /// DETECTED one, which the old version ignored, so a Boston user with
+    /// the picker on "Detect automatically" was told "My card on ParkNYC".
+    /// The linked-account fallback reads the city-ordered list, not the
+    /// registry's own order, for the same reason.
     private var providerShortName: String {
-        CityCatalog.providerDisplayName(for: model.cityOverride == "auto" ? nil : model.cityOverride)
-            ?? CityCatalog.providerDisplayName(for: providerAccounts.first(where: \.isLinked)?.city)
+        CityCatalog.providerDisplayName(for: model.effectiveCity)
+            ?? CityCatalog.providerDisplayName(for: orderedAccounts.first(where: \.isLinked)?.city)
             ?? "your parking account"
     }
 
@@ -265,7 +266,7 @@ struct SettingsView: View {
     @ViewBuilder
     private var linkedAccountsSection: some View {
         Section("Linked accounts") {
-            if providerAccounts.isEmpty {
+            if orderedAccounts.isEmpty {
                 if providersLoadFailed == true {
                     Text("Couldn't load account status. Pull to retry.")
                         .font(.secondaryText)
@@ -279,7 +280,7 @@ struct SettingsView: View {
                     }
                 }
             }
-            ForEach(providerAccounts) { account in
+            ForEach(orderedAccounts) { account in
                 HStack {
                     VStack(alignment: .leading, spacing: Spacing.quarter) {
                         Text(account.displayName)
@@ -322,6 +323,16 @@ struct SettingsView: View {
         case "linked": TagPill(label: "Linked", color: .success)
         case "expired": TagPill(label: "Sign in again", color: .warningGold)
         default: TagPill(label: "Not linked", color: .textSecondary)
+        }
+    }
+
+    /// The user's city's provider first, the rest alphabetically — the
+    /// registry's own order carries no meaning for this user.
+    private var orderedAccounts: [ProviderAccountStatus] {
+        providerAccounts.sorted { a, b in
+            let city = model.effectiveCity
+            if (a.city == city) != (b.city == city) { return a.city == city }
+            return a.displayName < b.displayName
         }
     }
 

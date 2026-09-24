@@ -7,7 +7,7 @@
  */
 
 import type { AppDb, SessionRow } from "../db.js";
-import { cityForZone } from "../providers/registry.js";
+import { cityForZone, providerForCity } from "../providers/registry.js";
 import type { PushSender } from "./apns.js";
 import { freePeriodPush, paymentFailedPush, sessionExtendedPush } from "./apns.js";
 import type { ExecutorDiagnostics, ExecutorErrorCode, ExecutorProvider } from "./executor.js";
@@ -198,6 +198,7 @@ export async function applyExtension(
         zoneNumber: session.providerZoneNumber,
         what: "extend",
         code: result.code,
+        providerName: providerForCity(session.city)?.displayName ?? "your parking account",
       }),
     );
     return {

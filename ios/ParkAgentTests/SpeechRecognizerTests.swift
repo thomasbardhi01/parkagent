@@ -11,9 +11,16 @@ final class SpeechRecognizerTests: XCTestCase {
     private static let script = "Park me near the MFA at 2 for two hours"
 
     /// Bounded poll so a broken state machine fails fast instead of hanging.
+    ///
+    /// The budget is generous on purpose. The scripted session is driven by
+    /// real `Task.sleep`s (8 words at 140 ms, then a 3-step countdown at
+    /// 900 ms ≈ 3.8 s), so on a loaded machine the wall clock stretches
+    /// well past a tight bound — this suite went red at 150 s for a test
+    /// that normally finishes in 5. A broken state machine still fails
+    /// here, just less punctually; a busy CI box no longer does.
     private func waitUntil(
         _ what: String,
-        timeout: TimeInterval = 8,
+        timeout: TimeInterval = 60,
         _ condition: () -> Bool
     ) async {
         let deadline = Date().addingTimeInterval(timeout)
@@ -100,6 +107,26 @@ final class SpeechRecognizerTests: XCTestCase {
         XCTAssertEqual(unavailable.state, .unavailable)
         unavailable.resetAvailability()
         XCTAssertEqual(unavailable.state, .idle)
+    }
+
+    /// The device crash class behind #2: the speech-authorization handler
+    /// arrives on a background queue, and a main-actor-isolated closure
+    /// traps there under Swift 6. The bridge must accept a callback fired
+    /// from ANY queue without trapping and still resume correctly.
+    func testAuthorizationCallbackOnBackgroundQueueDoesNotTrap() async {
+        let granted = await SpeechRecognizer.bridgeAuthorization { done in
+            DispatchQueue.global(qos: .userInitiated).async {
+                done(true)
+            }
+        }
+        XCTAssertTrue(granted)
+
+        let denied = await SpeechRecognizer.bridgeAuthorization { done in
+            DispatchQueue.global(qos: .background).async {
+                done(false)
+            }
+        }
+        XCTAssertFalse(denied)
     }
 
     /// The persisted -speechScenario key must be inert outside UI-test

@@ -5,6 +5,14 @@ on:
     branches: [main]
 
 jobs:
+  # The app runs in more than one city: user-facing copy must take city and
+  # provider names from the provider registry, never hardcode one.
+  city-neutral:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: ./scripts/check-city-neutral.sh
+
   server:
     runs-on: ubuntu-latest
     steps:

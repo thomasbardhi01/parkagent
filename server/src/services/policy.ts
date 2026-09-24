@@ -34,7 +34,11 @@ export const policySchema = z.strictObject({
   daily_cap_usd: z.number().positive(),
   auto_pay_max_rate_per_hour: z.number().nonnegative(),
   default_stay_minutes: z.number().int().positive().max(720),
-  parknyc_fee_usd: z.number().nonnegative(),
+  // DEPRECATED, accepted for one release: the pay-by-app fee is per city and
+  // now lives in city_overrides.<city>.parking_fee_usd. Kept optional so a
+  // policy document written before the migration (and any client that
+  // round-trips the field through PUT /policy) still validates.
+  parknyc_fee_usd: z.number().nonnegative().optional(),
   auto_extend: z.strictObject({
     enabled: z.boolean(),
     max_count: z.number().int().nonnegative(),
@@ -43,8 +47,10 @@ export const policySchema = z.strictObject({
   }),
   respect_enforcement_hours: z.boolean(),
   ticket_cost_usd: z.number().nonnegative(),
-  // Per-city overrides; anything absent falls back to the top-level values
-  // (parknyc_fee_usd / ticket_cost_usd), so old policy documents stay valid.
+  // Per-city numbers. parking_fee_usd is the city provider's pay-by-app fee
+  // and belongs here, per city; anything absent falls back to the top-level
+  // ticket_cost_usd (and, for the fee, to the deprecated parknyc_fee_usd
+  // then DEFAULT_PARKING_FEE_USD).
   city_overrides: z
     .partialRecord(
       z.enum(["nyc", "bos"]),
@@ -65,14 +71,22 @@ export interface CityPolicy {
 }
 
 /**
- * Resolve the per-city numbers, falling back to the top-level fields. An
- * unknown or missing city gets the defaults, which are NYC's — every zone
- * row carries a city, so that only happens for pre-city data.
+ * Last-resort pay-by-app fee: only reached for a city with no
+ * city_overrides entry in a document that also dropped the deprecated
+ * top-level field. Both shipped cities set their own.
+ */
+export const DEFAULT_PARKING_FEE_USD = 0.15;
+
+/**
+ * Resolve the per-city numbers. The fee comes from the city's own override;
+ * a document still carrying the deprecated top-level parknyc_fee_usd keeps
+ * working. An unknown or missing city (pre-city rows only — every zone row
+ * carries one) falls through to the same defaults.
  */
 export function cityPolicy(policy: Policy, city: string | undefined): CityPolicy {
   const overrides = city === "nyc" || city === "bos" ? policy.city_overrides?.[city] : undefined;
   return {
-    parkingFeeUsd: overrides?.parking_fee_usd ?? policy.parknyc_fee_usd,
+    parkingFeeUsd: overrides?.parking_fee_usd ?? policy.parknyc_fee_usd ?? DEFAULT_PARKING_FEE_USD,
     ticketCostUsd: overrides?.ticket_cost_usd ?? policy.ticket_cost_usd,
   };
 }

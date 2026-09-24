@@ -2,10 +2,11 @@ import SwiftUI
 
 /// Container chrome for content presented over the map: grabber, surface
 /// background, rounded top corners. Content decides its own height.
+///
+/// Deliberately no living wash: this sheet sits against the map, and the
+/// wash behind streets reads as haze. LivingBackground belongs on non-map
+/// surfaces (the assistant sheet).
 struct BottomSheet<Content: View>: View {
-    /// Layer the living wash into the sheet surface (Home). Kept faint here
-    /// so it reads as depth under the content, never competing with it.
-    var livingBackdrop = false
     @ViewBuilder let content: Content
 
     var body: some View {
@@ -20,13 +21,7 @@ struct BottomSheet<Content: View>: View {
                 .padding(.bottom, Spacing.unitAndHalf)
         }
         .frame(maxWidth: .infinity)
-        .background {
-            if livingBackdrop {
-                Color.surface.overlay(LivingBackground(strength: 0.55, drawsBase: false))
-            } else {
-                Color.surface
-            }
-        }
+        .background(Color.surface)
         .clipShape(
             UnevenRoundedRectangle(
                 topLeadingRadius: Radius.card,

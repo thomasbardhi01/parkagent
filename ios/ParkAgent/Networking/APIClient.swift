@@ -23,6 +23,13 @@ protocol APIClient: Sendable {
     func paymentSource() async throws -> PaymentSourceResponse
     func updatePaymentSource(_ source: PaymentSource) async throws -> PaymentSourceResponse
 
+    /// The map's curb layer (server/API.md "GET /zones/near"). Radius is
+    /// capped server-side at 400 m.
+    func nearbyZones(lat: Double, lng: Double, radiusM: Double) async throws -> NearbyZonesResponse
+
+    /// GET /health — which server build the phone is talking to (Diagnostics).
+    func health() async throws -> HealthResponse
+
     // City & provider accounts (server/API.md "GET /city", "Provider accounts").
     func detectCity(lat: Double, lng: Double) async throws -> CityDetectResponse
     func providersStatus() async throws -> ProvidersStatusResponse

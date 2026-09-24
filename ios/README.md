@@ -7,8 +7,11 @@ onboarding, and the Card tab. The Xcode project is **generated** — see
     cd ios && xcodegen generate
 
 First checkout: `cp Config.example.xcconfig Config.xcconfig` and fill in
-`DEVELOPMENT_TEAM` (plus `API_BASE_URL`/`API_KEY` to talk to a real
-server; without them the app runs on its mock API).
+`DEVELOPMENT_TEAM`, `API_BASE_URL`, and `API_KEY`. All three are required:
+the app talks to the live server on every build, and without the URL and
+key every screen shows its "not connected" state. The mock API activates
+only for a launch carrying `-useMockAPI YES` (the UI tests) or inside a
+SwiftUI preview — never on a phone.
 
 ## Layout
 
@@ -17,7 +20,7 @@ server; without them the app runs on its mock API).
   settling; 60 s agreement, 3-min debounce, driving-resume clearing);
   `ParkDetector` wires CoreMotion / AVAudioSession / CoreLocation into it
   and re-arms via significant-change relaunches. `SignalLog` is the
-  on-device raw-signal log behind the Debug-menu switch (exported from
+  on-device raw-signal log behind the Diagnostics switch (exported from
   there for field-test forensics — see docs/field-test-checklist.md).
 - `ParkAgent/State/` — `AppModel` (single source of app state),
   `PermissionsManager`, `LocationReporter` (60 s /location feed while a
@@ -25,8 +28,12 @@ server; without them the app runs on its mock API).
 - `ParkAgent/Networking/` — `APIClient` protocol, `LiveAPI`, and a full
   `MockAPI` with launch-argument scenarios (see
   `Support/LaunchOverrides.swift`) that the UI tests drive.
-- `ParkAgent/Views/` — Home (map + status), Sessions, Card, Settings
-  (with the Debug menu), Onboarding, Providers (link flow web view).
+- `ParkAgent/Views/` — Home (map + curb layer + status), Sessions, Card,
+  Settings, Onboarding, Providers (link flow web view).
+  `Settings/DiagnosticsView.swift` is the hidden developer screen: five
+  taps on the version number in About, DEBUG builds only.
+- `Tools/make_app_icon.py` regenerates the app icon from the design-system
+  colors (`uv run --with pillow ios/Tools/make_app_icon.py`).
 - `Support/StripeTopup.swift` — the ONLY file importing the Stripe iOS
   SDK; dry run and the mock never reach it.
 

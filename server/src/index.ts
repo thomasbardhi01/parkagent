@@ -25,7 +25,7 @@ import { makeLinkHttpClient } from "./services/link/linkClient.js";
 import { LinkWallet } from "./services/link/linkWallet.js";
 import { makeItineraryWorker } from "./jobs/itineraryTick.js";
 import { makeStripeGateway } from "./services/stripeGateway.js";
-import { makeCandidateFetcher } from "./services/zoneLookup.js";
+import { makeCandidateFetcher, makeNearbyZoneFetcher } from "./services/zoneLookup.js";
 
 // Secrets live in the repo-root .env (see .env.example), not in server/.
 // Resolved from this module, so it works from src/ under tsx and from dist/ under node.
@@ -121,8 +121,10 @@ const assistantModel = env.ANTHROPIC_API_KEY
   ? makeAnthropicModelClient(env.ANTHROPIC_API_KEY, env.ANTHROPIC_MODEL)
   : undefined;
 const findCandidates = makeCandidateFetcher(prisma);
-// Named-place geocoding for the assistant, biased to NYC/Boston (Nominatim,
-// the same free geocoder the Boston zone importer uses).
+// The map's curb layer (GET /zones/near) — same prefilter, plus geometry.
+const findNearbyZones = makeNearbyZoneFetcher(prisma);
+// Named-place geocoding for the assistant, biased to the covered cities
+// (Nominatim, the same free geocoder the Boston zone importer uses).
 const geocoder = new NominatimGeocoder();
 const assistantTools = new AssistantTools({
   db,
@@ -137,6 +139,7 @@ const app = buildApp({
   db,
   policy,
   findCandidates,
+  findNearbyZones,
   authenticate: makeAuthenticate(db, env.API_KEY_PEPPER),
   ...(assistantModel ? { assistantModel } : {}),
   assistantTools,

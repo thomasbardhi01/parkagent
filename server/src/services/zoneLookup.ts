@@ -90,6 +90,21 @@ export function resolveCandidates(
   return alternative ? { kind: "disagree", nearest, alternative } : { kind: "agree", nearest };
 }
 
+/**
+ * A zone to DRAW: the candidate terms plus the curb geometry. Used only by
+ * GET /zones/near (the map layer) — the pay path never needs geometry.
+ */
+export interface NearbyZone extends Candidate {
+  street: string | null;
+  /** GeoJSON MultiLineString coordinates: [[[lng, lat], …], …]. */
+  centerline: number[][][];
+}
+
+export type NearbyZoneFetcher = (query: LookupQuery) => Promise<NearbyZone[]>;
+
+/** Hard ceiling on what one /zones/near call may draw. */
+export const NEARBY_ZONE_LIMIT = 150;
+
 interface RawQuerier {
   $queryRaw<T>(strings: TemplateStringsArray, ...values: unknown[]): Promise<T>;
 }
@@ -144,4 +159,84 @@ export function makeCandidateFetcher(db: RawQuerier): CandidateFetcher {
       containsPoint: row.contains_point,
     }));
   };
+}
+
+interface NearbyRow extends CandidateRow {
+  street: string | null;
+  centerline_json: string | null;
+}
+
+/**
+ * The map's fetcher: same distance prefilter as the pay path, plus the
+ * simplified centerline as GeoJSON. Simplification is ~2 m — invisible at
+ * street zoom and it keeps a few hundred curb lines small on the wire.
+ * ST_Contains is not needed for drawing, but the shared row shape carries
+ * it, so it stays.
+ */
+export function makeNearbyZoneFetcher(db: RawQuerier): NearbyZoneFetcher {
+  return async ({ lat, lng, radiusM }) => {
+    const radiusDeg = (radiusM / 111_320) * 1.6;
+    const rows = await db.$queryRaw<NearbyRow[]>`
+      SELECT
+        z.zone_id,
+        z.city,
+        z.provider_zone_number,
+        z.street,
+        z.rate_first_hour::float8      AS rate_first_hour,
+        z.rate_additional_hour::float8 AS rate_additional_hour,
+        z.max_stay_minutes,
+        z.hours_json,
+        ST_Contains(z.geom, pt.g)      AS contains_point,
+        ST_Distance(z.centerline::geography, pt.g::geography) AS distance_m,
+        ST_AsGeoJSON(ST_Simplify(z.centerline, 0.00002)) AS centerline_json
+      FROM zones z,
+           (SELECT ST_SetSRID(ST_MakePoint(${lng}, ${lat}), 4326) AS g) pt
+      WHERE ST_DWithin(z.centerline, pt.g, ${radiusDeg})
+        AND ST_DWithin(z.centerline::geography, pt.g::geography, ${radiusM})
+      ORDER BY distance_m
+      LIMIT ${NEARBY_ZONE_LIMIT}`;
+    return rows.flatMap((row) => {
+      const centerline = parseMultiLineString(row.centerline_json);
+      // A zone we can't draw is not worth sending to a map.
+      if (centerline.length === 0) return [];
+      return [
+        {
+          zoneId: row.zone_id,
+          city: row.city,
+          providerZoneNumber: row.provider_zone_number,
+          street: row.street,
+          rateFirstHourUsd: row.rate_first_hour,
+          rateAdditionalHourUsd: row.rate_additional_hour,
+          maxStayMinutes: row.max_stay_minutes,
+          hours: row.hours_json,
+          distanceM: row.distance_m,
+          containsPoint: row.contains_point,
+          centerline,
+        },
+      ];
+    });
+  };
+}
+
+/**
+ * ST_AsGeoJSON output → MultiLineString coordinates. A LineString is
+ * wrapped so callers only ever see the one shape (the column is
+ * MultiLineString, but ST_Simplify can collapse to a LineString).
+ */
+export function parseMultiLineString(json: string | null): number[][][] {
+  if (!json) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return [];
+  }
+  const geometry = parsed as { type?: string; coordinates?: unknown };
+  if (geometry.type === "LineString" && Array.isArray(geometry.coordinates)) {
+    return [geometry.coordinates as number[][]];
+  }
+  if (geometry.type === "MultiLineString" && Array.isArray(geometry.coordinates)) {
+    return geometry.coordinates as number[][][];
+  }
+  return [];
 }

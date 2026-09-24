@@ -1,3 +1,4 @@
+import CoreLocation
 import Foundation
 
 // Local UI state, distinct from the wire types in APIModels.swift.
@@ -13,6 +14,22 @@ struct ProviderLinkPrompt: Identifiable {
 /// registry's cityDisplayName for offline use (chips, pickers).
 enum CityCatalog {
     static let all = ["nyc", "bos"]
+
+    /// Picker/list order: alphabetical by display name — no home-city bias.
+    static var allByDisplayName: [String] {
+        all.sorted { (displayName($0) ?? $0) < (displayName($1) ?? $1) }
+    }
+
+    /// "Boston and New York City" — for coverage copy, derived from the
+    /// catalog so no screen hardcodes a city list.
+    static var supportedCitiesSentence: String {
+        let names = allByDisplayName.compactMap { displayName($0) }
+        switch names.count {
+        case 0: return "supported cities"
+        case 1: return names[0]
+        default: return names.dropLast().joined(separator: ", ") + " and " + names[names.count - 1]
+        }
+    }
 
     static func displayName(_ city: String?) -> String? {
         switch city {
@@ -40,6 +57,20 @@ enum CityCatalog {
         default: nil
         }
     }
+
+    /// Where to point a map when all we know is the city. Only used as a
+    /// fallback — the map prefers the user's actual location.
+    static func center(of city: String?) -> CLLocationCoordinate2D? {
+        switch city {
+        case "nyc": CLLocationCoordinate2D(latitude: 40.7549, longitude: -73.9840)
+        case "bos": CLLocationCoordinate2D(latitude: 42.3555, longitude: -71.0655)
+        default: nil
+        }
+    }
+
+    /// Last-resort map center when the city is unknown too. Boston, because
+    /// that is where the prototype is driven — not a claim about coverage.
+    static let fallbackCenter = CLLocationCoordinate2D(latitude: 42.3555, longitude: -71.0655)
 }
 
 /// The session the user is currently paying for.

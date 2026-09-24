@@ -10,16 +10,16 @@ and decides, but no money moves and you pay the meter by hand as usual.
 1. **Server**: `curl https://parkagent-api.fly.dev/health` → `ok: true`
    and `dryRun: true`. If `dryRun` is false, STOP and fix the env before
    driving anywhere.
-2. **Zones loaded**: in the app, Settings → Developer → Debug menu → "Simulate park here"
-   at a fixture point should return a quote (NYC), and the Home chip
-   should name your city when you're in one.
+2. **Zones loaded**: in the app, Settings → About → tap the version five times → Diagnostics →
+   "Simulate park here" should return a quote for a zone near you, and
+   the Home chip should name your city when you're in one.
 3. **Phone setup** (per phone, both users):
    - Location: Settings → ParkAgent → **Always** (not While Using).
    - Motion & Fitness: on. Notifications: on.
    - If either is off, Home shows a banner with an Open Settings button —
      clear the banners before the drive.
-4. **Turn on the signal log**: Settings → Developer → Debug menu →
-   **Log raw detector signals**. This writes every motion, car-audio, and location event
+4. **Turn on the signal log**: Settings → About → tap the version five
+   times → Diagnostics → **Log raw detector signals**. This writes every motion, car-audio, and location event
    with a timestamp to a file on the phone; it is the only way to debug
    a missed or false park after the fact.
 5. **Payment source** (onboarding "How do you want to pay", or Settings →
@@ -69,7 +69,7 @@ and decides, but no money moves and you pay the meter by hand as usual.
 
 ## What "working" looks like per signal (in the exported log)
 
-Export: Settings → Developer → Debug menu → **Export signal log** (share sheet → AirDrop /
+Export: Settings → About → version ×5 → Diagnostics → **Export signal log** (share sheet → AirDrop /
 Files / mail to yourself). One line per event:
 `2026-09-27T14:03:22.512Z motion_stop`.
 

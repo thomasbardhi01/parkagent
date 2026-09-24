@@ -33,7 +33,7 @@ import type { PendingSessionCheck } from "./services/pendingSession.js";
 import type { PolicyService } from "./services/policy.js";
 import type { ProviderOpsFactory } from "./services/providerOps.js";
 import type { StripeGateway } from "./services/stripeGateway.js";
-import type { CandidateFetcher } from "./services/zoneLookup.js";
+import type { CandidateFetcher, NearbyZoneFetcher } from "./services/zoneLookup.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -45,6 +45,10 @@ export interface AppDeps {
   db: AppDb;
   policy: PolicyService;
   findCandidates: CandidateFetcher;
+  /** The map layer's geometry read (GET /zones/near); absent → that route
+   * 501s. Separate from findCandidates because the pay path never needs
+   * geometry and tests fake the two independently. */
+  findNearbyZones?: NearbyZoneFetcher;
   authenticate: preHandlerHookHandler;
   /** Picks the dry-run or real executor per call (dry_run can flip at runtime). */
   executorFor: ExecutorProvider;

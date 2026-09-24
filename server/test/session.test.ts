@@ -8,7 +8,14 @@ import { expect, test } from "vitest";
 
 import type { ZoneTermsRow } from "../src/db.js";
 import type { ExecutorResult } from "../src/services/executor.js";
-import { API_KEY, HOURS_MON_SAT, MONDAY_2PM, makeTestApp, seedSession } from "./helpers.js";
+import {
+  API_KEY,
+  HOURS_MON_SAT,
+  MONDAY_2PM,
+  makeTestApp,
+  seedProviderAccount,
+  seedSession,
+} from "./helpers.js";
 
 const HEADERS = { "x-api-key": API_KEY };
 const NOW = new Date(MONDAY_2PM);
@@ -270,28 +277,64 @@ test("free_period on extend is a hold: no failure, 'parking is free' push, 409",
   expect(decision).toMatchObject({ kind: "session_extend", rule: "free_period" });
 });
 
-test("payment_method_missing pushes an 'add a card to ParkBoston' failure, not a retry", async () => {
+test("payment_method_missing pushes an 'add a card' failure naming the zone's own provider", async () => {
   const failure: ExecutorResult = {
     ok: false,
     code: "payment_method_missing",
-    message: "ParkBoston has no saved payment method on this account",
+    message: "the provider has no saved payment method on this account",
   };
-  const { app, state, pushes } = makeApp({
-    executor: {
-      startSession: async () => failure,
-      extendSession: async () => failure,
-      stopSession: async () => failure,
-    },
-  });
+  const executor = {
+    startSession: async () => failure,
+    extendSession: async () => failure,
+    stopSession: async () => failure,
+  };
+
+  // NYC zone → ParkNYC. The push used to say ParkBoston for every city.
+  const { app, state, pushes } = makeApp({ executor });
   const res = await post(app, "/session/start", START);
   expect(res.statusCode).toBe(502);
   expect(res.json()).toMatchObject({ error: "executor_failed", code: "payment_method_missing" });
   expect(state.sessions[0]!.status).toBe("failed");
   const push = pushes.at(-1)!.push;
   expect(push.type).toBe("payment_failed");
-  expect(push.title).toBe("Add a card to ParkBoston");
-  expect(push.body).toContain("add a card to ParkBoston");
+  expect(push.title).toBe("Add a card to ParkNYC");
+  expect(push.body).toContain("add a card to ParkNYC");
   expect(push.extra).toMatchObject({ code: "payment_method_missing" });
+
+  // Boston zone → ParkBoston, same code path.
+  const bos = makeTestApp({
+    zones: [
+      {
+        zoneId: "bos-boylston-st-e-d-819305",
+        city: "bos",
+        providerZoneNumber: "81234",
+        rateFirstHour: 3.75,
+        rateAdditionalHour: 3.75,
+        maxStayMinutes: 120,
+        hoursJson: HOURS_MON_SAT,
+      },
+    ],
+    now: () => NOW,
+    executor,
+  });
+  // Boston pays through Passport, so that account has to be linked too.
+  seedProviderAccount(bos.state, { id: "pa-bos", provider: "passport" });
+  bos.state.parkedEvents.push({
+    id: "pe-bos",
+    userId: "u1",
+    lat: 42.3503,
+    lng: -71.081,
+    accuracyM: 12,
+    ts: NOW,
+    signals: ["motion_stop"],
+  });
+  const bosRes = await post(bos.app, "/session/start", {
+    parkedEventId: "pe-bos",
+    zoneId: "bos-boylston-st-e-d-819305",
+    minutes: 90,
+  });
+  expect(bosRes.statusCode).toBe(502);
+  expect(bos.pushes.at(-1)!.push.title).toBe("Add a card to ParkBoston");
 });
 
 test("location without an active session: 409", async () => {

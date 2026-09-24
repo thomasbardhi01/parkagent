@@ -2,7 +2,8 @@ import Foundation
 
 /// Launch arguments the app honors, mainly for the UI test target:
 ///
-///   -useMockAPI YES        force the mock API on (or NO for live)
+///   -useMockAPI YES        run this launch on the mock API (never persisted;
+///                          without it every build talks to the live server)
 ///   -skipOnboarding YES    land on Home instead of onboarding
 ///   -appearance dark       preset the appearance setting (system|light|dark)
 ///   -resetState YES        wipe UserDefaults before anything reads it
@@ -28,6 +29,31 @@ import Foundation
 enum LaunchOverrides {
     static let uiTesting: Bool = flagValue("-uiTesting") == "YES"
 
+    /// The mock API is a launch-time decision, never persisted: the UI tests
+    /// pass `-useMockAPI YES`; every other launch — Debug and Release alike —
+    /// talks to the live server. SwiftUI previews also get the mock so they
+    /// render without a network; previews never install on a phone.
+    static let useMockAPI: Bool =
+        flagValue("-useMockAPI") == "YES"
+        || ProcessInfo.processInfo.environment["XCODE_RUNNING_FOR_PREVIEWS"] == "1"
+
+    /// Every persisted key that only exists to steer the mock. Older builds
+    /// persisted `useMockAPI` (defaulting ON under DEBUG) plus the UI-test
+    /// scenario keys, so a phone installed from Xcode could quietly run on
+    /// fixtures forever. Normal launches scrub all of them; UI-test launches
+    /// re-write theirs from the arguments right after.
+    private static let mockDefaultsKeys = [
+        "useMockAPI",
+        "issuingLive",
+        MockScenario.defaultsKey,
+        CardMockScenario.defaultsKey,
+        ProviderMockScenario.defaultsKey,
+        CityMockScenario.defaultsKey,
+        AssistantMockScenario.defaultsKey,
+        LinkMockScenario.defaultsKey,
+        SpeechMockScenario.defaultsKey,
+    ]
+
     /// Call once, before any UserDefaults key is read (ParkAgentApp.init).
     static func applyToDefaults() {
         let defaults = UserDefaults.standard
@@ -36,7 +62,6 @@ enum LaunchOverrides {
         // "YES"/"NO" strings coerce to Bool properly.
         let reset = argued["resetState"] != nil && defaults.bool(forKey: "resetState")
         let skipOnboarding = argued["skipOnboarding"] != nil && defaults.bool(forKey: "skipOnboarding")
-        let mock = argued["useMockAPI"] != nil ? defaults.bool(forKey: "useMockAPI") : nil
         let appearance = argued[AppearanceSetting.defaultsKey] != nil
             ? defaults.string(forKey: AppearanceSetting.defaultsKey) : nil
         let scenario = argued[MockScenario.defaultsKey] != nil
@@ -66,8 +91,12 @@ enum LaunchOverrides {
         if reset, let bundleId = Bundle.main.bundleIdentifier {
             defaults.removePersistentDomain(forName: bundleId)
         }
+        // Scrub before the argument writes below, so UI-test launches still
+        // get their scenario keys and everyone else starts clean.
+        for key in mockDefaultsKeys {
+            defaults.removeObject(forKey: key)
+        }
         if skipOnboarding { defaults.set(true, forKey: "hasOnboarded") }
-        if let mock { defaults.set(mock, forKey: "useMockAPI") }
         if let appearance { defaults.set(appearance, forKey: AppearanceSetting.defaultsKey) }
         if let scenario { defaults.set(scenario, forKey: MockScenario.defaultsKey) }
         if let cardScenario { defaults.set(cardScenario, forKey: CardMockScenario.defaultsKey) }

@@ -9,6 +9,8 @@ struct AssistantSheetView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var model: AssistantModel?
     @State private var speech = SpeechRecognizer()
+    /// Drives the scroll-to-bottom when the keyboard rises.
+    @FocusState private var inputFocused: Bool
     /// Prefilled question (Siri hands one in).
     var initialQuery: String?
 
@@ -25,6 +27,11 @@ struct AssistantSheetView: View {
             }
             .navigationTitle("Ask ParkAgent")
             .navigationBarTitleDisplayMode(.inline)
+            // The living wash behind the sheet left the bar transparent, so
+            // scrolled messages ran under the title. Material gives it a
+            // surface to sit on while still reading as part of the sheet.
+            .toolbarBackground(.regularMaterial, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
@@ -81,8 +88,25 @@ struct AssistantSheetView: View {
                         value: model.proposedPlan?.planId
                     )
                 }
+                // No .defaultScrollAnchor(.bottom) here: pinning the whole
+                // scroll view to the bottom re-lays-out a tall plan card
+                // under the reader's finger (it moved the Sign off button
+                // out from under a tap). The explicit scrollTo below is
+                // what keeps the newest message in view.
                 .onChange(of: model.messages) {
                     withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
+                }
+                // The keyboard rising used to cover the reply that just
+                // arrived: SwiftUI shrinks the scroll view but keeps the
+                // offset, so follow it back down.
+                .onChange(of: inputFocused) { _, focused in
+                    guard focused else { return }
+                    Task {
+                        // One hop after the keyboard's frame change, or the
+                        // scroll lands at the pre-keyboard bottom.
+                        try? await Task.sleep(for: .milliseconds(350))
+                        withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
+                    }
                 }
             }
             speechArea
@@ -227,6 +251,7 @@ struct AssistantSheetView: View {
                 .padding(.vertical, 10)
                 .background(Color.surface)
                 .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
+                .focused($inputFocused)
                 .accessibilityIdentifier("assistant.inputField")
                 .onSubmit { Task { await model.send() } }
 
@@ -264,6 +289,9 @@ struct AssistantSheetView: View {
         }
         .padding(.vertical, Spacing.half)
         .padding(.horizontal, Spacing.unit)
+        // Material, not clear: messages scrolling past used to read through
+        // the bar. It still lets the living wash show, just not the text.
+        .background(.regularMaterial)
         .overlay(alignment: .top) { Divider() }
     }
 }

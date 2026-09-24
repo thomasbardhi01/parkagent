@@ -27,7 +27,7 @@ unknown paths 401 too. Authorization on top: `users.is_admin` gates
 `403 {"error": "forbidden"}` (`create:user -- --admin`, or flip the
 column in SQL for an existing user). Abuse-prone routes are rate-limited per user
 (429 + `Retry-After`): `/parked` 30/min, provider writes 10/min, provider
-reads 60/min, `/zones/:zoneId/provider-number` 12/min. Unhandled errors
+reads 60/min, `/zones/:zoneId/provider-number` 12/min, `/zones/near` 60/min. Unhandled errors
 answer `500 {"error": "internal"}` — details go to the server log only.
 
 ## Dry run
@@ -136,7 +136,7 @@ Cost of the default stay in a zone, priced only over enforced minutes:
   "stayMinutes": 90,        // min(policy.default_stay_minutes, zone max stay)
   "chargedMinutes": 90,     // minutes of the stay inside enforcement hours
   "meterUsd": 7.13,         // rate ladder applied to chargedMinutes
-  "feeUsd": 0.15,           // policy.parknyc_fee_usd; 0 when meterUsd is 0
+  "feeUsd": 0.15,           // the city's parking_fee_usd; 0 when meterUsd is 0
   "totalUsd": 7.28
 }
 ```
@@ -148,8 +148,8 @@ nothing. A zone with `hours: []` (nothing posted) is treated as always
 enforced. `respect_enforcement_hours: false` in policy also treats every
 zone as always enforced. Rounding: half-up to the cent, once, on each of
 `meterUsd`/`feeUsd`/`totalUsd`. `feeUsd` is per city: the zone's `city`
-picks `policy.city_overrides` (ParkBoston charges $0.35 where ParkNYC
-charges $0.15), falling back to `parknyc_fee_usd`.
+picks `policy.city_overrides.<city>.parking_fee_usd` (ParkBoston charges
+$0.35 where ParkNYC charges $0.15).
 
 ### How the action is chosen
 
@@ -210,6 +210,52 @@ zone's city wins even from home, km away from a meter. Read-only — no
 
 Nowhere near any metered zone → `200` with all three fields null ("we're
 not there yet"). Errors: `400` bad query, `401` bad key.
+
+---
+
+## GET /zones/near?lat&lng&radius
+
+The map's curb layer: every metered zone whose centerline is within
+`radius` metres of the point, with the geometry to draw it and the terms to
+label it. `radius` is optional (default 250 m) and **capped at 400 m** — a
+PostGIS read runs per call, so the window stays small and the route is
+rate-limited at 60/min.
+
+```json
+{
+  "radiusM": 250,
+  "at": "2026-01-05T19:00:00.000Z",
+  "truncated": false,
+  "zones": [
+    {
+      "zoneId": "bos-boylston-st-e-d-819305",
+      "city": "bos",
+      "providerZoneNumber": "81234",
+      "street": "BOYLSTON ST",
+      "rateFirstHourUsd": 3.75,
+      "rateAdditionalHourUsd": 3.75,
+      "maxStayMinutes": 120,
+      "distanceM": 12.3,
+      "enforcedNow": true,
+      "todayHours": [{ "start": "08:00", "end": "20:00" }],
+      "hours": [{ "days": ["Mon"], "start": "08:00", "end": "20:00" }],
+      "centerline": [[[-71.0812, 42.3502], [-71.0805, 42.3504]]]
+    }
+  ]
+}
+```
+
+`centerline` is GeoJSON MultiLineString coordinates (`[[[lng, lat], …], …]`),
+simplified to about 2 m — invisible at street zoom, and it keeps a few
+hundred lines small on the wire. `enforcedNow` is what the map colors by
+(paying now vs free now) and `todayHours` is what the tapped-zone card
+shows; a zone with nothing posted reads as enforced all day, exactly as the
+quote path treats it. `truncated: true` means the 150-zone ceiling was hit —
+there is more metered street here than was returned.
+
+Errors: `400` bad or missing coordinates (or `radius` over the cap), `401`
+bad key, `429` rate limited, `501 {"error": "zone_geometry_unavailable"}` on
+a deployment with no geometry fetcher wired.
 
 ---
 
@@ -868,7 +914,6 @@ give the audit trail either way.
   "daily_cap_usd": 60,
   "auto_pay_max_rate_per_hour": 8.0,
   "default_stay_minutes": 90,
-  "parknyc_fee_usd": 0.15,
   "auto_extend": {
     "enabled": true,
     "max_count": 2,
@@ -878,15 +923,25 @@ give the audit trail either way.
   "respect_enforcement_hours": true,
   "ticket_cost_usd": 65,
   "city_overrides": {
-    "nyc": { "ticket_cost_usd": 65 },
+    "nyc": { "parking_fee_usd": 0.15, "ticket_cost_usd": 65 },
     "bos": { "parking_fee_usd": 0.35, "ticket_cost_usd": 40 }
   }
 }
 ```
 
 `city_overrides` is optional, keyed by `"nyc"`/`"bos"`, and each field is
-optional — anything absent falls back to the top-level `parknyc_fee_usd` /
-`ticket_cost_usd`. Quotes, session starts/extensions, and the extension
+optional. `parking_fee_usd` is the city provider's pay-by-app fee and lives
+only here; a missing `ticket_cost_usd` falls back to the top-level one.
+
+A deprecated top-level `parknyc_fee_usd` is still accepted for one release
+and still serves as the fee fallback, so documents written before the move
+keep validating. Migrate one with
+
+    pnpm -C server migrate:policy-fee            # repo-root policy.json
+    pnpm -C server migrate:policy-fee -- --file /path/to/policy.json
+
+which copies the value into every city that lacks its own
+`parking_fee_usd`, then drops the key. Quotes, session starts/extensions, and the extension
 worker all price per city now: sessions store their zone's `city` at start,
 so the worker's ticket-risk math uses that city's `ticket_cost_usd` (a $40
 Boston ticket argues for extension less strongly than a $65 NYC one).

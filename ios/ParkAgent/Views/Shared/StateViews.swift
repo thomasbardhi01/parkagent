@@ -25,6 +25,43 @@ struct EmptyStateView: View {
     }
 }
 
+/// Home's connectivity banner: the live API is unconfigured or unreachable.
+/// A real error state — the app never quietly swaps in fixtures.
+struct ErrorBanner: View {
+    var icon = "wifi.exclamationmark"
+    let title: String
+    let message: String
+    var retryTitle: String?
+    var retry: (() -> Void)?
+
+    var body: some View {
+        HStack(spacing: Spacing.half) {
+            Image(systemName: icon)
+                .foregroundStyle(Color.danger)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.captionTextSemibold)
+                    .foregroundStyle(Color.textPrimary)
+                Text(message)
+                    .font(.captionText)
+                    .foregroundStyle(Color.textSecondary)
+            }
+            Spacer()
+            if let retryTitle, let retry {
+                Button(retryTitle, action: retry)
+                    .font(.captionTextSemibold)
+                    .foregroundStyle(Color.actionCoralLink)
+            }
+        }
+        .padding(Spacing.unit)
+        .background(Color.surface)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
+        .shadow(color: .black.opacity(0.1), radius: 4, y: 1)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("home.apiErrorBanner")
+    }
+}
+
 /// Shown on Home when location permission is missing — without it the whole
 /// detect-and-pay loop is off.
 struct PermissionBanner: View {

@@ -5,26 +5,48 @@ struct HomeView: View {
     @Environment(AppModel.self) private var model
     @Environment(PermissionsManager.self) private var permissions
     @Namespace private var sessionZoom
-    @State private var camera: MapCameraPosition = .region(MKCoordinateRegion(
-        center: AppModel.fixtureCoordinate,
-        span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
-    ))
+    /// Set in .task from the user's location (falling back to the detected
+    /// city), so the map never opens on a hardcoded city.
+    @State private var camera: MapCameraPosition = .automatic
+    /// Follow the user until they pan; the locate-me button turns it back on.
+    @State private var following = true
+    /// Live map window, for the curb-layer fetch and the zoom gate.
+    @State private var visibleRegion: MKCoordinateRegion?
+    @State private var curbZones: [NearbyZone] = []
+    @State private var selectedZone: NearbyZone?
+    /// The center the loaded curb layer was fetched for, so panning a little
+    /// doesn't refetch on every frame.
+    @State private var curbFetchedAt: CLLocationCoordinate2D?
+    @State private var curbTruncated = false
+
+    /// Curb lines only make sense at street zoom; above this the whole city
+    /// would be one smear of lines (and the fetch radius is capped at 400 m
+    /// server-side anyway).
+    private static let curbZoomSpan: CLLocationDegrees = 0.012
+    /// Refetch once the map has moved this far from the last fetch.
+    private static let curbRefetchDistanceM: Double = 150
 
     var body: some View {
         @Bindable var model = model
         NavigationStack {
-            Map(position: $camera) {
-                UserAnnotation()
-                if let car = model.carCoordinate {
-                    Annotation("Your car", coordinate: car) {
-                        MapPin(kind: .car)
-                    }
-                }
-            }
-            .mapStyle(.standard(pointsOfInterest: .excludingAll))
+            mapLayer
             .overlay(alignment: .top) {
                 VStack(spacing: Spacing.half) {
                     statusChip
+                    if model.liveAPIUnavailable {
+                        ErrorBanner(
+                            icon: "exclamationmark.triangle.fill",
+                            title: "Not connected to ParkAgent",
+                            message: "The live API isn't configured — add API_BASE_URL and API_KEY to Config.xcconfig and reinstall."
+                        )
+                    } else if model.policyLoadFailed {
+                        ErrorBanner(
+                            title: "Can't reach the ParkAgent server",
+                            message: "Nothing loads until the connection is back.",
+                            retryTitle: "Retry",
+                            retry: { Task { await model.loadPolicy() } }
+                        )
+                    }
                     if permissions.locationDenied {
                         PermissionBanner()
                     }
@@ -39,36 +61,217 @@ struct HomeView: View {
                 .padding(.top, Spacing.half)
                 .padding(.horizontal, Spacing.unit)
             }
+            .overlay(alignment: .trailing) { locateMeButton }
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                // The living wash lives in the sheet surface — layering it
-                // over the map itself would fight the map.
-                BottomSheet(livingBackdrop: true) { sheetContent }
+                // No living wash on this screen: behind a map it reads as
+                // haze over the streets. Non-map surfaces keep it.
+                BottomSheet { sheetContent }
             }
             .navigationDestination(for: String.self) { sessionId in
                 ActiveSessionView()
                     .zoomDestination(id: sessionId, in: sessionZoom)
             }
+            .task { await centerCamera() }
         }
     }
 
-    private var statusChip: some View {
-        HStack(spacing: Spacing.half) {
-            Circle()
-                // textSecondary, not steel: steel is under 3:1 against the
-                // light chip surface.
-                .fill(model.activeSession == nil ? Color.textSecondary : Color.success)
-                .frame(width: 8, height: 8)
-            Text(chipText)
-                .font(.captionTextSemibold)
-                .foregroundStyle(Color.textPrimary)
+    // MARK: - Map
+
+    private var mapLayer: some View {
+        MapReader { proxy in
+            Map(position: $camera) {
+                UserAnnotation()
+                // Curb lines under the pins: paying-now coral, free-now green.
+                ForEach(curbZones) { zone in
+                    ForEach(Array(zone.polylines.enumerated()), id: \.offset) { _, line in
+                        MapPolyline(coordinates: line)
+                            .stroke(
+                                zone.enforcedNow ? Color.actionCoral : Color.success,
+                                style: StrokeStyle(
+                                    lineWidth: zone.zoneId == selectedZone?.zoneId ? 7 : 3.5,
+                                    lineCap: .round
+                                )
+                            )
+                    }
+                }
+                if let car = model.carCoordinate {
+                    Annotation("Your car", coordinate: car) {
+                        MapPin(kind: .car)
+                    }
+                }
+            }
+            .mapStyle(.standard(pointsOfInterest: .excludingAll))
+            // Scale and compass top-trailing; the status chip owns the top
+            // leading corner, so nothing overlaps it.
+            .mapControls {
+                MapScaleView()
+                MapCompass()
+            }
+            .onMapCameraChange(frequency: .onEnd) { context in
+                visibleRegion = context.region
+                Task { await refreshCurbLayer(for: context.region) }
+            }
+            // A drag is the user taking the wheel: stop following so the map
+            // stays where they put it.
+            .simultaneousGesture(DragGesture().onChanged { _ in following = false })
+            .onTapGesture { point in
+                guard let coordinate = proxy.convert(point, from: .local) else { return }
+                selectZone(at: coordinate)
+            }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, Spacing.half)
-        .background(Color.surface)
-        .clipShape(Capsule())
-        .shadow(color: .black.opacity(0.1), radius: 4, y: 1)
+    }
+
+    /// Re-centers on the user and resumes following.
+    private var locateMeButton: some View {
+        Button {
+            Task { await locateMe() }
+        } label: {
+            Image(systemName: following ? "location.fill" : "location")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(following ? Color.actionCoralLink : Color.textPrimary)
+                .frame(width: 44, height: 44)
+                .background(Color.surface, in: Circle())
+                .shadow(color: .black.opacity(0.15), radius: 4, y: 1)
+        }
+        .padding(.trailing, Spacing.unit)
+        .accessibilityLabel(following ? "Following your location" : "Center on your location")
+        .accessibilityIdentifier("home.locateMeButton")
+    }
+
+    /// The car's spot if it's parked, else where the phone is, else the
+    /// detected city — never a fixed city constant.
+    private func centerCamera() async {
+        var center = model.carCoordinate
+        if center == nil {
+            center = await currentCoordinate()
+        }
+        let resolved = center
+            ?? CityCatalog.center(of: model.effectiveCity)
+            ?? CityCatalog.fallbackCenter
+        camera = .region(MKCoordinateRegion(center: resolved, span: Self.streetSpan))
+
+        // Name the city in the chip on a fresh install, without waiting for
+        // the first park to be the thing that tells us where we are.
+        if model.detectedCity == nil, let center {
+            _ = await model.detectCity(lat: center.latitude, lng: center.longitude)
+        }
+    }
+
+    /// Where the phone is. The mock answers from the city scenario so the
+    /// simulator and UI tests are deterministic.
+    private func currentCoordinate() async -> CLLocationCoordinate2D? {
+        model.useMockAPI ? MockFixtures.currentCoordinate() : await OneShotLocation.request()
+    }
+
+    private static let streetSpan = MKCoordinateSpan(latitudeDelta: 0.006, longitudeDelta: 0.006)
+
+    /// Locate-me: back to the user, following again.
+    private func locateMe() async {
+        following = true
+        guard let coordinate = await currentCoordinate() else { return }
+        withAnimation(Motion.settle) {
+            camera = .region(MKCoordinateRegion(center: coordinate, span: Self.streetSpan))
+        }
+    }
+
+    /// Tapping the city chip recenters the same way.
+    private func recenterOnCity() {
+        let center = CityCatalog.center(of: model.effectiveCity) ?? CityCatalog.fallbackCenter
+        following = false
+        withAnimation(Motion.settle) {
+            camera = .region(MKCoordinateRegion(
+                center: center,
+                span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)
+            ))
+        }
+    }
+
+    // MARK: - Curb layer
+
+    /// Loads the curb lines for the visible window, at street zoom only. The
+    /// server caps the radius at 400 m, so this asks for what fits the
+    /// window within that.
+    private func refreshCurbLayer(for region: MKCoordinateRegion) async {
+        guard region.span.latitudeDelta <= Self.curbZoomSpan else {
+            // Zoomed out: drop the lines rather than draw a smear of them.
+            curbZones = []
+            curbFetchedAt = nil
+            selectedZone = nil
+            return
+        }
+        if let last = curbFetchedAt, distance(last, region.center) < Self.curbRefetchDistanceM {
+            return
+        }
+        // Half the window's height in metres, clamped to the server's cap.
+        let radius = min(400, max(120, region.span.latitudeDelta * 111_320 / 2))
+        guard let response = try? await model.api.nearbyZones(
+            lat: region.center.latitude,
+            lng: region.center.longitude,
+            radiusM: radius
+        ) else { return }
+        curbFetchedAt = region.center
+        curbZones = response.zones
+        curbTruncated = response.truncated
+        // A reloaded layer may not contain the tapped zone any more.
+        if let selected = selectedZone, !response.zones.contains(where: { $0.zoneId == selected.zoneId }) {
+            selectedZone = nil
+        }
+    }
+
+    /// The tapped curb line: nearest polyline vertex within a tolerance that
+    /// scales with zoom, so a fat finger still lands on a thin line.
+    private func selectZone(at coordinate: CLLocationCoordinate2D) {
+        guard !curbZones.isEmpty else { return }
+        let tolerance = max(25, (visibleRegion?.span.latitudeDelta ?? 0.006) * 111_320 * 0.04)
+        var best: (zone: NearbyZone, distance: Double)?
+        for zone in curbZones {
+            for line in zone.polylines {
+                for point in line {
+                    let metres = distance(point, coordinate)
+                    if metres <= tolerance, metres < (best?.distance ?? .greatestFiniteMagnitude) {
+                        best = (zone, metres)
+                    }
+                }
+            }
+        }
+        withAnimation(Motion.settle) {
+            selectedZone = best?.zone
+        }
+    }
+
+    private func distance(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D) -> Double {
+        CLLocation(latitude: a.latitude, longitude: a.longitude)
+            .distance(from: CLLocation(latitude: b.latitude, longitude: b.longitude))
+    }
+
+    private var statusChip: some View {
+        // Tapping it recenters on the city — the "where am I looking?"
+        // control right next to the "where am I?" label.
+        Button {
+            recenterOnCity()
+        } label: {
+            HStack(spacing: Spacing.half) {
+                Circle()
+                    // textSecondary, not steel: steel is under 3:1 against the
+                    // light chip surface.
+                    .fill(model.activeSession == nil ? Color.textSecondary : Color.success)
+                    .frame(width: 8, height: 8)
+                Text(chipText)
+                    .font(.captionTextSemibold)
+                    .foregroundStyle(Color.textPrimary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, Spacing.half)
+            .frame(minHeight: 44)
+            .background(Color.surface)
+            .clipShape(Capsule())
+            .shadow(color: .black.opacity(0.1), radius: 4, y: 1)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("home.statusChip")
+        .accessibilityHint("Centers the map on your city")
     }
 
     private var chipText: String {
@@ -85,9 +288,77 @@ struct HomeView: View {
         return status
     }
 
+    /// The tapped curb line's terms. Small, dismissible, and above the
+    /// spend row so it reads as an answer to the tap.
+    @ViewBuilder
+    private func curbTermsCard(_ zone: NearbyZone) -> some View {
+        VStack(alignment: .leading, spacing: Spacing.half) {
+            HStack(spacing: Spacing.half) {
+                Text(zone.street?.capitalized ?? "This block")
+                    .font(.bodyTextSemibold)
+                    .foregroundStyle(Color.textPrimary)
+                TagPill(
+                    label: zone.enforcedNow ? "Paying now" : "Free now",
+                    color: zone.enforcedNow ? .actionCoralLink : .success
+                )
+                Spacer()
+                Button {
+                    withAnimation(Motion.settle) { selectedZone = nil }
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.captionTextSemibold)
+                        .foregroundStyle(Color.textSecondary)
+                        .frame(width: 32, height: 32)
+                }
+                .accessibilityLabel("Dismiss zone details")
+            }
+            Text(curbTermsLine(zone))
+                .font(.secondaryText)
+                .foregroundStyle(Color.textSecondary)
+                .accessibilityIdentifier("home.curbTerms")
+            if !zone.providerZoneNumber.isEmpty {
+                Text("Zone \(zone.providerZoneNumber)")
+                    .font(.captionText)
+                    .foregroundStyle(Color.textSecondary)
+            }
+        }
+        .padding(Spacing.unit)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.surface)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
+        .accessibilityIdentifier("home.curbTermsCard")
+    }
+
+    private func curbTermsLine(_ zone: NearbyZone) -> String {
+        var parts = [Format.money(zone.rateFirstHourUsd) + "/hr"]
+        if zone.rateAdditionalHourUsd != zone.rateFirstHourUsd {
+            parts[0] = "\(Format.money(zone.rateFirstHourUsd)) first hour, then \(Format.money(zone.rateAdditionalHourUsd))/hr"
+        }
+        if let maxStay = zone.maxStayMinutes {
+            parts.append("\(Format.minutes(maxStay)) max")
+        }
+        let today = zone.todayHours
+            .map { "\($0.start)–\($0.end)" }
+            .joined(separator: ", ")
+        parts.append(today.isEmpty ? "not enforced today" : "today \(today)")
+        return parts.joined(separator: " · ")
+    }
+
     @ViewBuilder
     private var sheetContent: some View {
         VStack(alignment: .leading, spacing: Spacing.unit) {
+            if let zone = selectedZone {
+                curbTermsCard(zone)
+                    .transition(.opacity)
+            } else if curbTruncated && !curbZones.isEmpty {
+                // Never let a capped layer read as "that's all the metered
+                // street there is".
+                Text("Showing the nearest metered blocks — zoom in for the rest.")
+                    .font(.captionText)
+                    .foregroundStyle(Color.textSecondary)
+                    .accessibilityIdentifier("home.curbTruncatedNote")
+            }
+
             spendRow
 
             Button {
@@ -118,7 +389,9 @@ struct HomeView: View {
             }
 
             #if DEBUG
-            if model.useMockAPI && model.activeSession == nil {
+            // UI tests drive parks from here; a real user reaches "simulate"
+            // only through the hidden Diagnostics screen.
+            if LaunchOverrides.uiTesting && model.activeSession == nil {
                 Button("Simulate park") {
                     Task { await model.simulatePark() }
                 }

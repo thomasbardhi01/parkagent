@@ -15,15 +15,18 @@ final class SettingsUITests: ParkAgentUITestCase {
         let version = scrollTo(app, "settings.versionRow")
         XCTAssertTrue(version.waitForExistence(timeout: 5), "Version row missing")
 
-        // Four taps is not enough — it must be deliberate.
+        // Four taps is not enough — it must be deliberate. The link would
+        // sit below the version row, and a lazy Form doesn't build rows off
+        // screen, so scroll to the end before checking: a bare .exists here
+        // was false whether or not the link had been revealed.
         for _ in 0..<4 { version.tap() }
         XCTAssertFalse(
-            element(app, "settings.diagnosticsLink").exists,
+            scrollTo(app, "settings.diagnosticsLink", swipes: 3).exists,
             "Diagnostics revealed before the fifth tap"
         )
-        version.tap()
+        scrollTo(app, "settings.versionRow").tap()
 
-        let link = element(app, "settings.diagnosticsLink")
+        let link = scrollTo(app, "settings.diagnosticsLink", swipes: 4)
         XCTAssertTrue(link.waitForExistence(timeout: 5), "Fifth tap did not reveal Diagnostics")
         link.tap()
 

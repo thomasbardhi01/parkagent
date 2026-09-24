@@ -72,18 +72,28 @@ class ParkAgentUITestCase: XCTestCase {
         )
     }
 
-    /// Swipes up until the identifier is in the hierarchy. SwiftUI Form is a
-    /// lazy List: rows below the fold do not exist until scrolled into view,
-    /// so `.exists` on them is false rather than merely off-screen.
+    /// Swipes up until the identifier is in the hierarchy AND tappable —
+    /// hittable and clear of the floating tab bar. SwiftUI Form is a lazy
+    /// List, so rows below the fold don't exist until scrolled near; but
+    /// "exists" alone isn't enough either. CI run 36014956437 stopped with
+    /// the version row at y 872–924 under a tab bar starting at y 873, and
+    /// all five "taps on the version" landed on the tab bar instead.
     @discardableResult
     func scrollTo(_ app: XCUIApplication, _ identifier: String, swipes: Int = 8) -> XCUIElement {
         let target = element(app, identifier)
         var attempts = 0
-        while !target.exists && attempts < swipes {
+        while !isTappable(app, target) && attempts < swipes {
             app.swipeUp()
             attempts += 1
         }
         return target
+    }
+
+    private func isTappable(_ app: XCUIApplication, _ element: XCUIElement) -> Bool {
+        guard element.exists, element.isHittable else { return false }
+        let tabBar = app.tabBars.firstMatch
+        guard tabBar.exists else { return true }
+        return element.frame.maxY <= tabBar.frame.minY
     }
 
     /// Unlocks and opens the hidden Diagnostics screen: Settings, scroll to
@@ -95,7 +105,9 @@ class ParkAgentUITestCase: XCTestCase {
         for _ in 0..<5 {
             version.tap()
         }
-        let link = element(app, "settings.diagnosticsLink")
+        // The link appears in the row below the version — possibly below
+        // the fold or under the tab bar, so scroll it clear before tapping.
+        let link = scrollTo(app, "settings.diagnosticsLink", swipes: 4)
         XCTAssertTrue(
             link.waitForExistence(timeout: 5),
             "Five taps on the version number did not reveal Diagnostics"

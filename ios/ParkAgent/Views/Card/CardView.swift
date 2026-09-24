@@ -35,7 +35,7 @@ struct CardView: View {
                     .accessibilityIdentifier("card.emptyNoCard")
                 }
             }
-            .background(Color.appBackground)
+            .tabScreen()
             .navigationTitle("Card")
             .navigationDestination(for: CardTransaction.self) { transaction in
                 CardTransactionDetailView(transaction: transaction)

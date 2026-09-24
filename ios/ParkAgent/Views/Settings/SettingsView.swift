@@ -4,10 +4,13 @@ struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @Environment(PermissionsManager.self) private var permissions
     @AppStorage(AppearanceSetting.defaultsKey) private var appearanceRaw = AppearanceSetting.system.rawValue
-    /// Five taps on the version number reveal the Diagnostics link (DEBUG
-    /// only). Not persisted: it re-hides on the next launch.
+    #if DEBUG
+    /// Five taps on the version number reveal the Diagnostics link. Not
+    /// persisted: it re-hides on the next launch, and neither property
+    /// exists in a Release build.
     @State private var versionTaps = 0
     @State private var diagnosticsUnlocked = false
+    #endif
 
     @State private var providerAccounts: [ProviderAccountStatus] = []
     /// nil until the first load answers, so the failure copy never flashes
@@ -57,6 +60,11 @@ struct SettingsView: View {
                     versionRow
                 }
             }
+            // Form paints its own grouped background; hiding it lets the
+            // tab root's opaque background show through instead of the two
+            // fighting during a tab transition.
+            .scrollContentBackground(.hidden)
+            .tabScreen()
             .navigationTitle("Settings")
             .tint(.actionCoral)
             .refreshable {

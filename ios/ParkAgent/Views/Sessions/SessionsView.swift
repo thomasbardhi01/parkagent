@@ -18,7 +18,7 @@ struct SessionsView: View {
                     list
                 }
             }
-            .background(Color.appBackground)
+            .tabScreen()
             .navigationTitle("Sessions")
             .navigationDestination(for: SessionRecord.self) { record in
                 SessionDetailView(record: record)

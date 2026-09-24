@@ -198,6 +198,17 @@ final class LiveAPIRequestTests: XCTestCase {
 
     // MARK: - Sign-in (no bearer: the credential is in the body)
 
+    func testAuthMethodsIsAPublicGet() async throws {
+        StubURLProtocol.respond(json: #"{"apple": true, "email": false, "google": false}"#)
+        let methods = try await api.authMethods()
+
+        let request = try sentRequest()
+        XCTAssertEqual(request.httpMethod, "GET")
+        XCTAssertEqual(request.url?.path(), "/auth/methods")
+        XCTAssertNil(bearer(request), "asked before anyone is signed in")
+        XCTAssertEqual(methods, .appleOnly)
+    }
+
     func testAppleSignInPostsTheIdentityTokenAndName() async throws {
         StubURLProtocol.respond(json: Self.sessionBody)
         let session = try await api.signInWithApple(

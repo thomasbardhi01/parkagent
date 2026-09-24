@@ -7,6 +7,7 @@ import Foundation
 struct UnconfiguredAPI: APIClient {
     private var failure: APIError { .notConfigured }
 
+    func authMethods() async throws -> AuthMethods { throw failure }
     func signInWithApple(
         identityToken: String,
         deviceId: String,

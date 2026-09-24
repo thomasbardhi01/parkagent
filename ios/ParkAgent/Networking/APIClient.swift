@@ -6,6 +6,8 @@ import Foundation
 protocol APIClient: Sendable {
     // Identity (server/API.md "Authentication"). These are the only calls
     // that work signed out; everything else needs the access token.
+    /// Which sign-in methods are switched on (GET /auth/methods).
+    func authMethods() async throws -> AuthMethods
     func signInWithApple(
         identityToken: String,
         deviceId: String,
@@ -150,10 +152,10 @@ enum APIError: Error, LocalizedError {
         case "code_expired": "That code expired. Send a new one."
         case "too_many_attempts": "Too many tries. Send a new code."
         case "email_rate_limited": "Too many codes requested. Wait a few minutes."
-        case "email_not_configured": "Email sign-in isn't set up on this server yet."
         case "send_failed": "We couldn't send the email. Try again."
         case "invalid_identity_token": "That sign-in didn't verify. Try again."
-        case "google_signin_disabled": "Google sign-in isn't enabled."
+        case "email_signin_disabled": "Email sign-in isn't available. Use Sign in with Apple."
+        case "google_signin_disabled": "Google sign-in isn't available. Use Sign in with Apple."
         case "plate_taken": "That plate is already registered."
         case "auth_not_configured": "This server isn't set up for sign-in yet."
         default: "The server refused the request (\(code))."

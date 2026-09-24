@@ -27,7 +27,10 @@ class ParkAgentUITestCase: XCTestCase {
         appearance: String? = nil,
         paymentSource: String? = nil,
         issuingLive: Bool = false,
-        googleSignIn: Bool = false
+        googleSignIn: Bool = false,
+        /// The mock server's switched-on sign-in methods; nil = its
+        /// default, Apple only (as a real deployment ships).
+        authMethods: String? = nil
     ) -> XCUIApplication {
         let app = XCUIApplication()
         var args = [
@@ -40,6 +43,7 @@ class ParkAgentUITestCase: XCTestCase {
         if signedIn { args += ["-signedIn", "YES"] }
         if let authScenario { args += ["-authScenario", authScenario] }
         if googleSignIn { args += ["-googleSignIn", "YES"] }
+        if let authMethods { args += ["-authMethods", authMethods] }
         if skipOnboarding { args += ["-skipOnboarding", "YES"] }
         if let appearance { args += ["-appearance", appearance] }
         if let cardScenario { args += ["-cardScenario", cardScenario] }

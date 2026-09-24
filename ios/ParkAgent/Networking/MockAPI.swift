@@ -176,7 +176,22 @@ struct MockAPI: APIClient {
             ?? .returning
     }
 
+    /// Which methods the mock server has switched on — Apple only, like a
+    /// real deployment, unless a test passes `-authMethods apple,email`.
+    private var enabledMethods: AuthMethods {
+        let raw = UserDefaults.standard.string(forKey: Self.authMethodsKey) ?? "apple"
+        let names = Set(raw.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) })
+        return AuthMethods(apple: true, email: names.contains("email"), google: names.contains("google"))
+    }
+
+    static let authMethodsKey = "authMethods"
+
     // MARK: - Identity
+
+    func authMethods() async throws -> AuthMethods {
+        try await pause()
+        return enabledMethods
+    }
 
     func signInWithApple(
         identityToken: String,
@@ -200,6 +215,7 @@ struct MockAPI: APIClient {
 
     func signInWithGoogle(idToken: String, deviceId: String) async throws -> AuthSession {
         try await pause()
+        guard enabledMethods.google else { throw APIError.refused(code: "google_signin_disabled") }
         return await profileStore.session(
             named: nil,
             email: "thomas@example.com",
@@ -210,10 +226,12 @@ struct MockAPI: APIClient {
 
     func startEmailSignIn(email: String) async throws {
         try await pause()
+        guard enabledMethods.email else { throw APIError.refused(code: "email_signin_disabled") }
     }
 
     func verifyEmailSignIn(email: String, code: String, deviceId: String) async throws -> AuthSession {
         try await pause()
+        guard enabledMethods.email else { throw APIError.refused(code: "email_signin_disabled") }
         if authScenario == .badCode {
             throw APIError.refused(code: "invalid_code")
         }

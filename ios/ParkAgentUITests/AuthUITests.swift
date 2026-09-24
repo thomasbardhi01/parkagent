@@ -8,8 +8,9 @@ import XCTest
 /// Where a sign-in lands is the gate's call, not the account's age: under
 /// -uiTesting the gate reads -skipOnboarding as "this phone is set up".
 final class AuthUITests: ParkAgentUITestCase {
-    /// Signed out, the app shows the welcome screen, not Home.
-    func testWelcomeScreenGatesTheApp() {
+    /// Signed out, the app shows the welcome screen, not Home — and with
+    /// the server at its default, Sign in with Apple is the only way in.
+    func testWelcomeScreenGatesTheAppWithAppleOnly() {
         let app = launchApp(signedIn: false)
 
         XCTAssertTrue(
@@ -17,19 +18,42 @@ final class AuthUITests: ParkAgentUITestCase {
             "Welcome screen missing when signed out"
         )
         XCTAssertTrue(element(app, "welcome.appleButton").exists, "Apple button missing")
-        XCTAssertTrue(element(app, "welcome.emailButton").exists, "Email button missing")
-        // Google is behind a flag and must not appear by default.
+        // Give the methods call time to answer before asserting absence,
+        // so "absent" can't mean "not loaded yet".
+        XCTAssertFalse(
+            element(app, "welcome.emailButton").waitForExistence(timeout: 3),
+            "Email is switched off server-side; its button must not show"
+        )
         XCTAssertFalse(element(app, "welcome.googleButton").exists, "Google button should be hidden")
         XCTAssertFalse(app.tabBars.buttons["Home"].exists, "Tab bar should not be reachable signed out")
     }
 
-    /// The flag turns the Google button on — Apple still leads (App Store
-    /// requires Sign in with Apple wherever Google is offered).
-    func testGoogleButtonAppearsBehindTheFlag() {
-        let app = launchApp(signedIn: false, googleSignIn: true)
+    /// The email button is the server's call: switched on there, it shows.
+    func testEmailButtonAppearsWhenTheServerEnablesIt() {
+        let app = launchApp(signedIn: false, authMethods: "apple,email")
         XCTAssertTrue(element(app, "welcome.view").waitForExistence(timeout: 5))
-        XCTAssertTrue(element(app, "welcome.googleButton").exists, "Google button missing with the flag on")
-        XCTAssertTrue(element(app, "welcome.appleButton").exists, "Apple must still be offered")
+        XCTAssertTrue(
+            element(app, "welcome.emailButton").waitForExistence(timeout: 5),
+            "Email switched on server-side should show its button"
+        )
+        XCTAssertTrue(element(app, "welcome.appleButton").exists, "Apple must still lead")
+    }
+
+    /// Google needs both halves: the server switched on AND a build that
+    /// can mint its token. Either alone shows nothing; Apple always leads
+    /// (the App Store requires it wherever Google is offered).
+    func testGoogleButtonNeedsTheServerAndTheBuild() {
+        let buildOnly = launchApp(signedIn: false, googleSignIn: true)
+        XCTAssertTrue(element(buildOnly, "welcome.appleButton").waitForExistence(timeout: 5))
+        XCTAssertFalse(
+            element(buildOnly, "welcome.googleButton").waitForExistence(timeout: 3),
+            "Server has Google off; no button"
+        )
+        buildOnly.terminate()
+
+        let both = launchApp(signedIn: false, googleSignIn: true, authMethods: "apple,google")
+        XCTAssertTrue(element(both, "welcome.googleButton").waitForExistence(timeout: 5), "Google button missing")
+        XCTAssertTrue(element(both, "welcome.appleButton").exists, "Apple must still be offered")
     }
 
     /// Signing in on a set-up phone goes through the gate to Home.
@@ -80,8 +104,9 @@ final class AuthUITests: ParkAgentUITestCase {
 
     /// The email code flow end to end: address → code → signed in.
     func testEmailCodeSignIn() {
-        let app = launchApp(authScenario: "returning", signedIn: false)
+        let app = launchApp(authScenario: "returning", signedIn: false, authMethods: "apple,email")
 
+        XCTAssertTrue(element(app, "welcome.emailButton").waitForExistence(timeout: 5))
         element(app, "welcome.emailButton").tap()
         let emailField = element(app, "emailSignIn.emailField")
         XCTAssertTrue(emailField.waitForExistence(timeout: 5), "Email field missing")
@@ -109,8 +134,9 @@ final class AuthUITests: ParkAgentUITestCase {
 
     /// A wrong code says so and clears the field for another try.
     func testEmailCodeRejectsAWrongCode() {
-        let app = launchApp(authScenario: "badCode", signedIn: false)
+        let app = launchApp(authScenario: "badCode", signedIn: false, authMethods: "apple,email")
 
+        XCTAssertTrue(element(app, "welcome.emailButton").waitForExistence(timeout: 5))
         element(app, "welcome.emailButton").tap()
         let emailField = element(app, "emailSignIn.emailField")
         XCTAssertTrue(emailField.waitForExistence(timeout: 5))

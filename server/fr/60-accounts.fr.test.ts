@@ -2,6 +2,8 @@
  * FR-32 — accounts. What the live API can prove without a real Apple or
  * email sign-in (both device-manual; see the FR doc):
  *
+ *  - GET /auth/methods agrees with the routes (Apple on; a method reported
+ *    off answers "<method>_signin_disabled");
  *  - GET / PATCH /me as the FR user, restored afterwards;
  *  - the refresh surface refuses a token it never issued;
  *  - with a THROWAWAY session minted by `pnpm -C server create:fr-throwaway`
@@ -81,6 +83,30 @@ describe("FR-32 profile", () => {
   it("FR-32 PATCH /me refuses an empty name or a malformed phone", async () => {
     expect((await frFetch("PATCH", "/me", { name: "" })).status).toBe(400);
     expect((await frFetch("PATCH", "/me", { phone: "call me" })).status).toBe(400);
+  });
+});
+
+describe("FR-32 sign-in methods", () => {
+  it("FR-32 GET /auth/methods: Apple is on, and every method reported off refuses as not enabled", async () => {
+    const res = await sessionFetch("GET", "/auth/methods");
+    expect(res.status).toBe(200);
+    expect(res.body["apple"]).toBe(true);
+    // Only the methods reported OFF are exercised — an enabled email
+    // method would really send mail, which the suite never does.
+    if (res.body["email"] === false) {
+      const email = await sessionFetch("POST", "/auth/email/start", {
+        payload: { email: "fr-never-sent@example.invalid" },
+      });
+      expect(email.status).toBe(403);
+      expect(email.body["error"]).toBe("email_signin_disabled");
+    }
+    if (res.body["google"] === false) {
+      const google = await sessionFetch("POST", "/auth/google", {
+        payload: { idToken: "not-a-token", deviceId: "fr-device" },
+      });
+      expect(google.status).toBe(403);
+      expect(google.body["error"]).toBe("google_signin_disabled");
+    }
   });
 });
 

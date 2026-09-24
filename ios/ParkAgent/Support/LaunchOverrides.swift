@@ -22,7 +22,10 @@ import Foundation
 ///   -seedSession <json>    DEBUG: seed a REAL session ({accessToken,
 ///                          refreshToken, deviceId} from create:fr-throwaway)
 ///                          for live-path checks against a local API
-///   -googleSignIn YES      show "Continue with Google" on the welcome screen
+///   -authMethods <csv>     the mock server's switched-on sign-in methods
+///                          (default "apple"; e.g. "apple,email,google")
+///   -googleSignIn YES      the app can do Google sign-in (the SDK flag); the
+///                          button still needs the server to report it on
 ///   -onboardingStep <n>    resume onboarding at step n (OnboardingStep raw)
 ///   -selectedCity <key>    preset onboarding's chosen city (nyc|bos|other)
 ///   -fixedNow <epoch>      freeze AppClock (see AppClock.swift)
@@ -60,6 +63,7 @@ enum LaunchOverrides {
         LinkMockScenario.defaultsKey,
         SpeechMockScenario.defaultsKey,
         AuthMockScenario.defaultsKey,
+        MockAPI.authMethodsKey,
     ]
 
     /// Call once, before any UserDefaults key is read (ParkAgentApp.init).
@@ -95,6 +99,8 @@ enum LaunchOverrides {
             ? defaults.string(forKey: "selectedCity") : nil
         let authScenario = argued[AuthMockScenario.defaultsKey] != nil
             ? defaults.string(forKey: AuthMockScenario.defaultsKey) : nil
+        let authMethods = argued[MockAPI.authMethodsKey] != nil
+            ? defaults.string(forKey: MockAPI.authMethodsKey) : nil
         let signedIn = argued["signedIn"] != nil && defaults.bool(forKey: "signedIn")
         // Raw argv, not the argument domain: UserDefaults parses argument
         // values as property lists, and a JSON object doesn't survive that.
@@ -149,6 +155,7 @@ enum LaunchOverrides {
         if let onboardingStep { defaults.set(onboardingStep, forKey: OnboardingStep.defaultsKey) }
         if let selectedCity { defaults.set(selectedCity, forKey: "selectedCity") }
         if let authScenario { defaults.set(authScenario, forKey: AuthMockScenario.defaultsKey) }
+        if let authMethods { defaults.set(authMethods, forKey: MockAPI.authMethodsKey) }
         if let googleSignIn { defaults.set(googleSignIn, forKey: FeatureFlags.googleSignInKey) }
     }
 

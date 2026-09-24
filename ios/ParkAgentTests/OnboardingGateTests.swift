@@ -107,6 +107,7 @@ private struct HangingAPI: APIClient {
     func providersStatus() async throws -> ProvidersStatusResponse { try await hang() }
 
     // Unused by the gate.
+    func authMethods() async throws -> AuthMethods { try await hang() }
     func signInWithApple(
         identityToken: String,
         deviceId: String,

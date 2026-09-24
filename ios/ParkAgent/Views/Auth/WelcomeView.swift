@@ -2,9 +2,10 @@ import AuthenticationServices
 import SwiftUI
 
 /// The first screen anyone sees. Sign in with Apple is the primary action
-/// (native button, and the App Store requires it wherever Google is
-/// offered); "Continue with email" opens a 6-digit code flow; Google sits
-/// behind FeatureFlags.googleSignIn.
+/// and, by default, the only one. "Continue with email" (a 6-digit code
+/// flow) and "Continue with Google" appear only when the server reports
+/// them switched on (GET /auth/methods) — Google also needs a build that
+/// can mint its token (FeatureFlags.googleSignIn).
 ///
 /// Sign-in and sign-up are the same act here — the server creates the
 /// account on first use, so there is nothing to choose between.
@@ -49,11 +50,13 @@ struct WelcomeView: View {
 
             appleButton
 
-            Button("Continue with email") { emailPresented = true }
-                .buttonStyle(.secondary)
-                .accessibilityIdentifier("welcome.emailButton")
+            if auth.methods.email {
+                Button("Continue with email") { emailPresented = true }
+                    .buttonStyle(.secondary)
+                    .accessibilityIdentifier("welcome.emailButton")
+            }
 
-            if FeatureFlags.googleSignIn {
+            if auth.methods.google && FeatureFlags.googleSignIn {
                 Button("Continue with Google") {
                     Task { await auth.signInWithGoogle() }
                 }
@@ -74,6 +77,7 @@ struct WelcomeView: View {
             EmailSignInView()
                 .presentationDetents([.medium, .large])
         }
+        .task { await auth.loadMethods() }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("welcome.view")
     }

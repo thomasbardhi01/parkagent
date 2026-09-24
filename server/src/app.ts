@@ -159,6 +159,7 @@ const PUBLIC_PATHS = new Set([
   "/health",
   "/webhooks/stripe",
   "/link/callback",
+  "/auth/methods",
   "/auth/apple",
   "/auth/google",
   "/auth/email/start",

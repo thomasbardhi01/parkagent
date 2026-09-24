@@ -145,16 +145,19 @@ const assistantTools = new AssistantTools({
   linkWallet,
 });
 
-// Identity: Sign in with Apple always on; email codes when Resend is
-// configured; Google only behind its flag (App Store rule: Google on the
-// welcome screen requires Apple there too — we lead with Apple).
+// Identity: Sign in with Apple always on. Email codes and Google each sit
+// behind their own switch (EMAIL_SIGNIN_ENABLED, GOOGLE_SIGNIN_ENABLED),
+// off by default; a method that's off has no sender/verifier here, its
+// routes answer 403 "<method>_signin_disabled", and GET /auth/methods
+// reports it off so the app never shows the button.
 const appleKeys = makeJwksFetcher(APPLE_JWKS_URL);
 const googleKeys = makeJwksFetcher(GOOGLE_JWKS_URL);
 const auth = {
   jwtSecret: env.AUTH_JWT_SECRET,
-  emailSender: env.RESEND_API_KEY
-    ? makeResendSender(env.RESEND_API_KEY, env.RESEND_FROM)
-    : undefined,
+  emailSender:
+    env.EMAIL_SIGNIN_ENABLED === "true" && env.RESEND_API_KEY
+      ? makeResendSender(env.RESEND_API_KEY, env.RESEND_FROM)
+      : undefined,
   verifyAppleToken: (token: string, now: Date) =>
     verifyIdToken({
       token,

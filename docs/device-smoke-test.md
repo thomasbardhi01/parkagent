@@ -21,9 +21,10 @@ reinstall rather than continuing.
 
 ### 2. It opens on your city, not New York
 
-Launch. A fresh install lands on the **welcome screen** — sign in with
-Apple (or the emailed code). Never a "not connected" banner here: if
-sign-in says the app isn't configured, `API_BASE_URL` is missing. After
+Launch. A fresh install lands on the **welcome screen** with one button,
+Sign in with Apple (email and Google stay hidden while the server has them
+switched off). Never a "not connected" banner here: if sign-in says the
+app isn't configured, `API_BASE_URL` is missing. After
 sign-in you land on the first setup step you haven't done, or Home.
 
 Home's map should settle on **where you are** within a second or

@@ -40,8 +40,13 @@ const schema = z
     AUTH_JWT_SECRET: z.string().min(32),
     // Sign in with Apple audience — the app's bundle id.
     APPLE_AUDIENCE: z.string().min(1).default("com.thomasbardhi.parkagent"),
-    // Resend (resend.com) sends the email sign-in codes. Without a key,
-    // POST /auth/email/start answers 503 (Apple sign-in still works).
+    // Sign in with Apple is the only method on by default. Email codes are
+    // off until this is "true" (and then need RESEND_API_KEY); while off,
+    // /auth/email/* answers 403 email_signin_disabled and GET /auth/methods
+    // tells the app not to show the button.
+    EMAIL_SIGNIN_ENABLED: z.enum(["true", "false"]).default("false"),
+    // Resend (resend.com) sends the email sign-in codes; required when
+    // EMAIL_SIGNIN_ENABLED=true, ignored otherwise.
     RESEND_API_KEY: z.string().min(1).optional(),
     // The From header on sign-in mail; the domain must be verified in
     // Resend (and registered with Apple's private email relay so codes
@@ -96,6 +101,15 @@ const schema = z
           "LINK_CLIENT_ID, LINK_CLIENT_SECRET, LINK_PUBLISHABLE_KEY, and LINK_REDIRECT_URI are a set — set all four or none",
       });
     }
+    // Email sign-in switched on with no way to send the code would answer
+    // every start with a failure — refuse to run half-configured.
+    if (env.EMAIL_SIGNIN_ENABLED === "true" && !env.RESEND_API_KEY) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["RESEND_API_KEY"],
+        message: "required when EMAIL_SIGNIN_ENABLED=true (it sends the codes)",
+      });
+    }
     // Google Sign-In without a client id would accept tokens minted for
     // anyone's app — refuse to run half-configured.
     if (env.GOOGLE_SIGNIN_ENABLED === "true" && !env.GOOGLE_CLIENT_ID) {
@@ -117,13 +131,18 @@ const schema = z
 
 export type Env = z.infer<typeof schema>;
 
+/** The validation alone, without loadEnv's exit — for tests. */
+export function parseEnv(source: NodeJS.ProcessEnv) {
+  return schema.safeParse(source);
+}
+
 /**
  * Parse and validate process.env. Call once at boot, after dotenv has run.
  * Exits the process with a readable list of missing/invalid keys rather
  * than letting the server come up half-configured.
  */
 export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
-  const parsed = schema.safeParse(source);
+  const parsed = parseEnv(source);
   if (!parsed.success) {
     const lines = parsed.error.issues.map(
       (issue) => `  - ${issue.path.join(".")}: ${issue.message}`,

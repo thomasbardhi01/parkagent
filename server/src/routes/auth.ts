@@ -4,9 +4,10 @@
  * code path is additionally throttled per address. Tokens and codes never
  * appear in logs or decisions.
  *
- *   POST /auth/apple         Sign in with Apple identity token
- *   POST /auth/email/start   mail a 6-digit code (Resend)
- *   POST /auth/email/verify  code → session
+ *   GET  /auth/methods       which of apple / email / google are on
+ *   POST /auth/apple         Sign in with Apple identity token (always on)
+ *   POST /auth/email/start   mail a 6-digit code (EMAIL_SIGNIN_ENABLED only)
+ *   POST /auth/email/verify  code → session (EMAIL_SIGNIN_ENABLED only)
  *   POST /auth/google        Google ID token (GOOGLE_SIGNIN_ENABLED only)
  *   POST /auth/refresh       rotate the refresh token
  *   POST /auth/logout        revoke the refresh family
@@ -138,9 +139,20 @@ export function registerAuth(app: FastifyInstance, deps: AppDeps): void {
     return sessionBody(session, created);
   });
 
+  // Which sign-in methods this deployment accepts, so the welcome screen
+  // shows only buttons that work. Public (it runs before any session) and
+  // secret-free: three booleans. Apple is on whenever auth is configured;
+  // email and Google each need their switch (see index.ts).
+  app.get("/auth/methods", async () => ({
+    apple: Boolean(auth),
+    email: Boolean(auth?.emailSender),
+    google: Boolean(auth?.verifyGoogleToken),
+  }));
+
   app.post("/auth/email/start", { preHandler: limitEmailStart }, async (req, reply) => {
     const service = authDeps();
     if (!service) return reply.code(503).send({ error: "auth_not_configured" });
+    if (!auth?.emailSender) return reply.code(403).send({ error: "email_signin_disabled" });
     const parsed = emailStartSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: z.treeifyError(parsed.error) });
 
@@ -156,6 +168,9 @@ export function registerAuth(app: FastifyInstance, deps: AppDeps): void {
   app.post("/auth/email/verify", { preHandler: limitEmailVerify }, async (req, reply) => {
     const service = authDeps();
     if (!service) return reply.code(503).send({ error: "auth_not_configured" });
+    // Off means off: no code can be verified while the method is disabled,
+    // whatever codes an earlier configuration left in the table.
+    if (!auth?.emailSender) return reply.code(403).send({ error: "email_signin_disabled" });
     const parsed = emailVerifySchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: z.treeifyError(parsed.error) });
 

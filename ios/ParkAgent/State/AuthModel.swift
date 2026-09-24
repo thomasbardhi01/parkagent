@@ -146,6 +146,17 @@ final class AuthModel {
         errorMessage = nil
     }
 
+    // MARK: - Methods
+
+    /// Which sign-in buttons to show. Apple only until the server says
+    /// otherwise, and Apple only if it can't be asked: a button for a
+    /// switched-off method would just fail.
+    private(set) var methods: AuthMethods = .appleOnly
+
+    func loadMethods() async {
+        methods = (try? await api.authMethods()) ?? .appleOnly
+    }
+
     // MARK: - Internals
 
     private func signIn(_ work: @escaping () async throws -> AuthSession) async {

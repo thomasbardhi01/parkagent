@@ -2,9 +2,9 @@
 
 Personal prototype: detect that a car has parked in a metered zone, quote
 the cost, pay via the city's app (ParkNYC / ParkBoston) within a budget,
-and auto-extend using a cost-based rule. Anyone can sign up — Sign in with
-Apple, an emailed 6-digit code, or (flag-gated) Google — and connect their
-own city's parking account in one guided step. Two cities (NYC and Boston —
+and auto-extend using a cost-based rule. Anyone can sign up with Sign in
+with Apple (email codes and Google are built but switched off) and connect
+their own city's parking account in one guided step. Two cities (NYC and Boston —
 zones and sessions rows carry a `city`); Boston zone numbers aren't in the
 open data, so they come from the Passport Find Parking feed importer
 (`data/import_parkboston_zones.py` → `pnpm -C server load:zone-numbers`)
@@ -50,8 +50,12 @@ Mac App Store.
 
 ## Accounts (identity + sessions)
 Users sign in with Apple (identity token verified against Apple's JWKS,
-audience `APPLE_AUDIENCE`), an emailed 6-digit code (Resend,
-`RESEND_API_KEY`), or Google behind `GOOGLE_SIGNIN_ENABLED`. A sign-in
+audience `APPLE_AUDIENCE`) — the only method on by default. Email codes
+(`EMAIL_SIGNIN_ENABLED` + `RESEND_API_KEY`) and Google
+(`GOOGLE_SIGNIN_ENABLED` + `GOOGLE_CLIENT_ID`) are built but switched off:
+their routes answer `403 <method>_signin_disabled`, the server boots
+without any of their settings, and the Welcome screen shows only what
+`GET /auth/methods` reports on. A sign-in
 returns a 15-minute HS256 access JWT (`AUTH_JWT_SECRET`) plus an opaque
 refresh token: stored hashed, bound to a device id, 60-day sliding
 expiry, **rotated on every use**, and replay of a rotated token revokes

@@ -26,6 +26,10 @@ struct LiveAPI: APIClient {
 
     // MARK: - Identity
 
+    func authMethods() async throws -> AuthMethods {
+        try await send("auth/methods", authenticated: false)
+    }
+
     func signInWithApple(
         identityToken: String,
         deviceId: String,

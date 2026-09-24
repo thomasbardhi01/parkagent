@@ -8,6 +8,19 @@ import Foundation
 // MARK: - Identity (server/API.md "Authentication", "GET/PATCH /me")
 
 /// GET /me — the profile plus the payment-source settings it carries.
+/// GET /auth/methods — which sign-in methods the server accepts right now.
+/// Apple is the only one on by default; email codes and Google each sit
+/// behind a server switch.
+struct AuthMethods: Codable, Sendable, Equatable {
+    var apple: Bool
+    var email: Bool
+    var google: Bool
+
+    /// What the welcome screen assumes until (or unless) the server says
+    /// otherwise: never a button for a method that might be switched off.
+    static let appleOnly = AuthMethods(apple: true, email: false, google: false)
+}
+
 struct MeResponse: Codable, Sendable {
     var user: AuthUser
     var paymentSource: PaymentSource

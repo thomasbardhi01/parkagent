@@ -48,8 +48,13 @@ answer `500 {"error": "internal"}` — details go to the server log only.
 ## Identity & sessions
 
 Anyone can sign up: the first successful sign-in creates the account.
-Three ways in, all landing on the same user when the verified email
-matches (see "Merging"):
+**Sign in with Apple is the only method on by default.** Email codes and
+Google are built but switched off (`EMAIL_SIGNIN_ENABLED`,
+`GOOGLE_SIGNIN_ENABLED`, both default `false`); the server boots and runs
+without any Resend or Google settings, a switched-off method's routes
+answer `403 {"error": "<method>_signin_disabled"}`, and
+`GET /auth/methods` tells the app which buttons to show. All methods land
+on the same user when the verified email matches (see "Merging"):
 
 - **Sign in with Apple** — the app sends Apple's identity token; the
   server verifies it against Apple's JWKS (`appleid.apple.com/auth/keys`),
@@ -58,7 +63,8 @@ matches (see "Merging"):
   (`…@privaterelay.appleid.com`) are stored like any other verified
   address — which means the sending domain must be registered with
   Apple's private email relay or sign-in codes to those users bounce.
-- **Email one-time code** — 6 digits, 10-minute expiry, 5 attempts,
+- **Email one-time code** — behind `EMAIL_SIGNIN_ENABLED` (default off;
+  on requires `RESEND_API_KEY`). 6 digits, 10-minute expiry, 5 attempts,
   delivered by Resend.
 - **Google** — behind `GOOGLE_SIGNIN_ENABLED` (default off). The App
   Store requires offering Sign in with Apple wherever Google is offered,
@@ -99,6 +105,14 @@ fails any check → `401 {"error": "invalid_identity_token", "code": …}`
 (`malformed`, `unknown_key`, `bad_signature`, `wrong_issuer`,
 `wrong_audience`, `expired`).
 
+### GET /auth/methods
+
+Public, no body, no credential: `{"apple": true, "email": false,
+"google": false}` — which sign-in methods this deployment accepts. The
+welcome screen shows a button only for a method reported `true` (and
+Apple only, if it can't ask). Each flag is exactly what the routes do: a
+method reported `false` answers `403 <method>_signin_disabled`.
+
 ### POST /auth/google
 
 `{idToken, deviceId}` → the same session body. `403
@@ -113,15 +127,17 @@ code is stored hashed; the plaintext exists only in the email. At most 5
 codes per address per 15 minutes and 10 per 24 hours
 (`429 email_rate_limited`) on top of the per-IP limit — with 5 attempts a
 code, that bounds guessing at one address to 50 a day however many IPs
-ask. `503 {"error": "email_not_configured"}` when
-`RESEND_API_KEY` isn't set; `502 send_failed` when Resend refuses.
+ask. `403 {"error": "email_signin_disabled"}` unless
+`EMAIL_SIGNIN_ENABLED=true`; `502 send_failed` when Resend refuses.
 
 The response is identical whether or not the address has an account —
 this endpoint must not become an account-existence oracle.
 
 ### POST /auth/email/verify
 
-`{email, code, deviceId}` → the session body. Wrong code →
+`{email, code, deviceId}` → the session body; `403
+email_signin_disabled` while the method is off (no code verifies then,
+whatever an earlier configuration left behind). Wrong code →
 `401 invalid_code`; past 10 minutes → `401 code_expired`; after 5 failed
 attempts the code is burnt and even the right one answers
 `401 too_many_attempts`. Each attempt is claimed with one conditional

@@ -102,6 +102,38 @@ const post = (
   headers: Record<string, string> = {},
 ) => app.inject({ method: "POST", url, payload: payload as object, headers });
 
+describe("GET /auth/methods", () => {
+  test("Apple only by default — email and Google are off until switched on", async () => {
+    // makeTestApp wires no email sender and no Google verifier, exactly
+    // like a deployment without EMAIL_SIGNIN_ENABLED / GOOGLE_SIGNIN_ENABLED.
+    const { app } = makeTestApp({});
+    const res = await app.inject({ method: "GET", url: "/auth/methods" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ apple: true, email: false, google: false });
+  });
+
+  test("reports each method the deployment wired, and needs no credential", async () => {
+    const { app } = makeAuthApp({
+      auth: { verifyGoogleToken: async () => ({ ok: false, code: "bad_signature" }) },
+    });
+    const res = await app.inject({ method: "GET", url: "/auth/methods" });
+    expect(res.json()).toEqual({ apple: true, email: true, google: true });
+  });
+
+  test("what it reports matches what the routes do", async () => {
+    const { app } = makeTestApp({});
+    const methods = (await app.inject({ method: "GET", url: "/auth/methods" })).json();
+    expect(methods.email).toBe(false);
+    expect(methods.google).toBe(false);
+    const email = await post(app, "/auth/email/start", { email: "a@b.co" });
+    const google = await post(app, "/auth/google", { idToken: "x", deviceId: DEVICE });
+    expect([email.json().error, google.json().error]).toEqual([
+      "email_signin_disabled",
+      "google_signin_disabled",
+    ]);
+  });
+});
+
 describe("POST /auth/apple", () => {
   test("valid identity token creates a user and a working session", async () => {
     const { app, state } = makeAuthApp();
@@ -508,10 +540,32 @@ describe("email one-time codes", () => {
     expect(await startEmailLogin(deps, "target@example.com")).toEqual({ ok: true });
   });
 
-  test("without a configured sender, start answers 503", async () => {
-    const { app } = makeAuthApp({ auth: { emailSender: undefined } });
-    const res = await post(app, "/auth/email/start", { email: "a@b.co" });
-    expect(res.statusCode).toBe(503);
+  test("switched off (no sender wired), both email routes answer 403 and nothing is sent", async () => {
+    const { app, sentCodes, state } = makeAuthApp({ auth: { emailSender: undefined } });
+    const start = await post(app, "/auth/email/start", { email: "a@b.co" });
+    expect(start.statusCode).toBe(403);
+    expect(start.json()).toEqual({ error: "email_signin_disabled" });
+    expect(sentCodes).toHaveLength(0);
+    expect(state.emailLoginCodes).toHaveLength(0);
+
+    // Verify refuses too, even for a code left over from when it was on.
+    state.emailLoginCodes.push({
+      id: "leftover",
+      email: "a@b.co",
+      codeHash: "x",
+      expiresAt: new Date(baseNow + 60_000),
+      attempts: 0,
+      consumedAt: null,
+      createdAt: new Date(baseNow),
+    });
+    const verify = await post(app, "/auth/email/verify", {
+      email: "a@b.co",
+      code: "123456",
+      deviceId: DEVICE,
+    });
+    expect(verify.statusCode).toBe(403);
+    expect(verify.json()).toEqual({ error: "email_signin_disabled" });
+    expect(state.emailLoginCodes[0]!.attempts).toBe(0);
   });
 });
 

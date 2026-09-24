@@ -512,10 +512,13 @@ Anyone can sign up and stay signed in, and an account's lifecycle is
 safe end to end:
 
 - **Sign-in** by Apple (identity token verified against Apple's JWKS:
-  signature, issuer, audience, expiry), an emailed 6-digit code (10-minute
-  expiry, 5 attempts, 5 sends per address per 15 minutes), or Google
-  behind `GOOGLE_SIGNIN_ENABLED`. Verified-email matches merge into one
-  account; unverified emails never merge.
+  signature, issuer, audience, expiry) — the only method on by default.
+  An emailed 6-digit code (10-minute expiry, 5 attempts, 5 sends per
+  address per 15 minutes and 10 a day) and Google are built but switched
+  off (`EMAIL_SIGNIN_ENABLED`, `GOOGLE_SIGNIN_ENABLED`): their routes
+  answer `403 <method>_signin_disabled`, `GET /auth/methods` reports them
+  off, and the app shows only the Apple button. Verified-email matches
+  merge into one account; unverified emails are never stored.
 - **Sessions**: 15-minute access JWTs plus refresh tokens stored only
   hashed, bound to a device id, 60-day sliding expiry, rotated on every
   use. Presenting a rotated token is reuse and revokes the whole family;
@@ -532,9 +535,9 @@ safe end to end:
 - **Admin keys** keep working for scripts and the FR user; the app never
   carries one.
 
-**Accepted when** the live suite proves profile read/write, refresh
-refusal, device binding, rotation, reuse detection, and deletion against
-the deployed API, and the unit suites pin the verification, throttles,
+**Accepted when** the live suite proves the reported sign-in methods
+match the routes, profile read/write, refresh refusal, device binding,
+rotation, reuse detection, and deletion against the deployed API, and the unit suites pin the verification, throttles,
 merge rules, and teardown.
 
 The live session-lifecycle tests need a real refresh session, minted by
@@ -546,9 +549,9 @@ verified identity. The suite deletes the throwaway it is given; without
 one (`FR_THROWAWAY_SESSION` unset) those four tests skip.
 
 **Device-manual**: Sign in with Apple on a phone (the system sheet can't
-be automated, and a real identity token only comes from Apple), and
-email-code delivery to a real mailbox (Resend, including Apple's private
-relay for hidden-email users).
+be automated, and a real identity token only comes from Apple). Email-code
+delivery to a real mailbox (Resend, including Apple's private relay) is
+device-manual too, once email sign-in is switched on.
 
 Evidence: live FR-32 tests; `auth.test.ts` (real RS256 verification,
 code throttles, rotation, the rotation race, deletion teardown including

@@ -9,13 +9,15 @@
 
 import { describe, expect, test } from "vitest";
 
-import type { ModelClient, ModelResponse } from "../src/services/assistant/loop.js";
+import type { ModelClient, ModelResponse, ModelTurn } from "../src/services/assistant/loop.js";
 import {
   SYSTEM_PROMPT,
   joinReplySegments,
   scrubVerbalConfirm,
+  streetQuotesIn,
 } from "../src/services/assistant/loop.js";
-import type { SingleSpotPlan } from "../src/services/assistant/plans.js";
+import type { SingleSpotOption, SingleSpotPlan } from "../src/services/assistant/plans.js";
+import { groundStreetOptions } from "../src/services/assistant/tools.js";
 import type { GarageOption, GarageProvider } from "../src/services/garage/garageProvider.js";
 import { API_KEY, BOYLSTON_BOS, MONDAY_2PM, makeTestApp } from "./helpers.js";
 
@@ -23,7 +25,8 @@ const HEADERS = { "x-api-key": API_KEY, "content-type": "application/json" };
 const NOW = new Date(MONDAY_2PM);
 /** "2pm tomorrow" relative to the fixture Monday. */
 const TOMORROW_2PM = "2026-01-06T14:00:00-05:00";
-const PROD_REQUEST = "find me street parking near Boylston and Dartmouth for an hour at 2pm tomorrow";
+const PROD_REQUEST =
+  "find me street parking near Boylston and Dartmouth for an hour at 2pm tomorrow";
 
 function scriptedModel(responses: ModelResponse[]): ModelClient & { calls: number } {
   const state = { calls: 0 };
@@ -271,6 +274,224 @@ describe("the prod request", () => {
   });
 });
 
+describe("FR-26 street options are grounded in a quote (nightly FR 2026-09-24)", () => {
+  function streetOption(extra: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      id: "s1",
+      type: "street",
+      label: "Street near Newbury",
+      detail: "",
+      priceUsd: 4.1,
+      durationMinutes: 60,
+      startsAt: TOMORROW_2PM,
+      recommended: true,
+      ...extra,
+    };
+  }
+
+  test("a quoted street option the model sent without zoneId reaches the card with the quoted zone", async () => {
+    // The nightly failure's shape: the model quoted, then proposed with
+    // the zone under a key zod strips — the card got no zoneId.
+    const model = scriptedModel([
+      {
+        content: [
+          {
+            type: "tool_use",
+            id: "t1",
+            name: "quote_street",
+            input: { lat: 42.3495, lng: -71.0798, duration_minutes: 60, when: TOMORROW_2PM },
+          },
+        ],
+        stopReason: "tool_use",
+      },
+      {
+        content: [
+          {
+            type: "tool_use",
+            id: "t2",
+            name: "propose_plan",
+            input: {
+              plan: {
+                kind: "single_spot",
+                options: [streetOption({ zone: REPORTED_ZONE.zoneId })],
+              },
+            },
+          },
+        ],
+        stopReason: "tool_use",
+      },
+    ]);
+    const t = makeTestApp({ candidates: [REPORTED_ZONE], assistantModel: model, now: () => NOW });
+    const res = await t.app.inject({
+      method: "POST",
+      url: "/assistant/message",
+      headers: HEADERS,
+      payload: { text: PROD_REQUEST },
+    });
+    expect(res.statusCode).toBe(200);
+    const option = (res.json().plan.plan as SingleSpotPlan).options[0]!;
+    expect(option.zoneId).toBe(REPORTED_ZONE.zoneId);
+    expect(option).not.toHaveProperty("zone");
+    // Proposed on the model's own call — not the synthesis fallback.
+    expect(model.calls).toBe(2);
+  });
+
+  test("a later turn's re-proposal is grounded in the quote an earlier turn made", async () => {
+    const proposal = (id: string, option: Record<string, unknown>): ModelResponse => ({
+      content: [
+        {
+          type: "tool_use",
+          id,
+          name: "propose_plan",
+          input: { plan: { kind: "single_spot", options: [option] } },
+        },
+      ],
+      stopReason: "tool_use",
+    });
+    const model = scriptedModel([
+      {
+        content: [
+          {
+            type: "tool_use",
+            id: "t1",
+            name: "quote_street",
+            input: { lat: 42.3495, lng: -71.0798, duration_minutes: 60, when: TOMORROW_2PM },
+          },
+        ],
+        stopReason: "tool_use",
+      },
+      proposal("t2", streetOption({ zoneId: REPORTED_ZONE.zoneId })),
+      // Next turn: no new quote, and the zoneId dropped.
+      proposal("t3", streetOption({ label: "Same spot, 60 minutes" })),
+    ]);
+    const t = makeTestApp({ candidates: [REPORTED_ZONE], assistantModel: model, now: () => NOW });
+    const first = await t.app.inject({
+      method: "POST",
+      url: "/assistant/message",
+      headers: HEADERS,
+      payload: { text: PROD_REQUEST },
+    });
+    const second = await t.app.inject({
+      method: "POST",
+      url: "/assistant/message",
+      headers: HEADERS,
+      payload: { text: "Same again please.", conversation_id: first.json().conversationId },
+    });
+    expect(second.statusCode).toBe(200);
+    const option = (second.json().plan.plan as SingleSpotPlan).options[0]!;
+    expect(option.label).toBe("Same spot, 60 minutes");
+    expect(option.zoneId).toBe(REPORTED_ZONE.zoneId);
+  });
+
+  test("a street option with no quote behind it is refused, audited, and mints no plan", async () => {
+    const t = makeTestApp({ candidates: [REPORTED_ZONE], now: () => NOW });
+    const outcome = await t.deps.assistantTools!.execute(
+      { userId: "u1", conversationId: "c1" },
+      "propose_plan",
+      { plan: { kind: "single_spot", options: [streetOption()] } },
+    );
+    expect(outcome.endTurn).toBeUndefined();
+    expect(outcome.result).toMatchObject({
+      error: "street_option_ungrounded",
+      optionId: "s1",
+      quotedZoneIds: [],
+    });
+    expect(t.state.decisions.at(-1)).toMatchObject({ rule: "ungrounded_street_option" });
+    expect(t.state.decisions.some((d) => d.kind === "assistant_plan")).toBe(false);
+  });
+
+  test("a quote_street earlier in the same turn grounds a later propose_plan", async () => {
+    const t = makeTestApp({ candidates: [REPORTED_ZONE], now: () => NOW });
+    const ctx = { userId: "u1", conversationId: "c1" };
+    await t.deps.assistantTools!.execute(ctx, "quote_street", {
+      lat: 42.3495,
+      lng: -71.0798,
+      duration_minutes: 60,
+      when: TOMORROW_2PM,
+    });
+    const outcome = await t.deps.assistantTools!.execute(ctx, "propose_plan", {
+      plan: { kind: "single_spot", options: [streetOption()] },
+    });
+    expect((outcome.endTurn!.plan as SingleSpotPlan).options[0]!.zoneId).toBe(REPORTED_ZONE.zoneId);
+  });
+
+  test("groundStreetOptions: one zone fills; several resolve by price or refuse; a stated zone and garages pass", () => {
+    const base = { label: "x", detail: "", durationMinutes: 60, recommended: false };
+    const street = (id: string, priceUsd: number, zoneId?: string): SingleSpotOption => ({
+      ...base,
+      id,
+      type: "street",
+      priceUsd,
+      ...(zoneId ? { zoneId } : {}),
+    });
+    const garage: SingleSpotOption = {
+      ...base,
+      id: "g",
+      type: "garage",
+      priceUsd: 20,
+      garageOptionId: "g1",
+    };
+    const two = [
+      { zoneId: "bos-a", costUsd: 4.1 },
+      { zoneId: "bos-b", costUsd: 6.2 },
+    ];
+
+    // One zone quoted (twice) fills regardless of the option's price.
+    const one = groundStreetOptions([street("s", 99)], [two[0]!, two[0]!]);
+    expect(one).toMatchObject({ ok: true, options: [{ zoneId: "bos-a" }] });
+    // Several zones: the price picks the one quoted at it…
+    expect(groundStreetOptions([street("s", 6.2), garage], two)).toMatchObject({
+      ok: true,
+      options: [{ zoneId: "bos-b" }, { id: "g", garageOptionId: "g1" }],
+    });
+    // …and a price quoted for neither is ambiguous.
+    expect(groundStreetOptions([street("s", 5)], two)).toEqual({ ok: false, optionId: "s" });
+    // Nothing quoted: refused. An explicit zoneId is kept as sent.
+    expect(groundStreetOptions([street("s", 4.1)], [])).toEqual({ ok: false, optionId: "s" });
+    expect(groundStreetOptions([street("s", 5, "bos-z")], two)).toMatchObject({
+      ok: true,
+      options: [{ zoneId: "bos-z" }],
+    });
+  });
+
+  test("streetQuotesIn reads found quotes from a stored transcript, skipping misses, other tools, and orphans", () => {
+    const turns: ModelTurn[] = [
+      { role: "user", content: "parking near Newbury" },
+      {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "q1", name: "quote_street", input: {} },
+          { type: "tool_use", id: "q2", name: "quote_street", input: {} },
+          { type: "tool_use", id: "g1", name: "search_garages", input: {} },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "q1",
+            content: JSON.stringify({ found: true, zoneId: "bos-a", costUsd: 4.1 }),
+          },
+          { type: "tool_result", tool_use_id: "q2", content: JSON.stringify({ found: false }) },
+          {
+            type: "tool_result",
+            tool_use_id: "g1",
+            content: JSON.stringify({ found: true, zoneId: "bos-garage" }),
+          },
+          // Its tool_use was trimmed off the stored history.
+          {
+            type: "tool_result",
+            tool_use_id: "q0",
+            content: JSON.stringify({ found: true, zoneId: "bos-old" }),
+          },
+        ],
+      },
+    ];
+    expect(streetQuotesIn(turns)).toEqual([{ zoneId: "bos-a", costUsd: 4.1 }]);
+  });
+});
+
 describe("verbal confirm is a dead end", () => {
   test("typing 'confirm' in chat books nothing — the tool refuses and the reply points at the card", async () => {
     // A model that treats the typed word as authorization and calls the
@@ -278,13 +499,21 @@ describe("verbal confirm is a dead end", () => {
     const model = scriptedModel([
       {
         content: [
-          { type: "tool_use", id: "t1", name: "start_session", input: { zone: "bos-x", duration_minutes: 60 } },
+          {
+            type: "tool_use",
+            id: "t1",
+            name: "start_session",
+            input: { zone: "bos-x", duration_minutes: 60 },
+          },
         ],
         stopReason: "tool_use",
       },
       {
         content: [
-          { type: "text", text: "I can't start it from chat — use the Confirm button on the card." },
+          {
+            type: "text",
+            text: "I can't start it from chat — use the Confirm button on the card.",
+          },
         ],
         stopReason: "end_turn",
       },
@@ -439,7 +668,9 @@ describe("the model can't time-travel (Seaport prod bug #2)", () => {
     expect(turns).toContain("window_in_the_past");
     expect(turns).toContain("2026-01-05 14:00 ET");
     // …and the retry succeeded.
-    expect(t.state.decisions.some((d) => d.kind === "assistant_tool" && d.rule === "ok")).toBe(true);
+    expect(t.state.decisions.some((d) => d.kind === "assistant_tool" && d.rule === "ok")).toBe(
+      true,
+    );
   });
 
   test("quote_street gets the same guard", async () => {
@@ -454,7 +685,12 @@ describe("the model can't time-travel (Seaport prod bug #2)", () => {
     const fresh = await t.deps.assistantTools!.execute(
       { userId: "u1", conversationId: "c1" },
       "quote_street",
-      { lat: 42.3495, lng: -71.0798, duration_minutes: 60, when: new Date(NOW.getTime() - 30 * 60_000).toISOString() },
+      {
+        lat: 42.3495,
+        lng: -71.0798,
+        duration_minutes: 60,
+        when: new Date(NOW.getTime() - 30 * 60_000).toISOString(),
+      },
     );
     expect((fresh.result as { found: boolean }).found).toBe(true);
   });

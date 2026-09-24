@@ -25,6 +25,20 @@ try {
 
 const rows = [];
 for (const file of raw.testResults ?? []) {
+  // A throwing beforeAll (the dry-run gate, a dead API, a bad key) fails
+  // the FILE and leaves every test in it "skipped" — without this row the
+  // report would call a run that tested nothing a pass.
+  if (file.status === "failed" && file.message) {
+    const fileName = String(file.name ?? "")
+      .split("/")
+      .pop();
+    rows.push({
+      frIds: ["suite"],
+      name: `${fileName} (file-level failure)`,
+      status: "failed",
+      failure: String(file.message).slice(0, 1500),
+    });
+  }
   for (const test of file.assertionResults ?? []) {
     const name = test.fullName ?? test.title ?? "";
     const frIds = [...new Set(name.match(/FR-\d+/g) ?? ["untagged"])];

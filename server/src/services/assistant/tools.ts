@@ -25,7 +25,7 @@ import { lookupRadiusM, resolveCandidates } from "../zoneLookup.js";
 import { applyObservedToCandidates } from "../zoneTermsObserved.js";
 import { currentTimeLine } from "./loop.js";
 import { itineraryTotalUsd, planSchema } from "./plans.js";
-import type { AssistantPlanBody } from "./plans.js";
+import type { AssistantPlanBody, SingleSpotOption } from "./plans.js";
 
 export interface AssistantDeps {
   db: AppDb;
@@ -40,11 +40,21 @@ export interface AssistantDeps {
   now?: (() => Date) | undefined;
 }
 
+/** One zone quote_street found — what a street option is grounded in. */
+export interface StreetQuote {
+  zoneId: string;
+  costUsd: number;
+}
+
 export interface ToolContext {
   userId: string;
   conversationId: string;
   /** The phone's location when the message was sent, if it sent one. */
   location?: { lat: number; lng: number } | undefined;
+  /** This conversation's street quotes so far: the loop seeds it from
+   * the stored transcript and quote_street appends. propose_plan grounds
+   * street options in it. */
+  streetQuotes?: StreetQuote[] | undefined;
 }
 
 /** What a tool hands back to the loop. `endTurn` is propose_plan's exit. */
@@ -153,7 +163,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: "propose_plan",
     description:
-      "Present the final plan to the user as cards and END your turn. Single-spot: up to 3 options, exactly one recommended. Itinerary: the per-stop choices with costs and the day total. Nothing is booked or paid by this tool — the user must tap Confirm/Sign off.",
+      "Present the final plan to the user as cards and END your turn. Single-spot: up to 3 options, exactly one recommended; a street option carries the zoneId quote_street returned, a garage option the garageOptionId search_garages returned. Itinerary: the per-stop choices with costs and the day total. Nothing is booked or paid by this tool — the user must tap Confirm/Sign off.",
     input_schema: {
       type: "object" as const,
       additionalProperties: false,
@@ -222,6 +232,30 @@ export const TOOL_DEFINITIONS = [
 
 function num(v: unknown): number {
   return typeof v === "number" ? v : Number(v);
+}
+
+/** Fill each street option's missing zoneId from the conversation's
+ * quotes: the only zone quoted, else the only zone quoted at the
+ * option's price. Anything else is ambiguous — the model must say which. */
+export function groundStreetOptions(
+  options: SingleSpotOption[],
+  quotes: StreetQuote[],
+): { ok: true; options: SingleSpotOption[] } | { ok: false; optionId: string } {
+  const zones = new Set(quotes.map((q) => q.zoneId));
+  const grounded: SingleSpotOption[] = [];
+  for (const option of options) {
+    if (option.type !== "street" || option.zoneId) {
+      grounded.push(option);
+      continue;
+    }
+    const atPrice = new Set(
+      quotes.filter((q) => Math.abs(q.costUsd - option.priceUsd) < 0.005).map((q) => q.zoneId),
+    );
+    const zoneId = zones.size === 1 ? [...zones][0] : atPrice.size === 1 ? [...atPrice][0] : null;
+    if (!zoneId) return { ok: false, optionId: option.id };
+    grounded.push({ ...option, zoneId });
+  }
+  return { ok: true, options: grounded };
 }
 
 export class AssistantTools {
@@ -484,6 +518,7 @@ export class AssistantTools {
       costUsd: price.totalUsd,
       ...(zone.termsSource === "observed" ? { termsSource: "observed" } : {}),
     });
+    (ctx.streetQuotes ??= []).push({ zoneId: zone.zoneId, costUsd: price.totalUsd });
     return { result };
   }
 
@@ -575,6 +610,32 @@ export class AssistantTools {
       }
       plan = { ...plan, totalUsd, capUsd: policy.daily_cap_usd };
     } else {
+      // FR-26: a street option carries the zone quote_street quoted.
+      // Models drop the optional zoneId, or rename it and zod strips the
+      // unknown key, so a missing one is re-attached from this
+      // conversation's quotes; one with nothing to ground it in bounces
+      // back to the model instead of reaching a card with no zone.
+      const quotes = ctx.streetQuotes ?? [];
+      const grounded = groundStreetOptions(plan.options, quotes);
+      if (!grounded.ok) {
+        const quotedZoneIds = [...new Set(quotes.map((q) => q.zoneId))];
+        await this.audit(ctx, "propose_plan", input, "ungrounded_street_option", {
+          optionId: grounded.optionId,
+          quotedZoneIds,
+        });
+        return {
+          result: {
+            error: "street_option_ungrounded",
+            optionId: grounded.optionId,
+            quotedZoneIds,
+            hint:
+              quotes.length === 0
+                ? "quote this spot with quote_street first, then propose with the zoneId it returned"
+                : "set zoneId on the street option to the zoneId quote_street returned for it",
+          },
+        };
+      }
+      plan = { ...plan, options: grounded.options };
       const badges = plan.options.filter((o) => o.recommended).length;
       if (badges !== 1) {
         // Normalize instead of bouncing: first option wins the badge.

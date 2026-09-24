@@ -428,7 +428,9 @@ FR-25 test.
 
 Plan options must originate from tool results — a street option carries
 the zone the `quote_street` tool actually quoted (observed terms
-applied), a garage option the id `search_garages` returned; plans are
+applied; a zoneId the model dropped is re-attached from the
+conversation's quotes, and a street option with no quote to ground it
+is refused), a garage option the id `search_garages` returned; plans are
 zod-validated at the tool boundary and itinerary totals recomputed
 server-side, so an invented price or zone never reaches a card.
 **Accepted when** ungrounded plans are refused at the boundary.

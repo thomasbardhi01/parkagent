@@ -58,7 +58,6 @@ export const DEFAULT_POLICY: Policy = {
   daily_cap_usd: 60,
   auto_pay_max_rate_per_hour: 8.0,
   default_stay_minutes: 90,
-  parknyc_fee_usd: 0.15,
   auto_extend: {
     enabled: true,
     max_count: 2,
@@ -68,7 +67,7 @@ export const DEFAULT_POLICY: Policy = {
   respect_enforcement_hours: true,
   ticket_cost_usd: 65,
   city_overrides: {
-    nyc: { ticket_cost_usd: 65 },
+    nyc: { parking_fee_usd: 0.15, ticket_cost_usd: 65 },
     bos: { parking_fee_usd: 0.35, ticket_cost_usd: 40 },
   },
 };

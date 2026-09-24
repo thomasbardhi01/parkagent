@@ -96,25 +96,28 @@ export function paymentFailedPush(args: {
   zoneNumber: string;
   what: "pay" | "extend";
   code: string;
+  /** The session city's provider display name from the registry ("ParkNYC",
+   * "ParkBoston"); callers pass a neutral fallback when the city has none. */
+  providerName: string;
 }): Push {
   // A card-less account, an unknown plate, or an operator lockout are
-  // distinct, actionable failures: the fix is doing something in ParkBoston
-  // (or waiting), not blindly "retry"/"tap to pay".
+  // distinct, actionable failures: the fix is doing something in the
+  // provider's own app (or waiting), not blindly "retry"/"tap to pay".
   const body =
     args.code === "payment_method_missing"
-      ? `The meter for zone ${args.zoneNumber} is unpaid — add a card to ParkBoston, then tap to pay.`
+      ? `The meter for zone ${args.zoneNumber} is unpaid — add a card to ${args.providerName}, then tap to pay.`
       : args.code === "vehicle_missing"
-        ? `ParkBoston doesn't know your plate — add your vehicle there, then tap to pay zone ${args.zoneNumber}.`
+        ? `${args.providerName} doesn't know your plate — add your vehicle there, then tap to pay zone ${args.zoneNumber}.`
         : args.code === "parking_denied"
-          ? `ParkBoston won't let you re-park zone ${args.zoneNumber} right now (an operator lockout). Nothing was charged — wait or move the car.`
+          ? `${args.providerName} won't let you re-park zone ${args.zoneNumber} right now (an operator lockout). Nothing was charged — wait or move the car.`
           : `Could not ${args.what} zone ${args.zoneNumber} (${args.code}). The meter is unpaid — tap to pay.`;
   return {
     type: "payment_failed",
     title:
       args.code === "payment_method_missing"
-        ? "Add a card to ParkBoston"
+        ? `Add a card to ${args.providerName}`
         : args.code === "vehicle_missing"
-          ? "Add your plate to ParkBoston"
+          ? `Add your plate to ${args.providerName}`
           : args.code === "parking_denied"
             ? "Parking blocked right now"
             : "Payment failed",
@@ -123,7 +126,7 @@ export function paymentFailedPush(args: {
       code: args.code,
       zoneNumber: args.zoneNumber,
       // Tap-to-pay fallback: the app opens its pay screen with the zone
-      // prefilled (and copies the zone number for the ParkNYC app).
+      // prefilled (and copies the zone number for the provider's app).
       deepLink: `parkagent://pay?zone=${encodeURIComponent(args.zoneNumber)}`,
     },
   };
@@ -202,7 +205,12 @@ export function samplePush(type: PushTestType, now: Date): Push {
     case "session_expiring":
       return sessionExpiringPush({ zoneNumber: "456", minutesLeft: 10, reason: "max_stay" });
     case "payment_failed":
-      return paymentFailedPush({ zoneNumber: "456", what: "pay", code: "payment_declined" });
+      return paymentFailedPush({
+        zoneNumber: "456",
+        what: "pay",
+        code: "payment_declined",
+        providerName: "ParkBoston",
+      });
     case "provider_relink":
       return providerRelinkPush({ provider: "passport", displayName: "ParkBoston" });
   }

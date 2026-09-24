@@ -1,11 +1,12 @@
 /**
  * Named-place geocoding for the assistant. "find me a garage on Newbury
- * Street", "near India Street", "in South Boston", "near Fenway" name a
- * PLACE, not the phone's dot — so the assistant must resolve that place to
- * coordinates and search there, never silently fall back to the current
- * location. This is the tool that does it, biased hard to the two cities
- * ParkAgent covers (NYC and Boston) so "Newbury Street" lands in Back Bay,
- * not the dozen other Newbury Streets in the country.
+ * Street", "near India Street" name a PLACE, not the phone's dot — so the
+ * assistant must resolve that place to coordinates and search there, never
+ * silently fall back to the current location. This is the tool that does
+ * it, biased hard to the cities ParkAgent covers so a street name lands in
+ * one of them, not one of the dozen same-named streets elsewhere in the
+ * country. The user-facing city list comes from the provider registry
+ * (coveredCitiesSentence); the boxes below are this file's own data.
  *
  * The provider interface has one real implementation (Nominatim, the same
  * free geocoder the Boston zone-number importer uses) behind an injectable
@@ -15,7 +16,9 @@
  * with a nudge toward the biasing city.
  */
 
-/** WGS84 bounding boxes for the two metros we cover: [minLng, minLat, maxLng, maxLat]. */
+import { coveredCities } from "../../providers/registry.js";
+
+/** WGS84 bounding boxes for the metros we cover: [minLng, minLat, maxLng, maxLat]. */
 export const METRO_BBOX = {
   // NYC + close-in (roughly Yonkers down to the harbor, Newark to eastern Queens).
   nyc: [-74.3, 40.49, -73.68, 40.93] as const,
@@ -23,13 +26,22 @@ export const METRO_BBOX = {
   bos: [-71.19, 42.29, -70.98, 42.43] as const,
 };
 
-/** Center of each metro, for the bias nudge and the city label. */
+/** Center of each metro, for the bias nudge. */
 const METRO_CENTER = {
-  nyc: { lat: 40.7549, lng: -73.984, label: "New York, NY" },
-  bos: { lat: 42.3555, lng: -71.0655, label: "Boston, MA" },
+  nyc: { lat: 40.7549, lng: -73.984 },
+  bos: { lat: 42.3555, lng: -71.0655 },
 };
 
 export type MetroCity = "nyc" | "bos";
+
+/**
+ * Which metros an unbiased search tries, alphabetical by city display name
+ * via the registry — the order only affects tie-breaking, and hardcoding it
+ * would quietly favour one city.
+ */
+const SEARCH_ORDER: MetroCity[] = coveredCities()
+  .map((p) => p.city)
+  .filter((city): city is MetroCity => city === "nyc" || city === "bos");
 
 export interface GeocodeResult {
   lat: number;
@@ -129,8 +141,8 @@ export class NominatimGeocoder implements GeocoderProvider {
     if (cached && this.now().getTime() - cached.at < NominatimGeocoder.TTL_MS) {
       return { ok: true, results: cached.results.slice(0, limit) };
     }
-    // Which metros to try: the biased one first, else both.
-    const cities: MetroCity[] = q.city ? [q.city] : ["bos", "nyc"];
+    // Which metros to try: the biased one only, else every covered one.
+    const cities: MetroCity[] = q.city ? [q.city] : SEARCH_ORDER;
     const all: GeocodeResult[] = [];
     try {
       for (const city of cities) {

@@ -5,7 +5,6 @@
   "daily_cap_usd": 60,
   "auto_pay_max_rate_per_hour": 8,
   "default_stay_minutes": 90,
-  "parknyc_fee_usd": 0.15,
   "auto_extend": {
     "enabled": true,
     "max_count": 2,
@@ -16,6 +15,7 @@
   "ticket_cost_usd": 65,
   "city_overrides": {
     "nyc": {
+      "parking_fee_usd": 0.15,
       "ticket_cost_usd": 65
     },
     "bos": {

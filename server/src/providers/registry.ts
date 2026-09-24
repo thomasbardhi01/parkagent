@@ -79,6 +79,27 @@ export function allProviders(): ProviderInfo[] {
   return [...PROVIDERS];
 }
 
+/**
+ * Covered cities in a stable, unbiased order: alphabetical by display name.
+ * The array order above is historical (NYC came first), and nothing
+ * user-facing should imply a home city.
+ */
+export function coveredCities(): ProviderInfo[] {
+  return [...PROVIDERS].sort((a, b) => a.cityDisplayName.localeCompare(b.cityDisplayName));
+}
+
+/**
+ * "Boston and New York City" — the one place user-facing copy (assistant
+ * prompt, tool descriptions, explanations) gets the city list, so adding a
+ * city never leaves a stale sentence behind.
+ */
+export function coveredCitiesSentence(): string {
+  const names = coveredCities().map((p) => p.cityDisplayName);
+  if (names.length === 0) return "the cities we cover";
+  if (names.length === 1) return names[0] as string;
+  return names.slice(0, -1).join(", ") + " and " + names[names.length - 1];
+}
+
 /** Does this cookie belong to one of the provider's session domains? */
 export function cookieDomainAllowed(provider: ProviderInfo, domain: string): boolean {
   const bare = domain.replace(/^\./, "").toLowerCase();

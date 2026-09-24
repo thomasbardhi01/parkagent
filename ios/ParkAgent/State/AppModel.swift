@@ -141,6 +141,9 @@ final class AppModel {
     var distanceFromCarMeters: Double?
 
     /// Columbus Ave near W 81st St — the worked example in server/API.md.
+    /// MOCK ONLY: the fixtures are built around this point, so UI tests and
+    /// previews are deterministic. Nothing on a live launch may default to
+    /// it (see CityCatalog.center for the city fallbacks).
     static let fixtureCoordinate = CLLocationCoordinate2D(latitude: 40.7784, longitude: -73.9818)
 
     init() {

@@ -764,7 +764,7 @@ enum MockFixtures {
                 dailyCapUsd: 60,
                 autoPayMaxRatePerHour: 8.0,
                 defaultStayMinutes: 90,
-                parknycFeeUsd: 0.15,
+                parknycFeeUsd: nil,
                 autoExtend: AutoExtendPolicy(
                     enabled: true,
                     maxCount: 2,
@@ -774,7 +774,7 @@ enum MockFixtures {
                 respectEnforcementHours: true,
                 ticketCostUsd: 65,
                 cityOverrides: [
-                    "nyc": CityPolicyOverride(parkingFeeUsd: nil, ticketCostUsd: 65),
+                    "nyc": CityPolicyOverride(parkingFeeUsd: 0.15, ticketCostUsd: 65),
                     "bos": CityPolicyOverride(parkingFeeUsd: 0.35, ticketCostUsd: 40),
                 ]
             ),

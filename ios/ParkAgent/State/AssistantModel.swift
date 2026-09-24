@@ -75,12 +75,22 @@ final class AssistantModel {
         let assistantIndex = messages.count - 1
         phase = .streaming
 
-        let location = appModel.carCoordinate ?? AppModel.fixtureCoordinate
+        // The car's spot, else where the phone is now — never a fixture on
+        // the live API (a Seaport question must not carry NYC coordinates).
+        // The mock keeps the fixture so UI tests stay deterministic.
+        let location: CLLocationCoordinate2D?
+        if let car = appModel.carCoordinate {
+            location = car
+        } else if appModel.useMockAPI {
+            location = AppModel.fixtureCoordinate
+        } else {
+            location = await OneShotLocation.request()
+        }
         do {
             let stream = api.assistantMessage(
                 text: text,
                 conversationId: conversationId,
-                location: (lat: location.latitude, lng: location.longitude)
+                location: location.map { (lat: $0.latitude, lng: $0.longitude) }
             )
             for try await event in stream {
                 switch event {

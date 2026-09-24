@@ -2,48 +2,76 @@
 import CoreLocation
 import SwiftUI
 
-/// NYC points to fire a simulated park from, so the whole detect → quote →
-/// pay loop is testable on the simulator without motion data. Works against
-/// mock and live APIs alike; against live, each point exercises real zone
-/// lookup around that coordinate.
-enum NYCFixturePoint: String, CaseIterable, Identifiable {
+/// Points to fire a simulated park from, so the whole detect → quote → pay
+/// loop is testable on the simulator without motion data. Every city we
+/// cover is represented, and the picker defaults to the user's own city —
+/// there is no home city. Works against mock and live APIs alike; against
+/// live, each point exercises real zone lookup around that coordinate.
+enum FixturePoint: String, CaseIterable, Identifiable {
+    case boylstonBackBay
+    case hanoverNorthEnd
     case columbusW81
-    case broadwayW96
     case grandLafayette
-    case centralParkLoop
+    case unmeteredPark
 
     var id: String { rawValue }
 
+    /// Which city's zone data this point exercises; nil for the
+    /// deliberately-unmetered point.
+    var city: String? {
+        switch self {
+        case .boylstonBackBay, .hanoverNorthEnd: "bos"
+        case .columbusW81, .grandLafayette: "nyc"
+        case .unmeteredPark: nil
+        }
+    }
+
     var label: String {
         switch self {
+        case .boylstonBackBay: "Boylston St, Back Bay"
+        case .hanoverNorthEnd: "Hanover St, North End"
         case .columbusW81: "Columbus Ave & W 81st"
-        case .broadwayW96: "Broadway & W 96th"
         case .grandLafayette: "Grand St & Lafayette"
-        case .centralParkLoop: "Central Park loop (no meters)"
+        case .unmeteredPark: "Middle of a park (no meters)"
         }
     }
 
     var coordinate: CLLocationCoordinate2D {
         switch self {
+        case .boylstonBackBay: CLLocationCoordinate2D(latitude: 42.3503, longitude: -71.0810)
+        case .hanoverNorthEnd: CLLocationCoordinate2D(latitude: 42.3637, longitude: -71.0547)
         case .columbusW81: CLLocationCoordinate2D(latitude: 40.7784, longitude: -73.9818)
-        case .broadwayW96: CLLocationCoordinate2D(latitude: 40.7942, longitude: -73.9722)
         case .grandLafayette: CLLocationCoordinate2D(latitude: 40.7191, longitude: -73.9987)
-        case .centralParkLoop: CLLocationCoordinate2D(latitude: 40.7745, longitude: -73.9708)
+        case .unmeteredPark: CLLocationCoordinate2D(latitude: 42.3383, longitude: -71.1012)
         }
+    }
+
+    /// The first point in the given city, so the picker opens on somewhere
+    /// the user could actually be parked.
+    static func first(in city: String?) -> FixturePoint {
+        allCases.first { $0.city == city } ?? .boylstonBackBay
     }
 }
 
 struct DebugMenuView: View {
     @Environment(AppModel.self) private var model
-    @State private var fixture = NYCFixturePoint.columbusW81
+    @State private var fixture: FixturePoint?
     @State private var simulating = false
     @AppStorage(SignalLog.enabledKey) private var signalLogEnabled = false
+
+    /// Defaults to a point in the user's own city.
+    private var selectedFixture: FixturePoint {
+        fixture ?? .first(in: model.effectiveCity)
+    }
 
     var body: some View {
         Form {
             Section {
-                Picker("Fixture point", selection: $fixture) {
-                    ForEach(NYCFixturePoint.allCases) { point in
+                Picker("Fixture point", selection: Binding(
+                    get: { selectedFixture },
+                    set: { fixture = $0 }
+                )) {
+                    ForEach(FixturePoint.allCases) { point in
                         Text(point.label).tag(point)
                     }
                 }
@@ -51,7 +79,7 @@ struct DebugMenuView: View {
                     simulating = true
                     Task {
                         await model.handleDetectedPark(
-                            coordinate: fixture.coordinate,
+                            coordinate: selectedFixture.coordinate,
                             accuracy: 12.5,
                             signals: ["simulated"]
                         )

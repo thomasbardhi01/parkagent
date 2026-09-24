@@ -395,7 +395,12 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
       });
       await deps.sendPush(
         user.id,
-        paymentFailedPush({ zoneNumber: zone.providerZoneNumber, what: "pay", code: result.code }),
+        paymentFailedPush({
+          zoneNumber: zone.providerZoneNumber,
+          what: "pay",
+          code: result.code,
+          providerName: provider?.displayName ?? "your parking account",
+        }),
       );
       return reply
         .code(502)

@@ -120,7 +120,9 @@ struct SettingsView: View {
                     set: { if !$0 { relinkProviderId = nil } }
                 )
             ) {
-                ProviderLinkFlowView(providerId: relinkProviderId ?? "parknyc") {
+                // The ?? "" is unreachable (the cover only presents with an
+                // id); an empty id just lands on the flow's unavailable state.
+                ProviderLinkFlowView(providerId: relinkProviderId ?? "") {
                     Task { await loadProviders() }
                 }
             }
@@ -155,8 +157,9 @@ struct SettingsView: View {
                 set: { model.cityOverride = $0 }
             )) {
                 Text("Detect automatically").tag("auto")
-                Text("New York City").tag("nyc")
-                Text("Boston").tag("bos")
+                ForEach(CityCatalog.allByDisplayName, id: \.self) { city in
+                    Text(CityCatalog.displayName(city) ?? city).tag(city)
+                }
                 Text("Somewhere else").tag("other")
             }
             .accessibilityIdentifier("settings.cityPicker")
@@ -164,7 +167,7 @@ struct SettingsView: View {
             Text("City")
         } footer: {
             Text(model.cityDisplayName.map { "Paying \($0) meters." }
-                ?? "No supported city detected — meters run in New York City and Boston for now.")
+                ?? "No supported city detected — meters run in \(CityCatalog.supportedCitiesSentence) for now.")
         }
     }
 
@@ -266,7 +269,7 @@ struct SettingsView: View {
     @ViewBuilder
     private var linkedAccountsSection: some View {
         Section("Linked accounts") {
-            if providerAccounts.isEmpty {
+            if orderedAccounts.isEmpty {
                 if providersLoadFailed == true {
                     Text("Couldn't load account status. Pull to retry.")
                         .font(.secondaryText)
@@ -280,7 +283,7 @@ struct SettingsView: View {
                     }
                 }
             }
-            ForEach(providerAccounts) { account in
+            ForEach(orderedAccounts) { account in
                 HStack {
                     VStack(alignment: .leading, spacing: Spacing.quarter) {
                         Text(account.displayName)
@@ -323,6 +326,16 @@ struct SettingsView: View {
         case "linked": TagPill(label: "Linked", color: .success)
         case "expired": TagPill(label: "Sign in again", color: .warningGold)
         default: TagPill(label: "Not linked", color: .textSecondary)
+        }
+    }
+
+    /// The user's city's provider first, the rest alphabetically — the
+    /// registry's own order carries no meaning for this user.
+    private var orderedAccounts: [ProviderAccountStatus] {
+        providerAccounts.sorted { a, b in
+            let city = model.effectiveCity
+            if (a.city == city) != (b.city == city) { return a.city == city }
+            return a.displayName < b.displayName
         }
     }
 

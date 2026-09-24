@@ -136,7 +136,7 @@ Cost of the default stay in a zone, priced only over enforced minutes:
   "stayMinutes": 90,        // min(policy.default_stay_minutes, zone max stay)
   "chargedMinutes": 90,     // minutes of the stay inside enforcement hours
   "meterUsd": 7.13,         // rate ladder applied to chargedMinutes
-  "feeUsd": 0.15,           // policy.parknyc_fee_usd; 0 when meterUsd is 0
+  "feeUsd": 0.15,           // the city's parking_fee_usd; 0 when meterUsd is 0
   "totalUsd": 7.28
 }
 ```
@@ -148,8 +148,8 @@ nothing. A zone with `hours: []` (nothing posted) is treated as always
 enforced. `respect_enforcement_hours: false` in policy also treats every
 zone as always enforced. Rounding: half-up to the cent, once, on each of
 `meterUsd`/`feeUsd`/`totalUsd`. `feeUsd` is per city: the zone's `city`
-picks `policy.city_overrides` (ParkBoston charges $0.35 where ParkNYC
-charges $0.15), falling back to `parknyc_fee_usd`.
+picks `policy.city_overrides.<city>.parking_fee_usd` (ParkBoston charges
+$0.35 where ParkNYC charges $0.15).
 
 ### How the action is chosen
 
@@ -868,7 +868,6 @@ give the audit trail either way.
   "daily_cap_usd": 60,
   "auto_pay_max_rate_per_hour": 8.0,
   "default_stay_minutes": 90,
-  "parknyc_fee_usd": 0.15,
   "auto_extend": {
     "enabled": true,
     "max_count": 2,
@@ -878,15 +877,25 @@ give the audit trail either way.
   "respect_enforcement_hours": true,
   "ticket_cost_usd": 65,
   "city_overrides": {
-    "nyc": { "ticket_cost_usd": 65 },
+    "nyc": { "parking_fee_usd": 0.15, "ticket_cost_usd": 65 },
     "bos": { "parking_fee_usd": 0.35, "ticket_cost_usd": 40 }
   }
 }
 ```
 
 `city_overrides` is optional, keyed by `"nyc"`/`"bos"`, and each field is
-optional — anything absent falls back to the top-level `parknyc_fee_usd` /
-`ticket_cost_usd`. Quotes, session starts/extensions, and the extension
+optional. `parking_fee_usd` is the city provider's pay-by-app fee and lives
+only here; a missing `ticket_cost_usd` falls back to the top-level one.
+
+A deprecated top-level `parknyc_fee_usd` is still accepted for one release
+and still serves as the fee fallback, so documents written before the move
+keep validating. Migrate one with
+
+    pnpm -C server migrate:policy-fee            # repo-root policy.json
+    pnpm -C server migrate:policy-fee -- --file /path/to/policy.json
+
+which copies the value into every city that lacks its own
+`parking_fee_usd`, then drops the key. Quotes, session starts/extensions, and the extension
 worker all price per city now: sessions store their zone's `city` at start,
 so the worker's ticket-risk math uses that city's `ticket_cost_usd` (a $40
 Boston ticket argues for extension less strongly than a $65 NYC one).

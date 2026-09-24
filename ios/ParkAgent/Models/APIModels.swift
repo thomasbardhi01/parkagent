@@ -104,7 +104,10 @@ struct Policy: Codable, Sendable {
     var dailyCapUsd: Double
     var autoPayMaxRatePerHour: Double
     var defaultStayMinutes: Int
-    var parknycFeeUsd: Double
+    /// Deprecated on the server: the per-city fee now lives in
+    /// city_overrides.<city>.parking_fee_usd. Optional so both shapes decode
+    /// and round-trip through PUT /policy.
+    var parknycFeeUsd: Double?
     var autoExtend: AutoExtendPolicy
     var respectEnforcementHours: Bool
     var ticketCostUsd: Double

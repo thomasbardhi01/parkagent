@@ -6,7 +6,7 @@
 
 import { expect, test } from "vitest";
 
-import { cityPolicy } from "../src/services/policy.js";
+import { cityPolicy, DEFAULT_PARKING_FEE_USD, policySchema } from "../src/services/policy.js";
 import { priceStay, quoteZone } from "../src/services/quote.js";
 import { BOYLSTON_BOS, DEFAULT_POLICY, makeTestApp, parkedBody } from "./helpers.js";
 
@@ -24,14 +24,35 @@ const BOS_TERMS = {
 };
 
 test("city_overrides resolve fee and ticket cost per city, with fallbacks", () => {
+  // Each city carries its own pay-by-app fee; nothing city-specific lives
+  // at the top level any more.
   expect(cityPolicy(DEFAULT_POLICY, "bos")).toEqual({ parkingFeeUsd: 0.35, ticketCostUsd: 40 });
   expect(cityPolicy(DEFAULT_POLICY, "nyc")).toEqual({ parkingFeeUsd: 0.15, ticketCostUsd: 65 });
-  // No overrides at all → the top-level (NYC) numbers.
+  // No overrides at all → the top-level ticket cost and the default fee.
   const bare = { ...DEFAULT_POLICY };
   delete (bare as Record<string, unknown>)["city_overrides"];
-  expect(cityPolicy(bare, "bos")).toEqual({ parkingFeeUsd: 0.15, ticketCostUsd: 65 });
-  // Unknown/absent city → defaults too (pre-city rows).
-  expect(cityPolicy(DEFAULT_POLICY, undefined)).toEqual({ parkingFeeUsd: 0.15, ticketCostUsd: 65 });
+  expect(cityPolicy(bare, "bos")).toEqual({
+    parkingFeeUsd: DEFAULT_PARKING_FEE_USD,
+    ticketCostUsd: 65,
+  });
+  // Unknown/absent city → the same defaults (pre-city rows).
+  expect(cityPolicy(DEFAULT_POLICY, undefined)).toEqual({
+    parkingFeeUsd: DEFAULT_PARKING_FEE_USD,
+    ticketCostUsd: 65,
+  });
+});
+
+test("a pre-migration document still resolves through the deprecated fee", () => {
+  // policy.json files written before the fee moved under city_overrides keep
+  // working: the top-level key is accepted and used as the fallback.
+  const legacy = {
+    ...DEFAULT_POLICY,
+    parknyc_fee_usd: 0.15,
+    city_overrides: { bos: { parking_fee_usd: 0.35, ticket_cost_usd: 40 } },
+  };
+  expect(policySchema.safeParse(legacy).success).toBe(true);
+  expect(cityPolicy(legacy, "nyc")).toEqual({ parkingFeeUsd: 0.15, ticketCostUsd: 65 });
+  expect(cityPolicy(legacy, "bos")).toEqual({ parkingFeeUsd: 0.35, ticketCostUsd: 40 });
 });
 
 test("Back Bay weekday quote: flat $3.75/hr, ParkBoston $0.35 fee", () => {

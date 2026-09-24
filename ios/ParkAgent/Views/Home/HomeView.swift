@@ -5,10 +5,9 @@ struct HomeView: View {
     @Environment(AppModel.self) private var model
     @Environment(PermissionsManager.self) private var permissions
     @Namespace private var sessionZoom
-    @State private var camera: MapCameraPosition = .region(MKCoordinateRegion(
-        center: AppModel.fixtureCoordinate,
-        span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
-    ))
+    /// Set in .task from the user's location (falling back to the detected
+    /// city), so the map never opens on a hardcoded city.
+    @State private var camera: MapCameraPosition = .automatic
 
     var body: some View {
         @Bindable var model = model
@@ -62,7 +61,24 @@ struct HomeView: View {
                 ActiveSessionView()
                     .zoomDestination(id: sessionId, in: sessionZoom)
             }
+            .task { await centerCamera() }
         }
+    }
+
+    /// The car's spot if it's parked, else where the phone is, else the
+    /// detected city — never a fixed city constant.
+    private func centerCamera() async {
+        var center = model.carCoordinate
+        if center == nil {
+            center = model.useMockAPI ? AppModel.fixtureCoordinate : await OneShotLocation.request()
+        }
+        let resolved = center
+            ?? CityCatalog.center(of: model.effectiveCity)
+            ?? CityCatalog.fallbackCenter
+        camera = .region(MKCoordinateRegion(
+            center: resolved,
+            span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
+        ))
     }
 
     private var statusChip: some View {

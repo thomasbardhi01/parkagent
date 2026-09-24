@@ -341,8 +341,14 @@ private struct OnboardingCityStep: View {
                     .accessibilityIdentifier("onboarding.cityUnknown")
             }
 
-            cityOption("nyc", label: "New York City", detail: "ParkNYC")
-            cityOption("bos", label: "Boston", detail: "ParkBoston")
+            // From the catalog, alphabetical — the flow has no home city.
+            ForEach(CityCatalog.allByDisplayName, id: \.self) { city in
+                cityOption(
+                    city,
+                    label: CityCatalog.displayName(city) ?? city,
+                    detail: CityCatalog.providerDisplayName(for: city)
+                )
+            }
             cityOption("other", label: "Somewhere else", detail: nil)
 
             Spacer()
@@ -411,7 +417,7 @@ private struct OnboardingElsewhereStep: View {
             Text("We're not there yet")
                 .font(.numeral)
                 .foregroundStyle(Color.textPrimary)
-            Text("ParkAgent pays meters in New York City and Boston for now. You can still browse the app, and pick a city later in Settings when you're in one.")
+            Text("ParkAgent pays meters in \(CityCatalog.supportedCitiesSentence) for now. You can still browse the app, and pick a city later in Settings when you're in one.")
                 .font(.bodyText)
                 .foregroundStyle(Color.textSecondary)
                 .multilineTextAlignment(.center)

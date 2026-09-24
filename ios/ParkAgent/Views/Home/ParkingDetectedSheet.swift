@@ -33,10 +33,12 @@ struct ParkingDetectedSheet: View {
                     SessionsNotBuiltView(dismiss: { model.dismissParkedSheet() })
                 } else if case .refused(let code) = error, code == "provider_not_linked" {
                     // Same routing as an unlinked provider block: the fix
-                    // is linking, not retrying the payment.
+                    // is linking, not retrying the payment. No NYC default —
+                    // the response's provider, else the effective city's.
                     ProviderNotLinkedView(providerName: providerName) {
                         model.paymentError = nil
-                        linkingProviderId = parked.provider?.id ?? "parknyc"
+                        linkingProviderId = parked.provider?.id
+                            ?? CityCatalog.providerId(for: model.effectiveCity)
                     } dismiss: {
                         model.dismissParkedSheet()
                     }
@@ -60,7 +62,9 @@ struct ParkingDetectedSheet: View {
                 set: { if !$0 { linkingProviderId = nil } }
             )
         ) {
-            ProviderLinkFlowView(providerId: linkingProviderId ?? "parknyc") {
+            // ?? "" is unreachable (only presented with an id); an empty id
+            // lands on the flow's unavailable state, never a NYC default.
+            ProviderLinkFlowView(providerId: linkingProviderId ?? "") {
                 linkedInSheet = true
             }
         }
@@ -254,8 +258,10 @@ struct ParkingDetectedSheet: View {
 
     @ViewBuilder
     private var unknownZone: some View {
+        let zoneNumberName = CityCatalog.providerDisplayName(for: model.effectiveCity)
+            .map { "\($0) zone number" } ?? "pay-by-app zone number"
         header("No meter zone found here")
-        Text("If you can see a ParkNYC zone number on the meter, enter it to get a quote.")
+        Text("If you can see a \(zoneNumberName) on the meter, enter it to get a quote.")
             .font(.secondaryText)
             .foregroundStyle(Color.textSecondary)
         TextField("Zone number", text: $manualZoneNumber)

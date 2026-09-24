@@ -10,6 +10,7 @@
 import { randomUUID } from "node:crypto";
 
 import type { AppDb } from "../../db.js";
+import { coveredCitiesSentence } from "../../providers/registry.js";
 import { explainDecision } from "../explanations.js";
 import type { GarageProvider } from "../garage/garageProvider.js";
 import type { GeocoderProvider } from "./geocoder.js";
@@ -59,8 +60,7 @@ export const CONFIRMATION_TTL_MS = 10 * 60_000;
 export const TOOL_DEFINITIONS = [
   {
     name: "geocode_place",
-    description:
-      "Resolve a NAMED place or area to coordinates, biased to the two cities ParkAgent covers (New York City and Boston). Call this FIRST whenever the user names a street, neighborhood, or landmark ('Newbury Street', 'near India Street', 'in South Boston', 'near Fenway') instead of relying on their current location. Returns up to 3 matches, best first, each with lat/lng, a display name, and which city it's in. Then pass the chosen lat/lng to quote_street or search_garages. Empty results mean the place isn't in either city.",
+    description: `Resolve a NAMED place or area to coordinates, biased to the cities ParkAgent covers (${coveredCitiesSentence()}). Call this FIRST whenever the user names a street, neighborhood, or landmark instead of relying on their current location. Returns up to 3 matches, best first, each with lat/lng, a display name, and which city it's in. Then pass the chosen lat/lng to quote_street or search_garages. Empty results mean the place isn't in a city we cover.`,
     input_schema: {
       type: "object" as const,
       additionalProperties: false,
@@ -186,7 +186,7 @@ export const TOOL_DEFINITIONS = [
       additionalProperties: false,
       required: ["zone", "duration_minutes"],
       properties: {
-        zone: { type: "string", description: "Zone id, e.g. nyc-110436" },
+        zone: { type: "string", description: "Zone id, as returned by quote_street" },
         duration_minutes: { type: "integer", minimum: 1, maximum: 720 },
         confirmation_token: { type: "string" },
       },
@@ -341,8 +341,7 @@ export class AssistantTools {
       return {
         result: {
           found: false,
-          instruction:
-            "That place isn't in New York City or Boston, the two cities ParkAgent covers. Say so; don't fall back to the user's current location for a place we can't place.",
+          instruction: `That place isn't in ${coveredCitiesSentence()}, the cities ParkAgent covers. Say so; don't fall back to the user's current location for a place we can't place.`,
         },
       };
     }

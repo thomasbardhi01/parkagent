@@ -1,0 +1,115 @@
+# Nightly functional-requirements run (docs/functional-requirements.md):
+# the executor fixture suite plus the live FR suite against prod, in dry
+# run, as the dedicated FR user. Tue–Sat ~5:17am Eastern so the
+# "yesterday afternoon" pricing fixtures always land on a Mon–Fri
+# enforcement day and outside enforcement hours (the ts-clamp test needs
+# that). On failure one "Nightly FR failures" issue is opened or updated;
+# a green run closes it.
+#
+# Secrets:
+#   FR_API_KEY — api key of the DEDICATED FR user on prod
+#                (pnpm -C server create:fr-user against the prod DB).
+# The report artifact and the issue use the built-in GITHUB_TOKEN.
+
+name: nightly-fr
+
+on:
+  schedule:
+    - cron: "17 9 * * 2-6"
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "API base URL (default prod)"
+        required: false
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: nightly-fr
+  cancel-in-progress: false
+
+jobs:
+  fr:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with: { node-version: lts/*, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+
+      # The executor flows (start / extend / stop / error classification)
+      # are exercised from recorded fixture HTML — no browser ever touches
+      # a provider. Chromium is only for the DOM-parsing tests.
+      - name: Executor fixture suite
+        id: executor
+        run: |
+          pnpm -C executor exec playwright install --with-deps chromium
+          pnpm -C executor test
+
+      - name: FR suite against the live API (dry run)
+        id: frsuite
+        if: always() && steps.executor.conclusion != 'cancelled'
+        env:
+          FR_API_BASE: ${{ inputs.base || 'https://parkagent-api.fly.dev' }}
+          FR_API_KEY: ${{ secrets.FR_API_KEY }}
+        run: >
+          pnpm -C server test:fr --
+          --reporter=default
+          --reporter=json --outputFile.json=fr-report.json
+
+      - name: Build report
+        id: report
+        if: always()
+        run: |
+          cd server
+          node fr/report.mjs fr-report.json fr-summary.md
+          cat fr-summary.md >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo 'digest<<EOF'
+            node fr/report.mjs fr-report.json /dev/null
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: fr-report
+          path: |
+            server/fr-report.json
+            server/fr-summary.md
+          if-no-files-found: warn
+
+      - name: Open or update the failure issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DIGEST: ${{ steps.report.outputs.digest }}
+        run: |
+          title="Nightly FR failures"
+          body="Nightly FR run failed: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+          ${DIGEST}
+
+          (Executor fixture step: ${{ steps.executor.conclusion }}; FR suite step: ${{ steps.frsuite.conclusion }}. Report artifact \`fr-report\` on the run has details. This issue is managed by the nightly-fr workflow — it closes itself on the next green run.)"
+          number=$(gh issue list --state open --search "in:title \"$title\"" --json number,title \
+            --jq '[.[] | select(.title == "Nightly FR failures")][0].number // empty')
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi
+
+      - name: Close the failure issue on green
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="Nightly FR failures"
+          number=$(gh issue list --state open --search "in:title \"$title\"" --json number,title \
+            --jq '[.[] | select(.title == "Nightly FR failures")][0].number // empty')
+          if [ -n "$number" ]; then
+            gh issue close "$number" --comment "Nightly FR run is green again: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi

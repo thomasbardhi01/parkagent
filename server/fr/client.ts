@@ -33,6 +33,19 @@ export interface FrResponse {
   body: Record<string, unknown>;
 }
 
+/** fetch failures from before a connection existed: nothing reached the
+ * server, so one retry can't double-apply even a POST. A reset
+ * mid-request is deliberately absent — that request may have landed. */
+const CONNECT_PHASE_CODES = new Set(["UND_ERR_CONNECT_TIMEOUT", "ECONNREFUSED", "EAI_AGAIN"]);
+
+function fetchCause(err: unknown): { code: string | undefined; message: string } {
+  const cause = (err as { cause?: { code?: unknown; message?: unknown } }).cause;
+  return {
+    code: typeof cause?.code === "string" ? cause.code : undefined,
+    message: typeof cause?.message === "string" ? cause.message : String(err),
+  };
+}
+
 export async function frFetch(
   method: "GET" | "POST" | "PUT" | "DELETE",
   path: string,
@@ -48,14 +61,32 @@ export async function frFetch(
   // minutes after the first can trip them. Waiting out one Retry-After is
   // signal-preserving — the retry answers the real question.
   for (let attempt = 0; ; attempt += 1) {
-    const res = await fetch(`${BASE}${path}`, {
-      method,
-      headers: {
-        "x-api-key": KEY,
-        ...(payload !== undefined ? { "content-type": "application/json" } : {}),
-      },
-      ...(payload !== undefined ? { body: JSON.stringify(payload) } : {}),
-    });
+    let res: Response;
+    try {
+      res = await fetch(`${BASE}${path}`, {
+        method,
+        headers: {
+          "x-api-key": KEY,
+          ...(payload !== undefined ? { "content-type": "application/json" } : {}),
+        },
+        ...(payload !== undefined ? { body: JSON.stringify(payload) } : {}),
+      });
+    } catch (err) {
+      // Nightly 36015007755 went red on one connect timeout to the Fly
+      // edge; a connect-phase blip gets one retry. Anything else, or a
+      // second failure, fails the test naming the request and the cause
+      // (bare "fetch failed" hid both from the report).
+      const cause = fetchCause(err);
+      if (attempt === 0 && cause.code && CONNECT_PHASE_CODES.has(cause.code)) {
+        console.warn(`FR: ${method} ${path} failed to connect (${cause.code}); retrying once`);
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        continue;
+      }
+      throw new Error(
+        `${method} ${path}: fetch failed (${cause.code ?? "no code"}: ${cause.message})`,
+        { cause: err },
+      );
+    }
     if (res.status === 429 && attempt === 0) {
       const retryAfter = Math.min(Number(res.headers.get("retry-after") ?? "30") || 30, 90);
       await new Promise((resolve) => setTimeout(resolve, (retryAfter + 1) * 1000));

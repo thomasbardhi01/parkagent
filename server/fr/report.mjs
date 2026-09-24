@@ -14,11 +14,30 @@ import { readFileSync, writeFileSync } from "node:fs";
 
 const [, , inputPath = "fr-report.json", outputPath = "fr-summary.md"] = process.argv;
 
+// Set by the workflow: the commit /health reported before the suite ran,
+// and the commit the tests came from. A mismatch means the run tested an
+// older deploy (a dispatch right after a merge beats CI's deploy job).
+function buildLine(deployed = "", tests = "") {
+  if (!deployed || !tests) return "";
+  if (deployed === "unknown") return "⚠️ Couldn't read the deployed commit from /health.";
+  if (deployed === tests) return `Tested deploy \`${deployed.slice(0, 7)}\` (this run's commit).`;
+  return (
+    `⚠️ Tested deploy \`${deployed.slice(0, 7)}\`, but these tests are from ` +
+    `\`${tests.slice(0, 7)}\` — its deploy hadn't landed, so a failure may already be fixed on main.`
+  );
+}
+const build = buildLine(process.env.FR_DEPLOYED_COMMIT, process.env.FR_TESTS_COMMIT);
+const warning = build.startsWith("⚠️") ? build : "";
+
 let raw;
 try {
   raw = JSON.parse(readFileSync(inputPath, "utf8"));
 } catch (err) {
-  writeFileSync(outputPath, `# Nightly FR report\n\nCould not read ${inputPath}: ${err}\n`);
+  writeFileSync(
+    outputPath,
+    `# Nightly FR report\n\n${build ? `${build}\n\n` : ""}Could not read ${inputPath}: ${err}\n`,
+  );
+  if (warning) console.log(warning);
   console.log("(no report — the FR suite likely failed before writing results)");
   process.exit(0);
 }
@@ -70,6 +89,7 @@ const failed = rows.filter((r) => r.status === "failed");
 const skipped = rows.filter((r) => r.status !== "passed" && r.status !== "failed");
 
 let md = `# Nightly FR report\n\n`;
+if (build) md += `${build}\n\n`;
 md += `**${rows.length}** tests — **${rows.length - failed.length - skipped.length}** passed, `;
 md += `**${failed.length}** failed, **${skipped.length}** skipped.\n\n`;
 md += `| FR | Result | Tests |\n|---|---|---|\n`;
@@ -94,6 +114,7 @@ if (skipped.length > 0) {
 writeFileSync(outputPath, md);
 
 // stdout: the failed-FR digest the workflow drops into the issue body.
+if (warning) console.log(warning);
 if (failed.length === 0) {
   console.log("All FR tests passed.");
 } else {

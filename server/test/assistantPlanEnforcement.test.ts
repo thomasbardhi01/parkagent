@@ -454,6 +454,35 @@ describe("FR-26 street options are grounded in a quote (nightly FR 2026-09-24)",
     });
   });
 
+  test("groundStreetOptions: an option id naming a quoted zone grounds it where price can't (nightly FR run 36015007755)", () => {
+    // The street option prod's model actually sent: the zone id in `id`,
+    // no zoneId. Both sides of the block quoted at the same price, so
+    // price alone is ambiguous — only the id says which zone.
+    const sent: SingleSpotOption = {
+      id: "bos-newbury-st-a-b-f629d5",
+      type: "street",
+      label: "Newbury St metered parking",
+      detail: "",
+      priceUsd: 7.85,
+      durationMinutes: 120,
+      startsAt: "2026-09-25T14:00:00-04:00",
+      recommended: true,
+    };
+    const bothSides = [
+      { zoneId: "bos-newbury-st-a-b-f629d5", costUsd: 7.85 },
+      { zoneId: "bos-newbury-st-b-a-7d1e02", costUsd: 7.85 },
+    ];
+    expect(groundStreetOptions([sent], bothSides)).toMatchObject({
+      ok: true,
+      options: [{ id: sent.id, zoneId: "bos-newbury-st-a-b-f629d5" }],
+    });
+    // An id that names no quoted zone doesn't ground anything by itself.
+    expect(groundStreetOptions([{ ...sent, id: "bos-invented" }], bothSides)).toEqual({
+      ok: false,
+      optionId: "bos-invented",
+    });
+  });
+
   test("streetQuotesIn reads found quotes from a stored transcript, skipping misses, other tools, and orphans", () => {
     const turns: ModelTurn[] = [
       { role: "user", content: "parking near Newbury" },

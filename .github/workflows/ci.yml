@@ -86,20 +86,47 @@ jobs:
       - run: xcodegen generate
         working-directory: ios
       # Fall back to any iPhone the image ships if the preferred device is
-      # missing, rather than hard-failing on the name.
+      # missing, rather than hard-failing on the name. Everything after
+      # this pins the device by UDID, so boot, install, and test all hit
+      # the same simulator.
       - id: sim
         run: |
           DEVICE="iPhone 17 Pro Max"
-          if ! xcrun simctl list devices available | grep -q "$DEVICE"; then
+          if ! xcrun simctl list devices available | grep -q "$DEVICE ("; then
             DEVICE=$(xcrun simctl list devices available | grep -oE 'iPhone [^(]+' | head -1 | sed 's/ *$//')
           fi
+          UDID=$(xcrun simctl list devices available | grep -F "$DEVICE (" | head -1 | grep -oE '[0-9A-F]{8}(-[0-9A-F]{4}){3}-[0-9A-F]{12}')
           echo "device=$DEVICE" >> "$GITHUB_OUTPUT"
-          echo "Using simulator: $DEVICE"
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+          echo "Using simulator: $DEVICE ($UDID)"
       - run: >
           xcodebuild -project ios/ParkAgent.xcodeproj -scheme ParkAgent
-          -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.device }}"
+          -destination "id=${{ steps.sim.outputs.udid }}"
+          -derivedDataPath build
+          build-for-testing CODE_SIGNING_ALLOWED=NO
+      # Warm-up: a cold simulator's first boot and first app launch (dyld
+      # caches, SpringBoard, the first accessibility snapshot) take longer
+      # than a UI test's first wait, so the suite's first few tests used
+      # to fail on launch alone. Boot the device and launch the built app
+      # once, off the clock, before the suite starts.
+      - name: Warm up the simulator
+        env:
+          UDID: ${{ steps.sim.outputs.udid }}
+        run: |
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+          APP=$(find build/Build/Products -maxdepth 2 -type d -name 'ParkAgent.app' -path '*iphonesimulator*' | head -1)
+          echo "Installing $APP"
+          xcrun simctl install "$UDID" "$APP"
+          xcrun simctl launch "$UDID" com.thomasbardhi.parkagent -uiTesting YES -useMockAPI YES -resetState YES
+          sleep 20
+          xcrun simctl terminate "$UDID" com.thomasbardhi.parkagent || true
+      - run: >
+          xcodebuild -project ios/ParkAgent.xcodeproj -scheme ParkAgent
+          -destination "id=${{ steps.sim.outputs.udid }}"
+          -derivedDataPath build
           -resultBundlePath TestResults.xcresult
-          test CODE_SIGNING_ALLOWED=NO
+          test-without-building CODE_SIGNING_ALLOWED=NO
       # The xcresult bundle carries the XCTAttachment screenshots from the
       # snapshot tests.
       - uses: actions/upload-artifact@v6

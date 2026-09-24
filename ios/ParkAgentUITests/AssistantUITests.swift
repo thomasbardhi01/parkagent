@@ -1,8 +1,14 @@
 import XCTest
 
 /// The assistant sheet against the mock API: the single-spot flow, a
-/// six-stop itinerary sign-off, reordering, the SpotHero deep-link tap,
-/// the Link-connected confirm path, and the parking-only refusal.
+/// six-stop itinerary sign-off, reordering, the garage deep-link tap, the
+/// Link-connected confirm path, and the parking-only refusal.
+///
+/// Taps on anything inside the transcript go through `scrollTo` (#123):
+/// a card can exist in the tree while below the fold or under the tab
+/// bar, where a synthesized tap reaches nothing. The account-navigation
+/// helper (`openAccountSheet`) belongs to the accounts suite; this file
+/// owns the rest.
 final class AssistantUITests: ParkAgentUITestCase {
     private func openAssistant(
         _ assistantScenario: String,
@@ -43,7 +49,7 @@ final class AssistantUITests: ParkAgentUITestCase {
         XCTAssertTrue(element(app, "assistant.singleSpotPlan").waitForExistence(timeout: 10))
         XCTAssertEqual(app.staticTexts.matching(identifier: "Recommended").count, 1)
 
-        element(app, "assistant.confirm.opt-street").tap()
+        scrollTo(app, "assistant.confirm.opt-street").tap()
         // Street confirm hands the zone to the existing paid flow.
         let note = app.staticTexts.containing(
             NSPredicate(format: "label CONTAINS 'session starts when you park'")
@@ -54,7 +60,7 @@ final class AssistantUITests: ParkAgentUITestCase {
 
     /// The results layout: ONE hero with the only coral action, the rest
     /// as compact rows that stay collapsed until tapped, a mini map, and
-    /// the SpotHero note once under the list.
+    /// the provenance note once under the list.
     func testHeroCardIsTheOnlyActionAndRowsExpandOnTap() {
         let app = openAssistant("singleSpot")
         ask(app, "Park me near the MFA for 90 minutes")
@@ -81,19 +87,24 @@ final class AssistantUITests: ParkAgentUITestCase {
         )
 
         // Tap expands it and reveals the neutral Choose.
-        garageRow.tap()
+        scrollTo(app, "assistant.optionRow.opt-garage").tap()
         let choose = element(app, "assistant.choose.opt-garage")
         XCTAssertTrue(choose.waitForExistence(timeout: 3))
 
-        // Provenance is stated once, with the source named.
-        let note = element(app, "assistant.providerNote")
+        // Provenance is stated once, crediting exactly the sources shown
+        // (one SpotHero row, one ParkWhiz row) — the whole sentence, not
+        // a provider name several lines on screen could contain.
+        let note = scrollTo(app, "assistant.providerNote")
         XCTAssertTrue(note.exists)
-        XCTAssertTrue(note.label.contains("SpotHero"), "got: \(note.label)")
+        XCTAssertTrue(
+            note.label.hasPrefix("Garage prices from ParkWhiz and SpotHero, checked "),
+            "got: \(note.label)"
+        )
         XCTAssertTrue(element(app, "assistant.planMap").exists)
         attachScreenshot(of: app, named: "assistant-hero-and-rows")
 
         // Tapping the row again collapses it — one row open at a time.
-        garageRow.tap()
+        scrollTo(app, "assistant.optionRow.opt-garage").tap()
         XCTAssertFalse(choose.waitForExistence(timeout: 2))
     }
 
@@ -115,43 +126,46 @@ final class AssistantUITests: ParkAgentUITestCase {
             "A future meter must not offer a Confirm"
         )
         // The garage alternative is still choosable.
-        element(app, "assistant.optionRow.opt-garage-fenway").tap()
+        scrollTo(app, "assistant.optionRow.opt-garage-fenway").tap()
         XCTAssertTrue(
             element(app, "assistant.choose.opt-garage-fenway").waitForExistence(timeout: 3)
         )
         attachScreenshot(of: app, named: "assistant-future-street")
     }
 
+    /// A ParkWhiz alternative hands off to ParkWhiz — the merged search
+    /// means a garage isn't always SpotHero, and the note must name the
+    /// site the pass will actually live in.
     func testGarageConfirmOpensDeepLink() {
         let app = openAssistant("singleSpot")
         ask(app, "garage near fenway")
         XCTAssertTrue(element(app, "assistant.singleSpotPlan").waitForExistence(timeout: 10))
 
         // The garage is an alternative now: expand its row, then Choose.
-        // Wait for HITTABLE, not just exists: the row settles with a
-        // spring, and the button it reveals sits below everything above
-        // it — on a short screen or at large Dynamic Type it can exist in
-        // the tree while under the fold, where a synthesized tap reaches
-        // nothing and the test fails later with no hint about the tap.
-        element(app, "assistant.optionRow.opt-garage").tap()
-        let choose = element(app, "assistant.choose.opt-garage")
-        XCTAssertTrue(waitForHittable(choose, timeout: 5), "Choose never became tappable")
-        choose.tap()
-        // The deep link "opened" (probe in uiTesting mode) as SpotHero…
+        // scrollTo waits for HITTABLE, not just exists: the row settles
+        // with a spring, and the button it reveals can sit in the tree
+        // below the fold, where a synthesized tap reaches nothing.
+        scrollTo(app, "assistant.optionRow.opt-garage-2").tap()
+        scrollTo(app, "assistant.choose.opt-garage-2").tap()
+        // The deep link "opened" (probe in uiTesting mode) as a garage
+        // checkout…
         let probe = element(app, "assistant.externalLinkProbe")
         XCTAssertTrue(probe.waitForExistence(timeout: 5))
-        XCTAssertEqual(probe.label, "spothero")
-        // …and the hand-off note says where the pass lives. Match the
-        // note's OWN words, not just "SpotHero": the provenance line
-        // ("Garage prices from SpotHero, checked …") also contains that
-        // and is on screen from the moment the plan renders, so a bare
-        // "SpotHero" match would pass even if this note never arrived.
+        XCTAssertEqual(probe.label, "garageCheckout")
+        // …and the hand-off note names ParkWhiz. The whole clause, not the
+        // name: the provenance line under the list names ParkWhiz too.
         let handoffNote = app.staticTexts.containing(
-            NSPredicate(format: "label CONTAINS 'will live in your SpotHero account'")
+            NSPredicate(format: "label CONTAINS 'will live in your ParkWhiz account'")
         ).firstMatch
         XCTAssertTrue(
             handoffNote.waitForExistence(timeout: 5),
             "The confirm should say where the pass lives"
+        )
+        XCTAssertFalse(
+            app.staticTexts.containing(
+                NSPredicate(format: "label CONTAINS 'will live in your SpotHero account'")
+            ).firstMatch.exists,
+            "A ParkWhiz garage must not be handed off as SpotHero"
         )
     }
 
@@ -175,7 +189,7 @@ final class AssistantUITests: ParkAgentUITestCase {
             firstBefore.frame.minY, secondBefore.frame.minY,
             "Stop 1 starts above stop 2"
         )
-        element(app, "assistant.stopMenu.stop-2").tap()
+        scrollTo(app, "assistant.stopMenu.stop-2").tap()
         app.buttons["Move up"].tap()
         let firstRow = element(app, "assistant.stopRow.stop-2")
         XCTAssertTrue(firstRow.exists)
@@ -186,7 +200,7 @@ final class AssistantUITests: ParkAgentUITestCase {
         )
         attachScreenshot(of: app, named: "assistant-itinerary-reordered")
 
-        element(app, "assistant.signOffButton").tap()
+        scrollTo(app, "assistant.signOffButton").tap()
         let done = app.staticTexts.containing(
             NSPredicate(format: "label CONTAINS 'Signed off'")
         ).firstMatch
@@ -198,7 +212,16 @@ final class AssistantUITests: ParkAgentUITestCase {
         XCTAssertTrue(element(app, "home.dayHeader").waitForExistence(timeout: 5))
         // View-mode rows reuse the assistant stop-row identifiers; the
         // home.dayStop.* ids belong to the edit list.
-        XCTAssertTrue(element(app, "assistant.stopRow.stop-1").exists)
+        let homeFirst = element(app, "assistant.stopRow.stop-2")
+        let homeSecond = element(app, "assistant.stopRow.stop-1")
+        XCTAssertTrue(homeFirst.waitForExistence(timeout: 5))
+        XCTAssertTrue(homeSecond.exists)
+        // The reorder survived sign-off: Home shows the day in the order
+        // the user left it, not the order the model proposed.
+        XCTAssertLessThan(
+            homeFirst.frame.minY, homeSecond.frame.minY,
+            "The signed-off day keeps stop 2 above stop 1"
+        )
         attachScreenshot(of: app, named: "assistant-day-on-home")
     }
 
@@ -209,7 +232,7 @@ final class AssistantUITests: ParkAgentUITestCase {
         // The cards announce the wallet before the tap.
         XCTAssertTrue(element(app, "assistant.linkPayBadge").exists)
 
-        element(app, "assistant.confirm.opt-street").tap()
+        scrollTo(app, "assistant.confirm.opt-street").tap()
         // Confirm routes through the Link approval deep link…
         let probe = element(app, "assistant.externalLinkProbe")
         XCTAssertTrue(probe.waitForExistence(timeout: 5))
@@ -243,17 +266,19 @@ final class AssistantUITests: ParkAgentUITestCase {
         let app = openAssistant("singleSpot")
         let chips = app.buttons.matching(identifier: "assistant.promptChip")
         XCTAssertGreaterThan(chips.count, 0, "The empty state offers starters")
+        XCTAssertTrue(element(app, "assistant.emptyState").exists)
+        XCTAssertFalse(element(app, "assistant.userMessage").exists, "Nothing asked yet")
         attachScreenshot(of: app, named: "assistant-empty-state")
         let chip = chips.element(boundBy: 0)
         let asked = chip.label
         chip.tap()
 
-        // The tap sent it: the question appears as the user's message and
-        // the empty state is gone.
-        let userMessage = app.staticTexts.containing(
-            NSPredicate(format: "label CONTAINS %@", asked)
-        ).firstMatch
+        // The tap sent it: the user's own bubble carries exactly the chip's
+        // words (the chip itself can't satisfy this — it isn't a user
+        // message), and the empty state is gone.
+        let userMessage = element(app, "assistant.userMessage")
         XCTAssertTrue(userMessage.waitForExistence(timeout: 5))
+        XCTAssertEqual(userMessage.label, asked)
         XCTAssertFalse(element(app, "assistant.emptyState").exists)
     }
 

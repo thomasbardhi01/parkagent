@@ -143,7 +143,7 @@ struct AssistantSheetView: View {
         }
         .overlay(alignment: .bottomTrailing) {
             if uiTesting, let link = model.externalLink {
-                Button(link.kind == .spothero ? "spothero" : "linkApproval") {
+                Button(link.kind == .garageCheckout ? "garageCheckout" : "linkApproval") {
                     model.externalLink = nil
                     if link.kind == .linkApproval {
                         Task { await model.syncPendingLinkApproval() }
@@ -232,10 +232,9 @@ struct AssistantSheetView: View {
                 confirming: model.phase == .confirming,
                 linkConnected: appModel.linkWalletConnected
             ) { stops in
-                // Edits before sign-off stay client-side; sign-off sends
-                // the plan as proposed (server re-prices on PATCH after).
-                _ = stops
-                Task { await model.confirm(planId: plan.planId, optionId: nil) }
+                // Sign-off stores the day as proposed; a reorder made on
+                // the card is saved right after as its first edit.
+                Task { await model.confirm(planId: plan.planId, optionId: nil, stops: stops) }
             }
         }
     }

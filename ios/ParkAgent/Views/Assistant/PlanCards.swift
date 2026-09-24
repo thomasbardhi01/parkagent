@@ -88,7 +88,7 @@ struct SingleSpotPlanCards: View {
         // The server sends the sources actually shown, "+"-joined.
         let names = provenance.provider
             .split(separator: "+")
-            .map(Self.providerDisplayName)
+            .map { GarageSource.displayName($0) ?? $0.capitalized }
         let sources = ListFormatter.localizedString(byJoining: names)
         guard let searchedAt = Format.parseArrival(provenance.searchedAt) else {
             return "Garage prices from \(sources)."
@@ -96,13 +96,6 @@ struct SingleSpotPlanCards: View {
         return "Garage prices from \(sources), checked \(Format.clockTime(searchedAt))."
     }
 
-    static func providerDisplayName(_ id: Substring) -> String {
-        switch id {
-        case "spothero": return "SpotHero"
-        case "parkwhiz": return "ParkWhiz"
-        default: return id.capitalized
-        }
-    }
 }
 
 /// The recommended option, full width, with the single coral action.
@@ -161,7 +154,7 @@ private struct HeroOptionCard: View {
 
     private var confirmLabel: String {
         option.type == "garage"
-            ? "Confirm — open SpotHero (\(Format.money(option.priceUsd)))"
+            ? "Confirm — open \(option.provider.flatMap(GarageSource.displayName) ?? "checkout") (\(Format.money(option.priceUsd)))"
             : "Confirm \(Format.money(option.priceUsd)) for \(option.durationMinutes) min"
     }
 }

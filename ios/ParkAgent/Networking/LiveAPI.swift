@@ -456,32 +456,46 @@ struct LiveAPI: APIClient {
         )
         return AsyncThrowingStream { continuation in
             let task = Task {
-                let encoded = try Self.encoder.encode(body)
-                func open(_ token: String?) async throws -> (URLSession.AsyncBytes, Int) {
-                    var request = URLRequest(url: Self.url(base: baseURL, path: "assistant/message"))
-                    request.httpMethod = "POST"
-                    if let token {
-                        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-                    }
-                    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                    request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-                    request.httpBody = encoded
-                    let (bytes, response) = try await URLSession.shared.bytes(for: request)
-                    return (bytes, (response as? HTTPURLResponse)?.statusCode ?? 0)
-                }
                 do {
+                    // The same URL and request builders every other call
+                    // uses: no path-folded query, one bearer contract.
+                    let url = Self.url(base: baseURL, path: "assistant/message")
+                    let encoded = try Self.encoder.encode(body)
+                    func open(_ token: String?) async throws -> (URLSession.AsyncBytes, Int) {
+                        var request = Self.request(url, method: "POST", body: encoded, token: token)
+                        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+                        do {
+                            let (bytes, response) = try await URLSession.shared.bytes(for: request)
+                            return (bytes, (response as? HTTPURLResponse)?.statusCode ?? 0)
+                        } catch {
+                            throw APIError.transport(error)
+                        }
+                    }
                     let token = await tokens.current()
                     var (bytes, status) = try await open(token)
-                    // Same silent-refresh contract as the plain transport.
-                    if status == 401, let refreshed = await tokens.refresh(token) {
+                    // Same silent-refresh contract as the plain transport:
+                    // one refresh, one retry. Auth is checked when the
+                    // stream opens, so a token that expires (or is rotated
+                    // by another request's refresh) mid-reply never cuts
+                    // a stream that already started.
+                    if status == 401 {
+                        bytes.task.cancel() // the 401's body is never read
+                        guard let refreshed = await tokens.refresh(token) else {
+                            throw APIError.unauthorized
+                        }
                         (bytes, status) = try await open(refreshed)
                     }
                     guard (200..<300).contains(status) else {
-                        throw status == 503
-                            ? APIError.refused(code: "assistant_not_configured")
-                            : status == 401
-                                ? APIError.unauthorized
-                                : APIError.server(status: status)
+                        // A named refusal (assistant_budget_exhausted,
+                        // rate_limited, conversation_not_found, …) keeps
+                        // its code — it's the difference between "try
+                        // again" and "come back tomorrow".
+                        var data = Data()
+                        for try await byte in bytes {
+                            data.append(byte)
+                            if data.count >= 16_384 { break }
+                        }
+                        throw Self.failure(status: status, data: data)
                     }
                     // SSE frames: "event: <name>" then "data: <json>".
                     var event = ""
@@ -589,16 +603,7 @@ struct LiveAPI: APIClient {
         body: Data?,
         token: String?
     ) async throws -> Response {
-        var request = URLRequest(url: url)
-        request.httpMethod = method
-        if let token {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
-        if let body {
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.httpBody = body
-        }
-
+        let request = Self.request(url, method: method, body: body, token: token)
         let data: Data
         let response: URLResponse
         do {
@@ -608,37 +613,57 @@ struct LiveAPI: APIClient {
         }
 
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200..<300).contains(status) else { throw Self.failure(status: status, data: data) }
+        do {
+            return try Self.decoder.decode(Response.self, from: data)
+        } catch {
+            // A 200 with an empty body is normal for {ok:true} routes
+            // the caller decodes as an empty struct.
+            if let empty = EmptyResponse() as? Response, data.isEmpty { return empty }
+            throw APIError.transport(error)
+        }
+    }
+
+    /// The one request builder: bearer when there is a token, JSON body
+    /// when there is one. The assistant stream builds on it too.
+    static func request(_ url: URL, method: String, body: Data?, token: String?) -> URLRequest {
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        if let token {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        if let body {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = body
+        }
+        return request
+    }
+
+    /// A non-2xx answer as an APIError — shared by plain calls and the
+    /// assistant stream so a named refusal reads the same on both.
+    static func failure(status: Int, data: Data) -> APIError {
         switch status {
-        case 200..<300:
-            do {
-                return try Self.decoder.decode(Response.self, from: data)
-            } catch {
-                // A 200 with an empty body is normal for {ok:true} routes
-                // the caller decodes as an empty struct.
-                if let empty = EmptyResponse() as? Response, data.isEmpty { return empty }
-                throw APIError.transport(error)
-            }
         case 400:
-            throw APIError.invalidRequest(String(data: data, encoding: .utf8) ?? "bad request")
+            return .invalidRequest(String(data: data, encoding: .utf8) ?? "bad request")
         case 401:
             // The sign-in routes answer 401 with a typed reason
             // (invalid_code, token_reused, …) worth showing the user.
-            if let refusal = try? Self.decoder.decode(Refusal.self, from: data),
+            if let refusal = try? decoder.decode(Refusal.self, from: data),
                refusal.error != "unauthorized" {
-                throw APIError.refused(code: refusal.error)
+                return .refused(code: refusal.error)
             }
-            throw APIError.unauthorized
-        case 403, 409, 429, 502, 503:
+            return .unauthorized
+        case 403, 404, 409, 429, 502, 503:
             // Named refusals carry {"error": "<code>"} (dry_run,
-            // funding_unavailable, session_already_active, …).
-            if let refusal = try? Self.decoder.decode(Refusal.self, from: data) {
-                throw APIError.refused(code: refusal.error)
+            // funding_unavailable, assistant_budget_exhausted, …).
+            if let refusal = try? decoder.decode(Refusal.self, from: data) {
+                return .refused(code: refusal.error)
             }
-            throw APIError.server(status: status)
+            return .server(status: status)
         case 501:
-            throw APIError.notImplemented
+            return .notImplemented
         default:
-            throw APIError.server(status: status)
+            return .server(status: status)
         }
     }
 

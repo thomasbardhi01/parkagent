@@ -52,7 +52,8 @@ struct SingleSpotPlan: Decodable, Sendable {
     /// map's destination pin. Absent when they asked about "here".
     let destination: Destination?
     /// Where garage options came from and when the search ran; the card
-    /// shows it once under the list ("From SpotHero · checked 2:05 PM").
+    /// shows it once under the list ("Garage prices from ParkWhiz and
+    /// SpotHero, checked 2:05 PM").
     let provenance: Provenance?
 
     struct Destination: Decodable, Sendable {
@@ -92,6 +93,9 @@ struct SingleSpotOption: Decodable, Identifiable, Sendable {
     let zoneId: String?
     let garageOptionId: String?
     let deepLink: String?
+    /// Server-attached on garage options: which site the offer came from
+    /// ("spothero" | "parkwhiz") — where checkout finishes and the pass lives.
+    let provider: String?
     let recommended: Bool
     /// ISO start of the stay, when the plan is for later.
     let startsAt: String?
@@ -106,6 +110,19 @@ struct SingleSpotOption: Decodable, Identifiable, Sendable {
     var coordinate: CLLocationCoordinate2D? {
         guard let lat, let lng else { return nil }
         return CLLocationCoordinate2D(latitude: lat, longitude: lng)
+    }
+}
+
+/// The garage sources the server merges. One place for their names, so the
+/// card's button, the provenance line, and anything else that names where
+/// checkout happens agree with the option's own `provider`.
+enum GarageSource {
+    static func displayName(_ id: some StringProtocol) -> String? {
+        switch id {
+        case "spothero": "SpotHero"
+        case "parkwhiz": "ParkWhiz"
+        default: nil
+        }
     }
 }
 

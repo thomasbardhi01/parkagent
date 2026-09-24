@@ -96,6 +96,9 @@ enum MockAssistantFixtures {
     /// provider now emits (docs/assistant-verification.md).
     static let museumDeepLink =
         "https://spothero.com/checkout/135220?starts=2026-01-05T14%3A00%3A00&ends=2026-01-05T15%3A30%3A00"
+    /// ParkWhiz's own site:purchase link, the shape the live API returns.
+    static let valetDeepLink =
+        "https://www.parkwhiz.com/find_and_book/?location_id=15398&start_time=2026-01-05T14:00:00-05:00&end_time=2026-01-05T15:30:00-05:00"
 
     static var singleSpotPlan: AssistantReply.ProposedPlan {
         plan(
@@ -105,7 +108,7 @@ enum MockAssistantFixtures {
               "kind": "single_spot",
               "note": "Street is cheapest; the deck is closest.",
               "destination": {"lat": 42.3394, "lng": -71.0940, "label": "Museum of Fine Arts"},
-              "provenance": {"provider": "spothero", "searchedAt": "2026-01-05T14:00:00-05:00"},
+              "provenance": {"provider": "parkwhiz+spothero", "searchedAt": "2026-01-05T14:00:00-05:00"},
               "options": [
                 {"id": "opt-street", "type": "street", "label": "Street — Zone 81234",
                  "detail": "Boylston St meter, 2 min walk", "priceUsd": 4.10,
@@ -114,13 +117,13 @@ enum MockAssistantFixtures {
                 {"id": "opt-garage", "type": "garage", "label": "Museum Underground Deck",
                  "detail": "Self park, covered", "priceUsd": 18.00, "durationMinutes": 90,
                  "walkMinutes": 3, "entryType": "self", "garageOptionId": "g1",
-                 "lat": 42.3385, "lng": -71.0925,
+                 "lat": 42.3385, "lng": -71.0925, "provider": "spothero",
                  "deepLink": "\(museumDeepLink)", "recommended": false},
                 {"id": "opt-garage-2", "type": "garage", "label": "Fenway Valet Plaza",
                  "detail": "Valet", "priceUsd": 24.00, "durationMinutes": 90,
                  "walkMinutes": 6, "entryType": "valet", "garageOptionId": "g2",
-                 "lat": 42.3428, "lng": -71.0972,
-                 "deepLink": "\(museumDeepLink)", "recommended": false}
+                 "lat": 42.3428, "lng": -71.0972, "provider": "parkwhiz",
+                 "deepLink": "\(valetDeepLink)", "recommended": false}
               ]
             }
             """
@@ -148,7 +151,7 @@ enum MockAssistantFixtures {
                 {"id": "opt-garage-fenway", "type": "garage", "label": "Landsdowne Garage",
                  "detail": "Self park", "priceUsd": 32.00, "durationMinutes": 180,
                  "walkMinutes": 4, "entryType": "self", "garageOptionId": "g9",
-                 "lat": 42.3475, "lng": -71.0989,
+                 "lat": 42.3475, "lng": -71.0989, "provider": "spothero",
                  "deepLink": "\(museumDeepLink)", "recommended": false}
               ]
             }
@@ -318,7 +321,11 @@ extension MockAPI {
                 providerZoneNumber: nil, durationMinutes: nil,
                 paymentSource: linked ? "link_wallet" : "issuing_card",
                 linkApproval: approval, itineraryId: nil, totalUsd: nil, linkApprovals: nil,
-                note: "Checkout finishes in SpotHero; the parking pass will live in your SpotHero account."
+                // The server's wording (garageHandoffNote): the site the
+                // option came from, not always SpotHero.
+                note: option.provider.flatMap(GarageSource.displayName).map {
+                    "Checkout finishes in \($0); the parking pass will live in your \($0) account."
+                } ?? "Checkout finishes on the garage's own site; the parking pass will live there."
             )
         }
         return AssistantConfirmResponse(

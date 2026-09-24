@@ -38,8 +38,8 @@ final class AssistantModel {
     var errorText: String?
     /// The most recent proposed plan, rendered as cards under its message.
     var proposedPlan: AssistantReply.ProposedPlan?
-    /// Set when a confirm produced a deep link to open (SpotHero checkout
-    /// or a Link approval). RootView presents it in SFSafariViewController.
+    /// Set when a confirm produced a deep link to open (a garage's own
+    /// checkout — SpotHero or ParkWhiz — or a Link approval). RootView presents it in SFSafariViewController.
     var externalLink: ExternalLink?
     /// After a Link-approval sheet closes, the spend request to poll.
     var pendingLinkSync: String?
@@ -49,7 +49,7 @@ final class AssistantModel {
 
     struct ExternalLink: Identifiable, Equatable {
         enum Kind: Equatable {
-            case spothero
+            case garageCheckout
             case linkApproval
         }
 
@@ -121,7 +121,10 @@ final class AssistantModel {
     }
 
     /// The Confirm / Sign off tap — the ONLY path that books or spends.
-    func confirm(planId: String, optionId: String?) async {
+    /// `stops` is the itinerary as the user left it on the card: when they
+    /// reordered it before signing off, the new order is saved right after
+    /// (the server re-checks the cap on that edit like any other).
+    func confirm(planId: String, optionId: String?, stops: [ItineraryStop]? = nil) async {
         guard phase != .confirming else { return }
         phase = .confirming
         errorText = nil
@@ -131,15 +134,15 @@ final class AssistantModel {
             lastPaymentSource = response.paymentSource
             switch response.kind {
             case "garage_handoff":
-                // Link approval first when present, then the SpotHero link
+                // Link approval first when present, then the garage's link
                 // (the user approves the spend, then checks out).
                 if let approval = response.linkApproval?.approvalUrl, let url = URL(string: approval) {
                     pendingLinkSync = response.linkApproval?.spendRequestId
                     externalLink = ExternalLink(url: url, kind: .linkApproval)
                 } else if let link = response.deepLink, let url = URL(string: link) {
-                    externalLink = ExternalLink(url: url, kind: .spothero)
+                    externalLink = ExternalLink(url: url, kind: .garageCheckout)
                 }
-                appendNote(response.note ?? "Opening SpotHero to finish checkout.")
+                appendNote(response.note ?? "Opening the garage's checkout to finish.")
             case "street_confirmed":
                 if let approval = response.linkApproval?.approvalUrl, let url = URL(string: approval) {
                     pendingLinkSync = response.linkApproval?.spendRequestId
@@ -153,6 +156,7 @@ final class AssistantModel {
                     externalLink = ExternalLink(url: url, kind: .linkApproval)
                 }
                 appendNote("Signed off — the day is on Home. Garage links arrive 15 minutes before each stop.")
+                await saveReorder(itineraryId: response.itineraryId, planId: planId, stops: stops)
                 await appModel.refreshItineraries()
             default:
                 appendNote("Confirmed.")
@@ -162,6 +166,21 @@ final class AssistantModel {
             errorText = (error as? APIError)?.errorDescription ?? "Could not confirm."
         }
         phase = .idle
+    }
+
+    /// Sign-off stores the plan as proposed; a reorder made on the card
+    /// before the tap is applied as the day's first edit. Without this the
+    /// drag-to-reorder was silently dropped at sign-off.
+    private func saveReorder(itineraryId: String?, planId: String, stops: [ItineraryStop]?) async {
+        guard let itineraryId, let stops,
+              case .itinerary(let proposed)? = proposedPlan?.planId == planId ? proposedPlan?.plan : nil,
+              proposed.stops.map(\.id) != stops.map(\.id)
+        else { return }
+        do {
+            _ = try await api.patchItinerary(id: itineraryId, stops: stops)
+        } catch {
+            appendNote("The day is signed off in its original order — the new order didn't save.")
+        }
     }
 
     private func streetNote(_ response: AssistantConfirmResponse) -> String {

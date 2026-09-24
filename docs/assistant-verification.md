@@ -68,6 +68,21 @@ Sample rows (cheapest/nearest per place, both providers represented):
    Boston phone would have found nothing. The bias now orders the search
    (biased metro first, the other as fallback) instead of excluding.
 
+4. **SpotHero ignores a window's offset** (found in review,
+   2026-09-24). Probed `spothero.com/checkout/135220` with the same 6–10
+   PM ET stay written three ways: naive `2026-09-26T18:00:00` and
+   `…T18:00:00-04:00` both rendered 18:00, but `…T22:00:00.000Z` (the
+   same instant) rendered **22:00** — SpotHero reads the wall-clock
+   digits and drops the zone. ParkWhiz's API honors offsets (all three
+   forms came back `start_time 18:00:00-04:00`). So SpotHero's search and
+   checkout links now get ET wall-clock time, and every model-supplied
+   time is normalized server-side (offset-less = ET, never the host's
+   zone — UTC on Fly).
+5. **The same facility for a new window reused the old link** (found in
+   review). Option ids were facility ids, so after "make it 5 instead"
+   the cache handed back the 2 PM checkout link for the 5 PM card. Ids
+   are now `{provider}-{facility}-{windowTag}`.
+
 ## ParkWhiz spike (read-only public search)
 
 Question: can parkwhiz.com's search be read like SpotHero's — no login,
@@ -109,7 +124,7 @@ work around.
 ## What it looks like
 
 Captured from the UI-test run (`ParkAgentUITests/AssistantUITests`,
-iPhone 17 Pro, mock API):
+iPhone 17 Pro Max, mock API; refreshed after the 2026-09-24 review):
 
 | | |
 |---|---|

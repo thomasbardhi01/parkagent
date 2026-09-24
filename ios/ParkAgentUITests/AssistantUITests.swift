@@ -128,20 +128,30 @@ final class AssistantUITests: ParkAgentUITestCase {
         XCTAssertTrue(element(app, "assistant.singleSpotPlan").waitForExistence(timeout: 10))
 
         // The garage is an alternative now: expand its row, then Choose.
-        // The row settles with a spring, so wait for the button rather
-        // than racing the animation.
+        // Wait for HITTABLE, not just exists: the row settles with a
+        // spring, and the button it reveals sits below everything above
+        // it — on a short screen or at large Dynamic Type it can exist in
+        // the tree while under the fold, where a synthesized tap reaches
+        // nothing and the test fails later with no hint about the tap.
         element(app, "assistant.optionRow.opt-garage").tap()
         let choose = element(app, "assistant.choose.opt-garage")
-        XCTAssertTrue(choose.waitForExistence(timeout: 5))
+        XCTAssertTrue(waitForHittable(choose, timeout: 5), "Choose never became tappable")
         choose.tap()
         // The deep link "opened" (probe in uiTesting mode) as SpotHero…
         let probe = element(app, "assistant.externalLinkProbe")
         XCTAssertTrue(probe.waitForExistence(timeout: 5))
         XCTAssertEqual(probe.label, "spothero")
-        // …and the hand-off note says where the pass lives.
+        // …and the hand-off note says where the pass lives. Match the
+        // note's OWN words, not just "SpotHero": the provenance line
+        // ("Garage prices from SpotHero, checked …") also contains that
+        // and is on screen from the moment the plan renders, so a bare
+        // "SpotHero" match would pass even if this note never arrived.
+        let handoffNote = app.staticTexts.containing(
+            NSPredicate(format: "label CONTAINS 'will live in your SpotHero account'")
+        ).firstMatch
         XCTAssertTrue(
-            app.staticTexts.containing(NSPredicate(format: "label CONTAINS 'SpotHero'"))
-                .firstMatch.exists
+            handoffNote.waitForExistence(timeout: 5),
+            "The confirm should say where the pass lives"
         )
     }
 
@@ -266,6 +276,19 @@ final class AssistantUITests: ParkAgentUITestCase {
             usleep(200_000)
         }
         return !element.exists
+    }
+
+    /// Exists AND is on screen. `exists` alone is the trap: a lazily
+    /// realized element can be in the accessibility tree while sitting
+    /// under the fold, and `tap()` then synthesizes an event that reaches
+    /// nothing — the action never runs and the failure surfaces later,
+    /// somewhere else entirely.
+    private func waitForHittable(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !(element.exists && element.isHittable) && Date() < deadline {
+            usleep(200_000)
+        }
+        return element.exists && element.isHittable
     }
 
     func testRefusesNonParkingTopics() {

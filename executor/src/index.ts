@@ -43,6 +43,7 @@ export type {
   ProviderOpError,
   ProviderOpErrorCode,
   ProviderOpResult,
+  ReadSavedCardResult,
   StartSessionArgs,
   StopSessionArgs,
   StorageStateValue,
@@ -242,6 +243,7 @@ export function createPassportAccountOps(options: PassportExecutorOptions): Acco
     setupCard: (card) => withClient((c) => c.setupCard(card)),
     removeCard: (last4) => withClient((c) => c.removeCard(last4)),
     topupWallet: (amountUsd) => withClient((c) => c.topupWallet(amountUsd)),
+    readSavedCard: () => withClient((c) => c.readSavedCard()),
   };
 }
 
@@ -262,5 +264,6 @@ export function createParkNycAccountOps(options: ParkNycExecutorOptions): Accoun
     setupCard: (card) => withClient((c) => c.setupCard(card)),
     removeCard: (last4) => withClient((c) => c.removeCard(last4)),
     topupWallet: (amountUsd) => withClient((c) => c.topupWallet(amountUsd)),
+    readSavedCard: () => withClient((c) => c.readSavedCard()),
   };
 }

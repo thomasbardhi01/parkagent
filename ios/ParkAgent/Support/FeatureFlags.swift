@@ -12,4 +12,15 @@ enum FeatureFlags {
     }
 
     static let applePayProvisioningKey = "applePayProvisioningEnabled"
+
+    /// Whether this BUILD can do Google sign-in — off until the
+    /// GoogleSignIn-iOS SDK is added to project.yml to mint the id token.
+    /// The button needs this AND the server reporting Google on
+    /// (GET /auth/methods, GOOGLE_SIGNIN_ENABLED). The App Store requires
+    /// Sign in with Apple wherever Google is offered; Apple always leads.
+    static var googleSignIn: Bool {
+        UserDefaults.standard.bool(forKey: googleSignInKey)
+    }
+
+    static let googleSignInKey = "googleSignInEnabled"
 }

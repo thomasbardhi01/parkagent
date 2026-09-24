@@ -1,5 +1,10 @@
 import SwiftUI
 
+/// Three stages, in order: no valid session → Welcome (sign-in); signed in
+/// → the truth gate (`OnboardingGate`: resume at the first missing setup
+/// step); nothing missing → Home. Auth comes first because every protected
+/// request needs the access token, including the ones the gate and
+/// onboarding make.
 struct RootView: View {
     /// Set when the user finishes the flow. It never drives the gate
     /// forward — finishing calls back (`onComplete`), because a returning
@@ -8,47 +13,120 @@ struct RootView: View {
     /// the truth below; UI tests (-skipOnboarding) read it directly, and
     /// Diagnostics' reset clears it to re-run the gate.
     @AppStorage("hasOnboarded") private var hasOnboarded = false
-    @State private var model = AppModel()
+    @State private var authStore: AuthStore
+    @State private var model: AppModel
+    @State private var auth: AuthModel
     @State private var permissions = PermissionsManager()
     @State private var gate: Gate = .checking
 
     /// Onboarding is gated by what is actually true — permissions, the
-    /// stored vehicle and city, and the server's provider-link state — not
-    /// by a persisted flag that can survive a reinstall or a mock run.
+    /// account's car, the chosen city, and the server's provider-link state
+    /// — not by a persisted flag that can survive a reinstall or a mock run.
     enum Gate: Equatable {
         case checking
         case onboarding(OnboardingStep)
         case ready
     }
 
+    /// Which side of the welcome screen we are on; `.task(id:)` keys off it
+    /// so each sign-in runs the gate once and each sign-out tears down.
+    private enum SessionPhase: Equatable {
+        case loading, signedOut, signedIn
+    }
+
+    init() {
+        // One store, shared: AppModel reads tokens through it and AuthModel
+        // writes them. A second instance would mint a second device id.
+        let store = AuthStore()
+        let model = AppModel(authStore: store)
+        _authStore = State(initialValue: store)
+        _model = State(initialValue: model)
+        _auth = State(initialValue: AuthModel(
+            api: model.api,
+            store: store,
+            usesMockSignIn: model.useMockAPI
+        ))
+    }
+
     var body: some View {
-        Group {
-            switch gate {
-            case .checking:
-                ProgressView()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Color.appBackground)
-            case .onboarding(let step):
-                OnboardingView(startAt: step) { gate = .ready }
-            case .ready:
-                MainTabView()
+        // A ZStack, not a Group: a Group hands its modifiers to whichever
+        // branch is showing, so the lifecycle tasks below were torn down
+        // and restarted every time the screen changed — the policy load
+        // was cancelled mid-flight the moment the gate flipped from the
+        // spinner to Home, and Home showed "can't reach the server" over a
+        // request that had in fact answered 200 (seen on the live path).
+        ZStack {
+            switch authStore.state {
+            case .loading:
+                // One frame while the Keychain is read; a spinner here
+                // beats a welcome screen that flashes for signed-in users.
+                spinner
+            case .signedOut:
+                // Never the "not configured" banner: without a server the
+                // sign-in buttons say so themselves.
+                WelcomeView()
+            case .signedIn:
+                switch gate {
+                case .checking:
+                    spinner
+                case .onboarding(let step):
+                    OnboardingView(startAt: step) { gate = .ready }
+                case .ready:
+                    MainTabView()
+                }
             }
         }
         .environment(model)
+        .environment(auth)
+        .environment(authStore)
         .environment(permissions)
-        // Independent: the gate needs no policy, and waiting on one network
-        // call before starting the next only lengthens the launch spinner.
-        .task { await model.loadPolicy() }
-        .task { await evaluateGate() }
+        // Read the Keychain and wire the refresh transport before anything
+        // makes a protected request.
+        .task { model.restoreSession() }
+        .task(id: sessionPhase) { await enter(sessionPhase) }
         .onChange(of: hasOnboarded) { _, onboarded in
             // Diagnostics' Reset onboarding cleared it: back through the
-            // gate, which now finds the vehicle and city missing.
-            guard !onboarded else { return }
+            // gate, which now finds this phone's setup missing.
+            guard !onboarded, authStore.isSignedIn else { return }
             gate = .checking
             Task { await evaluateGate() }
         }
         .onChange(of: gate) { _, gate in
             if gate == .ready { model.startBackgroundWork() }
+        }
+    }
+
+    private var spinner: some View {
+        ProgressView()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.appBackground)
+    }
+
+    private var sessionPhase: SessionPhase {
+        switch authStore.state {
+        case .loading: .loading
+        case .signedOut: .signedOut
+        case .signedIn: .signedIn
+        }
+    }
+
+    /// Per-account lifecycle. Signing in (or launching signed in) loads the
+    /// policy and runs the gate side by side — the gate needs no policy,
+    /// and waiting on one before the other only lengthens the spinner.
+    /// Signing out stops everything that belonged to the account and resets
+    /// the gate for whoever signs in next.
+    private func enter(_ phase: SessionPhase) async {
+        switch phase {
+        case .loading:
+            return
+        case .signedOut:
+            model.stopBackgroundWork()
+            gate = .checking
+        case .signedIn:
+            gate = .checking
+            async let policy: Void = model.loadPolicy()
+            await evaluateGate()
+            await policy
         }
     }
 
@@ -70,73 +148,34 @@ struct RootView: View {
             }
             return
         }
-        if let missing = await firstMissingStep() {
-            gate = .onboarding(missing)
-        } else {
-            gate = .ready
-        }
+        let missing = OnboardingGate.firstMissingStep(await gatherFacts())
+        // Signed out while the server was answering: the next sign-in
+        // runs its own check.
+        guard authStore.isSignedIn, gate == .checking else { return }
+        gate = missing.map(Gate.onboarding) ?? .ready
     }
 
     /// Where a UI-test onboarding launch starts (-onboardingStep resume).
+    /// Step 0 is the retired onboarding welcome; sign-in replaced it.
     private var savedOrFirstStep: OnboardingStep {
         let saved = UserDefaults.standard.integer(forKey: OnboardingStep.defaultsKey)
-        return OnboardingStep(rawValue: saved) ?? .welcome
+        let step = OnboardingStep(rawValue: saved) ?? .permissions
+        return step == .welcome ? .permissions : step
     }
 
-    /// The first onboarding step whose outcome is missing, or nil when the
-    /// user is fully set up and lands on Home.
-    private func firstMissingStep() async -> OnboardingStep? {
+    private func gatherFacts() async -> OnboardingGate.Facts {
         await permissions.refreshNotificationStatus()
-
         let permissionsOK = permissions.locationStatus == .authorizedAlways
             && (!permissions.motionAvailable || permissions.motionStatus == .authorized)
             && permissions.notificationsGranted
-        let defaults = UserDefaults.standard
-        let plate = (defaults.string(forKey: "vehicle.plate") ?? "").trimmingCharacters(in: .whitespaces)
-        let state = (defaults.string(forKey: "vehicle.state") ?? "").trimmingCharacters(in: .whitespaces)
-        let vehicleOK = (2...8).contains(plate.count) && state.count == 2
-        let city = defaults.string(forKey: "selectedCity")
-        let cityOK = city == "nyc" || city == "bos" || city == "other"
-
-        // Nothing set up at all → the full flow, from the welcome screen.
-        if !permissionsOK && !vehicleOK && !cityOK { return .welcome }
-        if !permissionsOK { return .permissions }
-        if !vehicleOK { return .vehicle }
-        guard cityOK else { return .city }
-        // "Somewhere else": the flow finishes without a provider to link.
-        guard let providerId = CityCatalog.providerId(for: city) else { return nil }
-
-        // The server's truth about the provider link. Unreachable or slow
-        // server → land on Home, where the connectivity error is shown;
-        // never trap the user in onboarding (or on a spinner) over a
-        // network blip.
-        guard let linked = await providerLinked(providerId) else { return nil }
-        return linked ? nil : .linkProvider
-    }
-
-    /// How long the launch gate waits on the server before giving up and
-    /// landing on Home. URLSession's own timeout is 60 s — on one bar of
-    /// signal in a garage that was a minute of spinner.
-    private static let linkCheckTimeout: Duration = .seconds(4)
-
-    /// Whether the provider is linked, or nil when the server didn't
-    /// answer in time (or at all).
-    private func providerLinked(_ providerId: String) async -> Bool? {
-        let api = model.api
-        let timeout = Self.linkCheckTimeout
-        return await withTaskGroup(of: Bool?.self) { group in
-            group.addTask {
-                guard let status = try? await api.providersStatus() else { return nil }
-                return status.providers.first { $0.id == providerId }?.isLinked ?? false
-            }
-            group.addTask {
-                try? await Task.sleep(for: timeout)
-                return nil
-            }
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first
-        }
+        let server = await OnboardingGate.serverFacts(api: model.api)
+        return OnboardingGate.Facts(
+            permissionsOK: permissionsOK,
+            serverHasVehicle: server.hasVehicle,
+            localVehicleOK: OnboardingGate.localVehicleOK(),
+            city: UserDefaults.standard.string(forKey: "selectedCity"),
+            usableProviders: server.usableProviders
+        )
     }
 }
 
@@ -147,6 +186,8 @@ struct MainTabView: View {
 
     var body: some View {
         @Bindable var model = model
+        // Settings is gone from the tab bar: its contents live in the
+        // Account sheet behind Home's avatar button.
         TabView {
             HomeView()
                 .tabItem { Label("Home", systemImage: "map") }
@@ -154,8 +195,6 @@ struct MainTabView: View {
                 .tabItem { Label("Sessions", systemImage: "clock.arrow.circlepath") }
             CardView()
                 .tabItem { Label("Card", systemImage: "creditcard") }
-            SettingsView()
-                .tabItem { Label("Settings", systemImage: "gearshape") }
         }
         .tint(.actionCoral)
         // At the tab level, not inside HomeView: a park detected while the
@@ -165,8 +204,9 @@ struct MainTabView: View {
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.hidden)
         }
-        // Settings re-link and the provider_relink push land here; the
-        // parked sheet presents its own copy (a sheet can't stack on it).
+        // The Account sheet's re-link and the provider_relink push land
+        // here; the parked sheet presents its own copy (a sheet can't
+        // stack on it).
         .fullScreenCover(item: $model.providerLinkPrompt) { prompt in
             ProviderLinkFlowView(providerId: prompt.providerId)
         }
@@ -192,6 +232,13 @@ struct MainTabView: View {
                 let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?
                     .queryItems?.first(where: { $0.name == "q" })?.value
                 model.openAssistant(query: query)
+            case "providers":
+                // The provider_relink / reconnect push deep link.
+                let provider = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                    .queryItems?.first(where: { $0.name == "provider" })?.value
+                if let provider {
+                    model.providerLinkPrompt = ProviderLinkPrompt(providerId: provider)
+                }
             case "link":
                 // The OAuth callback page bounced back after connecting.
                 Task { await model.refreshLinkWalletStatus() }

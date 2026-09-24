@@ -11,9 +11,9 @@ DEVELOPMENT_TEAM =
 // so the scheme's slashes are escaped as $() to keep the URL intact.
 API_BASE_URL = http:$()/$()/localhost:3000
 
-// Per-user API key (users.api_key on the server; see server/API.md). Empty is
-// fine for the simulator — the app falls back to the mock API without it.
-API_KEY =
+// No API key here any more: the app signs in as a user (Sign in with Apple
+// or an email code) and authenticates with the JWT it gets back. API keys
+// are the server's admin/script credential now.
 
 // Stripe publishable key (pk_test_…), only needed to confirm real Apple Pay
 // or card top-ups. Empty is fine — dry run and the mock never reach Stripe.

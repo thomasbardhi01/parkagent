@@ -16,12 +16,21 @@ class ParkAgentUITestCase: XCTestCase {
         cardScenario: String? = nil,
         providerScenario: String? = nil,
         cityScenario: String? = nil,
+        authScenario: String? = nil,
         onboardingStep: Int? = nil,
         selectedCity: String? = nil,
         skipOnboarding: Bool = true,
+        /// Most tests want to land inside the app: `-signedIn YES` seeds a
+        /// mock session so the welcome screen doesn't gate them. The auth
+        /// tests pass false and drive the real sign-in.
+        signedIn: Bool = true,
         appearance: String? = nil,
         paymentSource: String? = nil,
-        issuingLive: Bool = false
+        issuingLive: Bool = false,
+        googleSignIn: Bool = false,
+        /// The mock server's switched-on sign-in methods; nil = its
+        /// default, Apple only (as a real deployment ships).
+        authMethods: String? = nil
     ) -> XCUIApplication {
         let app = XCUIApplication()
         var args = [
@@ -31,6 +40,10 @@ class ParkAgentUITestCase: XCTestCase {
             "-mockScenario", scenario,
             "-fixedNow", Self.fixedNow,
         ]
+        if signedIn { args += ["-signedIn", "YES"] }
+        if let authScenario { args += ["-authScenario", authScenario] }
+        if googleSignIn { args += ["-googleSignIn", "YES"] }
+        if let authMethods { args += ["-authMethods", authMethods] }
         if skipOnboarding { args += ["-skipOnboarding", "YES"] }
         if let appearance { args += ["-appearance", appearance] }
         if let cardScenario { args += ["-cardScenario", cardScenario] }
@@ -58,9 +71,23 @@ class ParkAgentUITestCase: XCTestCase {
         add(attachment)
     }
 
-    /// Settings > (five taps on the version) > Diagnostics > Simulate park,
-    /// then wait for the sheet. Mirrors how a human reaches the hidden
-    /// screen — there is no Developer section any more.
+    /// Open the Account sheet from Home's avatar button (the Settings tab
+    /// is gone; everything it held lives here now). Owned by feat/accounts;
+    /// AssistantUITests reaches the Link-wallet row through it.
+    @discardableResult
+    func openAccountSheet(_ app: XCUIApplication) -> XCUIElement {
+        app.tabBars.buttons["Home"].tap()
+        let avatar = element(app, "home.accountButton")
+        XCTAssertTrue(avatar.waitForExistence(timeout: 5), "Account button missing on Home")
+        avatar.tap()
+        let sheet = element(app, "account.view")
+        XCTAssertTrue(sheet.waitForExistence(timeout: 5), "Account sheet did not open")
+        return sheet
+    }
+
+    /// Account sheet > (five taps on the version) > Diagnostics > Simulate
+    /// park, then wait for the sheet. Mirrors how a human reaches the
+    /// hidden screen — there is no Developer section any more.
     func simulateParkViaDiagnostics(_ app: XCUIApplication) {
         openDiagnostics(app)
         let simulate = element(app, "diagnostics.simulateParkButton")
@@ -78,36 +105,45 @@ class ParkAgentUITestCase: XCTestCase {
     /// "exists" alone isn't enough either. CI run 36014956437 stopped with
     /// the version row at y 872–924 under a tab bar starting at y 873, and
     /// all five "taps on the version" landed on the tab bar instead.
+    ///
+    /// Each attempt polls for a beat before deciding to swipe: a row still
+    /// animating in — or waiting on an async state flip, like Link wallet's
+    /// Connect turning into Connected + Disconnect — reports neither
+    /// existing nor hittable for a moment, and scrolling past it would
+    /// trade one flake for another. Scroll for a post-interaction target
+    /// too: content that grows can push it past the fold with no scroll.
     @discardableResult
     func scrollTo(_ app: XCUIApplication, _ identifier: String, swipes: Int = 8) -> XCUIElement {
         let target = element(app, identifier)
-        var attempts = 0
-        while !isTappable(app, target) && attempts < swipes {
-            app.swipeUp()
-            attempts += 1
+        for attempt in 0...swipes {
+            if target.waitForExistence(timeout: 1), isTappable(app, target) { return target }
+            if attempt < swipes { app.swipeUp() }
         }
         return target
     }
 
     private func isTappable(_ app: XCUIApplication, _ element: XCUIElement) -> Bool {
         guard element.exists, element.isHittable else { return false }
+        // Only a tab bar that can take the tap is in the way: under the
+        // Account sheet it is still in the tree but covered.
         let tabBar = app.tabBars.firstMatch
-        guard tabBar.exists else { return true }
+        guard tabBar.exists, tabBar.isHittable else { return true }
         return element.frame.maxY <= tabBar.frame.minY
     }
 
-    /// Unlocks and opens the hidden Diagnostics screen: Settings, scroll to
-    /// the version row, tap it five times, follow the revealed link.
+    /// Unlocks and opens the hidden Diagnostics screen: the Account sheet,
+    /// scroll to the version row, tap it five times, follow the revealed
+    /// link.
     func openDiagnostics(_ app: XCUIApplication) {
-        app.tabBars.buttons["Settings"].tap()
-        let version = scrollTo(app, "settings.versionRow")
+        openAccountSheet(app)
+        let version = scrollTo(app, "account.versionRow")
         XCTAssertTrue(version.waitForExistence(timeout: 5), "Version row missing")
         for _ in 0..<5 {
             version.tap()
         }
         // The link appears in the row below the version — possibly below
-        // the fold or under the tab bar, so scroll it clear before tapping.
-        let link = scrollTo(app, "settings.diagnosticsLink", swipes: 4)
+        // the fold, so scroll it clear before tapping.
+        let link = scrollTo(app, "account.diagnosticsLink", swipes: 4)
         XCTAssertTrue(
             link.waitForExistence(timeout: 5),
             "Five taps on the version number did not reveal Diagnostics"

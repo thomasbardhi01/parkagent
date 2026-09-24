@@ -14,6 +14,8 @@ final class SpeechUITests: ParkAgentUITestCase {
             "-useMockAPI", "YES",
             "-uiTesting", "YES",
             "-skipOnboarding", "YES",
+            // Auth gates the app now: start past the welcome screen.
+            "-signedIn", "YES",
             "-fixedNow", Self.fixedNow,
             "-assistantScenario", "singleSpot",
             "-speechScenario", speechScenario,

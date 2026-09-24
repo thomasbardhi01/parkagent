@@ -1,10 +1,13 @@
 import SwiftUI
 
-/// Onboarding, rebuilt around linking the local parking provider:
-/// welcome → permissions → vehicle → your city → how you pay →
-/// link provider → (add money, ParkAgent card only) → budget → done.
-/// One coral action per screen; abandoning mid-way resumes at the last
-/// incomplete step on next launch.
+/// Onboarding runs AFTER sign-in (the welcome screen owns the sign-in
+/// itself), so the steps are only setup: permissions → vehicle → your city
+/// → how you pay → connect the provider → (add money, ParkAgent card only)
+/// → budget → done. One coral action per screen; abandoning mid-way
+/// resumes at the last incomplete step on next launch.
+///
+/// `welcome` is kept as the raw value 0 so a resume key written by an
+/// older build still decodes; the flow treats it as permissions.
 enum OnboardingStep: Int, CaseIterable {
     case welcome
     case permissions
@@ -39,7 +42,8 @@ struct OnboardingView: View {
     /// step of an abandoned run.
     init(startAt: OnboardingStep? = nil, onComplete: @escaping () -> Void = {}) {
         let saved = UserDefaults.standard.integer(forKey: OnboardingStep.defaultsKey)
-        _step = State(initialValue: startAt ?? OnboardingStep(rawValue: saved) ?? .welcome)
+        let start = startAt ?? OnboardingStep(rawValue: saved) ?? .permissions
+        _step = State(initialValue: start == .welcome ? .permissions : start)
         self.onComplete = onComplete
     }
 
@@ -59,9 +63,8 @@ struct OnboardingView: View {
     @ViewBuilder
     private var content: some View {
         switch step {
-        case .welcome:
-            OnboardingWelcomeStep { advance(to: .permissions) }
-        case .permissions:
+        case .welcome, .permissions:
+            // Signing in IS the welcome now; the flow opens on permissions.
             OnboardingPermissionsStep { advance(to: .vehicle) }
         case .vehicle:
             OnboardingVehicleStep { advance(to: .city) }
@@ -116,36 +119,7 @@ struct OnboardingView: View {
     }
 }
 
-// MARK: - Step 1: Welcome
-
-private struct OnboardingWelcomeStep: View {
-    let onContinue: () -> Void
-
-    var body: some View {
-        VStack(spacing: Spacing.unit) {
-            Spacer()
-            Image(systemName: "parkingsign.circle.fill")
-                .font(.system(size: 72))
-                .foregroundStyle(Color.actionCoral)
-            Text("Meet ParkAgent")
-                .font(.numeral)
-                .foregroundStyle(Color.textPrimary)
-            Text("Park at a meter and ParkAgent notices, quotes the cost, and pays through your own parking account — within limits you set.")
-                .font(.bodyText)
-                .foregroundStyle(Color.textSecondary)
-                .multilineTextAlignment(.center)
-            Spacer()
-            Button("Continue") { onContinue() }
-                .buttonStyle(.primary)
-                .accessibilityIdentifier("onboarding.continueButton")
-        }
-        .padding(Spacing.unitAndHalf)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("onboarding.welcome")
-    }
-}
-
-// MARK: - Step 2: Permissions
+// MARK: - Step 1: Permissions
 
 private struct OnboardingPermissionsStep: View {
     @Environment(PermissionsManager.self) private var permissions
@@ -248,13 +222,19 @@ private struct OnboardingPermissionsStep: View {
     }
 }
 
-// MARK: - Step 3: Vehicle
+// MARK: - Step 2: Vehicle
 
 private struct OnboardingVehicleStep: View {
+    @Environment(AppModel.self) private var model
     @AppStorage("vehicle.plate") private var plate = ""
     @AppStorage("vehicle.state") private var state = ""
     @AppStorage("vehicle.nickname") private var nickname = ""
     let onContinue: () -> Void
+
+    @State private var loadedExisting = false
+    @State private var existingId: String?
+    @State private var isSaving = false
+    @State private var saveError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.unit) {
@@ -262,9 +242,12 @@ private struct OnboardingVehicleStep: View {
             Text("Your car")
                 .font(.numeral)
                 .foregroundStyle(Color.textPrimary)
-            Text("Meters are paid against a plate. This stays on your phone.")
+            Text(existingId == nil
+                ? "Meters are paid against a plate."
+                : "We already have this one — change it if it's wrong.")
                 .font(.bodyText)
                 .foregroundStyle(Color.textSecondary)
+                .accessibilityIdentifier("onboarding.vehicleSubtitle")
 
             field("Plate", text: $plate, identifier: "onboarding.plateField")
                 .textInputAutocapitalization(.characters)
@@ -274,15 +257,65 @@ private struct OnboardingVehicleStep: View {
                 .autocorrectionDisabled()
             field("Nickname (optional)", text: $nickname, identifier: "onboarding.nicknameField")
 
+            if let saveError {
+                Text(saveError)
+                    .font(.captionTextSemibold)
+                    .foregroundStyle(Color.warningGold)
+                    .accessibilityIdentifier("onboarding.vehicleError")
+            }
+
             Spacer()
-            Button("Continue") { onContinue() }
-                .buttonStyle(.primary)
-                .disabled(!isValid)
-                .accessibilityIdentifier("onboarding.continueButton")
+            Button(isSaving ? "Saving…" : "Continue") {
+                Task { await save() }
+            }
+            .buttonStyle(.primary)
+            .disabled(!isValid || isSaving)
+            .accessibilityIdentifier("onboarding.continueButton")
         }
         .padding(Spacing.unitAndHalf)
+        .task {
+            // Prefilled if known: a returning driver (or one who added a
+            // car and came back) never retypes their plate.
+            guard !loadedExisting else { return }
+            loadedExisting = true
+            guard let existing = try? await model.api.vehicles().first else { return }
+            existingId = existing.id
+            plate = existing.plate
+            state = existing.state
+            nickname = existing.label ?? ""
+        }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("onboarding.vehicle")
+    }
+
+    /// The plate belongs to the ACCOUNT now, not just this phone — it is
+    /// what the executor types at the provider.
+    private func save() async {
+        isSaving = true
+        saveError = nil
+        let label = nickname.trimmingCharacters(in: .whitespaces)
+        do {
+            if let existingId {
+                _ = try await model.api.updateVehicle(
+                    id: existingId,
+                    plate: plate.trimmingCharacters(in: .whitespaces),
+                    state: state.trimmingCharacters(in: .whitespaces),
+                    label: label.isEmpty ? nil : label
+                )
+            } else {
+                _ = try await model.api.addVehicle(
+                    plate: plate.trimmingCharacters(in: .whitespaces),
+                    state: state.trimmingCharacters(in: .whitespaces),
+                    label: label.isEmpty ? nil : label
+                )
+            }
+            isSaving = false
+            onContinue()
+        } catch {
+            isSaving = false
+            saveError = (error as? APIError)?.errorDescription
+                ?? "Couldn't save that plate. Try again."
+        }
     }
 
     /// Loose on purpose: plates vary wildly; 2–8 characters is enough of a

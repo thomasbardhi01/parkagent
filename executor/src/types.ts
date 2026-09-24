@@ -202,6 +202,12 @@ export type VerifyAccountResult =
 
 export type TopupWalletResult = { ok: true; walletBalanceCents: number | null } | ProviderOpError;
 
+/** Brand + last4 of the card the provider account already has on file,
+ * read from its Your Cards screen for display (provider_card users).
+ * Nulls mean no card was listed (or details were hidden) — a success. */
+export type ReadSavedCardResult =
+  { ok: true; brand: string | null; last4: string | null } | ProviderOpError;
+
 /**
  * The sensitive card fields the payment form needs, fetched by the SERVER
  * from Stripe just before the call and passed straight through. Never log
@@ -225,6 +231,8 @@ export interface AccountOps {
   removeCard(last4: string): Promise<ProviderOpResult>;
   /** Top up the provider wallet from the card on file. */
   topupWallet(amountUsd: number): Promise<TopupWalletResult>;
+  /** Read the brand/last4 of the account's own saved card, for display. */
+  readSavedCard(): Promise<ReadSavedCardResult>;
 }
 
 /**

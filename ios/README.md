@@ -7,11 +7,13 @@ onboarding, and the Card tab. The Xcode project is **generated** — see
     cd ios && xcodegen generate
 
 First checkout: `cp Config.example.xcconfig Config.xcconfig` and fill in
-`DEVELOPMENT_TEAM`, `API_BASE_URL`, and `API_KEY`. All three are required:
-the app talks to the live server on every build, and without the URL and
-key every screen shows its "not connected" state. The mock API activates
-only for a launch carrying `-useMockAPI YES` (the UI tests) or inside a
-SwiftUI preview — never on a phone.
+`DEVELOPMENT_TEAM` and `API_BASE_URL`. Both are required: the app talks to
+the live server on every build, and without the URL sign-in fails with a
+"not configured" message (and Home shows its "not connected" banner). There
+is no `API_KEY` — the app authenticates as the signed-in user, with tokens
+in the Keychain. The mock API activates only for a launch carrying
+`-useMockAPI YES` (the UI tests) or inside a SwiftUI preview — never on a
+phone.
 
 ## Layout
 
@@ -28,10 +30,13 @@ SwiftUI preview — never on a phone.
 - `ParkAgent/Networking/` — `APIClient` protocol, `LiveAPI`, and a full
   `MockAPI` with launch-argument scenarios (see
   `Support/LaunchOverrides.swift`) that the UI tests drive.
-- `ParkAgent/Views/` — Home (map + curb layer + status), Sessions, Card,
-  Settings, Onboarding, Providers (link flow web view).
-  `Settings/DiagnosticsView.swift` is the hidden developer screen: five
-  taps on the version number in About, DEBUG builds only.
+- `ParkAgent/Views/` — Auth (the welcome / sign-in screen), Home (map +
+  curb layer + status, and the avatar that opens the Account sheet),
+  Sessions, Card, Account (profile, cars, cities and connected accounts,
+  limits, privacy, sign out, delete), Onboarding, Providers (link flow web
+  view). `Settings/DiagnosticsView.swift` is the hidden developer screen:
+  five taps on the version number in the Account sheet's About section,
+  DEBUG builds only.
 - `Tools/make_app_icon.py` regenerates the app icon from the design-system
   colors (`uv run --with pillow ios/Tools/make_app_icon.py`).
 - `Support/StripeTopup.swift` — the ONLY file importing the Stripe iOS

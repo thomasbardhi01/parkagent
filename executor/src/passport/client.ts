@@ -58,12 +58,14 @@ import {
   recentZonesState,
 } from "./parse.js";
 import { handleSignageModal, waitForPopupSettled } from "./signage.js";
+import { parseSavedCardLabel } from "../savedCard.js";
 import type {
   CardFormDetails,
   ExecutorError,
   ExecutorResult,
   ProviderOpResult,
   ProviderZoneTerms,
+  ReadSavedCardResult,
   StorageStateValue,
   TopupWalletResult,
   VerifyAccountResult,
@@ -1262,5 +1264,41 @@ export class PassportClient {
       code: "unknown",
       message: `ParkBoston has no wallet to top up $${amountUsd.toFixed(2)} into (Passport Zone Cash not enabled)`,
     };
+  }
+
+  /**
+   * Read the account's own saved card off Your Cards (#creditCards,
+   * VERIFIED live 2026-09-23 — rows read "<Name> (<last4>)"). Display data
+   * for provider_card users, captured at link time; nothing is clicked and
+   * no cards listed is a success with nulls.
+   */
+  async readSavedCard(): Promise<ReadSavedCardResult> {
+    const opened = await this.open();
+    if ("ok" in opened) return opened;
+    const { page } = opened;
+
+    let label: string | null = null;
+    const flow = await this.run("read saved card", page, async () => {
+      await page.goto(this.urls.paymentMethods);
+      await this.step("your-cards", page);
+      if (await this.atGatedEntry(page)) {
+        return this.fail(
+          page,
+          "auth_expired",
+          "Passport asked to sign in; cookies are not a session",
+        );
+      }
+      const first = selectors.cards.cardItems(page).first();
+      const listed = await first
+        .waitFor({ state: "visible", timeout: 5_000 })
+        .then(() => true)
+        .catch(() => false);
+      if (listed) {
+        label = (await first.innerText().catch(() => "")).replace(/\s+/g, " ").trim() || null;
+      }
+      return { ok: true, providerSessionId: "read-card", expiresAt: new Date(), amountUsd: 0 };
+    });
+    if (!flow.ok) return flow;
+    return { ok: true, ...(label ? parseSavedCardLabel(label) : { brand: null, last4: null }) };
   }
 }

@@ -1,0 +1,26 @@
+<!--
+  Passport (ParkBoston) sign-in/sign-up entry, reduced from the live app at
+  bostonma.ppprk.com/park/ (VERIFIED headless 2026-09-20; see
+  executor/src/passport/selectors.ts "Gated entry"). Sign-in and sign-up
+  are the SAME passwordless screen: T&C accept, then this e-mail/phone
+  field (#regEmail), a mailed/texted code, then a 4-digit PIN. The app
+  prefills #regEmail only — the code, PIN, and T&C tap are the user's.
+-->
+<!doctype html>
+<html>
+  <body>
+    <div id="registerPage" class="ui-page ui-page-active">
+      <div class="registerHeader">Sign In</div>
+      <p class="registerHint">Enter your email address or mobile number to continue.</p>
+      <form id="registerForm">
+        <input id="regEmail" name="regEmail" type="text" autocomplete="username"
+               placeholder="Email or Mobile Number" />
+        <button id="verify_email" type="button">Continue</button>
+      </form>
+      <div class="terms">
+        <input id="acceptTerms" type="checkbox" />
+        <label for="acceptTerms">I agree to the Terms &amp; Conditions</label>
+      </div>
+    </div>
+  </body>
+</html>

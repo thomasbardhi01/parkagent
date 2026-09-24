@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
 import type { AppDeps } from "../app.js";
-import { cityForZone, providerForCity } from "../providers/registry.js";
+import { cityForZone, providerForCity, providerStatusUsable } from "../providers/registry.js";
 import type { Quote } from "../services/quote.js";
 import { spentToday } from "../services/sessions.js";
 import { quoteZone } from "../services/quote.js";
@@ -188,7 +188,7 @@ export function registerParked(app: FastifyInstance, deps: AppDeps): void {
         displayName: providerInfo.displayName,
         loginUrl: providerInfo.loginUrl,
         status: account?.status ?? "unlinked",
-        linked: account?.status === "linked",
+        linked: providerStatusUsable(account?.status),
       };
     }
 

@@ -24,9 +24,9 @@ final class SnapshotUITests: ParkAgentUITestCase {
         XCTAssertTrue(element(app, "card.view").waitForExistence(timeout: 5))
         attachScreenshot(of: app, named: "card-\(appearance)")
 
-        app.tabBars.buttons["Settings"].tap()
-        XCTAssertTrue(element(app, "settings.view").waitForExistence(timeout: 5))
-        attachScreenshot(of: app, named: "settings-\(appearance)")
+        openAccountSheet(app)
+        attachScreenshot(of: app, named: "account-\(appearance)")
+        element(app, "account.doneButton").tap()
 
         // The parked sheet is the money screen; capture it too.
         simulateParkFromHome(app)
@@ -46,10 +46,14 @@ final class SnapshotUITests: ParkAgentUITestCase {
         waitForLabelContaining(chip, "Boston")
         attachScreenshot(of: app, named: "pr-home-boston-curb-lines")
 
-        // Neutral copy: Settings names Boston and ParkBoston, never NYC.
-        app.tabBars.buttons["Settings"].tap()
-        XCTAssertTrue(element(app, "settings.view").waitForExistence(timeout: 5))
-        attachScreenshot(of: app, named: "pr-settings-neutral-copy")
+        // Neutral copy: the Account sheet names Boston and ParkBoston,
+        // never NYC.
+        openAccountSheet(app)
+        attachScreenshot(of: app, named: "pr-account-neutral-copy")
+        let providerRow = scrollTo(app, "account.payment.provider_card")
+        XCTAssertEqual(providerRow.label, "My card on ParkBoston")
+        attachScreenshot(of: app, named: "pr-account-payment")
+        element(app, "account.doneButton").tap()
 
         openDiagnostics(app)
         attachScreenshot(of: app, named: "pr-diagnostics")

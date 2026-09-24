@@ -5,6 +5,40 @@ import Foundation
 // the policy document is snake_case on the wire, so those types carry
 // explicit CodingKeys.
 
+// MARK: - Identity (server/API.md "Authentication", "GET/PATCH /me")
+
+/// GET /me — the profile plus the payment-source settings it carries.
+/// GET /auth/methods — which sign-in methods the server accepts right now.
+/// Apple is the only one on by default; email codes and Google each sit
+/// behind a server switch.
+struct AuthMethods: Codable, Sendable, Equatable {
+    var apple: Bool
+    var email: Bool
+    var google: Bool
+
+    /// What the welcome screen assumes until (or unless) the server says
+    /// otherwise: never a button for a method that might be switched off.
+    static let appleOnly = AuthMethods(apple: true, email: false, google: false)
+}
+
+struct MeResponse: Codable, Sendable {
+    var user: AuthUser
+    var paymentSource: PaymentSource
+    var issuingLive: Bool
+}
+
+struct VehicleSummary: Codable, Sendable, Identifiable, Equatable {
+    var id: String
+    var plate: String
+    var state: String
+    var label: String?
+
+    /// "ABC 1234 · NY", or the nickname when the driver gave one.
+    var displayName: String {
+        label?.isEmpty == false ? label! : "\(plate) · \(state)"
+    }
+}
+
 struct ParkedRequest: Codable, Sendable {
     var lat: Double
     var lng: Double
@@ -59,9 +93,31 @@ struct ParkedProvider: Codable, Sendable, Equatable {
     var city: String
     var displayName: String
     var loginUrl: String
-    /// "linked" | "expired" | "unlinked"
+    /// "linked" | "expiring" | "expired" | "unlinked". "expiring" still
+    /// pays — the health job just asked for a re-link before it dies.
     var status: String
     var linked: Bool
+    /// Link-or-create metadata; absent on older servers.
+    var signup: ProviderSignup?
+}
+
+/// How a user with NO account at this provider opens one, on the
+/// provider's own page (server registry `signup`). The app prefills text
+/// fields only — codes, PINs, terms, and captcha stay the user's.
+struct ProviderSignup: Codable, Sendable, Equatable {
+    var url: String
+    /// "passwordless" (ParkBoston: code + PIN) | "form" (ParkNYC).
+    var mode: String
+    var note: String
+    var prefill: [SignupPrefillField]
+
+    var isPasswordless: Bool { mode == "passwordless" }
+}
+
+struct SignupPrefillField: Codable, Sendable, Equatable {
+    /// "emailOrPhone" | "email" | "phone" | "firstName" | "lastName" | "zip" | "plate"
+    var field: String
+    var selector: String
 }
 
 struct Candidate: Codable, Sendable, Identifiable, Equatable {
@@ -329,14 +385,31 @@ struct ProviderAccountStatus: Codable, Sendable, Identifiable, Equatable {
     /// The registry's session domains — the link web view watches these to
     /// know when the user has signed in before capturing cookies.
     var cookieDomains: [String]
-    /// "linked" | "expired" | "unlinked"
+    /// Link-or-create metadata; absent on older servers.
+    var signup: ProviderSignup?
+    /// "linked" | "expiring" | "expired" | "unlinked"
     var status: String
     var linkedAt: Date?
     var lastVerifiedAt: Date?
     var cardAdded: Bool
+    /// The card already on the PROVIDER account (provider_card users),
+    /// read at link time — brand and last4 only, for display.
+    var cardBrand: String?
+    var cardLast4: String?
     var walletBalanceCents: Int?
 
-    var isLinked: Bool { status == "linked" }
+    /// Usable for paying: "expiring" still works, it just wants a re-link
+    /// before the session dies (mirrors the server's providerStatusUsable).
+    var isLinked: Bool { status == "linked" || status == "expiring" }
+
+    /// Needs the user's attention in the Account sheet.
+    var needsReconnect: Bool { status == "expiring" || status == "expired" }
+
+    /// "Visa •••• 4242" when the provider showed us a card.
+    var maskedCard: String? {
+        guard let cardLast4 else { return nil }
+        return "\(cardBrand ?? "Card") •••• \(cardLast4)"
+    }
 }
 
 /// One cookie captured from the link web view, shaped like the server's
@@ -367,6 +440,9 @@ struct ProviderLinkRequest: Codable, Sendable {
 struct ProviderLinkResponse: Codable, Sendable {
     var status: String
     var walletBalanceCents: Int?
+    /// The provider account's own card, read at link time (provider_card).
+    var cardBrand: String?
+    var cardLast4: String?
     /// Non-nil when card setup was chained; poll link-status with it.
     var jobId: String?
 }

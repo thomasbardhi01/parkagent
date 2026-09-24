@@ -30,17 +30,17 @@ final class ProviderUITests: ParkAgentUITestCase {
         )
     }
 
-    /// An expired link shows "Sign in again" in Settings with a re-link
-    /// action that opens the flow.
-    func testSettingsShowsExpiredProvider() {
+    /// An expired link shows "Sign in again" in the Account sheet, with a
+    /// reconnect action that opens the flow.
+    func testAccountSheetShowsExpiredProvider() {
         let app = launchApp(providerScenario: "expired")
-        app.tabBars.buttons["Settings"].tap()
+        openAccountSheet(app)
 
-        let row = element(app, "settings.provider.parknyc")
+        let row = scrollTo(app, "account.provider.parknyc")
         XCTAssertTrue(row.waitForExistence(timeout: 5), "ParkNYC row missing")
         XCTAssertTrue(app.staticTexts["Sign in again"].exists, "Expired pill missing")
 
-        element(app, "settings.providerLink.parknyc").tap()
+        element(app, "account.providerLink.parknyc").tap()
         XCTAssertTrue(element(app, "link.intro").waitForExistence(timeout: 5), "Re-link did not open")
         element(app, "link.cancelButton").tap()
     }

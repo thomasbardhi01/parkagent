@@ -15,7 +15,12 @@ import { z } from "zod";
 
 import type { AppDeps } from "../app.js";
 import { makeRateLimiter } from "../services/rateLimit.js";
-import { allProviders, cookieDomainAllowed, providerById } from "../providers/registry.js";
+import {
+  allProviders,
+  cookieDomainAllowed,
+  providerById,
+  providerStatusUsable,
+} from "../providers/registry.js";
 import type { ProviderInfo } from "../providers/registry.js";
 import {
   LinkJobStore,
@@ -84,10 +89,15 @@ export function registerProviders(app: FastifyInstance, deps: AppDeps): void {
           // The app's link web view watches these domains to know when the
           // user has actually signed in before capturing cookies.
           cookieDomains: p.cookieDomains,
+          // Link-or-create sign-up metadata (registry.ts).
+          signup: p.signup,
           status: account?.status ?? "unlinked",
           linkedAt: account?.linkedAt?.toISOString() ?? null,
           lastVerifiedAt: account?.lastVerifiedAt?.toISOString() ?? null,
           cardAdded: account?.cardAdded ?? false,
+          // provider_card display info read at link time — never the PAN.
+          cardBrand: account?.cardBrand ?? null,
+          cardLast4: account?.cardLast4 ?? null,
           walletBalanceCents: account?.walletBalanceCents ?? null,
         };
       }),
@@ -182,6 +192,23 @@ export function registerProviders(app: FastifyInstance, deps: AppDeps): void {
       return reply.code(409).send({ error: "verification_failed", code: verify.code });
     }
 
+    // provider_card users pay with the card already on the account: read
+    // its brand/last4 off the provider's Your Cards screen for display.
+    // Best effort — a miss stores nulls and never blocks the link.
+    let cardBrand: string | null = null;
+    let cardLast4: string | null = null;
+    if (paymentSource === "provider_card") {
+      try {
+        const saved = await ops.readSavedCard();
+        if (saved.ok) {
+          cardBrand = saved.brand;
+          cardLast4 = saved.last4;
+        }
+      } catch {
+        // Display data only; the link stands without it.
+      }
+    }
+
     await deps.db.providerAccount.upsert({
       where: { userId_provider: { userId: user.id, provider: provider.id } },
       create: {
@@ -191,6 +218,8 @@ export function registerProviders(app: FastifyInstance, deps: AppDeps): void {
         stateEncrypted: stateCrypto.seal(JSON.stringify(state)),
         linkedAt: at,
         lastVerifiedAt: at,
+        cardBrand,
+        cardLast4,
         walletBalanceCents: verify.walletBalanceCents,
       },
       update: {
@@ -198,10 +227,17 @@ export function registerProviders(app: FastifyInstance, deps: AppDeps): void {
         stateEncrypted: stateCrypto.seal(JSON.stringify(state)),
         linkedAt: at,
         lastVerifiedAt: at,
+        cardBrand,
+        cardLast4,
         walletBalanceCents: verify.walletBalanceCents,
       },
     });
-    await decide("link_ok", { ok: true, walletBalanceCents: verify.walletBalanceCents });
+    await decide("link_ok", {
+      ok: true,
+      walletBalanceCents: verify.walletBalanceCents,
+      // Presence only — the decision never needs the digits.
+      savedCardSeen: cardLast4 !== null,
+    });
 
     // Chained setup: verification passed, so the card goes on now — as a
     // job the app polls, since the executor takes seconds.
@@ -239,6 +275,8 @@ export function registerProviders(app: FastifyInstance, deps: AppDeps): void {
     return {
       status: "linked",
       walletBalanceCents: verify.walletBalanceCents,
+      cardBrand,
+      cardLast4,
       jobId,
     };
   });
@@ -271,7 +309,7 @@ export function registerProviders(app: FastifyInstance, deps: AppDeps): void {
     const account = await deps.db.providerAccount.findUnique({
       where: { userId_provider: { userId: user.id, provider: provider.id } },
     });
-    if (!account || account.status !== "linked") {
+    if (!account || !providerStatusUsable(account.status)) {
       return reply.code(409).send({ error: "provider_not_linked", provider: provider.id });
     }
     const outcome = await runSetupCard(deps, user.id, provider);
@@ -329,14 +367,22 @@ export function registerProviders(app: FastifyInstance, deps: AppDeps): void {
 
     await deps.db.providerAccount.update({
       where: { userId_provider: { userId: user.id, provider: provider.id } },
-      data: { status: "unlinked", stateEncrypted: null, cardAdded: false },
+      data: {
+        status: "unlinked",
+        stateEncrypted: null,
+        cardAdded: false,
+        cardBrand: null,
+        cardLast4: null,
+      },
     });
 
     // Ledger integrity: a card that has ever transacted is never canceled.
     // With no linked provider left there is nothing for it to pay, so it is
     // frozen — reversible when the user links again.
     const remaining = await deps.db.providerAccount.findMany({ where: { userId: user.id } });
-    const anyLinked = remaining.some((a) => a.provider !== provider.id && a.status === "linked");
+    const anyLinked = remaining.some(
+      (a) => a.provider !== provider.id && providerStatusUsable(a.status),
+    );
     let cardFrozen = false;
     if (!anyLinked && card && card.status === "active" && deps.stripe) {
       const status = await deps.stripe.setCardStatus(card.stripeCardId, "inactive");
@@ -374,7 +420,7 @@ export function registerProviders(app: FastifyInstance, deps: AppDeps): void {
     const account = await deps.db.providerAccount.findUnique({
       where: { userId_provider: { userId: user.id, provider: provider.id } },
     });
-    if (!account || account.status !== "linked") {
+    if (!account || !providerStatusUsable(account.status)) {
       return reply.code(409).send({ error: "provider_not_linked", provider: provider.id });
     }
 

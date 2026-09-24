@@ -16,6 +16,16 @@ import Foundation
 ///   -speechScenario <name> script the assistant's dictation (scripted|denied|unavailable)
 ///   -paymentSource <raw>   preset the payment source (provider_card|issuing_card)
 ///   -issuingLive YES       the mock reports the ParkAgent card as live
+///   -authScenario <name>   preset the mock sign-in (returning|newUser|badCode|appleFails)
+///   -signedIn YES          seed a mock session so the app starts past the
+///                          welcome screen (most tests want this)
+///   -seedSession <json>    DEBUG: seed a REAL session ({accessToken,
+///                          refreshToken, deviceId} from create:fr-throwaway)
+///                          for live-path checks against a local API
+///   -authMethods <csv>     the mock server's switched-on sign-in methods
+///                          (default "apple"; e.g. "apple,email,google")
+///   -googleSignIn YES      the app can do Google sign-in (the SDK flag); the
+///                          button still needs the server to report it on
 ///   -onboardingStep <n>    resume onboarding at step n (OnboardingStep raw)
 ///   -selectedCity <key>    preset onboarding's chosen city (nyc|bos|other)
 ///   -fixedNow <epoch>      freeze AppClock (see AppClock.swift)
@@ -52,6 +62,8 @@ enum LaunchOverrides {
         AssistantMockScenario.defaultsKey,
         LinkMockScenario.defaultsKey,
         SpeechMockScenario.defaultsKey,
+        AuthMockScenario.defaultsKey,
+        MockAPI.authMethodsKey,
     ]
 
     /// Call once, before any UserDefaults key is read (ParkAgentApp.init).
@@ -85,17 +97,46 @@ enum LaunchOverrides {
             ? defaults.integer(forKey: OnboardingStep.defaultsKey) : nil
         let selectedCity = argued["selectedCity"] != nil
             ? defaults.string(forKey: "selectedCity") : nil
+        let authScenario = argued[AuthMockScenario.defaultsKey] != nil
+            ? defaults.string(forKey: AuthMockScenario.defaultsKey) : nil
+        let authMethods = argued[MockAPI.authMethodsKey] != nil
+            ? defaults.string(forKey: MockAPI.authMethodsKey) : nil
+        let signedIn = argued["signedIn"] != nil && defaults.bool(forKey: "signedIn")
+        // Raw argv, not the argument domain: UserDefaults parses argument
+        // values as property lists, and a JSON object doesn't survive that.
+        let seededSession = flagValue("-seedSession")
+        let googleSignIn = argued["googleSignIn"] != nil
+            ? defaults.bool(forKey: "googleSignIn") : nil
 
         defaults.setVolatileDomain([:], forName: UserDefaults.argumentDomain)
 
         if reset, let bundleId = Bundle.main.bundleIdentifier {
             defaults.removePersistentDomain(forName: bundleId)
+            // UserDefaults resets don't reach the Keychain, and a session
+            // left over from the previous test would skip the welcome
+            // screen the next one is trying to exercise.
+            Keychain.clearAll()
+            AuthUser.clearCache()
         }
         // Scrub before the argument writes below, so UI-test launches still
         // get their scenario keys and everyone else starts clean.
         for key in mockDefaultsKeys {
             defaults.removeObject(forKey: key)
         }
+        #if DEBUG
+        // A seeded session: tests that aren't about signing in start inside
+        // the app. Mock tokens only, and compiled out of Release — the
+        // seeding helper itself is DEBUG-only.
+        if signedIn { Keychain.seedTestSession() }
+        if let seededSession, let data = seededSession.data(using: .utf8),
+           let seed = try? JSONDecoder().decode([String: String].self, from: data),
+           let access = seed["accessToken"], let refresh = seed["refreshToken"],
+           let deviceId = seed["deviceId"] {
+            Keychain.seedSession(access: access, refresh: refresh, deviceId: deviceId)
+        }
+        #else
+        _ = (signedIn, seededSession)
+        #endif
         if skipOnboarding { defaults.set(true, forKey: "hasOnboarded") }
         if let appearance { defaults.set(appearance, forKey: AppearanceSetting.defaultsKey) }
         if let scenario { defaults.set(scenario, forKey: MockScenario.defaultsKey) }
@@ -113,6 +154,9 @@ enum LaunchOverrides {
         if let issuingLive { defaults.set(issuingLive, forKey: "issuingLive") }
         if let onboardingStep { defaults.set(onboardingStep, forKey: OnboardingStep.defaultsKey) }
         if let selectedCity { defaults.set(selectedCity, forKey: "selectedCity") }
+        if let authScenario { defaults.set(authScenario, forKey: AuthMockScenario.defaultsKey) }
+        if let authMethods { defaults.set(authMethods, forKey: MockAPI.authMethodsKey) }
+        if let googleSignIn { defaults.set(googleSignIn, forKey: FeatureFlags.googleSignInKey) }
     }
 
     private static func flagValue(_ flag: String) -> String? {

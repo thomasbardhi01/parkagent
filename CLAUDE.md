@@ -2,7 +2,9 @@
 
 Personal prototype: detect that a car has parked in a metered zone, quote
 the cost, pay via the city's app (ParkNYC / ParkBoston) within a budget,
-and auto-extend using a cost-based rule. Two cities (NYC and Boston —
+and auto-extend using a cost-based rule. Anyone can sign up with Sign in
+with Apple (email codes and Google are built but switched off) and connect
+their own city's parking account in one guided step. Two cities (NYC and Boston —
 zones and sessions rows carry a `city`); Boston zone numbers aren't in the
 open data, so they come from the Passport Find Parking feed importer
 (`data/import_parkboston_zones.py` → `pnpm -C server load:zone-numbers`)
@@ -41,6 +43,41 @@ Mac App Store.
 - Never store card numbers or Playwright auth state in the repo. Stripe IDs only.
 - Every automated decision writes a row to the `decisions` table with its inputs.
 - The executor is the only module allowed to touch ParkNYC. Nothing else imports it.
+- Never create a provider account without the user present, never store a
+  provider password, never automate a terms checkbox, a verification code,
+  or a captcha. Link-or-create prefills empty TEXT inputs on the
+  provider's own page and nothing else (see "Accounts" below).
+
+## Accounts (identity + sessions)
+Users sign in with Apple (identity token verified against Apple's JWKS,
+audience `APPLE_AUDIENCE`) — the only method on by default. Email codes
+(`EMAIL_SIGNIN_ENABLED` + `RESEND_API_KEY`) and Google
+(`GOOGLE_SIGNIN_ENABLED` + `GOOGLE_CLIENT_ID`) are built but switched off:
+their routes answer `403 <method>_signin_disabled`, the server boots
+without any of their settings, and the Welcome screen shows only what
+`GET /auth/methods` reports on. A sign-in
+returns a 15-minute HS256 access JWT (`AUTH_JWT_SECRET`) plus an opaque
+refresh token: stored hashed, bound to a device id, 60-day sliding
+expiry, **rotated on every use**, and replay of a rotated token revokes
+the whole family. Verified-email matches merge into one account.
+
+`Authorization: Bearer` is how the app authenticates; `x-api-key` remains
+for admin and scripts only, and the iOS app no longer carries a key at
+all (tokens live in the Keychain, `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`
+so background detection can refresh while locked and a restored backup
+never carries a refresh family to a second phone). Carry an existing
+script-made user across with
+`pnpm -C server attach-identity -- --user <id> --email <e> [--apple-sub <s>]`.
+
+`DELETE /me` tombstones the users row rather than deleting it — the
+`decisions` ledger needs a valid user id, so the person goes and the id
+stays. See server/API.md "Identity & sessions" for the full contract.
+
+A daily job (`jobs/providerHealthTick.ts`) verifies each linked provider
+session headlessly and pushes "Reconnect …" when one is expiring or
+expired, so it is fixed before the next park. The `expiring` status still
+pays — use `providerStatusUsable()` from the registry, never
+`status === "linked"`.
 
 ## Working style
 - Small PRs on feat/* branches, squash-merged into main.
@@ -69,15 +106,29 @@ generated from `project.yml`, so add plist keys and entitlements there too.
 
 First checkout also needs `cp ios/Config.example.xcconfig ios/Config.xcconfig`
 and your `DEVELOPMENT_TEAM` filled in; the file is gitignored and holds
-`API_BASE_URL` and `API_KEY`, which reach the app through Info.plist via
-`AppConfig`.
+`API_BASE_URL`, which reaches the app through Info.plist via `AppConfig`.
+There is no `API_KEY` any more — the app authenticates as the signed-in
+user.
+
+Sign in with Apple needs the capability on the App ID; the entitlement is
+declared in `project.yml`. On an UNSIGNED simulator build
+(`CODE_SIGNING_ALLOWED=NO`, how the tests run) every Keychain call fails
+`errSecMissingEntitlement` (-34018), so `Keychain.swift` keeps a
+in-memory fallback — without it nobody could stay signed in on the
+simulator. It is compiled only into DEBUG *simulator* builds: a Debug
+build on a phone never has it, so a locked-phone Keychain error can't
+quietly sign the app out onto an empty store.
 
 The app talks to the **live API on every build**, Debug included. `MockAPI`
 activates only for a launch carrying `-useMockAPI YES` (the UI tests) or
 inside a SwiftUI preview, and the choice is never persisted — a missing
-`API_BASE_URL`/`API_KEY` produces a visible error state, never a silent
-swap to fixtures. Developer tools live in `Settings/DiagnosticsView.swift`,
-reached by tapping the version number in Settings → About five times and
+`API_BASE_URL` puts the app on `UnconfiguredAPI` (a visible error state:
+the welcome screen's sign-in failure, or Home's banner once signed in),
+never a silent swap to fixtures. Launch order is Welcome (no valid
+session) → the onboarding truth gate (`State/OnboardingGate.swift`, the
+one place that decides which setup step is missing) → Home. Developer
+tools live in `Settings/DiagnosticsView.swift`, reached by tapping the
+version number in the Account sheet's About section five times, and
 compiled out of Release.
 
 Maps use MapKit for now; Mapbox is a possible later swap and nothing outside
@@ -135,6 +186,10 @@ before any customer use. Details: `executor/README.md`.
 - `pnpm -C server prisma migrate dev`   apply migrations
 - `pnpm -C server migrate:policy-fee`   move parknyc_fee_usd into city_overrides
 - `./scripts/check-city-neutral.sh`     fail on hardcoded city/provider names
+- `pnpm -C server attach-identity -- --user <id> --email <e>`  give an existing user a sign-in identity
+  (or `--api-key-prefix <8 chars>` in place of `--user`; on prod:
+  `fly ssh console -a parkagent-api -C "node dist/scripts/attach-identity.js …"`)
+- `pnpm -C server create:fr-throwaway`  mint a throwaway session for FR-32's live tests (needs the target's DB + AUTH_JWT_SECRET)
 - `pnpm -C executor run login`     headed browser; sign in to ParkNYC once, save auth state
 - `pnpm -C executor run record`    record a real ParkNYC flow (HAR/trace/screens) to fixtures/
 - `pnpm -C executor run build`     compile (server build needs its d.ts first)

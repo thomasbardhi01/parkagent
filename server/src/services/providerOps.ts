@@ -26,6 +26,13 @@ export type VerifyAccountResult = { ok: true; walletBalanceCents: number | null 
 
 export type TopupWalletResult = { ok: true; walletBalanceCents: number | null } | ProviderOpError;
 
+/** Brand + last4 of the card the PROVIDER account already has on file
+ * (provider_card users), read from its Your Cards screen for display.
+ * Nulls mean the screen showed no card (or hid the details) — that is a
+ * success, not an error. Never the PAN. */
+export type ReadSavedCardResult =
+  { ok: true; brand: string | null; last4: string | null } | ProviderOpError;
+
 /**
  * Sensitive card fields for the provider's payment form, fetched from
  * Stripe (expand number/cvc) immediately before the call. NEVER log these,
@@ -62,6 +69,7 @@ export interface ProviderAccountOps {
   setupCard(card: CardFormDetails): Promise<ProviderOpResult>;
   removeCard(last4: string): Promise<ProviderOpResult>;
   topupWallet(amountUsd: number): Promise<TopupWalletResult>;
+  readSavedCard(): Promise<ReadSavedCardResult>;
 }
 
 /** Injectable seam: real factory in parknycExecutor.ts, fakes in tests.

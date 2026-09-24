@@ -172,6 +172,11 @@ export const selectors = {
       page.getByRole("button", { name: /replace|make default|yes/i }),
     successMarker: (page: Page): Locator =>
       page.getByText(/card (added|saved)|payment method (added|updated)/i),
+    /** Any saved-card row's masked text ("Visa •••• 4242", "ending in
+     * 4242") — the display read for provider_card users. Drafted,
+     * TODO-verify. */
+    savedCardText: (page: Page): Locator =>
+      page.getByText(/(•+|\*+|ending\s*(in)?\s*)\d{4}/i).first(),
     /** The saved-card row, matched by its last4. */
     cardRow: (page: Page, last4: string): Locator =>
       page

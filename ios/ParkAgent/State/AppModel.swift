@@ -8,9 +8,10 @@ import Observation
 @Observable
 final class AppModel {
     private(set) var api: any APIClient
-    /// Set when API_BASE_URL/API_KEY are missing from Config.xcconfig. The
-    /// app stays on `UnconfiguredAPI` (every call fails with a real error)
-    /// — there is no silent fallback to fixtures.
+    /// Set when API_BASE_URL is missing from Config.xcconfig. The app stays
+    /// on `UnconfiguredAPI` (every call fails with a real error) — there is
+    /// no silent fallback to fixtures. Only a signed-in screen shows it as a
+    /// banner; signed out, the welcome screen's sign-in failure says it.
     private(set) var liveAPIUnavailable = false
 
     let detector = ParkDetector()
@@ -146,17 +147,21 @@ final class AppModel {
     /// it (see CityCatalog.center for the city fallbacks).
     static let fixtureCoordinate = CLLocationCoordinate2D(latitude: 40.7784, longitude: -73.9818)
 
-    init() {
+    /// Supplies the access token to LiveAPI and performs silent refresh.
+    private let authStore: AuthStore
+
+    init(authStore: AuthStore = AuthStore()) {
+        self.authStore = authStore
         let mock = LaunchOverrides.useMockAPI
         useMockAPI = mock
         if mock {
             api = MockAPI()
-        } else if let live = LiveAPI.fromConfig() {
+        } else if let live = LiveAPI.fromConfig(tokens: Self.tokenSource(authStore)) {
             api = live
         } else {
-            // Missing Config.xcconfig values are an error the user sees
-            // (Home banner via liveAPIUnavailable), never a quiet switch
-            // onto fixtures.
+            // No API_BASE_URL is an error the user sees (Home banner via
+            // liveAPIUnavailable, or the welcome screen's sign-in failure),
+            // never a quiet switch onto fixtures.
             api = UnconfiguredAPI()
             liveAPIUnavailable = true
         }
@@ -171,7 +176,60 @@ final class AppModel {
         }
     }
 
+    /// LiveAPI's view of the AuthStore: the current access token, and the
+    /// single-flight refresh a 401 hands back.
+    private static func tokenSource(_ authStore: AuthStore) -> LiveAPI.TokenSource {
+        LiveAPI.TokenSource(
+            current: { await authStore.accessToken() },
+            refresh: { used in await authStore.refreshAfterUnauthorized(usedToken: used) }
+        )
+    }
+
+    /// Read the stored session and wire the refresh transport. Called once
+    /// at launch, before anything makes a protected request.
+    func restoreSession() {
+        let baseURL = useMockAPI ? nil : AppConfig.apiBaseURL
+        authStore.restore { refreshToken, deviceId in
+            // Refresh is its own unauthenticated call, so it uses a bare
+            // client rather than recursing through the token source. The
+            // mock's sessions never expire, and an unconfigured app has
+            // nowhere to ask — neither is a reason to sign anyone out.
+            guard let baseURL else { return .unreachable }
+            return await LiveAPI(baseURL: baseURL, tokens: .none)
+                .refreshSession(refreshToken: refreshToken, deviceId: deviceId)
+        }
+        // Refresh the cached profile against the server, so a name or email
+        // changed on another device shows up here.
+        guard authStore.isSignedIn else { return }
+        Task { [authStore, api] in
+            if let me = try? await api.me() {
+                authStore.update(user: me.user)
+            }
+        }
+    }
+
     // MARK: - Background plumbing
+
+    /// Sign-out: stop reporting location and detecting parks for an
+    /// account that is no longer here, and drop its in-memory state.
+    func stopBackgroundWork() {
+        detector.stop()
+        reporter.stop()
+        activeSession = nil
+        pendingParked = nil
+        history = []
+        todaySpendUsd = 0
+        carCoordinate = nil
+        distanceFromCarMeters = nil
+        itineraries = []
+        linkWalletConnected = false
+        detectedCity = nil
+        cityOverride = "auto"
+        // The policy is the account's own caps; the next sign-in loads its
+        // own rather than inheriting these (or this one's load failure).
+        policyResponse = nil
+        policyLoadFailed = false
+    }
 
     /// Called once the user is past onboarding. Wires the detector to the
     /// /parked report and starts push registration.
@@ -203,6 +261,9 @@ final class AppModel {
         do {
             policyResponse = try await api.policy()
         } catch {
+            // Cancelled is not unreachable: whoever cancelled (a sign-out,
+            // a view going away) owns what happens next.
+            guard !Task.isCancelled else { return }
             policyLoadFailed = true
         }
     }

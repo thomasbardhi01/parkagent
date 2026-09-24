@@ -119,10 +119,30 @@ model ZoneTermsObserved {
   @@map("zone_terms_observed")
 }
 
-// The two humans this prototype serves. api_key is the whole auth story.
+// Anyone who signs up. Identity is Sign in with Apple, an email one-time
+// code, or (flag-gated) Google — the JWT/refresh-token pair in
+// refresh_tokens is the app's session. api_key remains for the owner's
+// admin key and scripts only.
 model User {
   id        String   @id @default(cuid())
   name      String
+  // Sign-in email (lowercased). Unique: verified-email matches merge into
+  // one account — an Apple/Google/email sign-in with the same verified
+  // address lands on the same user. Null on tombstoned (deleted) rows and
+  // on legacy script-created users.
+  email         String?  @unique
+  emailVerified Boolean  @default(false) @map("email_verified")
+  // Optional, user-entered (PATCH /me). No phone verification flow exists
+  // yet, so phone_verified stays false until one does.
+  phone         String?
+  phoneVerified Boolean  @default(false) @map("phone_verified")
+  // Sign in with Apple subject ("sub" claim) — stable per Apple ID + app.
+  appleSub  String?  @unique @map("apple_sub")
+  // Google ID token subject; only written when GOOGLE_SIGNIN_ENABLED.
+  googleSub String?  @unique @map("google_sub")
+  // DELETE /me tombstone: identity fields are scrubbed, this is stamped,
+  // and the row is kept so the decisions ledger keeps a valid user id.
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
   // Legacy plaintext key: only on rows migrate:api-keys hasn't processed
   // yet; nulled by that script and never written for new users.
   apiKey    String?  @unique @map("api_key")
@@ -147,8 +167,51 @@ model User {
   sessions     Session[]
   decisions    Decision[]
   deviceTokens DeviceToken[]
+  refreshTokens RefreshToken[]
 
   @@map("users")
+}
+
+// One rotating refresh token. The app holds the plaintext (Keychain); we
+// store only SHA-256(AUTH_JWT_SECRET:token). Tokens form a FAMILY: every
+// rotation creates a sibling row with the same family_id, and presenting a
+// token that was ALREADY rotated (theft replay) revokes the whole family.
+// Sliding 60-day expiry: each rotation restarts the clock. Bound to the
+// device id the app minted at first launch.
+model RefreshToken {
+  id        String    @id @default(cuid())
+  userId    String    @map("user_id")
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  familyId  String    @map("family_id")
+  tokenHash String    @unique @map("token_hash")
+  deviceId  String    @map("device_id")
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz(6)
+  // Stamped when this token was exchanged for its successor; a rotated
+  // token presented again is reuse.
+  rotatedAt DateTime? @map("rotated_at") @db.Timestamptz(6)
+  revokedAt DateTime? @map("revoked_at") @db.Timestamptz(6)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([userId])
+  @@index([familyId])
+  @@map("refresh_tokens")
+}
+
+// One email sign-in code (POST /auth/email/start). The 6-digit code is
+// stored hashed; 10-minute expiry, at most 5 verify attempts, consumed on
+// success. Rows are tiny and short-lived; expired rows are just dead.
+model EmailLoginCode {
+  id         String    @id @default(cuid())
+  // Lowercased address the code was mailed to.
+  email      String
+  codeHash   String    @map("code_hash")
+  expiresAt  DateTime  @map("expires_at") @db.Timestamptz(6)
+  attempts   Int       @default(0)
+  consumedAt DateTime? @map("consumed_at") @db.Timestamptz(6)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([email, createdAt])
+  @@map("email_login_codes")
 }
 
 model Vehicle {
@@ -584,6 +647,11 @@ model ProviderAccount {
   lastVerifiedAt     DateTime? @map("last_verified_at") @db.Timestamptz(6)
   // Our Issuing card is the provider account's payment method.
   cardAdded          Boolean   @default(false) @map("card_added")
+  // provider_card users: brand + last4 of the card already saved on the
+  // provider account, read (best effort) from its Your Cards screen at
+  // link time — display only, never the PAN.
+  cardBrand          String?   @map("card_brand")
+  cardLast4          String?   @map("card_last4")
   // Provider wallet balance as last seen (null: provider has no wallet or
   // we could not read it).
   walletBalanceCents Int?      @map("wallet_balance_cents")

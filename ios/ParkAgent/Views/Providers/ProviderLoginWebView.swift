@@ -1,21 +1,44 @@
 import SwiftUI
 import WebKit
 
-/// The provider's own login page in an in-app web view. We never see the
-/// password; captcha and 2FA happen naturally in the page. A background
-/// task polls the cookie store, and whenever cookies on the provider's
-/// registered session domains change, they go up to the model — which posts
-/// them to the server for headless verification and quietly keeps the page
-/// open if they were not a signed-in session yet.
+/// The provider's own login (or sign-up) page in an in-app web view. We
+/// never see the password; captcha and 2FA happen naturally in the page. A
+/// background task polls the cookie store, and whenever cookies on the
+/// provider's registered session domains change, they go up to the model —
+/// which posts them to the server for headless verification and quietly
+/// keeps the page open if they were not a signed-in session yet.
+///
+/// `prefillScript`, when present, types the user's own details into the
+/// provider's empty text inputs so nobody enters them twice. It fills text
+/// only — never a terms checkbox, a verification code, or a captcha, and
+/// it never submits (see ProviderSignupPrefill.swift).
 struct ProviderLoginWebView: UIViewRepresentable {
     let url: URL
     /// Suffix-matched, leading dot ignored — same rule as the server.
     let cookieDomains: [String]
+    var prefillScript: String?
     let onCookies: ([ProviderCookie]) -> Void
 
     func makeUIView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .default()
+        // Ephemeral, never `.default()`: the persistent store outlived
+        // sign-out, so the next account on this phone opened the link page
+        // already signed in to the LAST account's provider session — and
+        // the watcher below would post those cookies up as the new
+        // account's link, paying its meters on someone else's card. The
+        // cookies we need go to the server; the phone keeps none.
+        configuration.websiteDataStore = .nonPersistent()
+        if let prefillScript {
+            // At documentEnd on every frame load: these are SPAs, and the
+            // script itself re-runs on a timer for late-rendered inputs.
+            configuration.userContentController.addUserScript(
+                WKUserScript(
+                    source: prefillScript,
+                    injectionTime: .atDocumentEnd,
+                    forMainFrameOnly: true
+                )
+            )
+        }
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.load(URLRequest(url: url))
         context.coordinator.startWatching(store: configuration.websiteDataStore.httpCookieStore)

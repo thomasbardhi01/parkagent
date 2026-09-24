@@ -10,7 +10,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
 import type { AppDeps } from "../app.js";
-import { providerForCity } from "../providers/registry.js";
+import { providerForCity, providerStatusUsable } from "../providers/registry.js";
 
 const querySchema = z.object({
   lat: z.coerce.number().gte(-90).lte(90),
@@ -51,8 +51,11 @@ export function registerCity(app: FastifyInstance, deps: AppDeps): void {
         displayName: providerInfo.displayName,
         loginUrl: providerInfo.loginUrl,
         cookieDomains: providerInfo.cookieDomains,
+        // Link-or-create: where sign-up starts and what the app may
+        // prefill there (see registry.ts — text inputs only, ever).
+        signup: providerInfo.signup,
         status: account?.status ?? "unlinked",
-        linked: account?.status === "linked",
+        linked: providerStatusUsable(account?.status),
       },
     };
   });

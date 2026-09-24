@@ -6,6 +6,16 @@ import { asAppDb, createPrisma } from "./db.js";
 import { makeCardJanitor } from "./jobs/cardJanitor.js";
 import { makeLinkJobJanitor } from "./jobs/linkJobJanitor.js";
 import { makeExtender } from "./jobs/extendTick.js";
+import { makeProviderHealth } from "./jobs/providerHealthTick.js";
+import { makeResendSender } from "./services/emailer.js";
+import {
+  APPLE_ISSUER,
+  APPLE_JWKS_URL,
+  GOOGLE_ISSUERS,
+  GOOGLE_JWKS_URL,
+  makeJwksFetcher,
+  verifyIdToken,
+} from "./services/idToken.js";
 import { makeApnsDelivery, makeApnsSender } from "./services/apns.js";
 import { makeStateCrypto } from "./services/crypto.js";
 import { withDecisionLogging } from "./services/decisionLog.js";
@@ -135,12 +145,47 @@ const assistantTools = new AssistantTools({
   linkWallet,
 });
 
+// Identity: Sign in with Apple always on. Email codes and Google each sit
+// behind their own switch (EMAIL_SIGNIN_ENABLED, GOOGLE_SIGNIN_ENABLED),
+// off by default; a method that's off has no sender/verifier here, its
+// routes answer 403 "<method>_signin_disabled", and GET /auth/methods
+// reports it off so the app never shows the button.
+const appleKeys = makeJwksFetcher(APPLE_JWKS_URL);
+const googleKeys = makeJwksFetcher(GOOGLE_JWKS_URL);
+const auth = {
+  jwtSecret: env.AUTH_JWT_SECRET,
+  emailSender:
+    env.EMAIL_SIGNIN_ENABLED === "true" && env.RESEND_API_KEY
+      ? makeResendSender(env.RESEND_API_KEY, env.RESEND_FROM)
+      : undefined,
+  verifyAppleToken: (token: string, now: Date) =>
+    verifyIdToken({
+      token,
+      issuers: [APPLE_ISSUER],
+      audience: env.APPLE_AUDIENCE,
+      fetchKeys: appleKeys,
+      now,
+    }),
+  verifyGoogleToken:
+    env.GOOGLE_SIGNIN_ENABLED === "true" && env.GOOGLE_CLIENT_ID
+      ? (token: string, now: Date) =>
+          verifyIdToken({
+            token,
+            issuers: GOOGLE_ISSUERS,
+            audience: env.GOOGLE_CLIENT_ID!,
+            fetchKeys: googleKeys,
+            now,
+          })
+      : undefined,
+};
+
 const app = buildApp({
   db,
   policy,
   findCandidates,
   findNearbyZones,
-  authenticate: makeAuthenticate(db, env.API_KEY_PEPPER),
+  auth,
+  authenticate: makeAuthenticate(db, env.API_KEY_PEPPER, env.AUTH_JWT_SECRET),
   ...(assistantModel ? { assistantModel } : {}),
   assistantTools,
   linkWallet,
@@ -166,12 +211,16 @@ const extender = makeExtender({
 const cardJanitor = makeCardJanitor({ db, stripe, log });
 const linkJobJanitor = makeLinkJobJanitor({ db, log });
 const itineraryWorker = makeItineraryWorker({ db, sendPush, log });
+// Daily headless check of every linked provider session, so a dead or
+// dying session is re-linked from the couch, not discovered at the curb.
+const providerHealth = makeProviderHealth({ db, sendPush, stateCrypto, providerOps, log });
 
 app.listen({ port: env.PORT, host: "0.0.0.0" });
 extender.start();
 cardJanitor.start();
 linkJobJanitor.start();
 itineraryWorker.start();
+providerHealth.start();
 
 // Graceful shutdown: stop the jobs and close the executor's warm Chromium
 // (otherwise every Fly restart leaks the browser process to container
@@ -183,6 +232,7 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
     cardJanitor.stop();
     linkJobJanitor.stop();
     itineraryWorker.stop();
+    providerHealth.stop();
     void closeExecutorBrowser()
       .catch(() => {})
       .finally(() => {

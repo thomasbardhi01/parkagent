@@ -14,6 +14,8 @@ final class AssistantUITests: ParkAgentUITestCase {
             "-useMockAPI", "YES",
             "-uiTesting", "YES",
             "-skipOnboarding", "YES",
+            // Auth gates the app now: start past the welcome screen.
+            "-signedIn", "YES",
             "-fixedNow", Self.fixedNow,
             "-assistantScenario", assistantScenario,
         ]
@@ -141,14 +143,20 @@ final class AssistantUITests: ParkAgentUITestCase {
         XCTAssertTrue(element(app, "assistant.errorRow").waitForExistence(timeout: 10))
     }
 
-    func testSettingsConnectLinkWallet() {
+    /// The Link-wallet row now lives in the Account sheet (the Settings
+    /// tab is gone); the flow it drives is unchanged.
+    func testAccountSheetConnectsLinkWallet() {
         let app = openAssistant("singleSpot", linkScenario: "disconnected")
         app.buttons["Done"].tap()
-        app.tabBars.buttons["Settings"].tap()
-        let connect = element(app, "settings.linkConnectButton")
-        XCTAssertTrue(connect.waitForExistence(timeout: 5))
+        openAccountSheet(app)
+        let connect = scrollTo(app, "account.linkConnectButton")
+        XCTAssertTrue(connect.waitForExistence(timeout: 5), "Connect row never came into reach")
         connect.tap()
-        // Mock connects instantly; the row flips to Connected + Disconnect.
-        XCTAssertTrue(element(app, "settings.linkDisconnectButton").waitForExistence(timeout: 5))
+        // The mock connects instantly and the row becomes two rows —
+        // "Connected" plus Disconnect — so Disconnect lands lower than the
+        // Connect row it replaced, and on a tall screen that can be past
+        // the fold. Scroll for it rather than assuming it is on screen.
+        let disconnect = scrollTo(app, "account.linkDisconnectButton")
+        XCTAssertTrue(disconnect.waitForExistence(timeout: 5), "Row did not flip to Connected")
     }
 }

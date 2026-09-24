@@ -56,7 +56,7 @@ the evidence that proves it. Three kinds of evidence back an FR:
 | FR-29 | Admin summary | automated | `server/fr/50-ops.fr.test.ts`, `server/test/admin.test.ts`, `server/test/authorization.test.ts` |
 | FR-30 | Decision audit | automated | `server/fr/10-parked-nyc.fr.test.ts` (decisionId on every response), `server/test/parked.test.ts`, `server/test/adversarial.test.ts`, `server/test/security.test.ts` |
 | FR-31 | Dry-run discipline | automated | `server/fr/00-gate.fr.test.ts`, `server/test/policy.test.ts`, `server/test/session.test.ts` |
-| FR-32 | Accounts | **pending** | coming in a later PR |
+| FR-32 | Accounts | automated + device-manual | `server/fr/60-accounts.fr.test.ts`, `server/test/auth.test.ts`, `server/test/authTokens.test.ts`, `server/test/security.test.ts`, `server/test/vehicles.test.ts`; iOS `AuthStoreTests`, `LiveAPIRequestTests`, `OnboardingGateTests`, `AuthUITests`, `AccountUITests`; Apple sign-in and email-code delivery need a phone and a mailbox |
 | FR-33 | Wallet | **pending** | coming in a later PR |
 
 ---
@@ -506,15 +506,63 @@ gate holds and the both-switches rule is pinned.
 Evidence: live FR-31 gate tests; `policy.test.ts`, `session.test.ts`,
 `executorProvider.test.ts`.
 
+### FR-32 — Accounts
+
+Anyone can sign up and stay signed in, and an account's lifecycle is
+safe end to end:
+
+- **Sign-in** by Apple (identity token verified against Apple's JWKS:
+  signature, issuer, audience, expiry) — the only method on by default.
+  An emailed 6-digit code (10-minute expiry, 5 attempts, 5 sends per
+  address per 15 minutes and 10 a day) and Google are built but switched
+  off (`EMAIL_SIGNIN_ENABLED`, `GOOGLE_SIGNIN_ENABLED`): their routes
+  answer `403 <method>_signin_disabled`, `GET /auth/methods` reports them
+  off, and the app shows only the Apple button. Verified-email matches
+  merge into one account; unverified emails are never stored.
+- **Sessions**: 15-minute access JWTs plus refresh tokens stored only
+  hashed, bound to a device id, 60-day sliding expiry, rotated on every
+  use. Presenting a rotated token is reuse and revokes the whole family;
+  two requests racing with one token can't both win.
+- **Profile**: `GET /me` returns the caller's public profile and nothing
+  secret; `PATCH /me` edits name and phone, and an edited phone is never
+  verified (there is no SMS flow).
+- **Deletion**: `DELETE /me` freezes any issued card first (a Stripe
+  failure leaves the account whole and the delete retryable), then signs
+  out every device, unlinks providers and erases their sealed state,
+  deletes vehicles and conversations, and tombstones the users row — the
+  decisions ledger keeps a valid id, the person goes, and the account's
+  still-valid access token stops working at once.
+- **Admin keys** keep working for scripts and the FR user; the app never
+  carries one.
+
+**Accepted when** the live suite proves the reported sign-in methods
+match the routes, profile read/write, refresh refusal, device binding,
+rotation, reuse detection, and deletion against the deployed API, and the unit suites pin the verification, throttles,
+merge rules, and teardown.
+
+The live session-lifecycle tests need a real refresh session, minted by
+`pnpm -C server create:fr-throwaway` — an admin script that needs the
+target's own `DATABASE_URL` and `AUTH_JWT_SECRET`, run inside the prod
+machine by the nightly (`fly ssh console`). It is deliberately not an API
+route: nothing on the public surface can mint a session without a
+verified identity. The suite deletes the throwaway it is given; without
+one (`FR_THROWAWAY_SESSION` unset) those four tests skip.
+
+**Device-manual**: Sign in with Apple on a phone (the system sheet can't
+be automated, and a real identity token only comes from Apple). Email-code
+delivery to a real mailbox (Resend, including Apple's private relay) is
+device-manual too, once email sign-in is switched on.
+
+Evidence: live FR-32 tests; `auth.test.ts` (real RS256 verification,
+code throttles, rotation, the rotation race, deletion teardown including
+the Stripe-failure ordering), `authTokens.test.ts`, `security.test.ts`,
+`vehicles.test.ts`; iOS `AuthStoreTests` (single-flight refresh, device
+id across sign-out, a late refresh after sign-out),
+`LiveAPIRequestTests` (every identity and account call on the wire, the
+401 → refresh → retry path), `OnboardingGateTests`, `AuthUITests`,
+`AccountUITests`.
+
 ## Pending (later PRs)
-
-### FR-32 — Accounts (pending)
-
-Real multi-user accounts: sign-up/sign-in beyond hand-created api keys,
-per-account data isolation guarantees, and account lifecycle (rename,
-revoke, delete-with-cascade). Requirements and tests land with the
-accounts PR; today's closest coverage is the api-key auth suite
-(`apiKeys.test.ts`, `authorization.test.ts`, `security.test.ts`).
 
 ### FR-33 — Wallet (pending)
 

@@ -10,7 +10,7 @@ and decides, but no money moves and you pay the meter by hand as usual.
 1. **Server**: `curl https://parkagent-api.fly.dev/health` → `ok: true`
    and `dryRun: true`. If `dryRun` is false, STOP and fix the env before
    driving anywhere.
-2. **Zones loaded**: in the app, Settings → About → tap the version five times → Diagnostics →
+2. **Zones loaded**: in the app, Account (the avatar on Home) → About → tap the version five times → Diagnostics →
    "Simulate park here" should return a quote for a zone near you, and
    the Home chip should name your city when you're in one.
 3. **Phone setup** (per phone, both users):
@@ -18,12 +18,12 @@ and decides, but no money moves and you pay the meter by hand as usual.
    - Motion & Fitness: on. Notifications: on.
    - If either is off, Home shows a banner with an Open Settings button —
      clear the banners before the drive.
-4. **Turn on the signal log**: Settings → About → tap the version five
+4. **Turn on the signal log**: Account (the avatar on Home) → About → tap the version five
    times → Diagnostics → **Log raw detector signals**. This writes every motion, car-audio, and location event
    with a timestamp to a file on the phone; it is the only way to debug
    a missed or false park after the fact.
-5. **Payment source** (onboarding "How do you want to pay", or Settings →
-   Payment): the default is **My card on ParkNYC/ParkBoston** —
+5. **Payment source** (onboarding "How do you want to pay", or Account →
+   Spending): the default is **My card on ParkNYC/ParkBoston** —
    `provider_card`, the card already saved on your provider account. On
    that path there is **no ParkAgent card setup and no Add money step**:
    linking just captures the session and the executor pays with the
@@ -35,7 +35,7 @@ and decides, but no money moves and you pay the meter by hand as usual.
    switch to the ParkAgent card needs a fresh setup-card (consent prompt in
    the link flow).
 6. **Provider link** (needed even in dry run — session start refuses
-   without it): Settings → Providers → link ParkNYC (NYC) or ParkBoston
+   without it): Account → Cities & accounts → connect ParkNYC (NYC) or ParkBoston
    (Boston). ParkBoston sign-in is passwordless: T&C accept, e-mail/phone
    code, then a 4-digit PIN. On the `provider_card` default the link flow
    shows "the card already saved on your account keeps paying" instead of
@@ -69,7 +69,7 @@ and decides, but no money moves and you pay the meter by hand as usual.
 
 ## What "working" looks like per signal (in the exported log)
 
-Export: Settings → About → version ×5 → Diagnostics → **Export signal log** (share sheet → AirDrop /
+Export: Account → About → version ×5 → Diagnostics → **Export signal log** (share sheet → AirDrop /
 Files / mail to yourself). One line per event:
 `2026-09-27T14:03:22.512Z motion_stop`.
 

@@ -123,7 +123,13 @@ per-stop cost, day total against the cap, one Sign off.
 
 ## Repro
 
-The sweep script lives in the session scratchpad
-(`verify-spothero.ts`); run it from `server/` with `npx tsx` on a
-machine with network access. It drives the same classes prod uses —
-nothing is mocked.
+    pnpm -C server verify:garages
+    pnpm -C server verify:garages -- --places "Fenway,Times Square"
+
+`server/src/scripts/verify-garages.ts` drives the same classes prod uses
+— the real `NominatimGeocoder` and the real merged garage provider,
+nothing mocked — recomputing each option's distance from the facility's
+own coordinates and printing the deep links so they can be opened and
+checked. Read-only and low volume: one geocode plus one search per
+provider per place, spaced for Nominatim's courtesy limit. It defaults
+to tomorrow 18:00–22:00 so the window is never in the past.

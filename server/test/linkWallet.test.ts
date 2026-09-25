@@ -14,6 +14,7 @@ import type {
   LinkSpendRequestState,
   LinkTokens,
 } from "../src/services/link/linkClient.js";
+import type { StateCrypto } from "../src/services/crypto.js";
 import { makeLinkHttpClient } from "../src/services/link/linkClient.js";
 import { makeWalletTick } from "../src/jobs/walletTick.js";
 import {
@@ -233,9 +234,46 @@ describe("spend requests: request → approval → card → spend", () => {
     expect((await wallet.revealCard("u1", req!.spendRequestId)).number).toBe("4000009990001984");
     expect(row.revealedAt).toEqual(NOW);
 
-    // 13 hours later — past the 12-hour validity window — it's gone.
+    // A card never shown, 13 hours later — past the 12-hour validity
+    // window — is gone.
+    const [unseen] = await wallet.createSpendRequestsForStops("u1", {
+      planId: "plan1",
+      stops: [
+        {
+          stopId: "s2",
+          label: "Deck",
+          amountUsd: 18,
+          merchantName: "SpotHero",
+          merchantUrl: "https://spothero.com",
+        },
+      ],
+    });
+    link.approve(unseen!.spendRequestId);
+    await wallet.syncSpendRequest("u1", unseen!.spendRequestId);
     at = new Date(NOW.getTime() + 13 * 60 * 60_000);
-    await expect(wallet.revealCard("u1", req!.spendRequestId)).rejects.toThrow("card_expired");
+    await expect(wallet.revealCard("u1", unseen!.spendRequestId)).rejects.toThrow("card_expired");
+  });
+
+  test("the one-time card is revealed once: a second retrieval is refused", async () => {
+    const { wallet, link } = await connectedWallet();
+    const [req] = await wallet.createSpendRequestsForStops("u1", {
+      planId: "plan1",
+      stops: [
+        {
+          stopId: "s1",
+          label: "Deck",
+          amountUsd: 18,
+          merchantName: "SpotHero",
+          merchantUrl: "https://spothero.com",
+        },
+      ],
+    });
+    link.approve(req!.spendRequestId);
+    await wallet.syncSpendRequest("u1", req!.spendRequestId);
+    expect((await wallet.revealCard("u1", req!.spendRequestId)).number).toBe("4000009990001984");
+    await expect(wallet.revealCard("u1", req!.spendRequestId)).rejects.toThrow(
+      "card_already_revealed",
+    );
   });
 
   test("an approval nobody gives inside Link's 10-minute window expires, uncharged", async () => {
@@ -425,6 +463,21 @@ describe("routes and plan integration", () => {
     // The reveal's audit row never carries the number.
     expect(JSON.stringify(t.state.decisions)).not.toContain("4000009990001984");
 
+    // Shown once, never again: the second retrieval is refused, with
+    // nothing of the card in the answer.
+    const second = await t.app.inject({
+      method: "POST",
+      url: `/link/spend-requests/${id}/card`,
+      headers: HEADERS,
+      payload: {},
+    });
+    expect(second.statusCode).toBe(410);
+    expect(second.json()).toEqual({ error: "card_already_revealed" });
+    expect(t.state.decisions.at(-1)).toMatchObject({
+      kind: "link_card_reveal",
+      rule: "card_already_revealed",
+    });
+
     const activity = await t.app.inject({
       method: "GET",
       url: "/wallet/activity",
@@ -433,6 +486,91 @@ describe("routes and plan integration", () => {
     expect(activity.json().items).toMatchObject([
       { kind: "garage", label: "Deck on 5th", link: { spendRequestId: id, status: "approved" } },
     ]);
+  });
+
+  test("two reveals racing for one card: exactly one gets it", async () => {
+    const { t, wallet, link } = await connectedWallet(() => NOW, LINK_LIVE);
+    const [req] = await wallet.createSpendRequestsForStops("u1", {
+      planId: "plan1",
+      stops: [
+        {
+          stopId: "s1",
+          label: "Deck",
+          amountUsd: 18,
+          merchantName: "SpotHero",
+          merchantUrl: "https://spothero.com",
+        },
+      ],
+    });
+    link.approve(req!.spendRequestId);
+    await wallet.syncSpendRequest("u1", req!.spendRequestId);
+    // Both read the request (as copies, like rows off the wire) before
+    // either stamps it.
+    const db = t.deps.db;
+    let waiting: (() => void)[] = [];
+    t.deps.db = {
+      ...db,
+      linkSpendRequest: {
+        ...db.linkSpendRequest,
+        findUnique: async (args) => {
+          const row = await db.linkSpendRequest.findUnique(args);
+          await new Promise<void>((resolve) => {
+            waiting.push(resolve);
+            if (waiting.length === 2) {
+              waiting.forEach((r) => r());
+              waiting = [];
+            }
+          });
+          return row ? structuredClone(row) : row;
+        },
+      },
+    };
+    // The wallet reads through its own deps; point it at the racing db.
+    (wallet as unknown as { deps: { db: typeof db } }).deps.db = t.deps.db;
+    const reveal = () =>
+      t.app.inject({
+        method: "POST",
+        url: `/link/spend-requests/${req!.spendRequestId}/card`,
+        headers: HEADERS,
+        payload: {},
+      });
+    const results = await Promise.all([reveal(), reveal()]);
+    expect(results.map((r) => r.statusCode).sort()).toEqual([200, 410]);
+    const refused = results.find((r) => r.statusCode === 410)!;
+    expect(refused.body).not.toContain("4000009990001984");
+    expect(refused.body).not.toContain('"100"');
+  });
+
+  test("an error that quotes the card never reaches the answer or the audit", async () => {
+    const { t, wallet } = await connectedWallet(() => NOW, LINK_LIVE);
+    const row = seedLinkSpendRequest(t.state, {
+      status: "approved",
+      cardEncrypted: testStateCrypto().seal(
+        JSON.stringify({ number: "4000009990001984", cvc: "100", expMonth: 6, expYear: 2029 }),
+      ),
+    });
+    // Opening the card fails with an error that quotes what it handled —
+    // the way a parser's message quotes its input.
+    const walletDeps = (wallet as unknown as { deps: { stateCrypto: StateCrypto } }).deps;
+    walletDeps.stateCrypto = {
+      ...walletDeps.stateCrypto,
+      open: (sealed: string) => {
+        throw new Error(`cannot read card: ${testStateCrypto().open(sealed)}`);
+      },
+    };
+    const res = await t.app.inject({
+      method: "POST",
+      url: `/link/spend-requests/${row.id}/card`,
+      headers: HEADERS,
+      payload: {},
+    });
+    const surfaced = res.body + JSON.stringify(t.state.decisions);
+    expect(surfaced).not.toContain("4000009990001984");
+    expect(surfaced).not.toContain('"100"');
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toEqual({ error: "card_unreadable" });
+    // Nothing was shown, so the one reveal is still unclaimed.
+    expect(row.revealedAt).toBeNull();
   });
 
   test("a street spot never goes to Link — it pays with the card on the provider account", async () => {

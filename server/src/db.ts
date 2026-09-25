@@ -732,12 +732,18 @@ export interface AppDb {
         revealedAt?: Date;
       };
     }): Promise<unknown>;
-    /** The timeout sweep's claim: expire only a request still waiting, so
-     * an approval that lands mid-sweep is never overwritten. */
-    updateMany(args: {
-      where: { id: string; status: { in: string[] } };
-      data: { status: string };
-    }): Promise<{ count: number }>;
+    /** Two claims: the timeout sweep expires only a request still waiting,
+     * so an approval that lands mid-sweep is never overwritten; and the
+     * one-time card's single reveal stamps revealed_at only while it is
+     * still null, so of two concurrent reveals exactly one sees count 1. */
+    updateMany(
+      args:
+        | { where: { id: string; status: { in: string[] } }; data: { status: string } }
+        | {
+            where: { id: string; status: "approved"; revealedAt: null };
+            data: { revealedAt: Date };
+          },
+    ): Promise<{ count: number }>;
   };
   fundingMethod: {
     findMany(args: { where: { userId: string; removedAt: null } }): Promise<FundingMethodRow[]>;

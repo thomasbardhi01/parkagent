@@ -258,6 +258,8 @@ enum APIError: Error, LocalizedError {
         case "not_approved": "That Link payment hasn't been approved yet."
         case "card_expired": "That Link card has expired."
         case "card_used": "That Link card was already used."
+        case "card_already_revealed": "That Link card was already shown once, and it can't be shown again."
+        case "card_unreadable": "That Link card can't be shown. Pay at the garage's checkout instead."
         case "invalid_code": "That code doesn't match. Check it and try again."
         case "code_expired": "That code expired. Send a new one."
         case "too_many_attempts": "Too many tries. Send a new code."

@@ -1813,12 +1813,22 @@ PROVIDER_STATE_KEY crypto), and `POST /link/spend-requests/:id/card`.
 **`POST /link/spend-requests/:id/card`** — the approved one-time card, for
 the user to pay the garage's own checkout with (we never automate that
 checkout, so the card has to reach the person at it). Only the caller's
-own request, only while `approved`, unexpired, and unused;
+own request, only while `approved`, unexpired, and unused — and only
+ONCE: the first successful retrieval claims the card by stamping
+`revealed_at` with a compare-and-set (only where it is still null), so of
+any number of calls, concurrent ones included, exactly one gets the
+number, and every later one answers `410 card_already_revealed`.
 `Cache-Control: no-store`; the app asks for Face ID first and hides it
 after 30 seconds. Every reveal — and every refusal (`404
-unknown_spend_request`, `409 not_approved` / `card_expired` /
-`card_used`) — writes a `decisions` row (kind `link_card_reveal`) that
-never carries the number. `revealed_at` is stamped.
+unknown_spend_request`, `410 card_already_revealed`, `409 not_approved` /
+`card_expired` / `card_used` / `card_unreadable`) — writes a `decisions`
+row (kind `link_card_reveal`) that never carries the number. Only those
+named codes ever leave the route, in the body, the decision, or the log:
+any other error answers `500 reveal_failed` and is logged by its class
+name alone, since an error's message can quote what it was handling.
+`POST /link/spend-requests/:id/sync`, which fetches the card to seal it,
+does the same (`404` / `409` / `503` named codes, else `502
+sync_failed`).
 
 **Approval timeout.** Each request stores its `approval_expires_at`
 (creation + 10 minutes). The wallet job expires every request still

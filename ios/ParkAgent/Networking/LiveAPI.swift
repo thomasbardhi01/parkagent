@@ -684,9 +684,10 @@ struct LiveAPI: APIClient {
                 return .refused(code: refusal.error)
             }
             return .unauthorized
-        case 403, 404, 409, 429, 502, 503:
+        case 403, 404, 409, 410, 429, 502, 503:
             // Named refusals carry {"error": "<code>"} (dry_run,
-            // funding_unavailable, assistant_budget_exhausted, …).
+            // funding_unavailable, assistant_budget_exhausted,
+            // card_already_revealed, …).
             if let refusal = try? decoder.decode(Refusal.self, from: data) {
                 if refusal.error == "executor_failed" {
                     return .executorFailed(code: refusal.code)

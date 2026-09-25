@@ -929,6 +929,7 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
           cardEncrypted: null,
           validUntil: null,
           cardUsedAt: null,
+          revealedAt: null,
           createdAt: new Date(MONDAY_2PM),
           ...data,
         } as LinkSpendRequestRow);
@@ -945,9 +946,14 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
         if (row) Object.assign(row, data);
         return {};
       },
+      // Synchronous check-and-set, standing in for the conditional UPDATE.
       updateMany: async ({ where, data }) => {
         const row = state.linkSpendRequests.find(
-          (r) => r.id === where.id && where.status.in.includes(r.status),
+          (r) =>
+            r.id === where.id &&
+            (typeof where.status === "string"
+              ? r.status === where.status && (r.revealedAt ?? null) === null
+              : where.status.in.includes(r.status)),
         );
         if (!row) return { count: 0 };
         Object.assign(row, data);
@@ -1712,6 +1718,7 @@ export function seedLinkSpendRequest(
     cardEncrypted: null,
     validUntil: null,
     cardUsedAt: null,
+    revealedAt: null,
     createdAt: new Date(MONDAY_2PM),
     ...overrides,
   };

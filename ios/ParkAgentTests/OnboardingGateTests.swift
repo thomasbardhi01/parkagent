@@ -110,6 +110,7 @@ private struct HangingAPI: APIClient {
     func authMethods() async throws -> AuthMethods { try await hang() }
     func signInWithApple(
         identityToken: String,
+        authorizationCode: String?,
         deviceId: String,
         fullName: (given: String?, family: String?)?
     ) async throws -> AuthSession { try await hang() }

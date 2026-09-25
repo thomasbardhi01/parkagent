@@ -57,10 +57,14 @@ final class AuthModel {
                 return
             }
             let name = credential.fullName
+            // The server trades this one-time code for the token it revokes
+            // at Apple if the account is ever deleted.
+            let authorizationCode = credential.authorizationCode.flatMap { String(data: $0, encoding: .utf8) }
             Task {
                 await signIn {
                     try await self.api.signInWithApple(
                         identityToken: identityToken,
+                        authorizationCode: authorizationCode,
                         deviceId: self.store.deviceId,
                         fullName: name.map { (given: $0.givenName, family: $0.familyName) }
                     )
@@ -82,6 +86,7 @@ final class AuthModel {
         await signIn {
             try await self.api.signInWithApple(
                 identityToken: "mock-identity-token",
+                authorizationCode: "mock-authorization-code",
                 deviceId: self.store.deviceId,
                 fullName: (given: "Thomas", family: nil)
             )

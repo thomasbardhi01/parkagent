@@ -37,6 +37,7 @@ import type { ModelClient } from "../src/services/assistant/loop.js";
 import { AssistantTools } from "../src/services/assistant/tools.js";
 import type { GarageProvider } from "../src/services/garage/garageProvider.js";
 import type { GeocoderProvider } from "../src/services/assistant/geocoder.js";
+import type { AppleTokenClient } from "../src/services/appleTokens.js";
 import type { LinkClient } from "../src/services/link/linkClient.js";
 import { LinkWallet } from "../src/services/link/linkWallet.js";
 import type { ProviderAccountOps, ProviderOpsFactory } from "../src/services/providerOps.js";
@@ -532,9 +533,17 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
         row.stripeCustomerId = data.stripeCustomerId;
         return { count: 1 };
       },
-      findMany: async ({ where }) =>
-        state.users
-          .filter((u) => where.id.in.includes(u.id))
+      findMany: (async ({ where, take }: { where: Record<string, unknown>; take?: number }) => {
+        if (!("id" in where)) {
+          // Pending Apple revocations: tombstoned, token still sealed.
+          return state.users
+            .filter((u) => u.deletedAt !== null && (u.appleRefreshTokenSealed ?? null) !== null)
+            .slice(0, take ?? Infinity)
+            .map((u) => ({ id: u.id, appleRefreshTokenSealed: u.appleRefreshTokenSealed ?? null }));
+        }
+        const ids = (where as { id: { in: string[] } }).id.in;
+        return state.users
+          .filter((u) => ids.includes(u.id))
           .map((u) => ({
             id: u.id,
             name: u.name,
@@ -554,7 +563,8 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
             stripeCustomerId: u.stripeCustomerId ?? null,
             deletedAt: u.deletedAt,
             createdAt: u.createdAt,
-          })),
+          }));
+      }) as AppDb["user"]["findMany"],
     },
     refreshToken: {
       create: async ({ data }) => {
@@ -1686,6 +1696,8 @@ export function makeTestApp(options: {
   geocoder?: GeocoderProvider;
   /** Faked Link client; wires the LinkWallet as configured. */
   linkClient?: LinkClient;
+  /** Sign in with Apple's token + revoke endpoints (services/appleTokens.ts). */
+  appleTokens?: AppleTokenClient;
   /** u1's payment source (default "provider_card", like a fresh user). */
   paymentSource?: string;
   /** ISSUING_LIVE: whether "parkagent_card" may be chosen (default false). */
@@ -1780,6 +1792,7 @@ export function makeTestApp(options: {
     ...(options.issuingLive !== undefined ? { issuingLive: options.issuingLive } : {}),
     ...(options.issuingSandbox !== undefined ? { issuingSandbox: options.issuingSandbox } : {}),
     ...(options.apnsDelivery ? { apnsDelivery: options.apnsDelivery } : {}),
+    ...(options.appleTokens ? { appleTokens: options.appleTokens } : {}),
     now,
   };
   return { app: buildApp(deps), state, deps, pushes };

@@ -32,6 +32,7 @@ struct LiveAPI: APIClient {
 
     func signInWithApple(
         identityToken: String,
+        authorizationCode: String?,
         deviceId: String,
         fullName: (given: String?, family: String?)?
     ) async throws -> AuthSession {
@@ -41,6 +42,7 @@ struct LiveAPI: APIClient {
         }
         struct Body: Encodable {
             let identityToken: String
+            let authorizationCode: String?
             let deviceId: String
             let fullName: Name?
         }
@@ -49,6 +51,7 @@ struct LiveAPI: APIClient {
             method: "POST",
             body: Body(
                 identityToken: identityToken,
+                authorizationCode: authorizationCode,
                 deviceId: deviceId,
                 fullName: fullName.map { Name(givenName: $0.given, familyName: $0.family) }
             ),

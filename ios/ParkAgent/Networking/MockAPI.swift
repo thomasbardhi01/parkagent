@@ -126,6 +126,7 @@ struct MockAPI: APIClient {
 
     func signInWithApple(
         identityToken: String,
+        authorizationCode: String?,
         deviceId: String,
         fullName: (given: String?, family: String?)?
     ) async throws -> AuthSession {

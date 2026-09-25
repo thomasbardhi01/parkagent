@@ -32,6 +32,10 @@ const deviceIdSchema = z.string().min(8).max(128);
 
 const appleSchema = z.object({
   identityToken: z.string().min(1),
+  // One-time, 5-minute code from the same authorization; exchanged for the
+  // refresh token DELETE /me revokes (services/appleTokens.ts). Optional:
+  // older app builds don't send it, and sign-in never depends on it.
+  authorizationCode: z.string().min(1).max(4096).optional(),
   deviceId: deviceIdSchema,
   // Apple hands the name to the APP exactly once, at first sign-in — it is
   // never in the token, so the client forwards it here.
@@ -112,8 +116,45 @@ export function registerAuth(app: FastifyInstance, deps: AppDeps): void {
       name: fullName || verified.token.name,
     });
     const session = await issueSession(service, user, parsed.data.deviceId);
+    if (parsed.data.authorizationCode) {
+      await storeAppleRefreshToken(user.id, verified.token.sub, parsed.data.authorizationCode);
+    }
     return sessionBody(session, created);
   });
+
+  /**
+   * Trade the sign-in's authorization code for Apple's refresh token and
+   * keep it sealed, so DELETE /me can revoke it. Never fails the sign-in:
+   * without the Apple key or the sealing key there's nothing to do, and a
+   * failed exchange is recorded and the user signs in regardless (the next
+   * sign-in tries again with a fresh code).
+   */
+  async function storeAppleRefreshToken(userId: string, sub: string, code: string) {
+    if (!deps.appleTokens || !deps.stateCrypto) return;
+    const exchanged = await deps.appleTokens.exchangeCode(code);
+    // The code must belong to the identity just verified; a mismatch is
+    // never stored against this account.
+    const stored = exchanged.ok && (exchanged.sub === null || exchanged.sub === sub);
+    if (stored) {
+      await deps.db.user.update({
+        where: { id: userId },
+        data: { appleRefreshTokenSealed: deps.stateCrypto.seal(exchanged.refreshToken) },
+      });
+    }
+    await deps.db.decision.create({
+      data: {
+        kind: "auth_identity",
+        inputs: { provider: "apple", step: "authorization_code_exchange" },
+        rule: stored
+          ? "apple_refresh_token_stored"
+          : exchanged.ok
+            ? "apple_code_sub_mismatch"
+            : "apple_code_exchange_failed",
+        outcome: exchanged.ok ? { ok: stored } : { ok: false, error: exchanged.error },
+        userId,
+      },
+    });
+  }
 
   app.post("/auth/google", { preHandler: limitTokens }, async (req, reply) => {
     const service = authDeps();

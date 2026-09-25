@@ -210,10 +210,11 @@ final class LiveAPIRequestTests: XCTestCase {
         XCTAssertEqual(methods, .appleOnly)
     }
 
-    func testAppleSignInPostsTheIdentityTokenAndName() async throws {
+    func testAppleSignInPostsTheIdentityTokenCodeAndName() async throws {
         StubURLProtocol.respond(json: Self.sessionBody)
         let session = try await api.signInWithApple(
             identityToken: "apple-jwt",
+            authorizationCode: "apple-code",
             deviceId: "device-1",
             fullName: (given: "Pat", family: "Driver")
         )
@@ -224,6 +225,8 @@ final class LiveAPIRequestTests: XCTestCase {
         XCTAssertNil(bearer(request), "sign-in must not carry a stale access token")
         let sent = try body(request)
         XCTAssertEqual(sent["identityToken"] as? String, "apple-jwt")
+        // What the server exchanges for the token it revokes on delete.
+        XCTAssertEqual(sent["authorizationCode"] as? String, "apple-code")
         XCTAssertEqual(sent["deviceId"] as? String, "device-1")
         XCTAssertEqual(
             sent["fullName"] as? [String: String],

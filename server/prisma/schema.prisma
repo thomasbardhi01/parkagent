@@ -138,6 +138,11 @@ model User {
   phoneVerified Boolean  @default(false) @map("phone_verified")
   // Sign in with Apple subject ("sub" claim) — stable per Apple ID + app.
   appleSub  String?  @unique @map("apple_sub")
+  // The refresh token from the sign-in's authorization-code exchange,
+  // SEALED (AES-256-GCM, PROVIDER_STATE_KEY) — revoked at Apple on DELETE
+  // /me. Kept on the tombstone only while that revoke hasn't succeeded;
+  // jobs/appleRevocationTick.ts retries and clears it.
+  appleRefreshTokenSealed String? @map("apple_refresh_token_sealed")
   // Google ID token subject; only written when GOOGLE_SIGNIN_ENABLED.
   googleSub String?  @unique @map("google_sub")
   // DELETE /me tombstone: identity fields are scrubbed, this is stamped,

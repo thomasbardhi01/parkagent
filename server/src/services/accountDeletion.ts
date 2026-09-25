@@ -15,6 +15,8 @@
  */
 
 import type { AppDb } from "../db.js";
+import type { AppleTokenClient } from "./appleTokens.js";
+import type { StateCrypto } from "./crypto.js";
 import type { LinkWallet } from "./link/linkWallet.js";
 import type { StripeGateway } from "./stripeGateway.js";
 
@@ -24,12 +26,19 @@ export interface AccountDeletionDeps {
    * down; callers without one (the purge script) must refuse such rows. */
   stripe?: StripeGateway | undefined;
   linkWallet?: LinkWallet | undefined;
+  /** Revokes the Sign in with Apple token; absent → the sealed token stays
+   * on the tombstone for jobs/appleRevocationTick.ts once configured. */
+  appleTokens?: AppleTokenClient | undefined;
+  stateCrypto?: StateCrypto | undefined;
   now: () => Date;
 }
 
 export interface AccountDeletionResult {
   cardFrozen: boolean;
   customerDeleted: boolean;
+  /** true revoked at Apple · false tried and failed (the hourly job
+   * retries) · null there was no Apple token, or no way to revoke yet. */
+  appleRevoked: boolean | null;
   fundingMethodsRemoved: number;
   providersUnlinked: string[];
 }
@@ -70,7 +79,7 @@ export async function deleteAccount(
   //    local changes.
   const identity = await db.user.findUnique({
     where: { id: userId },
-    select: { stripeCustomerId: true },
+    select: { stripeCustomerId: true, appleRefreshTokenSealed: true },
   });
   let customerDeleted = false;
   if (identity?.stripeCustomerId && deps.stripe) {
@@ -114,6 +123,13 @@ export async function deleteAccount(
   await db.vehicle.deleteMany({ where: { userId } });
   await db.conversation.deleteMany({ where: { userId } });
 
+  // Sign in with Apple: revoke the token so the app leaves the person's
+  //    Apple ID (App Store 5.1.1(v)). After the steps that can abort, so a
+  //    delete that fails above never revokes a login the account still
+  //    has; never blocking — a failure leaves the sealed token on the
+  //    tombstone and jobs/appleRevocationTick.ts retries.
+  const appleRevoked = await revokeAppleToken(deps, identity?.appleRefreshTokenSealed ?? null);
+
   // 5. Tombstone the users row: the decisions ledger keeps its user id,
   //    the person's identity is gone, and no credential works again.
   await db.user.update({
@@ -131,6 +147,7 @@ export async function deleteAccount(
       apiKeyPrefix: null,
       stripeCustomerId: null,
       paymentSource: "provider_card",
+      ...(appleRevoked === true ? { appleRefreshTokenSealed: null } : {}),
       deletedAt: now(),
     },
   });
@@ -141,9 +158,37 @@ export async function deleteAccount(
       kind: "account_delete",
       inputs: { providersUnlinked, ...audit },
       rule: "deleted",
-      outcome: { ok: true, cardFrozen, customerDeleted, fundingMethodsRemoved: funding.length },
+      outcome: {
+        ok: true,
+        cardFrozen,
+        customerDeleted,
+        fundingMethodsRemoved: funding.length,
+        appleRevoked,
+      },
       userId,
     },
   });
-  return { cardFrozen, customerDeleted, fundingMethodsRemoved: funding.length, providersUnlinked };
+  return {
+    cardFrozen,
+    customerDeleted,
+    appleRevoked,
+    fundingMethodsRemoved: funding.length,
+    providersUnlinked,
+  };
+}
+
+/** Revoke a sealed Apple refresh token. null: nothing to revoke, or no way
+ * to yet (unconfigured, or the sealing key can't open it). */
+export async function revokeAppleToken(
+  deps: Pick<AccountDeletionDeps, "appleTokens" | "stateCrypto">,
+  sealed: string | null,
+): Promise<boolean | null> {
+  if (!sealed || !deps.appleTokens || !deps.stateCrypto) return null;
+  let token: string;
+  try {
+    token = deps.stateCrypto.open(sealed);
+  } catch {
+    return null;
+  }
+  return (await deps.appleTokens.revoke(token)).ok;
 }

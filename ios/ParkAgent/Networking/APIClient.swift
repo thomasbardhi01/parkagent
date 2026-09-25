@@ -8,8 +8,12 @@ protocol APIClient: Sendable {
     // that work signed out; everything else needs the access token.
     /// Which sign-in methods are switched on (GET /auth/methods).
     func authMethods() async throws -> AuthMethods
+    /// `authorizationCode` is Apple's one-time code from the same sign-in:
+    /// the server trades it for the refresh token it revokes if the account
+    /// is ever deleted (App Store 5.1.1(v)).
     func signInWithApple(
         identityToken: String,
+        authorizationCode: String?,
         deviceId: String,
         fullName: (given: String?, family: String?)?
     ) async throws -> AuthSession

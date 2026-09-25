@@ -95,8 +95,22 @@ the victim.
 ### POST /auth/apple
 
 ```json
-{ "identityToken": "eyJ…", "deviceId": "…", "fullName": {"givenName": "Thomas", "familyName": "B"} }
+{ "identityToken": "eyJ…", "authorizationCode": "c…", "deviceId": "…", "fullName": {"givenName": "Thomas", "familyName": "B"} }
 ```
+
+`authorizationCode` (optional; the same sign-in's one-time, 5-minute
+code) is exchanged at Apple's `/auth/token` for a refresh token, stored
+**sealed** (`users.apple_refresh_token_sealed`, AES-256-GCM under
+`PROVIDER_STATE_KEY`) so `DELETE /me` can revoke it — App Store Review
+5.1.1(v). The exchange authenticates with a client secret: an ES256 JWT
+signed with the Sign in with Apple key (`APPLE_SIGNIN_KEY`,
+`APPLE_SIGNIN_KEY_ID`, `APPLE_SIGNIN_TEAM_ID`; `sub` = `APPLE_AUDIENCE`).
+It never affects the sign-in: without the key group nothing is exchanged,
+a code whose `sub` isn't the verified identity's is never stored, and a
+failed exchange is recorded (`auth_identity`, rule
+`apple_code_exchange_failed`) and retried on the next sign-in. A
+carried-over account (`attach-identity`) gets its token the first time
+its owner signs in with Apple.
 
 `fullName` is optional and only ever sent once: Apple hands the name to
 the **app** on first sign-in, never in the token, so the client forwards
@@ -207,11 +221,16 @@ Irreversible; the app confirms in two steps. In order:
    deleted (push channels released);
 4. provider accounts unlinked and their **sealed cookie state erased**;
 5. vehicles and assistant conversations deleted (sessions detach from
-   the vehicle but remain — they are the money audit);
+   the vehicle but remain — they are the money audit); then the **Sign in
+   with Apple token revoked** at Apple's `/auth/revoke` (App Store
+   5.1.1(v)), which never blocks the delete: if Apple fails (or the key
+   isn't configured yet) the sealed token stays on the tombstone and an
+   hourly job (`jobs/appleRevocationTick.ts`) retries until Apple accepts
+   — every attempt a `decisions` row;
 6. the `users` row is **tombstoned**: name becomes "Deleted account",
    `email`/`phone`/`apple_sub`/`google_sub`/api-key/`stripe_customer_id`
-   columns are nulled, the payment source reset, and `deleted_at` is
-   stamped.
+   columns are nulled (and the sealed Apple token, once revoked), the
+   payment source reset, and `deleted_at` is stamped.
 
 The row survives on purpose: `decisions` is a non-negotiable ledger with
 a `user_id` on every row, so the id must stay valid — what goes is the
@@ -697,8 +716,17 @@ the choice moves where the charge lands, never what is allowed.
 ## POST /device
 
 `{token, platform: "ios", environment: "development" | "production"}` →
-`{ok: true}`. Registering is idempotent (the app re-sends on every
-launch; `environment` picks the sandbox or production APNs host), but the
+`{ok: true}`. `environment` is the APNs environment that MINTED the token
+— an Xcode-installed build gets sandbox ("development") tokens, a
+TestFlight / App Store build production ones — and each token is pushed to
+its own host (`apnsHost` in services/apns.ts: `api.sandbox.push.apple.com`
+vs `api.push.apple.com`); a token sent to the other host is rejected as
+BadDeviceToken and deleted. The app reads it from its own signing, not its
+build configuration (ios Support/APNsEnvironment.swift: the embedded
+provisioning profile's `aps-environment`; no embedded profile → App Store
+/ TestFlight → production). Registering is idempotent (the app re-sends
+on every launch, and a new environment for the same token replaces the
+old), but the
 token is **bound to the first registering user**: another account
 presenting it gets `409 {"error": "token_bound_elsewhere"}` instead of
 silently taking over the push channel. A token Apple reports dead (410)

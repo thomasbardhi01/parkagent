@@ -71,7 +71,10 @@ script-made user across with
 
 `DELETE /me` tombstones the users row rather than deleting it — the
 `decisions` ledger needs a valid user id, so the person goes and the id
-stays. See server/API.md "Identity & sessions" for the full contract.
+stays. It also revokes the person's Sign in with Apple token at Apple
+(App Store 5.1.1(v)): the sign-in's authorization code is exchanged for a
+refresh token stored sealed, which needs the `APPLE_SIGNIN_KEY` /
+`_KEY_ID` / `_TEAM_ID` group; a failed revoke is retried hourly. See server/API.md "Identity & sessions" for the full contract.
 
 A daily job (`jobs/providerHealthTick.ts`) verifies each linked provider
 session headlessly and pushes "Reconnect …" when one is expiring or

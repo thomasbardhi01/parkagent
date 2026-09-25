@@ -41,6 +41,14 @@ const schema = z
     AUTH_JWT_SECRET: z.string().min(32),
     // Sign in with Apple audience — the app's bundle id.
     APPLE_AUDIENCE: z.string().min(1).default("com.thomasbardhi.parkagent"),
+    // A Sign in with Apple key (developer.apple.com → Keys, "Sign in with
+    // Apple" enabled): signs the client secret for Apple's token and revoke
+    // endpoints, so DELETE /me can revoke the user's Apple tokens (App Store
+    // 5.1.1(v)). Optional as a set of three; without it sign-in works and
+    // no token is stored or revoked (services/appleTokens.ts).
+    APPLE_SIGNIN_KEY: z.string().min(1).optional(),
+    APPLE_SIGNIN_KEY_ID: z.string().min(1).optional(),
+    APPLE_SIGNIN_TEAM_ID: z.string().min(1).optional(),
     // Sign in with Apple is the only method on by default. Email codes are
     // off until this is "true" (and then need RESEND_API_KEY); while off,
     // /auth/email/* answers 403 email_signin_disabled and GET /auth/methods
@@ -112,6 +120,16 @@ const schema = z
         path: ["LINK_CLIENT_ID"],
         message:
           "LINK_CLIENT_ID, LINK_CLIENT_SECRET, LINK_PUBLISHABLE_KEY, and LINK_REDIRECT_URI are a set — set all four or none",
+      });
+    }
+    const appleKeys = [env.APPLE_SIGNIN_KEY, env.APPLE_SIGNIN_KEY_ID, env.APPLE_SIGNIN_TEAM_ID];
+    const appleSet = appleKeys.filter((k) => k !== undefined).length;
+    if (appleSet > 0 && appleSet < appleKeys.length) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["APPLE_SIGNIN_KEY"],
+        message:
+          "APPLE_SIGNIN_KEY, APPLE_SIGNIN_KEY_ID, and APPLE_SIGNIN_TEAM_ID are a set — set all three or none",
       });
     }
     // Email sign-in switched on with no way to send the code would answer

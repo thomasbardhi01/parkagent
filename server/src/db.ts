@@ -325,8 +325,16 @@ export interface UserIdentityRow {
   googleSub: string | null;
   /** The ParkAgent card's Stripe Customer (POST /wallet/setup-intent). */
   stripeCustomerId?: string | null;
+  /** Sealed Sign in with Apple refresh token (services/appleTokens.ts). */
+  appleRefreshTokenSealed?: string | null;
   deletedAt: Date | null;
   createdAt: Date;
+}
+
+/** A tombstoned account whose Apple token still needs revoking. */
+export interface PendingAppleRevocationRow {
+  id: string;
+  appleRefreshTokenSealed: string | null;
 }
 
 /** What the FR throwaway purge checks before touching a row: identity,
@@ -355,6 +363,7 @@ export interface UserUpdate {
   phoneVerified?: boolean;
   appleSub?: string | null;
   googleSub?: string | null;
+  appleRefreshTokenSealed?: string | null;
   deletedAt?: Date;
   apiKey?: null;
   apiKeyHash?: null;
@@ -432,6 +441,13 @@ export interface AppDb {
       where: { id: { in: string[] } };
       select: Record<keyof ThrowawayCheckRow, true>;
     }): Promise<ThrowawayCheckRow[]>;
+    /** Deleted accounts whose Apple revoke hasn't gone through yet
+     * (jobs/appleRevocationTick.ts). */
+    findMany(args: {
+      where: { deletedAt: { not: null }; appleRefreshTokenSealed: { not: null } };
+      select: Record<keyof PendingAppleRevocationRow, true>;
+      take: number;
+    }): Promise<PendingAppleRevocationRow[]>;
   };
   refreshToken: {
     create(args: {

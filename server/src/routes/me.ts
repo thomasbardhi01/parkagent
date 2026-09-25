@@ -91,7 +91,14 @@ export function registerMe(app: FastifyInstance, deps: AppDeps): void {
     // The teardown is shared with the FR throwaway purge; see
     // services/accountDeletion.ts for what goes and what stays.
     await deleteAccount(
-      { db: deps.db, stripe: deps.stripe, linkWallet: deps.linkWallet, now },
+      {
+        db: deps.db,
+        stripe: deps.stripe,
+        linkWallet: deps.linkWallet,
+        appleTokens: deps.appleTokens,
+        stateCrypto: deps.stateCrypto,
+        now,
+      },
       req.authedUser!.id,
     );
     return { ok: true, deleted: true };

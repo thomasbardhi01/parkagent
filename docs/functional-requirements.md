@@ -56,7 +56,7 @@ the evidence that proves it. Three kinds of evidence back an FR:
 | FR-29 | Admin summary | automated | `server/fr/50-ops.fr.test.ts`, `server/test/admin.test.ts`, `server/test/authorization.test.ts` |
 | FR-30 | Decision audit | automated | `server/fr/10-parked-nyc.fr.test.ts` (decisionId on every response), `server/test/parked.test.ts`, `server/test/adversarial.test.ts`, `server/test/security.test.ts` |
 | FR-31 | Dry-run discipline | automated | `server/fr/00-gate.fr.test.ts`, `server/test/policy.test.ts`, `server/test/session.test.ts` |
-| FR-32 | Accounts | automated + device-manual | `server/fr/60-accounts.fr.test.ts`, `server/test/auth.test.ts`, `server/test/frThrowawayPurge.test.ts`, `server/test/authTokens.test.ts`, `server/test/security.test.ts`, `server/test/vehicles.test.ts`; iOS `AuthStoreTests`, `LiveAPIRequestTests`, `OnboardingGateTests`, `AuthUITests`, `AccountUITests`; Apple sign-in and email-code delivery need a phone and a mailbox |
+| FR-32 | Accounts | automated + device-manual | `server/fr/60-accounts.fr.test.ts`, `server/test/auth.test.ts`, `server/test/appleTokens.test.ts`, `server/test/frThrowawayPurge.test.ts`, `server/test/authTokens.test.ts`, `server/test/security.test.ts`, `server/test/vehicles.test.ts`; iOS `AuthStoreTests`, `LiveAPIRequestTests`, `OnboardingGateTests`, `AuthUITests`, `AccountUITests`; Apple sign-in and email-code delivery need a phone and a mailbox |
 | FR-33 | Wallet | automated + device-manual | `server/fr/70-wallet.fr.test.ts`, `server/test/walletHolds.test.ts`, `server/test/wallet.test.ts`, `server/test/linkWallet.test.ts`, `server/test/paymentSource.test.ts`, `server/test/adversarial.test.ts`, `server/test/webhookStripe.test.ts`; iOS `LiveAPIRequestTests`, `CardBrandTests`, `WalletUITests`, `SessionUITests`, `OnboardingUITests`, `AccountUITests`, `AssistantUITests`; real Apple Pay / PaymentSheet, a real hold, and Link need a phone, the Stripe sandbox, and the Link OAuth client |
 | FR-34 | Release builds carry no debug code | automated | iOS `ParkAgentReleaseTests` (scheme `ParkAgentRelease`, runs inside the Release build), `ReleaseDenylistTests`, `ios/Tools/check-release-binary.sh`; UI `AccountUITests` (Diagnostics contents), `WalletUITests` (sandbox toggle) |
 
@@ -558,7 +558,10 @@ safe end to end:
 - **Deletion**: `DELETE /me` freezes any issued card first (a Stripe
   failure leaves the account whole and the delete retryable), then signs
   out every device, unlinks providers and erases their sealed state,
-  deletes vehicles and conversations, and tombstones the users row — the
+  deletes vehicles and conversations, revokes the Sign in with Apple token
+  at Apple (App Store 5.1.1(v); the refresh token from the sign-in's
+  authorization-code exchange, stored sealed — a failed revoke never
+  blocks the delete and is retried hourly), and tombstones the users row — the
   decisions ledger keeps a valid id, the person goes, and the account's
   still-valid access token stops working at once.
 - **Admin keys** keep working for scripts and the FR user; the app never

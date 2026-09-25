@@ -71,24 +71,24 @@ final class ItineraryOrderTests: XCTestCase {
         XCTAssertNotEqual(Format.arrivalTime(at("09:00")), "Any time")
     }
 
-    /// Sign-off saves the card's changes as the day's first edit. It used
-    /// to compare only the ORDER, so a new time on a stop that stayed put
-    /// was dropped.
+    /// Sign-off sends the card's changes with it (the server re-prices
+    /// them). Comparing only the ORDER once dropped a new time on a stop
+    /// that stayed put.
     func testSignOffSavesAnyCardEditNotJustAReorder() {
         let proposed = [stop("a", at("09:00")), stop("b", at("11:00"))]
-        XCTAssertNil(AssistantModel.cardEditsToSave(proposed: proposed, card: proposed))
+        XCTAssertNil(AssistantModel.cardEditsToSend(proposed: proposed, card: proposed))
 
         var retimed = proposed
         retimed[1].arrival = at("12:00") // same order, new time
-        XCTAssertEqual(AssistantModel.cardEditsToSave(proposed: proposed, card: retimed), retimed)
+        XCTAssertEqual(AssistantModel.cardEditsToSend(proposed: proposed, card: retimed), retimed)
 
         var cleared = proposed
         cleared[0].arrival = nil
-        XCTAssertEqual(AssistantModel.cardEditsToSave(proposed: proposed, card: cleared), cleared)
+        XCTAssertEqual(AssistantModel.cardEditsToSend(proposed: proposed, card: cleared), cleared)
 
         var longer = proposed
         longer[0].durationMinutes = 90
-        XCTAssertEqual(AssistantModel.cardEditsToSave(proposed: proposed, card: longer), longer)
+        XCTAssertEqual(AssistantModel.cardEditsToSend(proposed: proposed, card: longer), longer)
     }
 
     /// An untimed stop decodes from the server's `null` and from a stop

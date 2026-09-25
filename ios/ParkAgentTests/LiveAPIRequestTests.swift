@@ -625,6 +625,45 @@ final class LiveAPIRequestTests: XCTestCase {
         XCTAssertEqual(stops.first?["id"] as? String, "stop-1")
         XCTAssertEqual(stops.first?["arrival"] as? String, "2026-01-05T09:00:00-05:00")
     }
+
+    /// #131: the card's live price is the server's. A body captured from
+    /// the real route (server test app, a lengthened stop and a cleared
+    /// time), decoded as the app sees it; the card's stops go up as sent.
+    func testItineraryPriceOnTheWire() async throws {
+        StubURLProtocol.respond(json: #"""
+        {"planId":"plan1","stops":[{"id":"s1","label":"Coffee","address":"1 Main St","lat":40.77,"lng":-73.92,"arrival":"2026-01-05T10:00:00-05:00","durationMinutes":90,"choice":"street","costUsd":30.15,"zoneId":"nyc-417371"},{"id":"s2","label":"Museum","address":"2 Main St","lat":40.77,"lng":-73.92,"arrival":null,"durationMinutes":60,"choice":"street","costUsd":5,"zoneId":"nyc-417371","estimate":true}],"totalUsd":35.15,"capUsd":60,"spentTodayUsd":0,"remainingUsd":60,"fitsCap":true}
+        """#)
+        let stop = ItineraryStop(
+            id: "s1", label: "Coffee", address: "1 Main St", lat: 40.77, lng: -73.92,
+            arrival: "2026-01-05T10:00:00-05:00", durationMinutes: 90, choice: "street",
+            costUsd: 5, zoneId: "nyc-417371", garageOptionId: nil, deepLink: nil,
+            sessionId: nil, paymentSource: nil, garageLinkPushedAt: nil
+        )
+        let priced = try await api.priceItinerary(planId: "plan1", stops: [stop])
+        let request = try sentRequest()
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.url?.path(), "/assistant/plans/plan1/price")
+        XCTAssertEqual(bearer(request), "Bearer access-1")
+        let sent = try XCTUnwrap(try body(request)["stops"] as? [[String: Any]])
+        XCTAssertEqual(sent.first?["durationMinutes"] as? Int, 90)
+
+        XCTAssertEqual(priced.stops.map(\.costUsd), [30.15, 5])
+        XCTAssertNil(priced.stops[0].estimate)
+        XCTAssertEqual(priced.stops[1].estimate, true)
+        XCTAssertNil(priced.stops[1].arrival, "a cleared time decodes as no set time")
+        XCTAssertEqual(priced.totalUsd, 35.15)
+        XCTAssertEqual(priced.capUsd, 60)
+        XCTAssertTrue(priced.fitsCap)
+
+        // Sign-off carries the card's stops with it.
+        StubURLProtocol.respond(json: #"{"kind": "itinerary_signed_off", "itineraryId": "day-1", "totalUsd": 35.15}"#)
+        _ = try await api.confirmPlan(planId: "plan1", optionId: nil, stops: [stop])
+        let confirm = try sentRequest()
+        XCTAssertEqual(confirm.url?.path(), "/assistant/confirm")
+        let confirmBody = try body(confirm)
+        XCTAssertEqual(confirmBody["planId"] as? String, "plan1")
+        XCTAssertEqual((confirmBody["stops"] as? [[String: Any]])?.first?["id"] as? String, "s1")
+    }
 }
 
 /// Answers each request with the next canned response and records what was

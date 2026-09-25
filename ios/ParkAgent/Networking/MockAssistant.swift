@@ -74,14 +74,22 @@ actor MockAssistantStore {
     func patch(id: String, stops: [ItineraryStop]) -> ItinerarySummary? {
         guard let index = itineraries.firstIndex(where: { $0.id == id }) else { return nil }
         let old = itineraries[index]
+        // Like the server: re-priced against the stored day (the app's
+        // costs are never read), stored in arrival order with untimed
+        // stops where the user put them.
+        let priced = MockItineraryPricing.reprice(stops, proposed: old.stops).map { stop in
+            var kept = stop
+            let stored = old.stops.first { $0.id == stop.id }
+            kept.paymentSource = stored?.paymentSource ?? stop.paymentSource
+            kept.sessionId = stored?.sessionId
+            return kept
+        }
         let updated = ItinerarySummary(
             id: old.id,
             status: old.status,
             date: old.date,
-            // Like the server: stored in arrival order, untimed stops
-            // where the user put them.
-            stops: ItineraryOrder.normalized(stops),
-            totalUsd: (stops.reduce(0) { $0 + $1.costUsd } * 100).rounded() / 100
+            stops: priced,
+            totalUsd: MockItineraryPricing.total(priced)
         )
         itineraries[index] = updated
         return updated
@@ -97,6 +105,49 @@ actor MockAssistantStore {
         let status = scenario == .denies ? "denied" : "approved"
         spendStatuses[id] = status
         return status
+    }
+}
+
+/// Prices an edited itinerary by the server's rules (AssistantTools
+/// .repriceStops) at the mock's own deterministic rates — the fixture's
+/// per-hour prices: street $4.10 an hour, garage $12 an hour. A stop whose
+/// time, length, kind, and place are unchanged keeps its proposed price; a
+/// stop with no set time keeps its last price as an estimate; the app's
+/// own costs are never read.
+enum MockItineraryPricing {
+    static let streetPerHour = 4.10
+    static let garagePerHour = 12.0
+    static let capUsd = 60.0
+
+    static func reprice(_ stops: [ItineraryStop], proposed: [ItineraryStop]) -> [ItineraryStop] {
+        let previous = Dictionary(uniqueKeysWithValues: proposed.map { ($0.id, $0) })
+        return ItineraryOrder.normalized(stops.map { stop in
+            let prior = previous[stop.id]
+            var priced = stop
+            priced.costUsd = prior?.costUsd ?? 0
+            priced.estimate = prior?.estimate
+            if ItineraryOrder.arrival(of: stop) == nil {
+                priced.estimate = true
+                return priced
+            }
+            if let prior, !changed(stop, from: prior) { return priced }
+            let rate = stop.choice == "garage" ? garagePerHour : streetPerHour
+            priced.costUsd = (rate * Double(stop.durationMinutes) / 60 * 100).rounded() / 100
+            priced.estimate = nil
+            return priced
+        })
+    }
+
+    static func total(_ stops: [ItineraryStop]) -> Double {
+        (stops.reduce(0) { $0 + $1.costUsd } * 100).rounded() / 100
+    }
+
+    private static func changed(_ stop: ItineraryStop, from prior: ItineraryStop) -> Bool {
+        stop.choice != prior.choice
+            || stop.durationMinutes != prior.durationMinutes
+            || stop.lat != prior.lat
+            || stop.lng != prior.lng
+            || ItineraryOrder.arrival(of: stop) != ItineraryOrder.arrival(of: prior)
     }
 }
 
@@ -285,7 +336,25 @@ extension MockAPI {
         }
     }
 
-    func confirmPlan(planId: String, optionId: String?) async throws -> AssistantConfirmResponse {
+    func priceItinerary(planId: String, stops: [ItineraryStop]) async throws -> ItineraryPriceResponse {
+        try await Task.sleep(for: .milliseconds(300))
+        guard case .itinerary(let plan) = MockAssistantFixtures.itineraryPlan.plan else {
+            throw APIError.server(status: 500)
+        }
+        let priced = MockItineraryPricing.reprice(stops, proposed: plan.stops)
+        let total = MockItineraryPricing.total(priced)
+        return ItineraryPriceResponse(
+            planId: planId,
+            stops: priced,
+            totalUsd: total,
+            capUsd: MockItineraryPricing.capUsd,
+            spentTodayUsd: 0,
+            remainingUsd: MockItineraryPricing.capUsd,
+            fitsCap: total <= MockItineraryPricing.capUsd
+        )
+    }
+
+    func confirmPlan(planId: String, optionId: String?, stops: [ItineraryStop]?) async throws -> AssistantConfirmResponse {
         try await Task.sleep(for: .milliseconds(300))
         // The Wallet decides, like the server: Link only when it's the
         // active way to pay (and connected), and only for garages.
@@ -295,8 +364,22 @@ extension MockAPI {
         let streetSource = active == .parkagentCard ? "parkagent_card" : "provider_card"
 
         if planId == "mock-plan-day" || optionId == nil {
-            guard case .itinerary(let plan) = MockAssistantFixtures.itineraryPlan.plan else {
+            guard case .itinerary(let proposed) = MockAssistantFixtures.itineraryPlan.plan else {
                 throw APIError.server(status: 500)
+            }
+            // Like the server: the card's edits are re-priced and signed
+            // off, refused over the day's cap.
+            var plan = proposed
+            if let stops {
+                let priced = MockItineraryPricing.reprice(stops, proposed: proposed.stops)
+                let total = MockItineraryPricing.total(priced)
+                if total > MockItineraryPricing.capUsd {
+                    throw APIError.refused(code: "over_daily_cap")
+                }
+                plan = ItineraryPlan(
+                    date: proposed.date, stops: priced, totalUsd: total,
+                    capUsd: proposed.capUsd, note: proposed.note
+                )
             }
             let summary = await MockAssistantStore.shared.signOff(
                 plan: plan,

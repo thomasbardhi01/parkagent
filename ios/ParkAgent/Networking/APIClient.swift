@@ -104,7 +104,12 @@ protocol APIClient: Sendable {
         location: (lat: Double, lng: Double)?
     ) -> AsyncThrowingStream<AssistantEvent, Error>
     /// The user's tap on a plan card — the only path that books or pays.
-    func confirmPlan(planId: String, optionId: String?) async throws -> AssistantConfirmResponse
+    /// For an itinerary, `stops` are the card's stops when the user changed
+    /// them: the server re-prices them and signs off those.
+    func confirmPlan(planId: String, optionId: String?, stops: [ItineraryStop]?) async throws -> AssistantConfirmResponse
+    /// The itinerary card's live price after an edit, computed on the
+    /// server (POST /assistant/plans/:planId/price).
+    func priceItinerary(planId: String, stops: [ItineraryStop]) async throws -> ItineraryPriceResponse
     func itineraries() async throws -> ItinerariesResponse
     func patchItinerary(id: String, stops: [ItineraryStop]) async throws -> ItineraryPatchResponse
 
@@ -113,6 +118,14 @@ protocol APIClient: Sendable {
     func linkWalletConnect() async throws -> LinkConnectResponse
     func linkWalletDisconnect() async throws
     func syncLinkSpendRequest(id: String) async throws -> LinkSpendSyncResponse
+}
+
+extension APIClient {
+    /// A confirm with nothing edited: a single-spot option, or an itinerary
+    /// signed off as proposed.
+    func confirmPlan(planId: String, optionId: String?) async throws -> AssistantConfirmResponse {
+        try await confirmPlan(planId: planId, optionId: optionId, stops: nil)
+    }
 }
 
 enum APIError: Error, LocalizedError {

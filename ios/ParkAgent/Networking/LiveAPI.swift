@@ -553,12 +553,22 @@ struct LiveAPI: APIClient {
         }
     }
 
-    func confirmPlan(planId: String, optionId: String?) async throws -> AssistantConfirmResponse {
+    func confirmPlan(planId: String, optionId: String?, stops: [ItineraryStop]?) async throws -> AssistantConfirmResponse {
         struct Body: Encodable {
             let planId: String
             let optionId: String?
+            let stops: [ItineraryStop]?
         }
-        return try await send("assistant/confirm", method: "POST", body: Body(planId: planId, optionId: optionId))
+        return try await send(
+            "assistant/confirm",
+            method: "POST",
+            body: Body(planId: planId, optionId: optionId, stops: stops)
+        )
+    }
+
+    func priceItinerary(planId: String, stops: [ItineraryStop]) async throws -> ItineraryPriceResponse {
+        struct Body: Encodable { let stops: [ItineraryStop] }
+        return try await send("assistant/plans/\(planId)/price", method: "POST", body: Body(stops: stops))
     }
 
     func itineraries() async throws -> ItinerariesResponse {

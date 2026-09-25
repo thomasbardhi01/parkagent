@@ -46,7 +46,7 @@ the evidence that proves it. Three kinds of evidence back an FR:
 | FR-19 | Relink restores the account | automated | `server/test/providers.test.ts` |
 | FR-20 | Zone-number reporting & precedence | automated | `server/fr/20-parked-boston.fr.test.ts`, `server/test/zoneNumber.test.ts`, `server/test/zoneNumberReverts.test.ts`, `data/test_import_parkboston_zones.py` |
 | FR-21 | Assistant: single spot | automated | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantLoop.test.ts`, `server/test/assistantAccuracy.test.ts` |
-| FR-22 | Assistant: itinerary | automated | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantItinerary.test.ts`, `server/test/itineraryOrder.test.ts`; iOS `ItineraryOrderTests`, `AssistantUITests` (arrival order on the card and Home) |
+| FR-22 | Assistant: itinerary | automated | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantItinerary.test.ts`, `server/test/itineraryOrder.test.ts`, `server/test/itineraryReprice.test.ts`, `server/test/linkWallet.test.ts` (Link at re-priced amounts); iOS `ItineraryOrderTests`, `LiveAPIRequestTests` (the price call on the wire), `AssistantUITests` (arrival order on the card and Home; re-pricing and the over-cap Sign off) |
 | FR-23 | Named-place search within 600 m | automated | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantGeocode.test.ts`, `server/test/assistantAccuracy.test.ts` |
 | FR-24 | Past-date guard | automated | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantAccuracy.test.ts` |
 | FR-25 | Confirm-token gate | automated | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantPlanEnforcement.test.ts` |
@@ -400,11 +400,26 @@ Stops always display in arrival-time order, one rule on both sides
 and the timed ones fill the rest by arrival, so a later stop can never
 render above an earlier one. Only a stop without a set time can be dragged
 or moved; changing a stop's time re-sorts it, and a time can be cleared.
-Edits made on the plan card before sign-off are saved with it. **Accepted
-when** the six-stop day, ordering, reorder, cap-refusal, and worker
-behaviors are pinned and the live surface answers.
+Edits made on the plan card before sign-off are saved with it.
+Every edit is **priced by the server**, never at the phone's numbers: the
+card asks `POST /assistant/plans/:planId/price` after each edit and shows
+the server's per-stop costs and day total, with Sign off off while it
+prices and while the day is over the cap (saying why); the edits ride the
+sign-off, which re-prices them and refuses a day over the cap before
+anything is stored or any Link request made (Link asks for the re-priced
+garage amounts); a PATCH re-prices against the stored day. A stop whose
+time, length, kind, and place are unchanged keeps the server's price; a
+changed one is re-quoted the way `build_itinerary` quoted it; a stop with
+no set time, or one that can't be quoted, keeps its last price marked an
+estimate. **Accepted when** the six-stop day, ordering, reorder,
+re-pricing, cap-refusal, and worker behaviors are pinned and the live
+surface answers.
 
 Evidence: `assistantItinerary.test.ts` (the real Boston six-stop day);
+`itineraryReprice.test.ts` (only changed stops re-quoted, at
+`quote_street`'s price; a low client cost can't get a day under the cap at
+price, sign-off, or PATCH; search-down estimates; decision rows — each
+mutation-checked);
 live FR-22 test (itineraries surface). Sign-off is not exercised live —
 it would store recurring state for the FR user.
 

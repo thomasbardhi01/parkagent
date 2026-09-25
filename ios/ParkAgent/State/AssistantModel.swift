@@ -134,15 +134,19 @@ final class AssistantModel {
 
     /// The Confirm / Sign off tap — the ONLY path that books or spends.
     /// `stops` is the itinerary as the user left it on the card: when they
-    /// changed it before signing off, the changes are saved right after
-    /// (the server re-checks the cap on that edit like any other).
+    /// changed it, the edits go WITH the sign-off, and the server re-prices
+    /// them and re-checks the day against the cap before storing anything.
     func confirm(planId: String, optionId: String?, stops: [ItineraryStop]? = nil) async {
         guard phase != .confirming else { return }
         phase = .confirming
         errorText = nil
         Haptics.light()
         do {
-            let response = try await api.confirmPlan(planId: planId, optionId: optionId)
+            let response = try await api.confirmPlan(
+                planId: planId,
+                optionId: optionId,
+                stops: cardEdits(planId: planId, stops: stops)
+            )
             lastPaymentSource = response.paymentSource
             switch response.kind {
             case "garage_handoff":
@@ -170,7 +174,6 @@ final class AssistantModel {
                     externalLink = ExternalLink(url: url, kind: .linkApproval)
                 }
                 appendNote("Signed off — the day is on Home. Garage links arrive 15 minutes before each stop.")
-                await saveCardEdits(itineraryId: response.itineraryId, planId: planId, stops: stops)
                 await appModel.refreshItineraries()
             default:
                 appendNote("Confirmed.")
@@ -182,25 +185,24 @@ final class AssistantModel {
         phase = .idle
     }
 
-    /// Sign-off stores the plan as proposed; anything changed on the card
-    /// before the tap — a new time, a cleared time, a moved untimed stop, a
-    /// duration or street/garage switch — is applied as the day's first
-    /// edit. Comparing only the order used to drop every other edit.
-    private func saveCardEdits(itineraryId: String?, planId: String, stops: [ItineraryStop]?) async {
-        guard let itineraryId, let stops,
-              case .itinerary(let proposed)? = proposedPlan?.planId == planId ? proposedPlan?.plan : nil,
-              let edits = Self.cardEditsToSave(proposed: proposed.stops, card: stops)
-        else { return }
-        do {
-            _ = try await api.patchItinerary(id: itineraryId, stops: edits)
-        } catch {
-            appendNote("The day is signed off as proposed — your changes to it didn't save.")
-        }
+    /// The card's live price after an edit, from the server — never the
+    /// card's own arithmetic (POST /assistant/plans/:planId/price).
+    func price(planId: String, stops: [ItineraryStop]) async throws -> ItineraryPriceResponse {
+        try await api.priceItinerary(planId: planId, stops: stops)
+    }
+
+    /// The card's stops to send with the sign-off, when the user changed
+    /// anything on them; nil signs off the plan as proposed.
+    private func cardEdits(planId: String, stops: [ItineraryStop]?) -> [ItineraryStop]? {
+        guard let stops,
+              case .itinerary(let proposed)? = proposedPlan?.planId == planId ? proposedPlan?.plan : nil
+        else { return stops }
+        return Self.cardEditsToSend(proposed: proposed.stops, card: stops)
     }
 
     /// The card's stops when anything on them differs from the proposal —
     /// order, a time set or cleared, duration, street/garage — else nil.
-    nonisolated static func cardEditsToSave(
+    nonisolated static func cardEditsToSend(
         proposed: [ItineraryStop],
         card: [ItineraryStop]
     ) -> [ItineraryStop]? {

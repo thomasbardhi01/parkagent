@@ -257,6 +257,58 @@ final class AssistantUITests: ParkAgentUITestCase {
         XCTAssertEqual(handles.firstMatch.label, "Reorder MFA meeting")
     }
 
+    /// #131: an edit is priced by the SERVER before sign-off (the mock
+    /// prices a changed stop at the fixture's own rates: street $4.10 an
+    /// hour, garage $12 an hour). A longer street stop raises its cost and
+    /// the day total — asserted before and after, exactly. A garage stop
+    /// stretched to 3 hours takes the day over the $60 cap: Sign off turns
+    /// off and says why; shortening it back turns it on again.
+    func testEditedStopIsRepricedBeforeSignOff() {
+        let app = openAssistant("itinerary")
+        ask(app, "plan my boston day")
+        XCTAssertTrue(element(app, "assistant.itineraryPlan").waitForExistence(timeout: 10))
+        let total = element(app, "assistant.dayTotal")
+        XCTAssertTrue(total.waitForExistence(timeout: 5))
+        XCTAssertEqual(total.label, "$40.40 of $60.00")
+        XCTAssertTrue(stopRow(app, "stop-1").label.contains("$4.10"), stopRow(app, "stop-1").label)
+        XCTAssertFalse(stopRow(app, "stop-1").label.contains("$8.20"))
+
+        // stop-1 (street): 60 → 120 minutes.
+        editDuration(app, stop: "stop-1", steps: 4, up: true)
+        waitForLabel(of: total, toBe: "$44.50 of $60.00", timeout: 10)
+        waitForLabelContaining(stopRow(app, "stop-1"), "$8.20")
+        XCTAssertTrue(scrollTo(app, "assistant.signOffButton").isEnabled, "a day under the cap signs off")
+        XCTAssertFalse(element(app, "assistant.overCapNote").exists)
+
+        // stop-3 (garage): 60 → 180 minutes, $12 → $36: the day is $68.50.
+        editDuration(app, stop: "stop-3", steps: 8, up: true)
+        waitForLabel(of: total, toBe: "$68.50 of $60.00", timeout: 10)
+        let reason = element(app, "assistant.overCapNote")
+        XCTAssertTrue(reason.waitForExistence(timeout: 5), "no reason given for the disabled Sign off")
+        XCTAssertTrue(reason.label.contains("over your $60.00 daily limit"), reason.label)
+        XCTAssertFalse(scrollTo(app, "assistant.signOffButton").isEnabled, "over the cap must not sign off")
+        attachScreenshot(of: app, named: "assistant-itinerary-over-cap")
+
+        // Back to an hour: the proposed garage price again, and Sign off.
+        editDuration(app, stop: "stop-3", steps: 8, up: false)
+        waitForLabel(of: total, toBe: "$44.50 of $60.00", timeout: 10)
+        XCTAssertTrue(reason.waitForNonExistence(timeout: 5), "the over-cap reason outlived the fix")
+        XCTAssertTrue(scrollTo(app, "assistant.signOffButton").isEnabled, "back under the cap signs off")
+    }
+
+    /// Open a stop's edit sheet, step its duration by 15-minute steps, save.
+    private func editDuration(_ app: XCUIApplication, stop: String, steps: Int, up: Bool) {
+        scrollTo(app, "assistant.stopMenu.\(stop)").tap()
+        XCTAssertTrue(app.buttons["Edit stop"].waitForExistence(timeout: 3))
+        app.buttons["Edit stop"].tap()
+        // SwiftUI names a Stepper's buttons "<identifier>-Increment/-Decrement".
+        let button = app.buttons["stopEdit.duration-\(up ? "Increment" : "Decrement")"]
+        XCTAssertTrue(button.waitForExistence(timeout: 5), "no duration stepper")
+        for _ in 0..<steps { button.tap() }
+        element(app, "stopEdit.save").tap()
+        XCTAssertTrue(waitForDisappearance(element(app, "stopEdit.save"), timeout: 5))
+    }
+
     private func stopRow(_ app: XCUIApplication, _ id: String) -> XCUIElement {
         element(app, "assistant.stopRow.\(id)")
     }

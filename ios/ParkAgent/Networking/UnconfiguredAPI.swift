@@ -84,7 +84,10 @@ struct UnconfiguredAPI: APIClient {
         }
     }
 
-    func confirmPlan(planId: String, optionId: String?) async throws -> AssistantConfirmResponse { throw failure }
+    func confirmPlan(planId: String, optionId: String?, stops: [ItineraryStop]?) async throws -> AssistantConfirmResponse {
+        throw failure
+    }
+    func priceItinerary(planId: String, stops: [ItineraryStop]) async throws -> ItineraryPriceResponse { throw failure }
     func itineraries() async throws -> ItinerariesResponse { throw failure }
     func patchItinerary(id: String, stops: [ItineraryStop]) async throws -> ItineraryPatchResponse { throw failure }
 

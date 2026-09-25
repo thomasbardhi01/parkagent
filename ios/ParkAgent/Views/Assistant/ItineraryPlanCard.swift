@@ -5,17 +5,35 @@ import SwiftUI
 /// per-stop cost, the day total against the cap, and ONE Sign off button.
 /// Stops always show in arrival order (ItineraryOrder); only a stop whose
 /// time the user cleared can be dragged or moved.
+///
+/// Every edit is priced by the SERVER (`price`, POST
+/// /assistant/plans/:planId/price) before it counts: the card shows its
+/// costs and total, and Sign off waits for them and stays off while the
+/// day is over the cap. Sign-off itself re-prices once more.
 struct ItineraryPlanCard: View {
     let plan: ItineraryPlan
     let confirming: Bool
     let linkConnected: Bool
+    /// The server's price for the card's stops.
+    let price: ([ItineraryStop]) async throws -> ItineraryPriceResponse
     let onSignOff: ([ItineraryStop]) -> Void
 
     @State private var stops: [ItineraryStop] = []
     @State private var editingStop: ItineraryStop?
+    /// The latest price request; an older answer arriving late is dropped.
+    @State private var pricingRequest = 0
+    @State private var isPricing = false
+    @State private var lastPrice: ItineraryPriceResponse?
+    @State private var priceFailed = false
 
     private var totalUsd: Double {
         (stops.reduce(0) { $0 + $1.costUsd } * 100).rounded() / 100
+    }
+
+    /// The server's verdict after an edit; before any edit, the proposal's
+    /// own check (the plan was refused at proposal if it didn't fit).
+    private var fitsCap: Bool {
+        lastPrice?.fitsCap ?? (totalUsd <= plan.capUsd)
     }
 
     var body: some View {
@@ -58,11 +76,23 @@ struct ItineraryPlanCard: View {
 
             totalRow
 
+            if !isPricing && !fitsCap {
+                Text(overCapReason)
+                    .font(.captionTextSemibold)
+                    .foregroundStyle(Color.danger)
+                    .accessibilityIdentifier("assistant.overCapNote")
+            } else if priceFailed {
+                Text("Couldn't check the new price. Signing off checks it again.")
+                    .font(.captionText)
+                    .foregroundStyle(Color.textSecondary)
+                    .accessibilityIdentifier("assistant.priceFailedNote")
+            }
+
             Button(confirming ? "Signing off…" : "Sign off — \(Format.money(totalUsd)) day") {
                 onSignOff(stops)
             }
             .buttonStyle(.primary)
-            .disabled(confirming || totalUsd > plan.capUsd)
+            .disabled(confirming || isPricing || !fitsCap)
             .accessibilityIdentifier("assistant.signOffButton")
 
             if linkConnected {
@@ -89,6 +119,8 @@ struct ItineraryPlanCard: View {
                     stops[index] = edited
                     stops = ItineraryOrder.normalized(stops)
                 }
+                // Then the server prices the day as it now stands.
+                Task { await reprice() }
             }
             .presentationDetents([.medium, .large])
         }
@@ -97,18 +129,72 @@ struct ItineraryPlanCard: View {
     }
 
     private var totalRow: some View {
-        let over = totalUsd > plan.capUsd
-        return HStack {
+        HStack {
             Text("Day total")
                 .font(.captionTextSemibold)
                 .foregroundStyle(Color.textSecondary)
                 .textCase(.uppercase)
             Spacer()
-            Text("\(Format.money(totalUsd)) of \(Format.money(plan.capUsd))")
-                .font(.bodyTextSemibold)
-                .monospacedDigit()
-                .foregroundStyle(over ? Color.danger : Color.textPrimary)
-                .accessibilityIdentifier("assistant.dayTotal")
+            if isPricing {
+                HStack(spacing: Spacing.quarter) {
+                    ProgressView().controlSize(.small)
+                    Text("Updating price…")
+                }
+                .font(.captionText)
+                .foregroundStyle(Color.textSecondary)
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("assistant.pricingNote")
+            } else {
+                Text("\(Format.money(totalUsd)) of \(Format.money(plan.capUsd))")
+                    .font(.bodyTextSemibold)
+                    .monospacedDigit()
+                    .foregroundStyle(fitsCap ? Color.textPrimary : Color.danger)
+                    .accessibilityIdentifier("assistant.dayTotal")
+            }
+        }
+    }
+
+    /// Why Sign off is off, in plain words.
+    private var overCapReason: String {
+        let cap = Format.money(lastPrice?.capUsd ?? plan.capUsd)
+        if let spent = lastPrice?.spentTodayUsd, spent > 0 {
+            return "With \(Format.money(spent)) already spent today, this day goes over your \(cap) daily limit. Shorten or drop a stop to sign off."
+        }
+        return "This day goes over your \(cap) daily limit. Shorten or drop a stop to sign off."
+    }
+
+    /// Ask the server for the day's price as the card now stands, and take
+    /// its per-stop costs (and canonical times, estimate flags, re-picked
+    /// garages) onto the card. Only the latest request's answer lands.
+    private func reprice() async {
+        pricingRequest += 1
+        let request = pricingRequest
+        isPricing = true
+        priceFailed = false
+        defer { if request == pricingRequest { isPricing = false } }
+        do {
+            let priced = try await price(stops)
+            guard request == pricingRequest else { return }
+            let byId = Dictionary(uniqueKeysWithValues: priced.stops.map { ($0.id, $0) })
+            withAnimation {
+                stops = ItineraryOrder.normalized(stops.map { stop in
+                    guard let server = byId[stop.id] else { return stop }
+                    var updated = stop
+                    updated.arrival = server.arrival
+                    updated.costUsd = server.costUsd
+                    updated.estimate = server.estimate
+                    updated.zoneId = server.zoneId
+                    updated.garageOptionId = server.garageOptionId
+                    updated.deepLink = server.deepLink
+                    return updated
+                })
+                lastPrice = priced
+            }
+        } catch {
+            guard request == pricingRequest else { return }
+            // Sign-off re-prices on the server anyway; say so rather than
+            // trap the day behind a flaky connection.
+            priceFailed = true
         }
     }
 
@@ -235,7 +321,9 @@ struct ItineraryStopRow: View {
                 .fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
-            Text(Format.money(stop.costUsd))
+            // "≈": the server carried an earlier price over (no set time,
+            // or it couldn't quote the new one).
+            Text(stop.estimate == true ? "≈ \(Format.money(stop.costUsd))" : Format.money(stop.costUsd))
                 .font(.bodyTextSemibold)
                 .monospacedDigit()
                 .foregroundStyle(Color.textPrimary)

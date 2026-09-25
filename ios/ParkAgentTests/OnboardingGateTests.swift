@@ -173,7 +173,12 @@ private struct HangingAPI: APIClient {
     ) -> AsyncThrowingStream<AssistantEvent, Error> {
         AsyncThrowingStream { _ in }
     }
-    func confirmPlan(planId: String, optionId: String?) async throws -> AssistantConfirmResponse { try await hang() }
+    func confirmPlan(planId: String, optionId: String?, stops: [ItineraryStop]?) async throws -> AssistantConfirmResponse {
+        try await hang()
+    }
+    func priceItinerary(planId: String, stops: [ItineraryStop]) async throws -> ItineraryPriceResponse {
+        try await hang()
+    }
     func itineraries() async throws -> ItinerariesResponse { try await hang() }
     func patchItinerary(id: String, stops: [ItineraryStop]) async throws -> ItineraryPatchResponse {
         try await hang()

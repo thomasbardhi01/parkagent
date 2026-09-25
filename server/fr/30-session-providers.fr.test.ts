@@ -11,12 +11,23 @@
  * this suite can ever reach a real provider, even outside dry run.
  */
 
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { frFetch, gate, mostRecentEasternAt, NYC_AUTOPAY, parkedBody } from "./client.js";
 
+/** Set once the FR-10 test has tried to switch the FR user's source. */
+let touchedSource = false;
+
 beforeAll(async () => {
   await gate();
+});
+
+// The FR user is left on the default however FR-10 ends — a regression
+// that let the switch through must not strand it on the ParkAgent card.
+afterAll(async () => {
+  if (touchedSource) {
+    await frFetch("PUT", "/wallet/source", { source: "provider_card" }).catch(() => null);
+  }
 });
 
 describe("FR-13 / FR-17 session start requires the caller's own linked provider", () => {
@@ -94,6 +105,7 @@ describe("FR-10 payment source", () => {
     const card = wallet.body["parkagentCard"] as Record<string, unknown>;
     expect(typeof card["live"]).toBe("boolean");
 
+    touchedSource = true;
     const wantCard = await frFetch("PUT", "/wallet/source", { source: "parkagent_card" });
     // Never allowed for the FR user: not live, or live with no card to
     // hold against — either way the caps' path stays untouched.

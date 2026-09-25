@@ -552,8 +552,20 @@ The live session-lifecycle tests need a real refresh session, minted by
 target's own `DATABASE_URL` and `AUTH_JWT_SECRET`, run inside the prod
 machine by the nightly (`fly ssh console`). It is deliberately not an API
 route: nothing on the public surface can mint a session without a
-verified identity. The suite deletes the throwaway it is given; without
-one (`FR_THROWAWAY_SESSION` unset) those four tests skip.
+verified identity. Without one (`FR_THROWAWAY_SESSION` unset) those four
+tests skip. The suite deletes the throwaway it is given however its tests
+end — a file-level `afterAll` sends `DELETE /me` with the throwaway's own
+access token even when the dry-run gate fails and every test skips — and
+the nightly then runs `purge-fr-throwaways --apply` in the prod machine,
+which catches what the suite couldn't (a run that died first, a token
+already dead) with the same teardown `DELETE /me` runs
+(`services/accountDeletion.ts`). The purge only ever touches rows
+`create-fr-throwaway` minted — its marker decision, its exact name, no
+sign-in identity, no api key, not admin — and a live one only once it is
+30 minutes old (or named by `--include`); `pnpm -C server
+purge:fr-throwaways` dry-runs it against any database. Other per-run
+state is put back in `afterAll` too: the FR user's name and phone, its
+payment source, and the fake device token.
 
 **Device-manual**: Sign in with Apple on a phone (the system sheet can't
 be automated, and a real identity token only comes from Apple). Email-code

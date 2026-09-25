@@ -336,6 +336,20 @@ export function makeExtender(deps: ExtenderDeps): Extender {
           ...(result.shadow ? { shadow: result.shadow } : {}),
           ...(result.hold ? { hold: result.hold } : {}),
         };
+      } else if (result.code === "extension_in_progress") {
+        // The user's own Extend (or a racing tick) got there first; this
+        // one never started — nothing held, nothing charged, no push. It
+        // isn't a rule of ours either, so it must not start the
+        // hysteresis window: the next tick decides afresh from the new
+        // expiry.
+        rule = "extension_in_progress";
+        outcome = {
+          action: "none",
+          minutes,
+          ok: false,
+          code: result.code,
+          message: result.message,
+        };
       } else {
         // free_period is a HOLD, not a failure: applyExtension already
         // pushed "parking is free now" and nothing was charged. A declined
@@ -377,7 +391,7 @@ export function makeExtender(deps: ExtenderDeps): Extender {
       },
     });
 
-    if (changed) {
+    if (changed && rule !== "extension_in_progress") {
       await deps.db.session.update({
         where: { id: session.id },
         data: { lastExtenderRule: rule, lastExtenderRuleAt: at },

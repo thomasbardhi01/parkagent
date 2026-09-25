@@ -26,6 +26,7 @@ import {
   sweepHolds,
 } from "../src/services/wallet/holds.js";
 import { makeExtender } from "../src/jobs/extendTick.js";
+import { applyExtension, priceExtension } from "../src/services/sessions.js";
 import {
   API_KEY,
   MONDAY_2PM,
@@ -896,5 +897,167 @@ describe("the auto-extend worker", () => {
     expect(tick.outcome).toMatchObject({ code: "card_declined" });
     expect(t.executorCalls).toEqual([]); // the provider was never asked
     expect(t.pushes.at(-1)!.push.type).toBe("card_declined");
+  });
+});
+
+// Auto-extend fires in the same minutes the user is prompted to tap
+// Extend. Each extension picks its number — its hold's leg — from the
+// session row, which moves only once the executor has paid, so two at once
+// used to pick the SAME leg and the second silently reused the first's
+// hold. One extension at a time per session: the other is refused cleanly.
+describe("one extension at a time per session", () => {
+  function seedExtendable(t: ReturnType<typeof cardApp>) {
+    setFakeRowClock(() => NOW);
+    const session = seedSession(t.state, {
+      id: "s-race",
+      userId: "u1",
+      status: "active",
+      dryRun: false,
+      paymentSource: "parkagent_card",
+      zoneId: BOYLSTON.zoneId,
+      city: "bos",
+      providerZoneNumber: "456",
+      startedAt: new Date(NOW.getTime() - 80 * 60_000),
+      expiresAt: new Date(NOW.getTime() + 8 * 60_000),
+      rateFirstHour: 3.75,
+      rateAdditionalHour: 3.75,
+      maxStayMinutes: 300,
+      hoursJson: HOURS_BOS,
+      purchasedMinutes: 90,
+      chargedMinutes: 90,
+      carLat: 42.3495,
+      carLng: -71.0798,
+      parknycConfirmation: "prov-1",
+    });
+    // Far from the car and walking away: ticket risk wins → auto-extend.
+    t.state.locationFixes.push(
+      ...[0, 1, 2].map((i) => ({
+        id: `f${i}`,
+        sessionId: "s-race",
+        userId: "u1",
+        lat: 42.36 + i * 0.002,
+        lng: -71.06,
+        accuracyM: 10,
+        ts: new Date(NOW.getTime() - (2 - i) * 60_000),
+      })),
+    );
+    return session;
+  }
+
+  /** Every extension waits inside the provider until `release()`, so a
+   * second one can arrive while the first is mid-flight. */
+  function gateExtensions(t: ReturnType<typeof cardApp>) {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const entered: (() => void)[] = [];
+    const entries = [0, 1].map((i) => new Promise<void>((resolve) => (entered[i] = resolve)));
+    let count = 0;
+    const base = t.deps.executorFor;
+    t.deps.executorFor = (args) => {
+      const executor = base(args);
+      return {
+        ...executor,
+        extendSession: async (extendArgs) => {
+          entered[count++]?.();
+          await gate;
+          return executor.extendSession(extendArgs);
+        },
+      };
+    };
+    return { release, firstEntered: entries[0]!, secondEntered: entries[1]! };
+  }
+
+  const extendLegs = (t: ReturnType<typeof cardApp>) =>
+    t.state.sessionHolds.filter((h) => h.leg.startsWith("extend"));
+
+  test("auto-extend and the user's Extend at once: two distinct holds or one clean refusal, never a shared one", async () => {
+    const t = cardApp({
+      steps: [
+        { kind: "charge", usd: 1.5 },
+        { kind: "charge", usd: 1.5 },
+      ],
+    });
+    seedExtendable(t);
+    const gate = gateExtensions(t);
+    const extender = makeExtender({
+      db: t.deps.db,
+      policy: t.deps.policy,
+      executorFor: t.deps.executorFor,
+      sendPush: t.deps.sendPush,
+      stripe: t.deps.stripe,
+      now: () => NOW,
+      log: { info: () => {}, warn: () => {} },
+    });
+
+    // The worker's extension is at the provider when the user taps Extend.
+    const auto = extender.tick();
+    await gate.firstEntered;
+    const manual = t.app.inject({
+      method: "POST",
+      url: "/session/extend",
+      headers: HEADERS,
+      payload: { sessionId: "s-race", minutes: 30 },
+    });
+    await Promise.race([manual, gate.secondEntered]);
+    gate.release();
+    const [manualRes] = await Promise.all([manual, auto]);
+
+    // Whatever happened, no two extensions share a hold. (Sharing is what
+    // the race used to do: the tap rode the worker's hold, the worker
+    // captured it, and the provider's charge for the tap was declined.)
+    const tick = t.state.decisions.find((d) => d.kind === "extend_tick")!;
+    const tap = t.state.decisions.find((d) => d.kind === "session_extend")!;
+    const holdIds = [tick, tap]
+      .map((d) => (d.outcome as { hold?: { holdId?: string } }).hold?.holdId)
+      .filter((id) => id !== undefined);
+    expect(new Set(holdIds).size).toBe(holdIds.length);
+    expect(extendLegs(t)).toHaveLength(holdIds.length);
+
+    // And what does happen: the worker's extension goes through on its own
+    // hold; the tap is refused before anything is held or charged.
+    expect(tick).toMatchObject({ rule: "extend", outcome: { action: "extend" } });
+    expect(manualRes.statusCode).toBe(409);
+    expect(manualRes.json()).toEqual({ error: "extension_in_progress" });
+    expect(tap).toMatchObject({ rule: "extension_in_progress" });
+    expect(t.calls.holds.map((h) => h.idempotencyKey)).toEqual(["hold:s-race:extend-1"]);
+    expect(t.executorCalls).toEqual(["extend"]);
+    expect(t.state.sessions.find((s) => s.id === "s-race")!.extendCount).toBe(1);
+  });
+
+  test("an extension priced before another one landed is refused, not run on the stale read", async () => {
+    // The user's extension is paid but its charge hasn't reached the
+    // webhook yet, so its hold is still `held` (deferred to the sweep).
+    const t = cardApp({ steps: [{ kind: "silent" }, { kind: "charge", usd: 1.5 }] });
+    const session = seedExtendable(t);
+    const stale = structuredClone(session);
+    const tap = await t.app.inject({
+      method: "POST",
+      url: "/session/extend",
+      headers: HEADERS,
+      payload: { sessionId: "s-race", minutes: 30 },
+    });
+    expect(tap.statusCode).toBe(200);
+    expect(extendLegs(t).map((h) => [h.leg, h.status])).toEqual([["extend-1", "held"]]);
+
+    // The worker read the session before that tap landed.
+    const deps = {
+      db: t.deps.db,
+      policy: t.deps.policy,
+      executorFor: t.deps.executorFor,
+      sendPush: t.deps.sendPush,
+      stripe: t.deps.stripe,
+      now: () => NOW,
+    };
+    const late = await applyExtension(
+      deps,
+      stale,
+      30,
+      priceExtension(stale, t.deps.policy.get(), 30),
+      "auto",
+    );
+    expect(late).toMatchObject({ ok: false, code: "extension_in_progress" });
+    expect(extendLegs(t)).toHaveLength(1);
+    expect(t.calls.holds).toHaveLength(1);
+    expect(t.executorCalls).toEqual(["extend"]);
   });
 });

@@ -478,9 +478,11 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
   });
   // Postgres's locks, as far as the race tests need them: a row lock a
   // transaction takes (its upsert's) is held until the transaction ends,
-  // and another transaction's upsert of that row WAITS for it — exactly
-  // the serialization the code relies on. Autocommit statements lock and
-  // release on their own. The fake never rolls back.
+  // and another transaction's upsert of that row WAITS for it; an advisory
+  // lock taken with pg_try_advisory_xact_lock is held the same way, and a
+  // second try answers false at once — exactly the serialization the code
+  // relies on. Autocommit statements lock and release on their own. The
+  // fake never rolls back.
   const lockHolders = new Map<string, symbol>();
   const lockWaiters = new Map<string, (() => void)[]>();
   const acquireLock = async (key: string, owner: symbol) => {
@@ -499,6 +501,17 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
       lockWaiters.delete(key);
       waiters.forEach((wake) => wake());
     }
+  };
+  const queryRawAs = async (owner: symbol, query: TemplateStringsArray, values: unknown[]) => {
+    const sql = query.join("?");
+    if (sql.includes("pg_try_advisory_xact_lock(")) {
+      const key = `advisory:${String(values[0])}`;
+      const holder = lockHolders.get(key);
+      if (holder !== undefined && holder !== owner) return [{ locked: false }];
+      lockHolders.set(key, owner);
+      return [{ locked: true }];
+    }
+    throw new Error(`fake $queryRaw: no stand-in for ${sql.trim()}`);
   };
   const upsertIssuingAuthorization = async (
     owner: symbol,
@@ -1494,6 +1507,14 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
         return data;
       },
     },
+    $queryRaw: (async (query: TemplateStringsArray, ...values: unknown[]) => {
+      const owner = Symbol("autocommit");
+      try {
+        return await queryRawAs(owner, query, values);
+      } finally {
+        releaseLocks(owner);
+      }
+    }) as AppDb["$queryRaw"],
     $transaction: async (fn) => {
       const owner = Symbol("transaction");
       const tx: AppTx = {
@@ -1502,6 +1523,8 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
           ...db.issuingAuthorization,
           upsert: (args) => upsertIssuingAuthorization(owner, args),
         },
+        $queryRaw: ((query: TemplateStringsArray, ...values: unknown[]) =>
+          queryRawAs(owner, query, values)) as AppDb["$queryRaw"],
       };
       try {
         return await fn(tx);

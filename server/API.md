@@ -690,6 +690,20 @@ worker alike. A declined hold answers `409 card_declined` (decision rule
 `hold_declined`; the worker records `extend_failed` with
 `code: "card_declined"`) and pushes `card_declined`; nothing is charged.
 
+One extension at a time per session, whatever pays it. Auto-extend fires
+in the same minutes the user is prompted to tap Extend, and an
+extension's number (its hold's leg), its cap room and the totals it adds
+to all come from the session row, which moves only once the executor has
+paid. So each extension runs start to finish under a transaction-scoped
+Postgres advisory lock on its session (`pg_try_advisory_xact_lock`) and
+re-reads the row inside it. A second extension arriving meanwhile — or
+one priced from a read another extension has since overtaken — is
+refused at once with `409 {"error": "extension_in_progress"}`: nothing
+held, nothing charged, no push (decision rule `extension_in_progress`;
+the worker records the same rule with `action: "none"` and it doesn't
+start the hysteresis window, so the next tick decides from the new
+expiry). Trying again afterwards is safe.
+
 ## POST /session/stop
 
 `{sessionId}` → `{sessionId, stoppedAt}`. Marks the session `stopped` and

@@ -251,6 +251,7 @@ enum APIError: Error, LocalizedError {
         case "funding_method_in_use": "That's the only card the ParkAgent card can use. Switch how you pay first."
         case "hold_in_progress": "That card is covering a parking session right now. Try again after it ends."
         case "card_declined": "Your card was declined — update it in Wallet."
+        case "extension_in_progress": "An extension for this spot is already going through. Check your time, then try again."
         case "wallet_not_ready": "How you pay needs attention — fix it in Wallet."
         case "setup_not_complete": "The card wasn't saved. Try again."
         case "not_approved": "That Link payment hasn't been approved yet."

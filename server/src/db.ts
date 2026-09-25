@@ -1141,6 +1141,9 @@ export interface AppDb {
     fn: (tx: AppTx) => Promise<T>,
     options?: { maxWait?: number; timeout?: number },
   ): Promise<T>;
+  /** Raw SQL, for what the tables above can't say — only a Postgres
+   * advisory lock today (sessions.ts). Values bind as parameters. */
+  $queryRaw<T = unknown>(query: TemplateStringsArray, ...values: unknown[]): Promise<T>;
 }
 
 /** The client a transaction hands its callback: the same tables, on the

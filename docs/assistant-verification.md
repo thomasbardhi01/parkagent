@@ -139,7 +139,7 @@ per-stop cost, day total against the cap, one Sign off.
 ## Repro
 
     pnpm -C server verify:garages
-    pnpm -C server verify:garages -- --places "Fenway,Times Square"
+    pnpm -C server verify:garages --places "Fenway,Times Square"
 
 `server/src/scripts/verify-garages.ts` drives the same classes prod uses
 — the real `NominatimGeocoder` and the real merged garage provider,

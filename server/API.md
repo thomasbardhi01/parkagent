@@ -17,7 +17,7 @@ Two credentials authenticate a request, tried in this order:
    per request, so a deleted account's still-valid JWT stops working
    immediately.
 2. **`x-api-key: <users.api_key>`** — admin and scripts only now. Keys are
-   created with `pnpm -C server create:user -- --name <name>`, printed
+   created with `pnpm -C server create:user --name <name>`, printed
    exactly once; at rest the `users` table holds only
    `SHA-256(API_KEY_PEPPER:key)` plus an 8-char identification prefix (the
    pepper is a server env secret, so a DB dump alone can't validate keys).
@@ -814,7 +814,7 @@ server refuses to boot with one but not the other). Body must be the raw
 Stripe payload. `400` on a missing/invalid signature; `503` when Stripe
 isn't configured.
 
-Setup: `pnpm -C server issuing:setup -- --user <id>` creates the user's
+Setup: `pnpm -C server issuing:setup --user <id>` creates the user's
 cardholder and one virtual card with spending controls from `policy.json`
 (`allowed_categories: parking_lots_garages` only, per-authorization limit =
 `session_cap_usd`, daily limit = `daily_cap_usd`). Stripe IDs only — the
@@ -893,7 +893,7 @@ ignored.
 
     stripe listen --forward-to localhost:3000/webhooks/stripe   # terminal A
     pnpm -C server dev                                          # terminal B
-    pnpm -C server stripe:trigger -- --user <id> [--amount 7.28] [--category parking_lots_garages]
+    pnpm -C server stripe:trigger --user <id> [--amount 7.28] [--category parking_lots_garages]
 
 `stripe listen` prints a `whsec_…` — put it in `.env` as
 `STRIPE_WEBHOOK_SECRET`. `stripe:trigger` fires a test authorization at the

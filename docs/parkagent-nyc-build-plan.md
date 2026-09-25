@@ -4,6 +4,36 @@ Goal: an iOS app + small server that detects you've parked in a NYC metered zone
 
 Design principle for the prototype: **every automated action has a dry-run mode first.** You'll run the whole loop for a week with "would have paid $X for zone Y" notifications before any money moves.
 
+## Status (2026-09-25, `v1.0.0-rc3` = `79413c4`)
+
+This is the original plan, with each phase's real status added in a quote
+block. The prototype outgrew it: two cities, sign-up for anyone, a Wallet
+with three ways to pay, and a parking assistant. Those are under "Beyond
+the plan" at the end.
+
+| Phase | Status | Delivered by |
+|---|---|---|
+| 0 Accounts and tools | done; Apple portal setup for TestFlight remains | — (#67) |
+| 1 Repo and dev env | complete | #1, #3, #4, #35, #39, #40 |
+| 2 Zone data | complete for NYC and Boston; ground truth pending | #42, #60, #64, #87, #105, #111 |
+| 3 Server | complete, hardened, gated by a CI boot check | #43, #46, #49, #65, #79, #116, #133 |
+| 4 iOS app | complete; Release builds proven free of debug code | #3, #47, #50, #51, #54, #63, #104, #119, #123, #118, #124, #130 |
+| 5 Session executor | ParkBoston verified paid; ParkNYC awaits its paid run | #56, #61, #62, #87–#94, #106, #109, #112, #113 (#24) |
+| 6 Stripe Issuing | complete in test mode, reshaped into the Wallet; live needs Stripe | #52, #55, #57, #61, #112, #124, #134 (#66) |
+| 7 Extension worker | complete; one extension at a time per session | #53, #62, #65, #124, #134 |
+| 8 Test on yourself | **next**: the Boston field days | #130 (plan); #71, #135 |
+
+What's left lives in three milestones:
+- **Field test**: Apple developer setup (#67), the Boston dry-run day (#71), and the Boston real-money day (#135).
+- **TestFlight 1.0**: the App Store Connect record and API key (#136), TestFlight secrets and App Privacy (#137), the first upload (#138), the final accounts-server review (#140), the Anthropic spend limit (#101), the NYC dry-run day (#72, #45), and inviting friends in dry run (#139, #32).
+- **App Store 1.0**:
+  - the Sign in with Apple device check (#142);
+  - key rotation (#48) and a private repo (#37);
+  - real money in NYC (#24, #44);
+  - the assisted and autonomous weeks (#33, #34);
+  - everything waiting on a partner: Stripe Issuing (#66, #126, #125, #68), Link (#100, #127, #128), SpotHero/ParkWhiz/Passport (#102, #141, #103, #36);
+  - code follow-ups (#22, #70, #110, #132).
+
 ---
 
 ## Phase 0 — Accounts and tools (half a day)
@@ -24,7 +54,11 @@ Design principle for the prototype: **every automated action has a dry-run mode 
 
 ## Phase 1 — Repo layout and dev environment (half a day)
 
-> **Status: complete** (2026-09-20) — monorepo, CI, env validation, hooks: PRs #39, #40.
+> **Status: complete** (2026-09-20). Server and iOS scaffolds, Dockerfile, CI
+> deploy, env validation, hooks, Dependabot: PRs #1, #3, #4, #35, #39, #40.
+> CI has since grown `city-neutral` (#119), `executor` with Chromium (#93),
+> the iOS unit and Release-binary gate (#130), and `boot` (#133). Deploy
+> needs `server`, `boot`, and `ios`.
 
 Monorepo, one language per layer:
 
@@ -71,7 +105,11 @@ Use Claude Code for: scaffolding each package, writing the GeoJSON builder, the 
 
 ## Phase 2 — Zone data (one day)
 
-> **Status: complete** (2026-09-20) — 10,576 passenger zones fetched, built, and loaded into PostGIS (dev and prod): PR #42.
+> **Status: complete for both cities.**
+> - **NYC:** 10,576 passenger zones fetched, built, and loaded into PostGIS on dev and prod (#42).
+> - **Boston:** zones built from meter data with a `city` column and per-city fees (#60).
+> - **ParkBoston zone numbers** aren't in the open data. They come from the Passport Find Parking import (#87, #105, #111) plus driver reports, verified when two users agree (#64).
+> - **Outstanding:** ground truth against posted signs (#45); Boston max stay from observed terms instead of the blanket 2 hours (#110); an optional Street View bootstrap (#70).
 
 NYC publishes exactly what you need.
 
@@ -95,7 +133,12 @@ Refresh monthly; rates change.
 
 ## Phase 3 — Server (two days)
 
-> **Status: complete** (2026-09-20) — /parked quoting end to end with decisions audit, policy service, migrations on deploy, verified live on Fly: PRs #43, #46 (sessions/executor stubbed until Phase 5).
+> **Status: complete.**
+> - `/parked` quoting end to end with the decisions audit, the policy service, and migrations on deploy (#43, #46, #49).
+> - **Hardening:** hashed API keys, admin authz, rate limits, webhook idempotency, `/admin/summary` (#65, #79).
+> - **Identity:** Sign in with Apple, rotating refresh tokens, `DELETE /me` tombstones (#118).
+> - **Proof:** a live FR suite runs nightly against prod in dry run (#116, #121, #122).
+> - **Boot check:** since the v70 outage (`docs/incidents.md`), CI boots the real server before every deploy (#133).
 
 Fastify + TypeScript + Prisma + Postgres on Fly.io.
 
@@ -133,11 +176,13 @@ Every decision writes a `decisions` row: inputs, rule fired, outcome. You'll rea
 
 ## Phase 4 — iOS app (three to four days)
 
-> **Status: complete** (2026-09-21) — design system, screens on a mock API,
-> detection/reporting/push plumbing, appearance + UI tests: PRs #47, #50,
-> #51, #54; onboarding + multi-city surfacing: #63. The detector's
-> three-signal fusion (settling burst, red-light clearing, signal log,
-> unit-test target) landed in the pre-field-test audit PR.
+> **Status: complete (1.0.0).**
+> - **Foundations:** design system, screens, detection/reporting/push plumbing, UI tests (#47, #50, #51, #54); onboarding and multi-city (#63); two-of-three detector fusion and the signal log (#65); polish (#104, #108).
+> - **Real device build:** the live API on every build, the truth-gated onboarding, curb lines on the map, Diagnostics (#119, #123).
+> - **Sign-up and the Account sheet** (#118).
+> - **Tabs** Park · Activity · Wallet (#124).
+> - **1.0.0-rc1 (#130):** Release builds carry no debug code (FR-34, proven in CI); a time-sensitive "Parked in zone …" notification; App Store readiness (privacy manifest, opaque icon, account deletion).
+> - **Outstanding:** a fuller policy editor (#22). Only the per-stop cap, daily cap, and default stay are editable, and only by an admin. TestFlight is #136–#139.
 
 SwiftUI, minimum iOS 17. Three jobs: detect parking, report location, show/approve sessions.
 
@@ -162,13 +207,20 @@ Run on your own phone via Xcode with your developer account. Walk around your bl
 
 ## Phase 5 — Session executor (two days, and the fragile part)
 
-> **Status: code complete, awaiting paid verification** — ParkNYC
-> (Flowbird) client + fixtures/tests: PRs #56, #59; per-user linked
-> provider accounts replacing the single storage-state secret: #61;
-> ParkBoston (Passport) client + shadow mode: #62; driver-reported Boston
-> zone numbers: #64. Outstanding: the first PAID `record` run against
-> each provider (ParkNYC and ParkBoston) — post-zone screens are drafted
-> TODO-verify until then.
+> **Status: ParkBoston verified with real money; ParkNYC awaits its paid run.**
+> - **ParkNYC** (Flowbird) client with fixtures and tests (#56, #59).
+> - **Per-user linked provider accounts**, sealed with `PROVIDER_STATE_KEY` (#61).
+> - **ParkBoston** (Passport) client and shadow mode (#62), then its flow screen by screen (#87–#94, #106) and the Vehicles chooser with observed zone terms (#109).
+> - **Real ParkBoston sessions:**
+>   - a paid start through receipt (#112);
+>   - extend walked for real (#113);
+>   - stop is unsupported in Boston, since meter time isn't refundable;
+>   - an operator lockout is typed `parking_denied`.
+> - **CI:** executor tests with Chromium (#93).
+> - **Outstanding:**
+>   - ParkNYC's paid `record` run (#24).
+>   - Passport card management, used only by the ParkAgent card (#126).
+>   - A few extend-path checks on the Boston real-money day (#135).
 
 There is no public ParkNYC API. For the prototype, run Playwright in `executor/` against the ParkNYC web experience, logged in with your own account.
 
@@ -188,12 +240,15 @@ Note: automating a consumer app against its terms is fine as a personal experime
 
 ## Phase 6 — Stripe Issuing, test mode (one day)
 
-> **Status: complete in test mode** (2026-09-21) — card setup, real-time
-> authorization webhook, ledger: PR #52; E2E fixes (real-time response
-> shape, card setup): #55; Card tab + card endpoints: #57; card lifecycle
-> + provider-account chaining: #61; Apple Pay top-ups: #63. Outstanding
-> (by hand): live Issuing application, Apple Pay merchant ID + Stripe
-> certificate, Wallet provisioning entitlement.
+> **Status: complete in test mode, then reshaped into the Wallet.**
+> - **Issuing basics:** card setup, the real-time authorization webhook, the ledger (#52, #55); the Card tab and card lifecycle (#57, #61); Apple Pay top-ups (#63).
+> - **#112** made the user's own card on the provider (`provider_card`) the default, with Issuing behind `ISSUING_LIVE`.
+> - **#124** replaced the stored balance with a **Wallet** of three ways to pay:
+>   - `provider_card` (live);
+>   - `link_wallet` (garages only, "coming soon" until the Link OAuth client is set);
+>   - `parkagent_card` (per-session holds on the user's own card; "coming soon" until `ISSUING_LIVE`).
+> - **#134** fixed the review's findings: the webhook reserves once, and one extension at a time.
+> - **Outstanding:** live Issuing and the consumer-program question (#66), its launch checklist (#126, #125), the Apple Pay merchant ID (#67), the provisioning entitlement (#68), and the Link OAuth client (#100, #127, #128).
 
 1. Create an Issuing cardholder (you) and one virtual card.
 2. Set spending controls: `allowed_categories: ["parking_lots_garages"]` (MCC 7523), `spending_limits` matching `policy.json` (per-authorization and daily).
@@ -205,9 +260,11 @@ Note: automating a consumer app against its terms is fine as a personal experime
 
 ## Phase 7 — Extension worker (one day)
 
-> **Status: complete** (2026-09-21) — worker, /location feed, APNs pushes:
-> PR #53; per-city ticket-risk pricing: #62; stale-fix and at-the-car
-> hardening in the audit PR.
+> **Status: complete.**
+> - Worker, `/location` feed, APNs pushes (#53); per-city ticket-risk pricing (#62); stale-fix and at-the-car hardening (#65).
+> - Since #124, each extension leg gets its own hold on the ParkAgent card.
+> - Since #134, one extension at a time per session: an advisory lock, and `409 extension_in_progress` for the loser.
+> - The app's auto-extend toggle became a read-only row, because the worker follows the policy (#130).
 
 `server/src/jobs/extendTick.ts`, run every 60 s for each active session:
 
@@ -233,10 +290,10 @@ Hysteresis: once a decision is made for a session, don't reverse it for 5 minute
 
 ## Phase 8 — Test on yourself (two weeks)
 
-> **Status: next.** The pre-field-test audit PR (chore/audit) hardened
-> every surface and added `GET /admin/summary` + the detector signal log;
-> docs/field-test-checklist.md is the step-by-step runbook for the Boston
-> and NYC dry-run days.
+> **Status: next.**
+> - `docs/field-test-plan.md` (#130) is the runbook: the night before, day 1 in dry run in Boston (#71), day 2 with real money on your own card through ParkBoston (#135), and the go/no-go for inviting friends.
+> - `docs/field-test-checklist.md` has the per-stop routine and how to read the signal log.
+> - The two weeks below map to #32 (dry-run week, with friends in dry run), #33 (assisted), and #34 (autonomous).
 
 Week 1, **dry run**: `dry_run: true`. Drive normally. The app detects parks, the server quotes, you get "would have paid $X for zone Y, Z min" notifications, and you pay manually as usual. Each evening, read the `decisions` table. Track:
 - Detection precision (false parks per day) and recall (missed parks).
@@ -268,12 +325,32 @@ Roughly three to four weeks of evenings. The data and server pieces are the ones
 
 ---
 
-## Beyond the plan: Boston (2026-09)
+## Beyond the plan (2026-09)
 
-The prototype grew a second city, which the original plan didn't cover:
-Boston zone data with a `city` column and per-city fees (PR #60), per-user
-provider accounts (#61), the Passport/ParkBoston executor with shadow mode
-(#62), onboarding around provider linking + Apple Pay top-ups (#63), and
-driver-reported zone numbers — ParkBoston publishes none and its web app
-has no map (#64). `zones` and `sessions` rows carry `city`; policy has
-`city_overrides` (fee, ticket cost).
+The prototype grew well past one user, one city.
+
+- **Boston.**
+  - Zone data with a `city` column and per-city fees (#60).
+  - Per-user provider accounts (#61), and the Passport/ParkBoston executor with shadow mode (#62).
+  - Onboarding around provider linking (#63).
+  - Driver-reported zone numbers (#64), then the Passport Find Parking import (#87, #105, #111).
+  - `zones` and `sessions` rows carry `city`, and policy has `city_overrides` (fee, ticket cost).
+- **The parking assistant.**
+  - Finds a spot or plans a day (#81–#86).
+  - v2 (#117): grounded results, SpotHero plus ParkWhiz garages, per-turn cost accounting, and a per-user daily model-spend cap.
+  - Itinerary stops are re-priced on the server (#130). The model's first per-stop prices are next (#132).
+- **Accounts** (#118).
+  - Sign in with Apple for anyone; email codes and Google are built and switched off.
+  - Rotating refresh tokens and link-or-create for the provider account.
+  - `DELETE /me` tombstones the user row, and revokes the Apple token (#130).
+- **Wallet** (#124, #134). Three ways to pay, holds instead of a stored balance, Link for garages, and Activity.
+- **Proof.**
+  - The functional-requirements doc and a nightly FR suite against prod in dry run (#116, #121, #122).
+  - An acceptance pass with a real Boston payment (#112, #113).
+  - Release builds proven free of debug code (#130).
+  - A CI boot check after the v70 outage (#133, `docs/incidents.md`).
+- **Releases.**
+  - `v0.9-prototype` (`0ae01ad`).
+  - 1.0.0-rc1 (#130, `45d4f37`): never tagged; it crash-looped prod.
+  - `v1.0.0-rc2` (#133, `2a930c4`).
+  - `v1.0.0-rc3` (#134, `79413c4`).

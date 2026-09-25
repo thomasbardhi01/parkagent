@@ -131,7 +131,7 @@ a "Meter Fee Unpaid" ticket is $40
 
 `data/import_parkboston_zones.py` fills the empty Boston zone numbers from
 the Passport Find Parking feed. It needs a saved signed-in Passport session
-(`pnpm -C executor run login -- --provider passport`) and the built
+(`pnpm -C executor run login --provider passport`) and the built
 `data/out/boston_zones.geojson`. What it does:
 
 1. **Sweep** (read-only, pays for nothing): derives ~1 km probe points from

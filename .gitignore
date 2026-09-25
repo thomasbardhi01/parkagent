@@ -17,6 +17,8 @@ executor/captures/
 *.log
 .DS_Store
 .claude/settings.local.json
+# Claude Code helper-agent worktrees: full checkouts of other branches.
+.claude/worktrees/
 ios/**/xcuserdata/
 ios/**/DerivedData/
 # xcodebuild output (result bundles, screenshots) from local runs.

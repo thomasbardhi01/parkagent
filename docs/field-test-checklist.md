@@ -1,9 +1,11 @@
-# Field-test checklist — Boston and NYC dry-run days
+# Field-test checklist — per stop, and reading the logs
 
-What to do, in order, when taking ParkAgent out in the car for the first
-time in each city. Everything runs in **dry run** (`policy.json
-dry_run: true` AND env `DRY_RUN=true` on Fly): the app detects, quotes,
-and decides, but no money moves and you pay the meter by hand as usual.
+The per-stop routine and the log-reading reference for any field day.
+**`docs/field-test-plan.md` is the plan**: which day is dry run and which is
+real money, the switch order, and the go/no-go criteria. This checklist is
+written for the dry-run days (`DRY_RUN=true` on Fly, or the policy's
+`dry_run: true`). The app detects, quotes, and decides, but no money moves
+and you pay the meter by hand as usual.
 
 ## Before leaving the house
 
@@ -24,17 +26,17 @@ and decides, but no money moves and you pay the meter by hand as usual.
    with a timestamp to a file on the phone; it is the only way to debug
    a missed or false park after the fact.
 5. **Payment source** (onboarding "How do you want to pay", or the Wallet
-   tab): the default is **My card on ParkNYC/ParkBoston** —
-   `provider_card`, the card already saved on your provider account. On
-   that path there is **no ParkAgent card setup and no Add money step**:
-   linking just captures the session and the executor pays with the
-   account's own card (it picks the card on file at the "Your Cards"
-   screen). The **ParkAgent card** option only appears when the server has
-   `ISSUING_LIVE=true`; until then it reads "coming soon". Daily and
-   per-stop caps apply the same either way — the choice only moves where
-   the charge lands. If you switch sources, re-link isn't required, but a
-   switch to the ParkAgent card needs a fresh setup-card (consent prompt in
-   the link flow).
+   tab): the default is **Your card on ParkNYC/ParkBoston**
+   (`provider_card`), the card already saved on your provider account. On
+   that path there is **no ParkAgent card setup**. Linking just captures
+   the session, and the executor pays with the account's own card (it
+   picks the card on file at the "Your Cards" screen). The **ParkAgent
+   card** is always listed, tagged "Coming soon", until the server has
+   `ISSUING_LIVE=true`. A Debug build can choose it only with the
+   Diagnostics sandbox toggle, which must be off for a field test. **Link**
+   reads "coming soon" until the Link OAuth client is set, and it pays
+   garages only, never street meters. Daily and per-stop caps apply the
+   same whichever card pays.
 6. **Provider link** (needed even in dry run — session start refuses
    without it): Account → Cities & accounts → connect ParkNYC (NYC) or ParkBoston
    (Boston). ParkBoston sign-in is passwordless: T&C accept, e-mail/phone
@@ -109,14 +111,16 @@ Watch for:
 - `declines` — every `confirm`-producing rule fired today
   (`candidates_disagree` means the two-sides-of-the-street prompt;
   `needs_zone_number` is normal for fresh Boston blocks).
-- `executorErrors` — should be empty in dry run; anything here is a bug.
+- `executorErrors` (per city): should be `{}` in dry run. Anything here is
+  a bug.
 - `shadow` — only meaningful with `shadow_mode` on (Boston rehearsal):
   `fired` should equal sessions started, `declined` should be 0.
 - `spendUsd` vs what you actually fed meters — the quote accuracy check.
 
-Deeper: `pnpm -C server decisions:recent -- --city bos --limit 50`
-(prod: through the fly proxy, see server/README.md) shows every decision
-with its rule; the `decisions` table has the full inputs.
+Deeper: `pnpm -C server decisions:recent --city bos --limit 50` (prod:
+through the fly proxy, see server/README.md) shows every decision with its
+rule, and the `decisions` table has the full inputs. Leave out the `--`
+before the flags: pnpm 12 passes it through, and the script rejects it.
 
 **Push notifications** — before relying on them in the field, confirm they
 actually land on the phone:
@@ -145,11 +149,11 @@ area label `ios`/`server`/`executor`/`data`) with:
      `ui_changed` rows carry a screenshot in the decisions table.
 4. What the provider's own app showed (zone, price) if you cross-checked.
 
-## After the dry-run week (per the build plan)
+## After the dry-run days
 
-Track daily: false parks, missed parks, zone accuracy vs signs, quote vs
-actual paid. When a few days run clean: week 2 is `dry_run: false` with
-every session on one-tap confirm, executor live, extensions capped at
-one — and before that flip, both providers need one verified PAID
-`record` run (see executor/README.md) so the post-zone screens stop
-being TODO-verify.
+Track daily: false parks, missed parks, zone accuracy vs signs, and quote
+vs actual paid. What happens next is in `docs/field-test-plan.md`: Boston
+real money on your own card (#135), then friends in dry run (#139). Real
+money anywhere else needs its own paid verification first. ParkBoston's
+start, extend, and stop were walked for real in #112/#113, but ParkNYC's
+paid `record` run (#24) is still to do.

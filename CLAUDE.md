@@ -11,21 +11,27 @@ open data, so they come from the Passport Find Parking feed importer
 plus driver reports of the posted number
 (`POST /zones/:zoneId/provider-number`, verified when two users agree —
 a verified report beats an import, an import beats a single unverified
-report) and the executor types the stored number in. The Passport flow is
-verified through the Vehicles chooser (which also yields provider-observed
-zone terms — `zone_terms_observed` beats the dataset when quoting); the
-screens after it remain drafted TODO-verify until the first paid
-recording. Two users, iOS only.
+report) and the executor types the stored number in. The Passport flow was
+walked with real money (start through receipt in #112, extend in #113;
+Boston has no early stop). Its Vehicles chooser also yields
+provider-observed zone terms, and `zone_terms_observed` beats the dataset
+when quoting. ParkNYC's paid run is still to do (#24). iOS only.
+
+Current release: `v1.0.0-rc3` (79413c4), with prod in dry run. The README
+has the status and the release tags. What's left is in three GitHub
+milestones (Field test, TestFlight 1.0, App Store 1.0) on project board 3.
 
 ## Locations
-The checkout lives at `~/Documents/parkagent`; the `feat/nyc-data` worktree
-at `~/Documents/parkagent-data`. There is no repo at `~/parkagent` — if a
-tool claims there is, it is pointed at a stale path.
+The checkout lives at `~/Documents/parkagent`. There is no repo at
+`~/parkagent`, and no `~/Documents/parkagent-data` worktree any more. A tool
+that claims either is pointed at a stale path. Helper-agent worktrees go
+under `.claude/worktrees/`, which is gitignored. Remove them, and any
+`~/Documents/pa-*` worktree, once their branch has merged.
 
 ## Layout
 - data/      Python scripts that fetch NYC/Boston open data and build zone GeoJSON
 - server/    Fastify + TypeScript API on Fly.io; Prisma + Postgres/PostGIS
-- executor/  Playwright scripts that drive ParkNYC web (isolated, replaceable)
+- executor/  Playwright scripts that drive the ParkNYC and ParkBoston web apps (isolated, replaceable)
 - ios/       SwiftUI app: park detection, location reporting, session UI;
              the Xcode project is generated, see "iOS project" below
 - policy.json  Spending and extension rules; server reads it at boot
@@ -42,7 +48,8 @@ Mac App Store.
 - Any code path that moves money checks DRY_RUN and policy.json first.
 - Never store card numbers or Playwright auth state in the repo. Stripe IDs only.
 - Every automated decision writes a row to the `decisions` table with its inputs.
-- The executor is the only module allowed to touch ParkNYC. Nothing else imports it.
+- The executor is the only module allowed to touch a provider's site (ParkNYC,
+  ParkBoston). Nothing else imports it.
 - Never create a provider account without the user present, never store a
   provider password, never automate a terms checkbox, a verification code,
   or a captcha. Link-or-create prefills empty TEXT inputs on the
@@ -82,11 +89,59 @@ expired, so it is fixed before the next park. The `expiring` status still
 pays — use `providerStatusUsable()` from the registry, never
 `status === "linked"`.
 
+## Paying: three sources and their gates
+`users.payment_source` picks one. Caps (`session_cap_usd`,
+`daily_cap_usd`) bind all three, and "today's spend" counts everything that
+paid, including garages approved in Link.
+- `provider_card` (default, **live**): the card already saved on the
+  user's ParkNYC/ParkBoston account. The executor pays with it. We never
+  see the card number.
+- `link_wallet`: Stripe Link. It pays **garages only**. Each paid garage is
+  a spend request the user approves in Link, and the one-time card is
+  revealed once for the garage's own checkout. Providers keep ONE saved
+  card, so Link never pays a street meter (#128). `/link/*` answers 503,
+  and the app shows "Coming soon", until `LINK_CLIENT_ID` /
+  `_CLIENT_SECRET` / `_PUBLISHABLE_KEY` / `_REDIRECT_URI` are set.
+  `LINK_TEST_MODE` lets a spend request through under dry run.
+- `parkagent_card`: our Issuing card on each linked parking account,
+  funded per session by a manual-capture **hold** on the user's own card
+  (`services/wallet/holds.ts`). There is no stored balance anywhere. It's
+  selectable only with `ISSUING_LIVE=true`, or in a Debug build with the
+  Diagnostics sandbox toggle against a test-mode key. Before
+  `ISSUING_LIVE`, setup-card never runs against a real provider.
+
+Dry run is effective when env `DRY_RUN` is true OR `policy.json`'s
+`dry_run` is. It is server-wide, for every account. `PUT /policy` is
+admin-only (`GET /policy` reports `editable`) and rewrites `policy.json`
+inside the container, so any restart or deploy, including `fly secrets
+set`, reloads the image's copy (dry run on, caps 45/60). To go real: flip
+the `DRY_RUN` secret first, then the caps, then the policy.
+
 ## Working style
 - Small PRs on feat/* branches, squash-merged into main.
 - All changes land through a PR — no direct pushes to main, no exceptions.
   Before any commit, check `git branch --show-current`; if it says main,
-  branch first (the checkout can land on main after a PR merge).
+  branch first (the checkout can land on main after a PR merge). Branch
+  protection (admins included) requires the `server`, `ios`, and `executor`
+  checks. Only squash merges are allowed, and merged branches are deleted
+  on GitHub automatically. The user merges. Auto mode can't.
+- CI (`.github/workflows/ci.yml`):
+  - `city-neutral` runs `scripts/check-city-neutral.sh`. No city or provider
+    names in app/server sources outside the registries. Take names from
+    `CityCatalog` / the provider registry.
+  - `server`, `executor`, `ios` (unit tests, the `ParkAgentRelease` scheme,
+    and the Release-binary `strings` check).
+  - `boot` runs `scripts/boot-check.sh off` and `on` against a migrated
+    PostGIS.
+  - `ui-tests` (`continue-on-error`).
+  - `deploy` needs `server`, `boot`, and `ios`. A new optional env var gets
+    a line in **both** of `boot-check.sh`'s lists, and anything that logs at
+    boot goes through the `app` from `createFastify()`
+    (`docs/incidents.md`).
+- pnpm 12 passes a literal `--` through to scripts, and a script using
+  strict `parseArgs` rejects it. So call `pnpm -C server decisions:recent
+  --city bos`, not `… -- --city bos`. Only `attach-identity`,
+  `create:fr-user`, and `purge:fr-throwaways` strip the `--`.
 - Run `pnpm -r lint && pnpm -r test` before proposing a change.
 - `pnpm install` registers a lefthook pre-commit hook (see lefthook.yml):
   lint-staged runs prettier and eslint --fix on staged files, then the server
@@ -200,12 +255,43 @@ linked account for the zone's provider; each call gets a fresh browser
 context on one warm shared Chromium process. The old single-secret
 `PARKNYC_STATE_PATH`/`PARKNYC_STATE_JSON` plumbing is gone
 (`pnpm -C executor run login` remains as a local way to capture cookies).
-Its tests are unit tests over recorded fixture HTML; they never launch a
-browser or touch ParkNYC, and nothing in `executor/` runs in CI (CI only
-compiles it — `pnpm -C server build` needs `executor/dist` types, so run
-`pnpm -C executor run build` first). It is a personal-use prototype
-against ParkNYC's own web app; issue #37 tracks moving it to a private repo
-before any customer use. Details: `executor/README.md`.
+Its tests run over recorded fixture HTML and never touch a provider's live
+site. A few DOM tests launch a local headless Chromium, and they skip
+themselves where it is absent. CI's required `executor` job runs lint and
+the tests with Chromium installed (#93). `pnpm -C server build` needs
+`executor/dist` types, so run `pnpm -C executor run build` first. It is a personal-use prototype
+against ParkNYC's own web app. The repo is public. #37 tracks making it
+private, or moving `executor/` out, before anything beyond friends. Details: `executor/README.md`.
+
+## Deploy, verify, roll back
+A merge to main deploys through CI's `deploy` job, about 10–25 minutes
+after the merge because it waits on `ios`. The release command runs
+`prisma migrate deploy` first. Two shell helpers (in `~/.zshrc`, not the
+repo) wrap the checks:
+
+    # block until prod's /health reports PR <n>'s merge commit
+    waitdeploy(){ SHA=$(gh pr view "$1" --repo thomasbardhi01/parkagent --json mergeCommit -q .mergeCommit.oid); until curl -s https://parkagent-api.fly.dev/health | grep -q "$SHA"; do sleep 20; done; echo "deployed $SHA"; }
+    # dispatch the nightly FR suite against prod and watch it
+    nightly(){ gh workflow run nightly-fr.yml --repo thomasbardhi01/parkagent && sleep 8 && gh run watch "$(gh run list --repo thomasbardhi01/parkagent --workflow=nightly-fr.yml --limit 1 --json databaseId -q '.[0].databaseId')" --repo thomasbardhi01/parkagent; }
+
+So after merging PR N: `waitdeploy N && nightly`. Don't dispatch the
+nightly before the deploy lands, or it tests the old build (its report
+prints the commit it tested).
+
+**Rollback.** For a crash-looping or broken release:
+
+    fly releases -a parkagent-api --image     # the last good release's image
+    fly deploy -a parkagent-api --image registry.fly.io/parkagent-api:deployment-<id>
+    curl -s https://parkagent-api.fly.dev/health
+
+Then fix forward in a PR. A rollback doesn't revert migrations, so keep
+them additive.
+
+**Machine size lives in `fly.toml`.** The `[[vm]]` block is
+`shared-cpu-1x` with 1 GB, which the executor's Chromium needs. Every `fly
+deploy`, rollbacks included, re-applies it and undoes any `fly scale
+memory` or `fly scale vm`. Change the size in `fly.toml` through a PR, and
+check it with `fly scale show -a parkagent-api`.
 
 ## Commands
 - `pnpm -C server dev`         start the API locally

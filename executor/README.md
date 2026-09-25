@@ -20,7 +20,7 @@ implements the same `Executor` protocol as the dry-run executor.
 pnpm install                              # workspace deps
 pnpm -C executor exec playwright install chromium   # the browser itself
 pnpm -C executor run login                    # see below
-pnpm -C executor run login -- --provider passport   # ParkBoston
+pnpm -C executor run login --provider passport   # ParkBoston
 ```
 
 ## Login (auth without credentials in the repo)
@@ -58,14 +58,14 @@ account's cookies into a fresh context on one warm shared Chromium process.
 ## Recording fixtures
 
 ```sh
-pnpm -C executor run record -- --flow start --zone 110436 --minutes 15
-pnpm -C executor run record -- --flow extend --session <providerSessionId>
-pnpm -C executor run record -- --flow stop --session <providerSessionId>
+pnpm -C executor run record --flow start --zone 110436 --minutes 15
+pnpm -C executor run record --flow extend --session <providerSessionId>
+pnpm -C executor run record --flow stop --session <providerSessionId>
 # Passport / ParkBoston (the zone number comes from a user report):
-pnpm -C executor run record -- --provider passport --flow start --zone 81234 --minutes 15
+pnpm -C executor run record --provider passport --flow start --zone 81234 --minutes 15
 # Find Parking recon (READ-ONLY, no charge): dump the map's
 # zones-by-location feed near a point — number + block name per zone:
-pnpm -C executor run record -- --provider passport --flow findParking \
+pnpm -C executor run record --provider passport --flow findParking \
   --query "Boylston St Back Bay" --lat 42.3495 --lng -71.0798
 # Multi-point sweep of the same feed (READ-ONLY, headless, rate-limited);
 # driven by data/import_parkboston_zones.py — see data/README.md:
@@ -162,7 +162,10 @@ values in `#hourTimeText`/`#minTimeText`) and `#pickerNext` to continue.
 The flow drives the steppers to the requested minutes (minute step
 assumed 15, TODO-verify). After `#pickerNext` the app either charges the
 default card straight to confirmation (`use_default_card`) or shows the
-payment-method page — that next screen stays TODO-verify.
+payment-method page — that next screen stays TODO-verify. *(Superseded:
+the screens after the picker were walked with real money in #112/#113,
+see below. The step is per zone and read live off `#minTimeText`; zone
+456 sells in 12-minute steps.)*
 
 **No Meter Parking notice (2026-09-22):** after hours (paid parking is
 8am-8pm EST Mon-Sat) the start flow hits a "No Meter Parking. Please

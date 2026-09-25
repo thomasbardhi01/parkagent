@@ -27,7 +27,7 @@ exported variable wins over `.env`:
 
 ### create:user
 
-    pnpm -C server create:user -- --name Thomas [--plate ABC1234 --state NY]
+    pnpm -C server create:user --name Thomas [--plate ABC1234 --state NY]
 
 Creates a user (and optionally a vehicle) and prints the api key **once**.
 Only `SHA-256(API_KEY_PEPPER:key)` and an 8-char identification prefix are
@@ -70,7 +70,7 @@ The phones keep their existing keys — nothing changes client-side.
 ### load:zones
 
     pnpm -C server load:zones              # passenger zones only (default)
-    pnpm -C server load:zones -- --all     # include commercial/charter faces
+    pnpm -C server load:zones --all     # include commercial/charter faces
 
 Mirrors `data/out/zones.geojson` into the `zones` table (stale
 `data_version` rows deleted) and audits the run in `zone_loads`. Build the
@@ -79,7 +79,7 @@ fetch → build → load-dev → load-prod refresh runbook.
 
 ### issuing:setup
 
-    pnpm -C server issuing:setup -- --user <users.id> [--email <email>]
+    pnpm -C server issuing:setup --user <users.id> [--email <email>]
 
 Creates the user's Stripe Issuing cardholder and one virtual card
 (test mode), spending controls from `policy.json`: MCC
@@ -91,7 +91,7 @@ re-apply the controls. Needs `STRIPE_SECRET_KEY` in `.env`.
 
     stripe listen --forward-to localhost:3000/webhooks/stripe   # terminal A
     pnpm -C server dev                                          # terminal B
-    pnpm -C server stripe:trigger -- --user <users.id> [--amount 7.28] [--category parking_lots_garages]
+    pnpm -C server stripe:trigger --user <users.id> [--amount 7.28] [--category parking_lots_garages]
 
 Fires a test-mode authorization at the user's card via Stripe's test
 helpers so the `/webhooks/stripe` real-time path runs end to end; the
@@ -104,7 +104,7 @@ before the webhook if above the per-auth cap too).
 ### decisions:recent
 
     pnpm -C server decisions:recent
-    pnpm -C server decisions:recent -- --user Thomas --city bos --limit 50
+    pnpm -C server decisions:recent --user Thomas --city bos --limit 50
 
 Prints the last 20 `decisions` rows — timestamp, rule, action, zone, quote —
 which is the evening read during the dry-run week. `--user` filters by the

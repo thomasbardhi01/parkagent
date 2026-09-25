@@ -8,8 +8,8 @@ Prerequisites: `ios/Config.xcconfig` has your `DEVELOPMENT_TEAM` and
 `API_BASE_URL` (there is no `API_KEY` any more), and `cd ios && xcodegen
 generate` has been run since the last `project.yml` change.
 
-For a **fresh** run (onboarding from the top), delete the app from the
-phone first — see "Reinstalling for a fresh onboarding" at the bottom.
+For a **fresh** run (onboarding from the top), sign out and delete the app
+from the phone first. See "Reinstalling for a fresh onboarding" at the bottom.
 
 ---
 
@@ -19,9 +19,9 @@ On the home screen, before opening anything. Ink square, coral P. A blank
 white or grey tile means the asset catalog didn't compile into the build —
 reinstall rather than continuing.
 
-### 2. It opens on your city, not New York
+### 2. It opens where you are
 
-Launch. A fresh install lands on the **welcome screen** with one button,
+Launch. Signed out, the app lands on the **welcome screen** with one button,
 Sign in with Apple (email and Google stay hidden while the server has them
 switched off). Never a "not connected" banner here: if sign-in says the
 app isn't configured, `API_BASE_URL` is missing. After
@@ -29,8 +29,9 @@ sign-in you land on the first setup step you haven't done, or Home.
 
 Home's map should settle on **where you are** within a second or
 two, and the chip at the top should read your city (e.g. "Boston · No
-active session"). If the map opens on Manhattan, the location fix failed
-and it fell back to a city default — check Location permission (step 3).
+active session"). If the map sits on a city center (your chosen city's, or
+Boston Common when no city is known) instead of on you, the location fix
+failed. Check Location permission (step 3).
 
 ### 3. Permissions are actually granted
 
@@ -58,7 +59,8 @@ On your Mac: `curl -s https://parkagent-api.fly.dev/health` (or whatever
 what you just deployed, not an older one.
 
 Then on the phone: Home → avatar → Account → scroll to About → tap the
-version number **five times** → Diagnostics. Read **Dry run** out loud:
+version number **five times** → tap the **Diagnostics** row that appears.
+Read **Dry run** out loud:
 `On` means nothing can move money; `OFF` is shown in red for a reason.
 It is the *effective* flag (the server's `DRY_RUN` or the policy's), so
 it can say On while `/health` says the env half is off.
@@ -115,9 +117,10 @@ times quickly — you should never see two screens superimposed.
 ### 11. The detector is armed
 
 Diagnostics → Detection. Expect **Detector: Running** and "Fully armed".
-If it lists missing permissions, fix them before driving — detection needs
+If it lists missing permissions, fix them before driving. Detection needs
 any two of motion stop, car-audio disconnect, and location settling, and
-without Location Always you are down to one.
+every park also needs a location fix to send. Without Location Always, no
+park can fire in the background.
 
 Turn on **Log raw detector signals** here before a field-test drive; it is
 the only way to debug a missed or false park afterwards.
@@ -138,24 +141,29 @@ notification should arrive within a few minutes (see
 
 ## Reinstalling for a fresh onboarding
 
-Onboarding is gated on what is actually true (permissions, a stored
-vehicle and city, and a linked provider), so simply reinstalling over the
-top will skip straight to Home if the phone still satisfies all of that.
-To walk it from the start:
+Onboarding is gated on what is actually true: permissions, a car **on the
+account** (the server), the city chosen on this phone, and a linked
+provider. So reinstalling over the top skips straight to Home if all of
+that still holds. To walk it from the start:
 
-1. **Delete the app from the phone** — long-press the icon → Remove App →
-   Delete App. This is what clears the stored vehicle, city, and the
-   permission grants; a plain Xcode reinstall does not.
-2. In Xcode: Product → Run (⌘R) with your phone selected.
-3. Accept the permission prompts as they come, or the first onboarding step
-   will keep asking for them.
+1. **Sign out first** (Account → Sign out). iOS can keep Keychain items
+   across an app delete, and the session tokens live in the Keychain. If
+   you skip this, a reinstall may come back signed in and skip Welcome.
+2. **Delete the app from the phone**: long-press the icon → Remove App →
+   Delete App. This clears the city and the permission grants on this
+   phone. A plain Xcode reinstall does not.
+3. In Xcode: Product → Run (⌘R) with your phone selected.
+4. Accept the permission prompts as they come, or the first onboarding step
+   will keep asking for them. Your car and provider link live on your
+   account, so those steps show them already set.
 
 Two faster options that don't need a delete:
 
-- **Diagnostics → Reset onboarding** clears the vehicle, city, and the
-  completion flag on this phone. You land back on the welcome screen
-  immediately. Permissions stay granted (iOS only asks once), so the
-  permissions step will show them already on.
+- **Diagnostics → Reset onboarding** clears the city, the local copy of
+  the car, and the completion flag on this phone. It doesn't sign you out.
+  You land back in setup at the first missing step, normally **City**.
+  Permissions are still granted, and the car is still on your account, so
+  those steps are skipped.
 - **iOS Settings → ParkAgent** → set Location to "Never" or turn Motion
   off, then relaunch: the truth gate sends you to the permissions step.
 

@@ -62,9 +62,11 @@ with `-authenticationKeyPath`, `-authenticationKeyID`,
 - **Push**: `ios/project.yml` declares `aps-environment: development`. The
   App Store export re-signs with a distribution profile, and Xcode sets
   `aps-environment` to `production` in the uploaded binary. The run log
-  prints the value when Xcode reports it. Release builds register their push
-  token as `production`, so the server sends to Apple's production push
-  service.
+  prints the value when Xcode reports it. The app reads its environment
+  from its signing, not its build configuration (`APNsEnvironment.swift`).
+  TestFlight and App Store builds carry no embedded profile and register as
+  `production`. Anything installed from Xcode, Release included, registers
+  as `development`. The server sends each token to its own host.
 
 ## Secrets and variables
 
@@ -215,16 +217,27 @@ about this). Answer the question in App Store Connect on the build: the app
 uses none of the listed encryption algorithms beyond what Apple's operating
 system provides.
 
+### 8. Sign in with Apple key (server)
+
+Beta App Review exercises Delete account, and App Review guideline
+5.1.1(v) requires it to revoke the user's Apple tokens. The server does
+that only when `APPLE_SIGNIN_KEY`, `APPLE_SIGNIN_KEY_ID`, and
+`APPLE_SIGNIN_TEAM_ID` are set (a key from Keys with Sign in with Apple
+enabled). They are set on prod. `fly secrets list -a parkagent-api` shows
+all three. The on-device check that deletion removes the app from the
+Apple ID's Sign in with Apple list is #142.
+
 ## Running it
 
-From GitHub: Actions → testflight → Run workflow, pick the branch (for
-example `release/1.0-rc1`), fill in any inputs, Run.
+From GitHub: Actions → testflight → Run workflow, pick the branch or tag
+(normally `main`, or a release tag such as `v1.0.0-rc3`), fill in any
+inputs, Run.
 
 From a terminal:
 
 ```sh
-gh workflow run testflight.yml --ref release/1.0-rc1
-gh workflow run testflight.yml --ref release/1.0-rc1 \
+gh workflow run testflight.yml --ref main
+gh workflow run testflight.yml --ref v1.0.0-rc3 \
   -f build_number=12 -f what_to_test="$(cat notes.txt)"
 gh run watch
 ```
@@ -319,8 +332,8 @@ Microphone and Speech Recognition
 Requested only when the user taps the parking assistant's microphone button, to transcribe the question.
 
 Paying
-Paying requires linking a real ParkNYC or ParkBoston account. The user signs in on the provider's own web page inside the app, and the app never sees or stores that password. For this beta the server runs in dry run: no payment is made and no money moves. The app detects the stop, finds the zone, quotes the price, and records what it would have paid, marked "Dry run". Without a provider account you can still sign in, grant permissions, add a car, choose a city, and reach the connect step; outside those two cities choose "Somewhere else".
+Paying requires linking a real ParkNYC or ParkBoston account. The user signs in on the provider's own web page inside the app, and the app never sees or stores that password. For this beta the server runs in dry run: no payment is made and no money moves. The app detects the stop, finds the zone, quotes the price, and records what it would have paid, marked "Dry run". Without a provider account you can still sign in, grant permissions, add a car, choose a city, choose how to pay, and at the connect step tap "Skip for now" to reach the app; outside those two cities choose "Somewhere else".
 
 Deleting an account
-Park tab > the avatar at the top right > Account > Delete account, at the bottom. Type DELETE to confirm.
+Park tab > the avatar at the top right (it opens the Account sheet) > Delete account, near the bottom. Type DELETE to confirm.
 ```

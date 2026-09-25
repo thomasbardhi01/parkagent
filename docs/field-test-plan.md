@@ -1,4 +1,4 @@
-# Field test plan — 1.0.0-rc1
+# Field test plan — 1.0.0
 
 Two days in Boston before anyone else gets the app: day 1 in dry run (the
 app does everything except pay), day 2 with real money on your own card
@@ -6,9 +6,10 @@ through ParkBoston (`provider_card`). Then a go/no-go on inviting friends.
 
 Use a **Debug build installed from Xcode** on your phone for both days —
 it is the only build with Diagnostics (tap the version number in Account →
-About five times), which you need for the signal log and the dry-run
-readout. `ios/Config.xcconfig` must point `API_BASE_URL` at prod. Friends
-get the TestFlight (Release) build, which has no Diagnostics.
+About five times, then the **Diagnostics** row that appears), which you
+need for the signal log and the dry-run readout. `ios/Config.xcconfig` must
+point `API_BASE_URL` at prod. Friends get the TestFlight (Release) build,
+which has no Diagnostics.
 
 `docs/field-test-checklist.md` has the per-stop routine and how to read the
 exported signal log; this plan says what to do on which day and what "good
@@ -22,18 +23,21 @@ using the app; friends join only while the server is back in dry run.
 
 ## The night before
 
-1. **Merge and deploy.** Merge the release PR, wait for CI's `deploy` job,
-   then `curl -s https://parkagent-api.fly.dev/health` shows the merge
-   commit and `"dryRun": true`. Tag it (see the PR's checklist).
-2. **Give the server room for the browser.** Paying runs headless Chromium
-   on the one Fly machine, which has 512 MB, and nothing has run the
-   executor on Fly yet:
+1. **Prod runs the build you mean to test.** `main` at `v1.0.0-rc3` or
+   later. `curl -s https://parkagent-api.fly.dev/health` must show that
+   commit and `"dryRun": true`. After a merge, `waitdeploy <PR>` blocks
+   until it does (see CLAUDE.md).
+2. **The server has room for the browser.** Paying runs headless Chromium
+   on the one Fly machine, and nothing has run the executor on Fly yet.
+   The size lives in `fly.toml`'s `[[vm]]` block (1 GB), and every deploy
+   re-applies it. Don't use `fly scale memory`: the next merge undoes it.
+   Check:
 
-       fly scale memory 1024 -a parkagent-api
+       fly scale show -a parkagent-api      # MEMORY 1024 MB
 
 3. **Install** the Debug build from Xcode (Product → Run on your phone).
    Walk `docs/device-smoke-test.md` top to bottom. Every step must pass.
-4. **Diagnostics** (Account → About → version × 5):
+4. **Diagnostics** (Account → About → version × 5 → Diagnostics):
    - Detection: **Detector: Running**, **Fully armed**.
    - Dry run: **On — no money moves**.
    - ParkAgent card sandbox: **off**.
@@ -79,8 +83,9 @@ At each stop (details in the checklist):
    paid"), so the extension worker runs against it. Screenshot the sheet
    and the session.
 5. At one stop, walk a few blocks away and stay past the last 12 minutes
-   of the session: you should get "would have extended" (or a warning, if
-   a cap or the max stay is in the way). Then stop the session in the app.
+   of the session. You should get **"Dry run: extended"** ("Auto-extend
+   would have added N min ($X) in zone Z."), or **"Meter expiring"** if a
+   cap or the max stay is in the way. Then stop the session in the app.
 6. Pay the real meter yourself.
 
 ### Send me after day 1
@@ -112,7 +117,8 @@ All must hold, or day 2 waits for a fix:
 - At most one false park across the red lights and drive-throughs, and
   it's understood from the signal log.
 - No crash and no out-of-memory kill in `fly logs`.
-- `admin/summary` shows no `executorErrors`.
+- `admin/summary` shows no executor errors: `jq '.cities[].executorErrors'`
+  prints only `{}`.
 
 ---
 
@@ -132,7 +138,10 @@ blocks whose zone numbers are known (day 1's).
        fly secrets set DRY_RUN=false -a parkagent-api
 
 3. Keep the caps small: Account → Spending limits, **$10 per stop, $20 per
-   day** (you're the admin, so you can edit them). Save.
+   day**, and **Default stay 15 min**. There's no per-park duration in the
+   app: Pay buys the default stay, capped at the zone's max stay, and the
+   image's default is 90 minutes. You're the admin, so you can edit these.
+   Tap **Save limits**.
 4. Then the policy switch (it keeps the caps you just saved):
 
        curl -s -H "x-api-key: $KEY" https://parkagent-api.fly.dev/policy \
@@ -146,13 +155,13 @@ blocks whose zone numbers are known (day 1's).
    the policy back to the image's (dry run on, caps $45/$60). That's the
    safe direction for dry run, but it would quietly turn your paid test
    into a dry one — and if you then flip the policy again, re-check the
-   caps first.
+   caps and the default stay first.
 
 ### The stops
 
 | # | Stop | Expect |
 |---|---|---|
-| 1 | A known block, short stay (15–30 min) | Pay → a real ParkBoston session; "Meter paid" push; Activity shows meter + fee |
+| 1 | A known block, short stay (the 15-minute default stay) | Pay → a real ParkBoston session; "Meter paid" push; Activity shows meter + fee |
 | 2 | Same block or another; stay past the end, walk away | one auto-extension (a real second charge) and a "Session extended" push |
 | 3 | Any known block | Stop in the app. ParkBoston has no early stop: the session stays until it runs out, with no refund. That's expected. |
 
@@ -206,7 +215,8 @@ All must hold:
    out-of-memory kill on Fly.
 7. **The friend path works on TestFlight.** Install the TestFlight build
    with a *second* Apple ID (not the admin) and go through onboarding: Sign
-   in with Apple, permissions, plate, city, connect the provider, and the
+   in with Apple, permissions, plate, city, **How do you want to pay** (your
+   card on the provider, preselected), connect the provider, and the
    **read-only** spending limits step (Continue, no Save). Tapping the
    version number five times must do nothing.
 8. Detection and zones are as good as on day 1.
@@ -216,3 +226,10 @@ them the tester notes in `docs/testflight.md`. They need their own ParkNYC
 or ParkBoston account. Keep the server in dry run while anyone but you is
 on it. Turning real money on for everyone is a separate decision, after a
 dry-run week with friends (`docs/parkagent-nyc-build-plan.md`).
+
+## Tracking
+
+Each day has a GitHub issue in the **Field test** milestone: #67 (Apple
+developer setup), #71 (the night before and day 1), and #135 (day 2).
+Inviting friends is #139, in the **TestFlight 1.0** milestone. NYC gets
+its own dry-run day afterwards (#72).

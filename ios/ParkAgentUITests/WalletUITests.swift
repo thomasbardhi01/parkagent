@@ -188,6 +188,7 @@ final class WalletUITests: ParkAgentUITestCase {
         XCTAssertEqual(consent.value as? String, "unchecked")
         consent.tap()
         XCTAssertTrue(confirm.isEnabled)
+        attachScreenshot(of: app, named: "pr-wallet-switch-parkagent")
         confirm.tap()
 
         let funding = element(app, "wallet.hero.funding")

@@ -11,6 +11,7 @@ import { allProviders, providerStatusUsable } from "../../providers/registry.js"
 import { nycStartOfMonth } from "../hours.js";
 import { LINK_MANAGE_URL } from "../link/linkClient.js";
 import type { LinkPaymentMethodSummary } from "../link/linkClient.js";
+import { LINK_COMMITTED_STATUSES, linkSpentSince } from "../link/linkSpend.js";
 import type { PendingLinkApproval } from "../link/linkWallet.js";
 import { spentToday } from "../sessions.js";
 import { activityPage } from "./activity.js";
@@ -114,8 +115,11 @@ export interface WalletSummary {
     todayUsd: number;
     dailyCapUsd: number;
     sessionCapUsd: number;
+    /** Everything this month, whatever paid: byCity (street meters) plus
+     * linkMonthUsd (garages approved in Link) add up to it. */
     monthUsd: number;
     byCity: { city: string; cityDisplayName: string; monthUsd: number }[];
+    linkMonthUsd: number;
   };
   activity: ActivityPage;
 }
@@ -280,7 +284,17 @@ export async function walletSummary(
   // ---- Spending (real money only — dry-run sessions moved none)
   const sessionTotal = (s: { amountUsd: unknown; feeUsd: unknown }) =>
     Number(s.amountUsd ?? 0) + Number(s.feeUsd ?? 0);
-  const monthUsd = round2(monthSessions.reduce((sum, s) => sum + sessionTotal(s), 0));
+  // Garages approved in Link are spend too; they have no meter city, so
+  // they get their own line and the month still adds up.
+  const linkMonthUsd = await linkSpentSince(
+    deps.db,
+    userId,
+    nycStartOfMonth(at),
+    LINK_COMMITTED_STATUSES,
+  );
+  const monthUsd = round2(
+    monthSessions.reduce((sum, s) => sum + sessionTotal(s), 0) + linkMonthUsd,
+  );
   const byCity = allProviders()
     .map((p) => ({
       city: p.city,
@@ -325,6 +339,7 @@ export async function walletSummary(
       sessionCapUsd: policy.session_cap_usd,
       monthUsd,
       byCity,
+      linkMonthUsd,
     },
     activity,
   };

@@ -26,7 +26,8 @@ import { itineraryStopSchema, itineraryTotalUsd } from "../services/assistant/pl
 import type { ItineraryPlan, SingleSpotPlan } from "../services/assistant/plans.js";
 import { garageHandoffNote, garageProviderInfo } from "../services/garage/garageProvider.js";
 import { cityForZone, providerForCity } from "../providers/registry.js";
-import { parseEasternTime } from "../services/hours.js";
+import { nycStartOfDay, parseEasternTime } from "../services/hours.js";
+import { LINK_PENDING_STATUSES, linkSpentSince } from "../services/link/linkSpend.js";
 import { makeRateLimiter } from "../services/rateLimit.js";
 import { spentToday } from "../services/sessions.js";
 import { normalizeSource } from "../services/wallet/summary.js";
@@ -253,6 +254,8 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
         expiresAt: new Date(at.getTime() + CONFIRMATION_TTL_MS),
       },
     });
+    // What the cap checks below saw, filled in once measured.
+    const spendInputs: Record<string, number> = {};
     const decide = (rule: string, outcome: Record<string, unknown>) =>
       deps.db.decision.create({
         data: {
@@ -261,6 +264,7 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
             planId: planRow.id,
             optionId: parsed.data.optionId ?? null,
             kind: planRow.kind,
+            ...spendInputs,
           },
           rule,
           outcome,
@@ -293,7 +297,18 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
     // money path: never under dry run unless Link itself is in test mode
     // (test requests carry test:true and can't charge).
     const linkBlockedByDryRun = linkActive && dryRun && deps.linkWallet?.testMode !== true;
+    // Today's spend, whatever paid (approved Link garages included).
     const spentTodayUsd = await spentToday(deps.db, user.id, at);
+    // Requests still awaiting approval become spend the moment the user
+    // approves them, so they hold their room too: two confirms can't each
+    // fit the cap and together pass it.
+    const linkPendingTodayUsd = linkActive
+      ? await linkSpentSince(deps.db, user.id, nycStartOfDay(at), LINK_PENDING_STATUSES)
+      : 0;
+    Object.assign(spendInputs, {
+      spentTodayUsd,
+      ...(linkActive ? { linkPendingTodayUsd } : {}),
+    });
 
     /** Whether Link may be asked for `amountUsd` right now, and why not. */
     const linkGate = (amountUsd: number, alreadyRequestedUsd = 0): string | null => {
@@ -301,7 +316,10 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
       if (amountUsd <= 0) return "free";
       if (linkBlockedByDryRun) return "dry_run";
       if (amountUsd > policy.session_cap_usd) return "session_cap_exceeded";
-      if (spentTodayUsd + alreadyRequestedUsd + amountUsd > policy.daily_cap_usd) {
+      if (
+        spentTodayUsd + linkPendingTodayUsd + alreadyRequestedUsd + amountUsd >
+        policy.daily_cap_usd
+      ) {
         return "daily_cap_exceeded";
       }
       return null;

@@ -1560,6 +1560,32 @@ export function seedFundingMethod(
   return row;
 }
 
+/** Seed a Link spend request (a garage paid with Link). Approved by
+ * default — committed spend against the daily cap. */
+export function seedLinkSpendRequest(
+  state: FakeDbState,
+  overrides: Partial<LinkSpendRequestRow> = {},
+): LinkSpendRequestRow {
+  const row: LinkSpendRequestRow = {
+    id: `lsrq_seed_${state.linkSpendRequests.length + 1}`,
+    userId: "u1",
+    itineraryId: null,
+    stopId: null,
+    planId: null,
+    amountUsd: 20,
+    status: "approved",
+    approvalUrl: null,
+    merchantName: "SpotHero",
+    cardEncrypted: null,
+    validUntil: null,
+    cardUsedAt: null,
+    createdAt: new Date(MONDAY_2PM),
+    ...overrides,
+  };
+  state.linkSpendRequests.push(row);
+  return row;
+}
+
 /** Seed a saved vehicle (the session's plate, passed to the executor). */
 export function seedVehicle(
   state: FakeDbState,

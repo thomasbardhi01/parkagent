@@ -16,7 +16,13 @@ import type {
 } from "../src/services/link/linkClient.js";
 import { makeLinkHttpClient } from "../src/services/link/linkClient.js";
 import { makeWalletTick } from "../src/jobs/walletTick.js";
-import { API_KEY, MONDAY_2PM, makeTestApp, testStateCrypto } from "./helpers.js";
+import {
+  API_KEY,
+  MONDAY_2PM,
+  makeTestApp,
+  seedLinkSpendRequest,
+  testStateCrypto,
+} from "./helpers.js";
 
 const HEADERS = { "x-api-key": API_KEY, "content-type": "application/json" };
 const NOW = new Date(MONDAY_2PM);
@@ -424,6 +430,43 @@ describe("routes and plan integration", () => {
     const res = await confirm(t, "opt-garage");
     expect(res.json()).toMatchObject({ linkApproval: null, linkSkipped: "session_cap_exceeded" });
     expect(link.requests.size).toBe(0);
+  });
+
+  test("the daily cap counts today's Link garages — approved, and still awaiting approval", async () => {
+    const hoursAgo = (h: number) => new Date(NOW.getTime() - h * 3_600_000);
+    const { t, link } = await connectedWallet(() => NOW, LINK_LIVE);
+    // $60 a day: $25 approved this morning and $20 still awaiting approval
+    // leave $15, so an $18 garage doesn't fit. Neither a declined request
+    // nor yesterday's approval takes any room.
+    seedLinkSpendRequest(t.state, { amountUsd: 25, status: "approved", createdAt: hoursAgo(3) });
+    seedLinkSpendRequest(t.state, {
+      amountUsd: 20,
+      status: "pending_approval",
+      createdAt: hoursAgo(0.1),
+    });
+    seedLinkSpendRequest(t.state, { amountUsd: 40, status: "denied", createdAt: hoursAgo(1) });
+    seedLinkSpendRequest(t.state, { amountUsd: 40, status: "approved", createdAt: hoursAgo(26) });
+    seedSpotPlan(t);
+    const res = await confirm(t, "opt-garage");
+    expect(res.json()).toMatchObject({ linkApproval: null, linkSkipped: "daily_cap_exceeded" });
+    expect(link.requests.size).toBe(0);
+    // The decision records what the cap saw.
+    expect(t.state.decisions.at(-1)).toMatchObject({
+      kind: "assistant_confirm",
+      inputs: { spentTodayUsd: 25, linkPendingTodayUsd: 20 },
+    });
+
+    // With the same approval but nothing pending, the $18 garage fits.
+    const roomy = await connectedWallet(() => NOW, LINK_LIVE);
+    seedLinkSpendRequest(roomy.t.state, {
+      amountUsd: 25,
+      status: "approved",
+      createdAt: hoursAgo(3),
+    });
+    seedSpotPlan(roomy.t);
+    const ok = await confirm(roomy.t, "opt-garage");
+    expect(ok.json()).toMatchObject({ paymentSource: "link_wallet" });
+    expect(roomy.link.requests.size).toBe(1);
   });
 
   test("an itinerary asks Link once per paid GARAGE stop; street stops stay on the curb", async () => {

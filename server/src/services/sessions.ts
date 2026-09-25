@@ -18,6 +18,7 @@ import {
 import type { ExecutorDiagnostics, ExecutorErrorCode, ExecutorProvider } from "./executor.js";
 import type { HoursInterval } from "./hours.js";
 import { nycStartOfDay } from "./hours.js";
+import { LINK_COMMITTED_STATUSES, linkSpentSince } from "./link/linkSpend.js";
 import type { Policy } from "./policy.js";
 import type { RatedTerms, StayPrice } from "./quote.js";
 import { priceStay } from "./quote.js";
@@ -40,20 +41,27 @@ export interface SessionDeps {
 }
 
 /**
- * Real dollars this user has committed today (NYC calendar day). Dry-run
- * sessions are excluded — they moved no money — and failed ones never
- * charged.
+ * Real dollars this user has committed today (NYC calendar day), whatever
+ * paid: street sessions on any source, plus garages approved in Link. The
+ * daily cap is measured against this everywhere — quotes, starts,
+ * extensions, the assistant, the Wallet. Dry-run sessions are excluded —
+ * they moved no money — and failed ones never charged.
  */
 export async function spentToday(db: AppDb, userId: string, at: Date): Promise<number> {
+  const since = nycStartOfDay(at);
   const rows = await db.session.findMany({
     where: {
       userId,
       dryRun: false,
       status: { in: ["pending", "active", "stopped", "expired"] },
-      createdAt: { gte: nycStartOfDay(at) },
+      createdAt: { gte: since },
     },
   });
-  return rows.reduce((sum, s) => sum + Number(s.amountUsd ?? 0) + Number(s.feeUsd ?? 0), 0);
+  const streetUsd = rows.reduce(
+    (sum, s) => sum + Number(s.amountUsd ?? 0) + Number(s.feeUsd ?? 0),
+    0,
+  );
+  return streetUsd + (await linkSpentSince(db, userId, since, LINK_COMMITTED_STATUSES));
 }
 
 /** The rate terms the session was sold under (snapshotted at start). The

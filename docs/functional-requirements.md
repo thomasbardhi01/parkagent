@@ -607,7 +607,10 @@ There is no stored balance: top-up, withdraw, and Add money are
 admin-only operator tools. `GET /wallet` reports the active source, the
 three options with availability, each option's details, every parking
 account and what pays there, today's and the month's spend against the
-caps (per city), and the first page of the unified Activity ledger
+caps — whatever paid: street meters per city plus garages approved in
+Link, the same figure every daily-cap check uses (a Link request still
+awaiting approval also holds its room) — and the first page of the
+unified Activity ledger
 (sessions with meter, fee, explanation, holds, and timeline; garage
 bookings; Link payments with their approval state; receipt ids).
 `PUT /wallet/source` validates readiness. The app's tabs are Park ·
@@ -626,7 +629,9 @@ hold's room), `wallet.test.ts` (each Wallet state's shape, setup-intent
 and funding methods, activity paging and explanations, admin-only
 funding, `DELETE /me` taking the Customer and Link with it),
 `linkWallet.test.ts` (garage approval → reveal, the street restriction,
-dry-run and cap gating, approval timeout), `paymentSource.test.ts`,
+dry-run and cap gating — including today's approved and pending Link
+requests — and approval timeout), `session.test.ts` (a street start
+refused once Link garages used the day's cap), `paymentSource.test.ts`,
 `adversarial.test.ts` (replay claims once); live FR-33 tests (summary
 shape and honesty, paging, switch refusals, setup-intent refusal before
 any Stripe call, the old route gone) — run against a local API on the

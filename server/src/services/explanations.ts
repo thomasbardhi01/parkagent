@@ -54,7 +54,8 @@ const RULE_TEXT: Record<string, string> = {
   hold_captured: "the hold captured what the ParkAgent card paid and released the rest",
   hold_released: "the hold was released in full — nothing was charged",
   capture_deferred: "the provider's charge hadn't arrived yet, so capture waited",
-  wallet_not_ready: "the chosen way to pay isn't set up yet",
+  wallet_not_ready:
+    "the chosen way to pay wasn't ready — no card to hold against, a frozen card, or the card not yet on the parking account",
   hold_failed: "the hold on your card couldn't be placed, so nothing was paid",
   replayed: "a duplicate delivery was answered from the recorded decision",
 };

@@ -382,7 +382,7 @@ agree.
 | `free_period` | all agree, `totalUsd` is 0 | `ignore` | nearest only |
 | `rate_above_ceiling` | ladder max > `auto_pay_max_rate_per_hour` | `confirm` | nearest only |
 | `session_cap_exceeded` | `totalUsd` > `session_cap_usd` | `confirm` | nearest only |
-| `daily_cap_exceeded` | today's session spend + `totalUsd` > `daily_cap_usd` | `confirm` | nearest only |
+| `daily_cap_exceeded` | today's spend (sessions + garages approved in Link) + `totalUsd` > `daily_cap_usd` | `confirm` | nearest only |
 | `needs_zone_number` | would auto-pay, but the zone's pay-by-app number is unknown (Boston, unreported block) | `confirm` | nearest only |
 | `auto_pay_ok` | none of the above | `pay` | nearest only |
 
@@ -625,7 +625,7 @@ guarantees and cannot be confirmed through — raise them via `PUT /policy`):
 | `max_stay_exceeded` | `minutes` > zone max stay |
 | `free_period` | the whole stay prices to $0 (outside enforcement) — nothing to buy, and typing minutes into the provider anyway could charge money the quote never priced |
 | `session_cap_exceeded` | purchase total > `session_cap_usd` |
-| `daily_cap_exceeded` | real (non-dry-run) spend today + total > `daily_cap_usd` |
+| `daily_cap_exceeded` | real (non-dry-run) spend today — sessions plus garages approved in Link — + total > `daily_cap_usd` |
 
 Other errors: `404` unknown/foreign `parkedEventId` or `zoneId`, `409
 {"error": "session_already_active"}` (one open session per user — enforced
@@ -1564,9 +1564,13 @@ spendable card once approved, so it is a money path and is **checked
 before it is made**: `linkSkipped` says why none was — `dry_run` (either
 dry-run switch on, unless `LINK_TEST_MODE`, whose requests carry
 `test: true` and can't charge), `session_cap_exceeded` (a garage over
-`session_cap_usd`), `daily_cap_exceeded` (today's real spend plus the
-request(s) over `daily_cap_usd`), or `link_failed`. None of these block
-the handoff — the user can still pay at the garage's own checkout.
+`session_cap_usd`), `daily_cap_exceeded` (today's real spend — sessions
+and garages already approved in Link — plus requests still awaiting
+approval today, plus this confirm's request(s), over `daily_cap_usd`; a
+pending request holds its room because approving it makes it spendable),
+or `link_failed`. None of these block the handoff — the user can still
+pay at the garage's own checkout. The confirm's decision row records
+`spentTodayUsd` and `linkPendingTodayUsd`.
 
 The token authorizes the TAPPED option only: `book_garage` /
 `start_session` refuse it for any other option id, zone, or duration,
@@ -1700,8 +1704,11 @@ without asking Link — a late approval can't revive it.
 a failed read keeps the cached one. "Manage in Link" opens
 `https://app.link.com`.
 
-The daily cap applies across every source (garage requests count into
-the same `daily_cap_usd` check). Env: `LINK_CLIENT_ID`,
+The daily cap applies across every source: a garage approved in Link
+(`approved` / `succeeded`) counts into today's spend everywhere the cap is
+checked — quotes, session starts and extensions, auto-extend, the
+assistant — and a request still awaiting approval also holds its room
+against further Link requests. Env: `LINK_CLIENT_ID`,
 `LINK_CLIENT_SECRET`, `LINK_PUBLISHABLE_KEY`, `LINK_REDIRECT_URI` (all
 four or none — without them the Wallet shows "Link — coming soon"),
 optional `LINK_TEST_MODE`.
@@ -1751,8 +1758,9 @@ and the provider card is the provider's business.
     "paysWith": { "source": "provider_card", "brand": "Visa", "last4": "1234" } | null,
     "attention": null
   }],
-  "spending": { "todayUsd": 4.1, "dailyCapUsd": 60, "sessionCapUsd": 45, "monthUsd": 23.81,
-                "byCity": [{ "city": "bos", "cityDisplayName": "Boston", "monthUsd": 16.53 }, …] },
+  "spending": { "todayUsd": 4.1, "dailyCapUsd": 60, "sessionCapUsd": 45, "monthUsd": 41.81,
+                "byCity": [{ "city": "bos", "cityDisplayName": "Boston", "monthUsd": 16.53 }, …],
+                "linkMonthUsd": 18 },
   "activity": { "items": [ …first five of GET /wallet/activity… ], "nextCursor": null }
 }
 ```
@@ -1768,9 +1776,12 @@ and the provider card is the provider's business.
   or `own_card_replaced` (the account carries the ParkAgent card while
   another source is active — the user must add their own card back in the
   provider's app).
-- `spending` counts real money only (dry-run sessions moved none): today
-  (ET day, the caps' clock) against `daily_cap_usd`, the month, and the
-  month per city.
+- `spending` counts real money only (dry-run sessions moved none),
+  whatever paid: today (ET day, the caps' clock — the same figure the
+  daily cap is checked against, so it includes garages approved in Link)
+  against `daily_cap_usd`, and the month. The month splits into street
+  meters per city (`byCity`) plus `linkMonthUsd` (garages approved in
+  Link, which have no meter city); together they add up to `monthUsd`.
 - Brand/expiry/name on `parkagentCard.card` are read live from Stripe
   (best effort — the card still renders from our mirror).
 

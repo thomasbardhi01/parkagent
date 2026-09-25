@@ -17,6 +17,7 @@ import {
   makeTestApp,
   seedFundingMethod,
   seedHold,
+  seedLinkSpendRequest,
   seedProviderAccount,
   seedSession,
 } from "./helpers.js";
@@ -116,6 +117,7 @@ describe("GET /wallet — the states the app renders", () => {
         { city: "bos", cityDisplayName: "Boston", monthUsd: 0 },
         { city: "nyc", cityDisplayName: "New York City", monthUsd: 0 },
       ],
+      linkMonthUsd: 0,
     });
     expect(body.dryRun).toBe(true);
   });
@@ -224,6 +226,47 @@ describe("GET /wallet — the states the app renders", () => {
       true,
     );
     expect(body.activity).toEqual({ items: [], nextCursor: null });
+  });
+
+  test("spending: garages approved in Link count today and this month, on their own line", async () => {
+    const t = makeTestApp({ seedLinkedProvider: false });
+    const hoursAgo = (h: number) => new Date(NOW.getTime() - h * 3_600_000);
+    seedSession(t.state, {
+      status: "stopped",
+      dryRun: false,
+      city: "bos",
+      amountUsd: 4,
+      feeUsd: 0.1,
+      createdAt: hoursAgo(2),
+    });
+    seedLinkSpendRequest(t.state, { amountUsd: 18, status: "approved", createdAt: hoursAgo(1) });
+    // Awaiting approval, declined, or expired: nothing spent.
+    seedLinkSpendRequest(t.state, {
+      amountUsd: 12,
+      status: "pending_approval",
+      createdAt: hoursAgo(0.1),
+    });
+    seedLinkSpendRequest(t.state, { amountUsd: 30, status: "denied", createdAt: hoursAgo(1) });
+    seedLinkSpendRequest(t.state, { amountUsd: 30, status: "expired", createdAt: hoursAgo(1) });
+    // Saturday (Jan 3): this month, not today.
+    seedLinkSpendRequest(t.state, { amountUsd: 9, status: "succeeded", createdAt: hoursAgo(50) });
+    // December: neither.
+    seedLinkSpendRequest(t.state, {
+      amountUsd: 50,
+      status: "approved",
+      createdAt: hoursAgo(24 * 10),
+    });
+
+    const body = (await call(t, "GET", "/wallet")).json();
+    expect(body.spending).toMatchObject({
+      todayUsd: 22.1,
+      monthUsd: 31.1,
+      linkMonthUsd: 27,
+      byCity: [
+        { city: "bos", monthUsd: 4.1 },
+        { city: "nyc", monthUsd: 0 },
+      ],
+    });
   });
 });
 

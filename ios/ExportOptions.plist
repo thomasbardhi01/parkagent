@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Export options for the TestFlight upload (.github/workflows/testflight.yml,
+  docs/testflight.md). `xcodebuild -exportArchive` with these signs the
+  archive for App Store Connect with the team's cloud-managed distribution
+  certificate and uploads it; nothing is left to upload by hand.
+
+  teamID is deliberately absent: the workflow copies this file and inserts
+  the team from APPLE_TEAM_ID at run time. Run by hand, Xcode takes the team
+  from the archive.
+
+  manageAppVersionAndBuildNumber is off because the workflow sets the build
+  number itself (CURRENT_PROJECT_VERSION) and checks it before uploading.
+-->
+<plist version="1.0">
+<dict>
+	<key>method</key>
+	<string>app-store-connect</string>
+	<key>destination</key>
+	<string>upload</string>
+	<key>signingStyle</key>
+	<string>automatic</string>
+	<key>uploadSymbols</key>
+	<true/>
+	<key>manageAppVersionAndBuildNumber</key>
+	<false/>
+</dict>
+</plist>

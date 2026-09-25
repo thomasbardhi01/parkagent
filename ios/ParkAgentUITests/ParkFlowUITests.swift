@@ -132,7 +132,7 @@ final class ParkFlowUITests: ParkAgentUITestCase {
         element(app, "parkedSheet.saveAndPayButton").tap()
 
         // The applied-number notice is transient: it shows only for the pay
-        // round-trip (a 400 ms mock pause here; seconds in prod) and then the
+        // round-trip (2 s in this mock scenario; seconds in prod) and then the
         // sheet dismisses. Match identifier AND label in ONE predicate wait so
         // there is no gap between confirming it exists and reading its label —
         // reading `.label` after the sheet had already dismissed was the flake

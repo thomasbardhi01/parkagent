@@ -281,6 +281,13 @@ struct MockAPI: APIClient {
 
     func startSession(_ request: SessionStartRequest) async throws -> SessionStartOutcome {
         try await pause()
+        // The zone-number notices ("saved for this block", the applied
+        // number) only show while the start is in flight; 400 ms was short
+        // enough for a loaded simulator to miss them (both Boston capture
+        // tests flaked, on CI and locally).
+        if scenario == .bostonNeedsZone || scenario == .bostonImportConflict {
+            try await Task.sleep(for: .milliseconds(1600))
+        }
         // What the server answers when the executor fails at the provider
         // after the pay click (ui_changed): nobody knows if it paid.
         if scenario == .paymentFailed { throw APIError.executorFailed(code: "ui_changed") }

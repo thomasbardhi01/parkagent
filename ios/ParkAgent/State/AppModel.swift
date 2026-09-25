@@ -1,6 +1,7 @@
 import CoreLocation
 import Foundation
 import Observation
+import UIKit
 
 /// Single source of app state. Screens read it via the environment; only its
 /// methods talk to the APIClient.
@@ -308,6 +309,11 @@ final class AppModel {
             carCoordinate = coordinate
             paymentError = nil
             pendingParked = response
+            // Backgrounded (the usual case: the driver just walked away),
+            // the sheet waits unseen — say so with a notification.
+            if UIApplication.shared.applicationState != .active {
+                await ParkedNotice.post(for: response)
+            }
             // A real park is the freshest city signal there is.
             if let city = response.candidates.first?.city {
                 detectedCity = city

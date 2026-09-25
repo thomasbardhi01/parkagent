@@ -467,7 +467,11 @@ applied; a zoneId the model dropped is re-attached from the
 conversation's quotes, and a street option with no quote to ground it
 is refused), a garage option the id `search_garages` returned; plans are
 zod-validated at the tool boundary and itinerary totals recomputed
-server-side, so an invented price or zone never reaches a card.
+server-side, so an invented zone never reaches a card. Prices: a
+single-spot option's price and every EDITED itinerary stop's price come
+from the server's own quote (#131); an itinerary's first proposal still
+carries the per-stop prices the model read off `build_itinerary`, summed
+and capped server-side but not re-quoted yet (#132).
 **Accepted when** ungrounded plans are refused at the boundary.
 
 Evidence: `assistantPlanEnforcement.test.ts`,

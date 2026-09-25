@@ -199,9 +199,12 @@ test("executor failure fails the session and pushes payment_failed", async () =>
     screenshotBase64: "aGk=",
   });
   expect(typeof decision.outcome["durationMs"]).toBe("number");
-  // The failure push is the tap-to-pay fallback, deep link included.
+  // The failure push says what to do instead, deep link included; the
+  // executor code rides in `extra`, never in the words a driver reads.
   const push = pushes.at(-1)!.push;
   expect(push.type).toBe("payment_failed");
+  expect(push.body).toBe("The meter for zone 417371 is unpaid — pay in ParkNYC or at the meter.");
+  expect(push.body).not.toContain("ui_changed");
   expect(push.extra).toMatchObject({
     code: "ui_changed",
     zoneNumber: "417371",
@@ -313,7 +316,7 @@ test("payment_method_missing pushes an 'add a card' failure naming the zone's ow
   const push = pushes.at(-1)!.push;
   expect(push.type).toBe("payment_failed");
   expect(push.title).toBe("Add a card to ParkNYC");
-  expect(push.body).toContain("add a card to ParkNYC");
+  expect(push.body).toContain("ParkNYC has no card saved");
   expect(push.extra).toMatchObject({ code: "payment_method_missing" });
 
   // Boston zone → ParkBoston, same code path.

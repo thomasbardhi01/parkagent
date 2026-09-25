@@ -720,16 +720,18 @@ Pushes carry a standard `aps` payload plus `{"type": ...}`, one of:
 - `session_expiring` — expiring soon and auto-extend will not fire; carries
   `reason`: `"max_stay"` (move the car), `"budget"` (a cap would be hit),
   or `"no_auto_extend"` (disabled or max_count used up)
-- `payment_failed` — a pay or extend attempt failed; the meter is unpaid;
-  carries `code` (executor error code)
+- `payment_failed` — a pay or extend attempt failed; the meter is unpaid.
+  The body says what to do instead (pay in the provider's app or at the
+  meter; extend in the app); `code` (the executor error code) rides in
+  `extra`, never in the text
 - `card_declined` — the ParkAgent card's hold was refused by the user's
   saved card; nothing was paid (the hold comes before the provider).
   Carries `zoneNumber` and `deepLink: "parkagent://wallet"` — the fix is
   updating the card in the Wallet, not a retry
 - `provider_relink` — the linked provider session died (`auth_expired`);
   carries `provider` and a deep link into the app's link flow, `zoneNumber`, and `deepLink`
-  (`parkagent://pay?zone=<zone>` — tap-to-pay fallback with the zone
-  prefilled)
+  (`parkagent://pay?zone=<zone>` — opens the Park tab, where the zone
+  number is on screen)
 
 Sending requires the `APNS_KEY` (contents of the `.p8` auth key),
 `APNS_KEY_ID`, `APNS_TEAM_ID`, and `APNS_BUNDLE_ID` env vars; with any of
@@ -1226,8 +1228,9 @@ nag a human, and nags must be auditable.
 
 ### POST /providers/:provider/topup
 
-`{amountUsd}` → top up the provider wallet from the card on file, through
-the executor. Policy-gated and audited like every money move (kind
+**Admin only** (`403 forbidden` for anyone else) — an operator tool; the app
+has no top-up. `{amountUsd}` → top up the provider wallet from the card on
+file, through the executor. Policy-gated and audited like every money move (kind
 `provider_topup`): single move ≤ `daily_cap_usd`
 (`409 amount_over_daily_cap`), dry run refuses (`409 dry_run`,
 `wouldAllow: true`), executor failures come back typed
@@ -1245,9 +1248,14 @@ Returns the active policy plus bookkeeping:
 {
   "policy": { …policy.json… },
   "hash": "sha256:…",        // canonical-JSON hash, matches policy_snapshots
-  "dryRun": true             // effective: env DRY_RUN || policy.dry_run
+  "dryRun": true,            // effective: env DRY_RUN || policy.dry_run
+  "editable": false          // may THIS caller PUT it (admin only)
 }
 ```
+
+The policy is shared: its caps apply to every account (each person's own
+spend counts against them). The app shows them read-only when `editable`
+is false — the budget step in onboarding and Account → Spending limits.
 
 ## PUT /policy
 

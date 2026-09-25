@@ -105,15 +105,20 @@ export function paymentFailedPush(args: {
 }): Push {
   // A card-less account, an unknown plate, or an operator lockout are
   // distinct, actionable failures: the fix is doing something in the
-  // provider's own app (or waiting), not blindly "retry"/"tap to pay".
+  // provider's own app (or waiting), not blindly retrying. Every body says
+  // what the driver can actually do from here — the app can't re-run a
+  // payment from a push — and never shows the raw executor code (it rides
+  // in `extra.code` for the app and the decision log).
   const body =
     args.code === "payment_method_missing"
-      ? `The meter for zone ${args.zoneNumber} is unpaid — add a card to ${args.providerName}, then tap to pay.`
+      ? `The meter for zone ${args.zoneNumber} is unpaid — ${args.providerName} has no card saved. Add one there and pay in ${args.providerName} for now.`
       : args.code === "vehicle_missing"
-        ? `${args.providerName} doesn't know your plate — add your vehicle there, then tap to pay zone ${args.zoneNumber}.`
+        ? `${args.providerName} doesn't know your plate — add your vehicle there and pay zone ${args.zoneNumber} in ${args.providerName} for now.`
         : args.code === "parking_denied"
           ? `${args.providerName} won't let you re-park zone ${args.zoneNumber} right now (an operator lockout). Nothing was charged — wait or move the car.`
-          : `Could not ${args.what} zone ${args.zoneNumber} (${args.code}). The meter is unpaid — tap to pay.`;
+          : args.what === "extend"
+            ? `Zone ${args.zoneNumber} wasn't extended. Extend in ParkAgent or ${args.providerName} before the meter runs out.`
+            : `The meter for zone ${args.zoneNumber} is unpaid — pay in ${args.providerName} or at the meter.`;
   return {
     type: "payment_failed",
     title:
@@ -128,8 +133,8 @@ export function paymentFailedPush(args: {
     extra: {
       code: args.code,
       zoneNumber: args.zoneNumber,
-      // Tap-to-pay fallback: the app opens its pay screen with the zone
-      // prefilled (and copies the zone number for the provider's app).
+      // A tap opens the Park tab (the active session, or Home), where
+      // the zone number is on screen for the provider's app.
       deepLink: `parkagent://pay?zone=${encodeURIComponent(args.zoneNumber)}`,
     },
   };

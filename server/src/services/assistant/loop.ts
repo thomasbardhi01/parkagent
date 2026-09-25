@@ -505,9 +505,11 @@ function synthesizePlan(quotes: QuoteContext): Record<string, unknown> | null {
     options.push({
       id: "street-1",
       type: "street",
+      // The zone id is an internal slug ("bos-…") and never shown; a
+      // block with no known number says so on the meter instead.
       label: quotes.street.zoneNumber
         ? `Street — Zone ${quotes.street.zoneNumber}`
-        : `Street — ${quotes.street.zoneId}`,
+        : "Street — zone number on the meter",
       detail: "Metered street parking",
       priceUsd: quotes.street.costUsd,
       durationMinutes: quotes.street.minutes,

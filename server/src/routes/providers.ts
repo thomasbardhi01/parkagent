@@ -13,6 +13,7 @@ import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 
+import { requireAdmin } from "../app.js";
 import type { AppDeps } from "../app.js";
 import { makeRateLimiter } from "../services/rateLimit.js";
 import {
@@ -406,7 +407,11 @@ export function registerProviders(app: FastifyInstance, deps: AppDeps): void {
     return { ok: true, cardRemoval, cardFrozen };
   });
 
+  // Operator tool only, like the card funding moves: the app has no
+  // top-up (there is no stored balance anywhere), and a route that moves
+  // money must not sit open to every signed-in user with no caller.
   app.post("/providers/:provider/topup", { preHandler: limitWrites }, async (req, reply) => {
+    if (!requireAdmin(req, reply)) return;
     const provider = requireProvider(req, reply);
     if (!provider) return;
     const parsed = topupSchema.safeParse(req.body);

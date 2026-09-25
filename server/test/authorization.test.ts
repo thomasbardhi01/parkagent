@@ -29,6 +29,10 @@ test("the admin key still edits policy; everyone still reads it", async () => {
   const { app, deps } = makeTestApp({});
   const read = await app.inject({ method: "GET", url: "/policy", headers: nonAdmin });
   expect(read.statusCode).toBe(200);
+  // The app renders the limits read-only for anyone who can't save them.
+  expect(read.json().editable).toBe(false);
+  const adminRead = await app.inject({ method: "GET", url: "/policy", headers: admin });
+  expect(adminRead.json().editable).toBe(true);
 
   const put = await app.inject({
     method: "PUT",

@@ -112,7 +112,8 @@ export const TOOL_DEFINITIONS = [
       properties: {
         query: {
           type: "string",
-          description: "The named place, e.g. 'Newbury Street' or 'Fenway'",
+          description:
+            "The named place: a street, neighborhood, or landmark, e.g. 'Newbury Street' or 'SoHo'",
         },
         city: {
           type: "string",

@@ -212,6 +212,9 @@ before any customer use. Details: `executor/README.md`.
 - `pnpm -C server prisma migrate dev`   apply migrations
 - `pnpm -C server migrate:policy-fee`   move parknyc_fee_usd into city_overrides
 - `./scripts/check-city-neutral.sh`     fail on hardcoded city/provider names
+- `scripts/boot-check.sh off|on`       boot the built server with every optional feature off / on and
+  assert /health (CI gates deploy on both; needs a migrated DATABASE_URL and no repo-root .env —
+  run it from a scratch worktree). A new optional env var gets a line in both of its lists.
 - `pnpm -C server attach-identity -- --user <id> --email <e>`  give an existing user a sign-in identity
   (or `--api-key-prefix <8 chars>` in place of `--user`; on prod:
   `fly ssh console -a parkagent-api -C "node dist/scripts/attach-identity.js …"`)

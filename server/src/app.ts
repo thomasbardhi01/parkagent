@@ -191,11 +191,13 @@ export function requireAdmin(req: FastifyRequest, reply: FastifyReply): boolean 
 }
 
 /**
- * Build the Fastify app. Without deps only /health exists — enough for the
- * health tests and for boot-order flexibility; index.ts always passes deps.
+ * The bare Fastify instance, logger configured, no routes. index.ts makes
+ * it before anything else so `app.log` exists for every dependency built
+ * on the way to buildApp — a logger that forward-references a later
+ * `const app` crash-loops the process the first time boot logs through it.
  */
-export function buildApp(deps?: AppDeps): FastifyInstance {
-  const app = Fastify({
+export function createFastify(): FastifyInstance {
+  return Fastify({
     logger: {
       // Belt and braces: Fastify's default req serializer logs no headers,
       // but nothing should be one serializer tweak away from logging
@@ -211,7 +213,13 @@ export function buildApp(deps?: AppDeps): FastifyInstance {
       },
     },
   });
+}
 
+/**
+ * Build the Fastify app. Without deps only /health exists — enough for the
+ * health tests; index.ts always passes deps, and its early-made instance.
+ */
+export function buildApp(deps?: AppDeps, app: FastifyInstance = createFastify()): FastifyInstance {
   // Unhandled errors must not echo their message to the caller — Stripe,
   // Prisma, and Playwright errors carry request ids, DB topology, and page
   // state. Log server-side, answer generic. Fastify's own 4xx errors

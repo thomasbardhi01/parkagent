@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { config } from "dotenv";
 import { loadEnv } from "./env.js";
-import { buildApp, makeAuthenticate } from "./app.js";
+import { buildApp, createFastify, makeAuthenticate } from "./app.js";
 import { asAppDb, createPrisma } from "./db.js";
 import { makeCardJanitor } from "./jobs/cardJanitor.js";
 import { makeLinkJobJanitor } from "./jobs/linkJobJanitor.js";
@@ -49,6 +49,13 @@ config({ path: fileURLToPath(new URL("../../.env", import.meta.url)) });
 
 const env = loadEnv();
 
+// The Fastify instance (and so app.log) comes first: everything below may
+// log while it is built — the decision-log wrapper, the job loggers, the
+// boot notices — and a logger that reaches a later `const app` throws a
+// TDZ ReferenceError at boot (the #130 crash loop). Routes attach in
+// buildApp further down.
+const app = createFastify();
+
 // policy.json lives at the repo root next to .env; an invalid file is a
 // refusal to boot, not a warning.
 const policy = new PolicyService(
@@ -59,7 +66,7 @@ const policy = new PolicyService(
 const prisma = createPrisma(env.DATABASE_URL);
 // Every decisions row also emits one structured log line (kind, rule, ids
 // — never inputs/outcome), wrapped here once so routes, the extension
-// worker, and the janitor can't forget. `app` is bound lazily below.
+// worker, and the janitor can't forget.
 const db = withDecisionLogging(asAppDb(prisma), {
   info: (payload, msg) => app.log.info(payload, msg),
 });
@@ -217,30 +224,33 @@ const appleTokens =
     : undefined;
 if (!appleTokens) log.info("APPLE_SIGNIN_* not set; Apple tokens are not stored or revoked");
 
-const app = buildApp({
-  db,
-  policy,
-  findCandidates,
-  findNearbyZones,
-  auth,
-  authenticate: makeAuthenticate(db, env.API_KEY_PEPPER, env.AUTH_JWT_SECRET),
-  ...(assistantModel ? { assistantModel } : {}),
-  assistantTools,
-  assistantDailySpendCapUsd: env.ASSISTANT_DAILY_SPEND_CAP_USD,
-  linkWallet,
-  executorFor,
-  sendPush,
-  apnsDelivery,
-  ...(stripe ? { stripe } : {}),
-  hasPendingSession: makePendingSessionCheck(db),
-  ...(stateCrypto ? { stateCrypto } : {}),
-  ...(appleTokens ? { appleTokens } : {}),
-  providerOps,
-  issuingLive: env.ISSUING_LIVE === "true",
-  // A test-mode Stripe key can't move real money, so a Debug build may
-  // choose the ParkAgent card against it before ISSUING_LIVE.
-  issuingSandbox: isTestModeKey(env.STRIPE_SECRET_KEY),
-});
+buildApp(
+  {
+    db,
+    policy,
+    findCandidates,
+    findNearbyZones,
+    auth,
+    authenticate: makeAuthenticate(db, env.API_KEY_PEPPER, env.AUTH_JWT_SECRET),
+    ...(assistantModel ? { assistantModel } : {}),
+    assistantTools,
+    assistantDailySpendCapUsd: env.ASSISTANT_DAILY_SPEND_CAP_USD,
+    linkWallet,
+    executorFor,
+    sendPush,
+    apnsDelivery,
+    ...(stripe ? { stripe } : {}),
+    hasPendingSession: makePendingSessionCheck(db),
+    ...(stateCrypto ? { stateCrypto } : {}),
+    ...(appleTokens ? { appleTokens } : {}),
+    providerOps,
+    issuingLive: env.ISSUING_LIVE === "true",
+    // A test-mode Stripe key can't move real money, so a Debug build may
+    // choose the ParkAgent card against it before ISSUING_LIVE.
+    issuingSandbox: isTestModeKey(env.STRIPE_SECRET_KEY),
+  },
+  app,
+);
 
 const extender = makeExtender({
   db,

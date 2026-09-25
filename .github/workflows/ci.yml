@@ -33,6 +33,42 @@ jobs:
         env:
           DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
 
+  # The server tests build the app through buildApp() with fakes and never
+  # run index.ts, so a boot that throws before listen (#130's crash loop)
+  # passes them. This boots the real `node dist/index.js` against a migrated
+  # PostGIS twice — every optional feature off, then every one on with dummy
+  # but well-formed values — and deploy waits on it. See scripts/boot-check.sh.
+  boot:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgis/postgis:17-3.5
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ci -d ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      # The image runs node:24-slim; boot on the same major.
+      - uses: actions/setup-node@v7
+        with: { node-version: 24, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -C executor run build
+      - run: pnpm -C server build
+      # What fly.toml's release_command runs before a deploy takes traffic.
+      - run: pnpm -C server exec prisma migrate deploy
+      - run: scripts/boot-check.sh off
+      - run: scripts/boot-check.sh on
+
   executor:
     runs-on: ubuntu-latest
     steps:
@@ -169,7 +205,7 @@ jobs:
 
   deploy:
     # Merging to main deploys; nobody needs the Fly token locally.
-    needs: [server, ios]
+    needs: [server, boot, ios]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     concurrency:

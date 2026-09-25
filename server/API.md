@@ -850,7 +850,13 @@ Redelivery is idempotent: a replayed `.request` answers the recorded
 decision (deciding twice could flip the answer once spend moved) and its
 decisions row records `replayed: true`; a `.request` retry that arrives
 after a lifecycle `.created` already created the row (decision
-`"external"`) decides for real and updates that row in place.
+`"external"`) decides for real and updates that row in place. That holds
+for deliveries in flight at the same time too: the decision, its claim on
+the hold, and the ledger row commit in one transaction that starts by
+upserting the row by `stripe_authorization_id` (unique), which inserts it
+or locks it until commit — a concurrent duplicate waits there, then
+answers the stored decision, so an authorization reserves hold room
+exactly once in either arrival order.
 
 ### Ledger events
 

@@ -15,6 +15,7 @@ import { buildApp, makeAuthenticate } from "../src/app.js";
 import { hashApiKey } from "../src/services/apiKeys.js";
 import type {
   AppDb,
+  AppTx,
   EmailLoginCodeRow,
   FundingMethodRow,
   GarageBookingRow,
@@ -475,6 +476,54 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
     ...row,
     paymentSource: state.userPaymentSources[row.id] ?? row.paymentSource,
   });
+  // Postgres's locks, as far as the race tests need them: a row lock a
+  // transaction takes (its upsert's) is held until the transaction ends,
+  // and another transaction's upsert of that row WAITS for it — exactly
+  // the serialization the code relies on. Autocommit statements lock and
+  // release on their own. The fake never rolls back.
+  const lockHolders = new Map<string, symbol>();
+  const lockWaiters = new Map<string, (() => void)[]>();
+  const acquireLock = async (key: string, owner: symbol) => {
+    while (lockHolders.has(key) && lockHolders.get(key) !== owner) {
+      await new Promise<void>((resolve) => {
+        lockWaiters.set(key, [...(lockWaiters.get(key) ?? []), resolve]);
+      });
+    }
+    lockHolders.set(key, owner);
+  };
+  const releaseLocks = (owner: symbol) => {
+    for (const [key, holder] of [...lockHolders]) {
+      if (holder !== owner) continue;
+      lockHolders.delete(key);
+      const waiters = lockWaiters.get(key) ?? [];
+      lockWaiters.delete(key);
+      waiters.forEach((wake) => wake());
+    }
+  };
+  const upsertIssuingAuthorization = async (
+    owner: symbol,
+    { where, create, update }: Parameters<AppDb["issuingAuthorization"]["upsert"]>[0],
+  ) => {
+    await acquireLock(`issuing_authorizations:${where.stripeAuthorizationId}`, owner);
+    let row = state.issuingAuthorizations.find(
+      (a) => a.stripeAuthorizationId === where.stripeAuthorizationId,
+    );
+    if (row) {
+      Object.assign(row, update);
+    } else {
+      row = { ...create, createdAt: new Date() };
+      state.issuingAuthorizations.push(row);
+    }
+    return {
+      id: row.stripeAuthorizationId,
+      approved: row.approved,
+      decision: row.decision,
+      status: row.status,
+      amountUsd: row.amountUsd,
+      holdId: row.holdId ?? null,
+    };
+  };
+
   const db: AppDb = {
     user: {
       // Auth looks up by hash now — mirror prod: only the peppered hashes
@@ -1419,6 +1468,14 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
         state.issuingAuthorizations.push({ ...data, createdAt: new Date() });
         return { id: data.stripeAuthorizationId };
       },
+      upsert: async (args) => {
+        const owner = Symbol("autocommit");
+        try {
+          return await upsertIssuingAuthorization(owner, args);
+        } finally {
+          releaseLocks(owner);
+        }
+      },
       update: async ({ where, data }) => {
         const row = state.issuingAuthorizations.find(
           (a) => a.stripeAuthorizationId === where.stripeAuthorizationId,
@@ -1436,6 +1493,21 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
         state.snapshots.push(data);
         return data;
       },
+    },
+    $transaction: async (fn) => {
+      const owner = Symbol("transaction");
+      const tx: AppTx = {
+        ...db,
+        issuingAuthorization: {
+          ...db.issuingAuthorization,
+          upsert: (args) => upsertIssuingAuthorization(owner, args),
+        },
+      };
+      try {
+        return await fn(tx);
+      } finally {
+        releaseLocks(owner);
+      }
     },
   };
   return { db, state };

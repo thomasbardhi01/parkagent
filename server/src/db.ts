@@ -199,6 +199,22 @@ export interface IssuingAuthorizationRow {
   createdAt: Date;
 }
 
+/** A new issuing_authorizations row, as the webhook writes it. */
+export interface IssuingAuthorizationWrite {
+  stripeAuthorizationId: string;
+  stripeCardId: string;
+  userId: string | null;
+  amountUsd: number;
+  merchantCategory: string | null;
+  merchantCategoryCode: string | null;
+  merchantName: string | null;
+  approved: boolean;
+  decision: string;
+  status: string;
+  sessionId?: string | null;
+  holdId?: string | null;
+}
+
 export interface ItineraryRow {
   id: string;
   userId: string;
@@ -1009,22 +1025,24 @@ export interface AppDb {
       orderBy: { createdAt: "desc" };
       take: number;
     }): Promise<IssuingAuthorizationRow[]>;
-    create(args: {
-      data: {
-        stripeAuthorizationId: string;
-        stripeCardId: string;
-        userId: string | null;
-        amountUsd: number;
-        merchantCategory: string | null;
-        merchantCategoryCode: string | null;
-        merchantName: string | null;
-        approved: boolean;
-        decision: string;
-        status: string;
-        sessionId?: string | null;
-        holdId?: string | null;
-      };
-    }): Promise<{ id: string }>;
+    create(args: { data: IssuingAuthorizationWrite }): Promise<{ id: string }>;
+    /** The .request handler's first write, inside its transaction: insert
+     * the row, or update the existing one — either way Postgres holds that
+     * row's lock until the transaction ends, so a duplicate delivery's
+     * upsert waits there and then reads the decision this one stored. The
+     * `update` is a real write on purpose: an empty one might not lock. */
+    upsert(args: {
+      where: { stripeAuthorizationId: string };
+      create: IssuingAuthorizationWrite;
+      update: { stripeCardId: string };
+    }): Promise<{
+      id: string;
+      approved: boolean;
+      decision: string;
+      status: string;
+      amountUsd: unknown;
+      holdId: string | null;
+    }>;
     update(args: {
       where: { stripeAuthorizationId: string };
       data: {
@@ -1116,7 +1134,18 @@ export interface AppDb {
     }): Promise<{ hash: string } | null>;
     create(args: { data: { hash: string; policy: unknown; source: string } }): Promise<unknown>;
   };
+  /** Prisma's interactive transaction: what `fn` writes through `tx`
+   * commits together or not at all, and a row lock `tx` takes is held
+   * until `fn` returns. Keep `fn` short — it pins a pooled connection. */
+  $transaction<T>(
+    fn: (tx: AppTx) => Promise<T>,
+    options?: { maxWait?: number; timeout?: number },
+  ): Promise<T>;
 }
+
+/** The client a transaction hands its callback: the same tables, on the
+ * transaction's own connection. */
+export type AppTx = Omit<AppDb, "$transaction">;
 
 export function createPrisma(databaseUrl: string): PrismaClient {
   const adapter = new PrismaPg({ connectionString: databaseUrl });

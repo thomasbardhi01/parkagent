@@ -610,6 +610,100 @@ describe("the Issuing webhook only pays against a hold", () => {
     expect(t.state.sessionHolds[0]!.authorizedUsd).toBe(6);
   });
 
+  // Stripe redelivers .request, and a lifecycle .created can land first.
+  // Two deliveries of ONE authorization in flight together must decide
+  // once and claim its room on the hold once, in either arrival order.
+  describe("duplicate deliveries of one authorization reserve once", () => {
+    /** Stalls the first two calls of `fn` until both have arrived, so two
+     * deliveries pass that point together — as they would in production. */
+    function together<A extends unknown[], R>(fn: (...args: A) => Promise<R>) {
+      let waiting: (() => void)[] = [];
+      let calls = 0;
+      return async (...args: A): Promise<R> => {
+        calls += 1;
+        if (calls <= 2) {
+          await new Promise<void>((resolve) => {
+            waiting.push(resolve);
+            if (waiting.length === 2) {
+              waiting.forEach((r) => r());
+              waiting = [];
+            }
+          });
+        }
+        return fn(...args);
+      };
+    }
+
+    /** Both deliveries look the card up, then read the ledger row, side by
+     * side before either writes. */
+    function racing(t: ReturnType<typeof cardApp>) {
+      const db = t.deps.db;
+      t.deps.db = {
+        ...db,
+        issuingCard: { ...db.issuingCard, findUnique: together(db.issuingCard.findUnique) },
+        issuingAuthorization: {
+          ...db.issuingAuthorization,
+          findUnique: together(db.issuingAuthorization.findUnique),
+        },
+      };
+    }
+
+    async function deliverTwice(t: ReturnType<typeof cardApp>) {
+      const answers = await Promise.all([
+        postWebhook(t.app, authRequest("iauth_dup", 6)),
+        postWebhook(t.app, authRequest("iauth_dup", 6)),
+      ]);
+      const decisions = t.state.decisions.filter((d) => d.kind === "issuing_authorization");
+      return {
+        // A delivery the route crashed on answers without metadata.
+        answers: answers.map((a) => ({ approved: a.approved, reason: a.metadata?.reason })),
+        replays: decisions.filter((d) => (d.inputs as { replayed?: boolean }).replayed).length,
+        decided: decisions.filter((d) => !(d.inputs as { replayed?: boolean }).replayed).length,
+      };
+    }
+
+    test("two .request deliveries, no row yet", async () => {
+      const t = cardApp();
+      // Room for BOTH on the hold, so a double claim would succeed.
+      const hold = seedHold(t.state, { amountUsd: 20, createdAt: NOW });
+      racing(t);
+      const run = await deliverTwice(t);
+      expect(run.answers).toEqual([
+        { approved: true, reason: "approved" },
+        { approved: true, reason: "approved" },
+      ]);
+      expect(hold.authorizedUsd).toBe(6);
+      expect(run).toMatchObject({ decided: 1, replays: 1 });
+      expect(t.state.issuingAuthorizations).toMatchObject([
+        { stripeAuthorizationId: "iauth_dup", decision: "approved", holdId: hold.id },
+      ]);
+    });
+
+    test(".created first (an external row), then two .request deliveries", async () => {
+      const t = cardApp();
+      const hold = seedHold(t.state, { amountUsd: 20, createdAt: NOW });
+      await postWebhook(t.app, {
+        id: "evt_created_dup",
+        type: "issuing_authorization.created",
+        data: { object: authRequest("iauth_dup", 6).data.object },
+      });
+      expect(t.state.issuingAuthorizations).toMatchObject([{ decision: "external" }]);
+      racing(t);
+      const run = await deliverTwice(t);
+      expect(run.answers).toEqual([
+        { approved: true, reason: "approved" },
+        { approved: true, reason: "approved" },
+      ]);
+      expect(hold.authorizedUsd).toBe(6);
+      expect(run).toMatchObject({ decided: 1, replays: 1 });
+      expect(t.state.issuingAuthorizations).toHaveLength(1);
+      expect(t.state.issuingAuthorizations[0]).toMatchObject({
+        decision: "approved",
+        holdId: hold.id,
+      });
+    });
+  });
+
   test("a stale hold (a finished leg) is never matched", async () => {
     const t = cardApp();
     seedSession(t.state, { status: "pending", createdAt: NOW });

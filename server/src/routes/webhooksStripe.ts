@@ -13,8 +13,9 @@
  * The ParkAgent card spends only against a hold: after every other check
  * passes, the approval must claim room on a live session hold (see
  * services/wallet/holds.ts); the claim is stored on the ledger row
- * (hold_id, session_id) so a replay answers from the row and never claims
- * twice. payment_intent events for session holds reconcile a hold Stripe
+ * (hold_id, session_id), in the same transaction as the decision, so a
+ * replay — even one racing the first delivery — answers from the row and
+ * never claims twice. payment_intent events for session holds reconcile a hold Stripe
  * itself settled (the 7-day auto-cancel), idempotently.
  */
 
@@ -34,6 +35,10 @@ import {
 function cardId(auth: Stripe.Issuing.Authorization): string {
   return typeof auth.card === "string" ? auth.card : auth.card.id;
 }
+
+/** The decision a .request's row carries between its upsert and its real
+ * decision — inside one transaction, so no committed row ever shows it. */
+const UNDECIDED = "undecided";
 
 export function registerStripeWebhook(app: FastifyInstance, deps: AppDeps): void {
   // Own plugin scope so the raw-body parser (needed for signature
@@ -123,37 +128,7 @@ async function handleAuthorizationRequest(
       (await hasLiveHold(deps.db, userId, at))
     : false;
 
-  // Stripe redelivers events, and a lifecycle .created can arrive before a
-  // slow .request retry. A row that already carries one of OUR decisions is
-  // answered idempotently — deciding twice could flip the answer (spend
-  // moved between deliveries) and the create below would crash on the
-  // unique stripeAuthorizationId. A row first seen via .created (decision
-  // "external") gets a real decision now, updated in place.
-  const existing = await deps.db.issuingAuthorization.findUnique({
-    where: { stripeAuthorizationId: auth.id },
-  });
-  if (
-    existing?.decision !== undefined &&
-    existing.decision !== "external" &&
-    existing.approved !== undefined
-  ) {
-    await deps.db.decision.create({
-      data: {
-        kind: "issuing_authorization",
-        inputs: { stripeAuthorizationId: auth.id, stripeCardId, amountUsd, replayed: true },
-        rule: existing.decision,
-        outcome: { approved: existing.approved, replayed: true },
-        userId,
-      },
-    });
-    return reply
-      .code(200)
-      .header("Stripe-Version", event.api_version ?? deps.stripe!.apiVersion)
-      .header("Content-Type", "application/json")
-      .send({ approved: existing.approved, metadata: { reason: existing.decision } });
-  }
-
-  let decision = decideAuthorization(
+  const preliminary = decideAuthorization(
     {
       amountUsd,
       merchantCategory,
@@ -165,57 +140,86 @@ async function handleAuthorizationRequest(
     },
     policy,
   );
-  // Last gate, and the only write: the ParkAgent card pays only against a
-  // live hold on the user's own card with room for this amount.
-  let claimedHold: { id: string; sessionId: string } | null = null;
-  let holdCheck: string = "not_checked";
-  if (decision.approve && userId) {
-    const claim = await claimHoldForAuthorization(deps.db, userId, amountUsd, at);
-    holdCheck = claim.claimed ? "claimed" : claim.reason;
-    if (claim.claimed) claimedHold = { id: claim.hold.id, sessionId: claim.hold.sessionId };
-    decision = applyHoldClaim(decision, claim);
-  }
 
-  // Persist the audit BEFORE answering, so the decision survives even a slow
-  // or dropped response (Stripe's Autopilot may then approve/decline on our
-  // behalf, but request_history.reason records that — see the docs).
-  const row = {
-    stripeAuthorizationId: auth.id,
-    stripeCardId,
-    userId,
-    amountUsd,
-    merchantCategory,
-    merchantCategoryCode,
-    merchantName: auth.merchant_data?.name ?? null,
-    approved: decision.approve,
-    decision: decision.reason,
-    status: "pending",
-    sessionId: claimedHold?.sessionId ?? null,
-    holdId: claimedHold?.id ?? null,
-  };
-  if (existing) {
-    await deps.db.issuingAuthorization.update({
+  // One decision per authorization, however often Stripe delivers it — it
+  // redelivers, and a lifecycle .created can land before a slow .request
+  // retry. The decision, the room it claims on a hold, and the ledger row
+  // commit in ONE transaction that opens by upserting this authorization's
+  // row: Postgres inserts it, or locks the row that's there, until the
+  // transaction ends. A duplicate delivery waits at that upsert, then finds
+  // this decision and answers it — it never decides (or claims) again,
+  // whichever order the deliveries and the .created arrived in. A row first
+  // seen via .created (decision "external") is still undecided and gets
+  // its real decision here, in place. Persisting BEFORE answering means
+  // the decision survives even a slow or dropped response (Stripe's
+  // Autopilot may then approve/decline on our behalf, but
+  // request_history.reason records that — see the docs).
+  const settled = await deps.db.$transaction(async (tx) => {
+    const locked = await tx.issuingAuthorization.upsert({
+      where: { stripeAuthorizationId: auth.id },
+      create: {
+        stripeAuthorizationId: auth.id,
+        stripeCardId,
+        userId,
+        amountUsd,
+        merchantCategory,
+        merchantCategoryCode,
+        merchantName: auth.merchant_data?.name ?? null,
+        approved: false,
+        // Overwritten below before this transaction commits; nobody ever
+        // reads it.
+        decision: UNDECIDED,
+        status: "pending",
+      },
+      update: { stripeCardId },
+    });
+    if (locked.decision !== UNDECIDED && locked.decision !== "external") {
+      return { replayed: true as const, approved: locked.approved, reason: locked.decision };
+    }
+
+    // Last gate, and the only claim: the ParkAgent card pays only against a
+    // live hold on the user's own card with room for this amount.
+    let decision = preliminary;
+    let claimedHold: { id: string; sessionId: string } | null = null;
+    let holdCheck: string = "not_checked";
+    if (decision.approve && userId) {
+      const claim = await claimHoldForAuthorization(tx, userId, amountUsd, at);
+      holdCheck = claim.claimed ? "claimed" : claim.reason;
+      if (claim.claimed) claimedHold = { id: claim.hold.id, sessionId: claim.hold.sessionId };
+      decision = applyHoldClaim(decision, claim);
+    }
+    await tx.issuingAuthorization.update({
       where: { stripeAuthorizationId: auth.id },
       data: {
         approved: decision.approve,
         decision: decision.reason,
         status: "pending",
         amountUsd,
-        sessionId: row.sessionId,
-        holdId: row.holdId,
+        sessionId: claimedHold?.sessionId ?? null,
+        holdId: claimedHold?.id ?? null,
       },
     });
-  } else {
-    try {
-      await deps.db.issuingAuthorization.create({ data: row });
-    } catch (err) {
-      // A duplicate delivery racing this one won the insert. Its decision
-      // stands; the room this one claimed on the hold must go back, or the
-      // hold would later capture the charge twice.
-      if (claimedHold) await releaseHoldClaim(deps.db, claimedHold.id, amountUsd);
-      throw err;
-    }
+    return { replayed: false as const, decision, claimedHold, holdCheck };
+  });
+
+  if (settled.replayed) {
+    await deps.db.decision.create({
+      data: {
+        kind: "issuing_authorization",
+        inputs: { stripeAuthorizationId: auth.id, stripeCardId, amountUsd, replayed: true },
+        rule: settled.reason,
+        outcome: { approved: settled.approved, replayed: true },
+        userId,
+      },
+    });
+    return reply
+      .code(200)
+      .header("Stripe-Version", event.api_version ?? deps.stripe!.apiVersion)
+      .header("Content-Type", "application/json")
+      .send({ approved: settled.approved, metadata: { reason: settled.reason } });
   }
+  const { decision, claimedHold, holdCheck } = settled;
+
   await deps.db.decision.create({
     data: {
       kind: "issuing_authorization",

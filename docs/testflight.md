@@ -182,7 +182,29 @@ details, paste the [Beta App Review notes](#beta-app-review-notes), and
 leave "Sign-in required" unchecked: reviewers sign in with their own Apple
 ID.
 
-### 6. Export compliance
+### 6. App Privacy
+
+App Store Connect → Apps → ParkAgent → App Privacy asks what the app
+collects; the answers must match `ios/ParkAgent/PrivacyInfo.xcprivacy`.
+Data is **not used for tracking**, and every type is **linked to the
+user** and used for **App Functionality** only:
+
+- Location → Precise Location (where you parked, to find the meter zone;
+  where you are while a session runs, to decide whether to extend)
+- Contact Info → Name, Email Address (from Sign in with Apple), Phone
+  Number (optional, typed into the profile)
+- Identifiers → User ID, Device ID (the sign-in session's device id)
+- Purchases → Purchase History (parking sessions and garage bookings)
+- Financial Info → Payment Info (a saved card's brand and last four; the
+  number itself goes to Stripe)
+- User Content → Other User Content (what you ask the assistant)
+- Other Data → the car's license plate
+
+The assistant's garage search sends the searched location, without the
+user's name or account, to the garage services it queries (ParkWhiz,
+SpotHero). Keep this list and the manifest in step when either changes.
+
+### 7. Export compliance
 
 `ios/project.yml` sets `ITSAppUsesNonExemptEncryption = NO`: the app uses
 only the encryption built into iOS (HTTPS and the Keychain), which is

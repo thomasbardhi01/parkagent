@@ -22,11 +22,20 @@ export const singleSpotOptionSchema = z.object({
   garageOptionId: z.string().optional(),
   /** ISO start of the stay; how the server tells "now" from "later". */
   startsAt: z.string().optional(),
+  /** Where the option physically is — the card's mini map pin. The server
+   * re-attaches these from the garage cache / the street quote when the
+   * model drops them. */
+  lat: z.number().gte(-90).lte(90).optional(),
+  lng: z.number().gte(-180).lte(180).optional(),
   /** SERVER-COMPUTED on street options (model input ignored): a future
    * meter can't be started now — the detector pays at the curb, so the
    * card shows "We'll pay automatically when you park here" and no
    * Confirm. Garages and street-right-now stay confirmable. */
   payOnArrival: z.boolean().optional(),
+  /** SERVER-ATTACHED on garage options from the search cache (model input
+   * ignored), like deepLink: which source the offer came from, so the
+   * card, the handoff note, and the Link merchant name the right site. */
+  provider: z.string().optional(),
   deepLink: z.string().url().optional(),
   recommended: z.boolean().default(false),
 });
@@ -35,6 +44,18 @@ export const singleSpotPlanSchema = z.object({
   kind: z.literal("single_spot"),
   /** ≤3 options; exactly one may carry the recommended badge. */
   options: z.array(singleSpotOptionSchema).min(1).max(3),
+  /** The place the user asked about (geocoded) — the map's destination
+   * pin. The server backfills it from the turn's geocode when omitted. */
+  destination: z
+    .object({
+      lat: z.number().gte(-90).lte(90),
+      lng: z.number().gte(-180).lte(180),
+      label: z.string().max(120),
+    })
+    .optional(),
+  /** SERVER-ATTACHED: where garage results came from and when the search
+   * ran, so the card can say "From SpotHero · checked 2:05 PM". */
+  provenance: z.object({ provider: z.string(), searchedAt: z.string() }).optional(),
   note: z.string().max(400).optional(),
 });
 
@@ -64,10 +85,54 @@ export const itineraryPlanSchema = z.object({
   note: z.string().max(400).optional(),
 });
 
-export const planSchema = z.discriminatedUnion("kind", [
-  singleSpotPlanSchema,
-  itineraryPlanSchema,
+export const planSchema = z.discriminatedUnion("kind", [singleSpotPlanSchema, itineraryPlanSchema]);
+
+/**
+ * What propose_plan's input_schema shows the MODEL: the same zod schemas
+ * the tool validates with, minus the fields the server attaches itself
+ * (payOnArrival, provider, deepLink, pins, provenance). The tool used to
+ * describe `plan` as a bare object, so models guessed the shape — `kind:
+ * "street"`, `title`, `costUsd`, `optionId` — and every guess cost a
+ * bounced call (three per turn on a live Sonnet 5 run, 2026-09-24).
+ */
+const modelOptionSchema = singleSpotOptionSchema
+  .omit({ payOnArrival: true, provider: true, deepLink: true, lat: true, lng: true })
+  .extend({
+    zoneId: z.string().optional().describe("street options: the zoneId quote_street returned"),
+    garageOptionId: z
+      .string()
+      .optional()
+      .describe("garage options: the option id search_garages returned"),
+    startsAt: z
+      .string()
+      .optional()
+      .describe("ISO 8601 start with the UTC offset, e.g. 2026-09-26T14:00:00-04:00"),
+    recommended: z.boolean().default(false).describe("exactly one option is recommended"),
+  });
+
+const modelPlanSchema = z.discriminatedUnion("kind", [
+  singleSpotPlanSchema
+    .omit({ provenance: true })
+    .extend({ options: z.array(modelOptionSchema).min(1).max(3) }),
+  itineraryPlanSchema.extend({
+    stops: z
+      .array(itineraryStopSchema.omit({ deepLink: true }))
+      .min(1)
+      .max(12),
+  }),
 ]);
+
+/** JSON Schema for propose_plan's `plan` argument (anyOf the two kinds). */
+export const MODEL_PLAN_JSON_SCHEMA: Record<string, unknown> = (() => {
+  const schema = {
+    ...(z.toJSONSchema(modelPlanSchema, { io: "input" }) as Record<string, unknown>),
+  };
+  // A tool's nested schema carries no dialect marker; the union is anyOf.
+  delete schema["$schema"];
+  schema["anyOf"] = schema["oneOf"];
+  delete schema["oneOf"];
+  return schema;
+})();
 
 export type SingleSpotOption = z.infer<typeof singleSpotOptionSchema>;
 export type SingleSpotPlan = z.infer<typeof singleSpotPlanSchema>;

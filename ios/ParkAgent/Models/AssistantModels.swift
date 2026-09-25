@@ -1,12 +1,16 @@
+import CoreLocation
 import Foundation
 
 // The assistant wire contract (server/API.md "Assistant"). Plans render
 // as cards; nothing books or pays until the user's Confirm/Sign off tap
 // hits POST /assistant/confirm.
 
-/// One streamed event from POST /assistant/message.
+/// One streamed event from POST /assistant/message. The plan arrives as
+/// its own event the moment propose_plan lands, so the card renders
+/// before the reply text finishes streaming.
 enum AssistantEvent: Sendable {
     case delta(String)
+    case plan(AssistantReply.ProposedPlan)
     case done(AssistantReply)
 }
 
@@ -44,6 +48,36 @@ enum AssistantPlan: Decodable, Sendable {
 struct SingleSpotPlan: Decodable, Sendable {
     let options: [SingleSpotOption]
     let note: String?
+    /// The place the user asked about, geocoded server-side — the mini
+    /// map's destination pin. Absent when they asked about "here".
+    let destination: Destination?
+    /// Where garage options came from and when the search ran; the card
+    /// shows it once under the list ("Garage prices from ParkWhiz and
+    /// SpotHero, checked 2:05 PM").
+    let provenance: Provenance?
+
+    struct Destination: Decodable, Sendable {
+        let lat: Double
+        let lng: Double
+        let label: String
+    }
+
+    struct Provenance: Decodable, Sendable {
+        let provider: String
+        let searchedAt: String
+    }
+
+    /// The one option carrying the badge — the hero card. Falls back to
+    /// the first option so a plan always has a hero.
+    var recommendedOption: SingleSpotOption? {
+        options.first(where: \.recommended) ?? options.first
+    }
+
+    /// Everything else, in the order the server sent it.
+    var otherOptions: [SingleSpotOption] {
+        guard let hero = recommendedOption else { return [] }
+        return options.filter { $0.id != hero.id }
+    }
 }
 
 struct SingleSpotOption: Decodable, Identifiable, Sendable {
@@ -59,12 +93,37 @@ struct SingleSpotOption: Decodable, Identifiable, Sendable {
     let zoneId: String?
     let garageOptionId: String?
     let deepLink: String?
+    /// Server-attached on garage options: which site the offer came from
+    /// ("spothero" | "parkwhiz") — where checkout finishes and the pass lives.
+    let provider: String?
     let recommended: Bool
     /// ISO start of the stay, when the plan is for later.
     let startsAt: String?
     /// Server-computed: a future street meter can't be started now — the
     /// detector pays on arrival, so the card shows that instead of Confirm.
     let payOnArrival: Bool?
+    /// Where the option is, for the mini map's pins. Server-attached from
+    /// the garage search cache or the street quote's point.
+    let lat: Double?
+    let lng: Double?
+
+    var coordinate: CLLocationCoordinate2D? {
+        guard let lat, let lng else { return nil }
+        return CLLocationCoordinate2D(latitude: lat, longitude: lng)
+    }
+}
+
+/// The garage sources the server merges. One place for their names, so the
+/// card's button, the provenance line, and anything else that names where
+/// checkout happens agree with the option's own `provider`.
+enum GarageSource {
+    static func displayName(_ id: some StringProtocol) -> String? {
+        switch id {
+        case "spothero": "SpotHero"
+        case "parkwhiz": "ParkWhiz"
+        default: nil
+        }
+    }
 }
 
 struct ItineraryPlan: Decodable, Sendable {

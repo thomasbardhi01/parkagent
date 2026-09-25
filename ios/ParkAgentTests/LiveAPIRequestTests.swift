@@ -391,6 +391,159 @@ final class LiveAPIRequestTests: XCTestCase {
         XCTAssertEqual(request.url?.path(), "/me/vehicles/v1")
         XCTAssertEqual(bearer(request), "Bearer access-1")
     }
+
+    // MARK: - Assistant (bearer; the message route streams SSE)
+
+    /// What the SSE route writes: a text delta, the plan as its own event,
+    /// then `done` with the full payload.
+    private static let sseBody = [
+        "event: text",
+        #"data: {"delta": "Street is cheapest."}"#,
+        "",
+        "event: plan",
+        #"data: {"planId": "p1", "plan": {"kind": "single_spot", "options": [{"id": "s1", "type": "street", "label": "Meter", "detail": "", "priceUsd": 4.1, "durationMinutes": 60, "recommended": true}]}}"#,
+        "",
+        "event: done",
+        #"data: {"conversationId": "conv_1", "reply": "Street is cheapest.", "plan": null}"#,
+        "",
+    ].joined(separator: "\n")
+
+    /// Drain a stream into a readable trace of what it yielded.
+    private func trace(_ stream: AsyncThrowingStream<AssistantEvent, Error>) async throws -> [String] {
+        var events: [String] = []
+        for try await event in stream {
+            switch event {
+            case .delta(let text): events.append("delta:\(text)")
+            case .plan(let plan): events.append("plan:\(plan.planId)")
+            case .done(let reply): events.append("done:\(reply.conversationId)")
+            }
+        }
+        return events
+    }
+
+    private func ask(_ api: LiveAPI? = nil) -> AsyncThrowingStream<AssistantEvent, Error> {
+        (api ?? self.api).assistantMessage(
+            text: "parking near Newbury?",
+            conversationId: "conv_1",
+            location: (lat: 42.3503, lng: -71.0811)
+        )
+    }
+
+    func testAssistantMessageStreamsOverTheSharedTransport() async throws {
+        StubURLProtocol.respond(json: Self.sseBody)
+        let events = try await trace(ask())
+
+        let request = try sentRequest()
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.url?.path(), "/assistant/message")
+        XCTAssertNil(request.url?.query(), "the message route takes no query")
+        XCTAssertEqual(bearer(request), "Bearer access-1")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Accept"), "text/event-stream")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
+        let sent = try body(request)
+        XCTAssertEqual(sent["text"] as? String, "parking near Newbury?")
+        XCTAssertEqual(sent["conversation_id"] as? String, "conv_1")
+        XCTAssertEqual(sent["location"] as? [String: Double], ["lat": 42.3503, "lng": -71.0811])
+
+        XCTAssertEqual(events, ["delta:Street is cheapest.", "plan:p1", "done:conv_1"])
+    }
+
+    /// The access token lapsed while the user typed: the stream's first
+    /// open is a 401, one silent refresh, and the SAME request again with
+    /// the new token — the reply still streams.
+    func testAssistantStreamRefreshesOnceAndRetriesTheSameRequest() async throws {
+        StubURLProtocol.respond(sequence: [
+            (401, #"{"error": "unauthorized"}"#),
+            (200, Self.sseBody),
+        ])
+        let events = try await trace(ask())
+
+        let requests = sentRequests()
+        XCTAssertEqual(requests.map(bearer), ["Bearer access-1", "Bearer access-2"])
+        XCTAssertEqual(requests.map { $0.url?.path() }, ["/assistant/message", "/assistant/message"])
+        XCTAssertEqual(try requests.map { try body($0)["text"] as? String }, [
+            "parking near Newbury?", "parking near Newbury?",
+        ])
+        XCTAssertEqual(events, ["delta:Street is cheapest.", "plan:p1", "done:conv_1"])
+    }
+
+    func testAssistantStreamSecondUnauthorizedIsFinal() async throws {
+        StubURLProtocol.respond(sequence: [
+            (401, #"{"error": "unauthorized"}"#),
+            (401, #"{"error": "unauthorized"}"#),
+            (200, Self.sseBody),
+        ])
+        do {
+            _ = try await trace(ask())
+            XCTFail("expected unauthorized")
+        } catch APIError.unauthorized {
+            // expected
+        }
+        XCTAssertEqual(sentRequests().count, 2, "one try, one retry, no loop")
+    }
+
+    func testAssistantStreamWithoutARefreshedTokenDoesNotRetry() async throws {
+        let api = LiveAPI(
+            baseURL: URL(string: "https://api.test")!,
+            tokens: LiveAPI.TokenSource(current: { "access-1" }, refresh: { _ in nil })
+        )
+        StubURLProtocol.respond(sequence: [(401, #"{"error": "unauthorized"}"#)])
+        do {
+            _ = try await trace(ask(api))
+            XCTFail("expected unauthorized")
+        } catch APIError.unauthorized {
+            // expected
+        }
+        XCTAssertEqual(sentRequests().count, 1)
+    }
+
+    /// Over the daily model-spend cap the server refuses before any model
+    /// call; the stream must carry that CODE, not a bare "error 429".
+    func testAssistantStreamKeepsANamedRefusal() async throws {
+        StubURLProtocol.respond(sequence: [
+            (429, #"{"error": "assistant_budget_exhausted", "spentUsd": 5.01, "capUsd": 5}"#),
+        ])
+        do {
+            _ = try await trace(ask())
+            XCTFail("expected a refusal")
+        } catch APIError.refused(let code) {
+            XCTAssertEqual(code, "assistant_budget_exhausted")
+        }
+        XCTAssertEqual(sentRequests().count, 1, "a refusal is not a reason to retry")
+    }
+
+    func testAssistantConfirmAndItineraryCalls() async throws {
+        StubURLProtocol.respond(json: #"{"kind": "street_confirmed", "zoneId": "bos-1", "durationMinutes": 60}"#)
+        _ = try await api.confirmPlan(planId: "p1", optionId: "s1")
+        var request = try sentRequest()
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.url?.path(), "/assistant/confirm")
+        XCTAssertEqual(bearer(request), "Bearer access-1")
+        XCTAssertEqual(try body(request) as? [String: String], ["planId": "p1", "optionId": "s1"])
+
+        StubURLProtocol.respond(json: #"{"itineraries": []}"#)
+        _ = try await api.itineraries()
+        request = try sentRequest()
+        XCTAssertEqual(request.httpMethod, "GET")
+        XCTAssertEqual(request.url?.path(), "/assistant/itineraries")
+        XCTAssertEqual(bearer(request), "Bearer access-1")
+
+        let stop = ItineraryStop(
+            id: "stop-1", label: "Coffee", address: "1 Main St", lat: 42.35, lng: -71.08,
+            arrival: "2026-01-05T09:00:00-05:00", durationMinutes: 60, choice: "street",
+            costUsd: 4.1, zoneId: "bos-1", garageOptionId: nil, deepLink: nil,
+            sessionId: nil, paymentSource: nil, garageLinkPushedAt: nil
+        )
+        StubURLProtocol.respond(json: #"{"id": "i 1", "stops": [], "totalUsd": 4.1, "capUsd": 60}"#)
+        _ = try await api.patchItinerary(id: "i 1", stops: [stop])
+        request = try sentRequest()
+        XCTAssertEqual(request.httpMethod, "PATCH")
+        XCTAssertEqual(request.url?.path(percentEncoded: true), "/assistant/itineraries/i%201")
+        XCTAssertNil(request.url?.query())
+        let stops = try XCTUnwrap(try body(request)["stops"] as? [[String: Any]])
+        XCTAssertEqual(stops.first?["id"] as? String, "stop-1")
+        XCTAssertEqual(stops.first?["arrival"] as? String, "2026-01-05T09:00:00-05:00")
+    }
 }
 
 /// Answers each request with the next canned response and records what was

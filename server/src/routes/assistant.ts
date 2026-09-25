@@ -19,11 +19,13 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 
 import type { AppDeps } from "../app.js";
-import { runAssistantTurn } from "../services/assistant/loop.js";
+import { assistantSpendTodayUsd, runAssistantTurn } from "../services/assistant/loop.js";
 import type { AssistantResult } from "../services/assistant/loop.js";
 import { CONFIRMATION_TTL_MS } from "../services/assistant/tools.js";
 import { itineraryStopSchema, itineraryTotalUsd } from "../services/assistant/plans.js";
 import type { ItineraryPlan, SingleSpotPlan } from "../services/assistant/plans.js";
+import { garageHandoffNote, garageProviderInfo } from "../services/garage/garageProvider.js";
+import { cityForZone, providerForCity } from "../providers/registry.js";
 import { makeRateLimiter } from "../services/rateLimit.js";
 import { spentToday } from "../services/sessions.js";
 
@@ -50,6 +52,32 @@ const patchItinerarySchema = z.object({
   stops: z.array(itineraryStopSchema).min(1).max(12),
 });
 
+/**
+ * Who a Link spend request says the user is paying: the garage's own site
+ * for a garage (the one its offer came from — a merged search means it
+ * isn't always SpotHero), the city's meter app for a street spot. The
+ * approval screen shows this to the user, so it must name the real payee.
+ */
+function merchantFor(stop: {
+  type: "street" | "garage";
+  zoneId?: string | undefined;
+  provider?: string | undefined;
+  deepLink?: string | undefined;
+}): { merchantName: string; merchantUrl: string } {
+  if (stop.type === "garage") {
+    const garage = garageProviderInfo(stop.provider, stop.deepLink);
+    return {
+      merchantName: garage?.name ?? "Garage parking",
+      merchantUrl: stop.deepLink ?? garage?.url ?? "https://www.parkagent.app",
+    };
+  }
+  const meters = stop.zoneId ? providerForCity(cityForZone(stop.zoneId)) : null;
+  return {
+    merchantName: meters?.displayName ?? "City parking meters",
+    merchantUrl: meters ? new URL(meters.loginUrl).origin : "https://www.parkagent.app",
+  };
+}
+
 function sseWrite(reply: FastifyReply, event: string, data: unknown): void {
   reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
@@ -73,6 +101,44 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
     const conversationId = body.conversation_id ?? `conv_${randomUUID()}`;
     const text = (body.text ?? body.transcript)!;
 
+    // Someone else's conversation id: the turn would be saved over their
+    // transcript (the upsert keys on id alone), and that transcript is
+    // what the next turn's grounding is read from. Refuse before any
+    // paid call.
+    if (body.conversation_id !== undefined) {
+      const existing = await deps.db.conversation.findUnique({ where: { id: conversationId } });
+      if (existing && existing.userId !== user.id) {
+        return reply.code(404).send({ error: "conversation_not_found" });
+      }
+    }
+
+    // Per-user daily model-spend cap (estimated from logged token usage).
+    // Checked before the paid call, refused with the numbers on record.
+    if (deps.assistantDailySpendCapUsd !== undefined) {
+      const spentUsd = await assistantSpendTodayUsd(deps.db, user.id, now());
+      if (spentUsd >= deps.assistantDailySpendCapUsd) {
+        await deps.db.decision.create({
+          data: {
+            kind: "assistant_turn",
+            inputs: { conversationId },
+            rule: "daily_spend_cap",
+            outcome: {
+              refused: true,
+              spentUsd: Math.round(spentUsd * 10_000) / 10_000,
+              capUsd: deps.assistantDailySpendCapUsd,
+              estimatedCostUsd: 0,
+            },
+            userId: user.id,
+          },
+        });
+        return reply.code(429).send({
+          error: "assistant_budget_exhausted",
+          spentUsd: Math.round(spentUsd * 100) / 100,
+          capUsd: deps.assistantDailySpendCapUsd,
+        });
+      }
+    }
+
     const wantsStream = (req.headers.accept ?? "").includes("text/event-stream");
     let result: AssistantResult;
     if (wantsStream) {
@@ -91,6 +157,9 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
           text,
           location: body.location,
           onText: (delta) => sseWrite(reply, "text", { delta }),
+          // The plan gets its own event the moment propose_plan lands, so
+          // the card renders before the reply text settles.
+          onPlan: (plan) => sseWrite(reply, "plan", plan),
           now: deps.now,
         });
         sseWrite(reply, "done", {
@@ -215,8 +284,7 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
                 stopId: option.id,
                 label: option.label,
                 amountUsd: option.priceUsd,
-                merchantName: option.type === "garage" ? "SpotHero" : "City parking meters",
-                merchantUrl: option.deepLink ?? "https://spothero.com",
+                ...merchantFor(option),
               },
             ],
           });
@@ -253,7 +321,7 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
             deepLink: option.deepLink,
             paymentSource,
             linkApproval,
-            note: "Checkout finishes in SpotHero; the parking pass will live in your SpotHero account.",
+            note: garageHandoffNote(option.provider, option.deepLink),
           };
         }
         if (booked.error) {
@@ -271,7 +339,7 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
           deepLink: booked.deepLink ?? option.deepLink ?? null,
           paymentSource,
           linkApproval,
-          note: "Checkout finishes in SpotHero; the parking pass will live in your SpotHero account.",
+          note: garageHandoffNote(option.provider, option.deepLink),
         };
       }
 
@@ -335,8 +403,11 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
             stopId: s.id,
             label: s.label,
             amountUsd: s.costUsd,
-            merchantName: s.choice === "garage" ? "SpotHero" : "City parking meters",
-            merchantUrl: s.deepLink ?? "https://spothero.com",
+            ...merchantFor({
+              type: s.choice,
+              zoneId: s.zoneId,
+              ...(s.deepLink ? { deepLink: s.deepLink } : {}),
+            }),
           })),
         });
       } catch (err) {

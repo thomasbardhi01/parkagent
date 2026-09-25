@@ -736,10 +736,18 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
       },
       findUnique: async ({ where }) =>
         state.assistantConfirmations.find((r) => r.token === where.token) ?? null,
-      update: async ({ where, data }) => {
-        const row = state.assistantConfirmations.find((r) => r.token === where.token);
-        if (row) Object.assign(row, data);
-        return {};
+      updateMany: async ({ where, data }) => {
+        // Synchronous check-and-set: the fake's stand-in for the single
+        // UPDATE … WHERE used_at IS NULL the real database runs.
+        const row = state.assistantConfirmations.find(
+          (r) =>
+            r.token === where.token &&
+            r.usedAt === null &&
+            r.expiresAt.getTime() > where.expiresAt.gt.getTime(),
+        );
+        if (!row) return { count: 0 };
+        Object.assign(row, data);
+        return { count: 1 };
       },
     },
     itinerary: {
@@ -1304,6 +1312,10 @@ export function makeTestApp(options: {
   seedLinkedProvider?: boolean;
   /** Scripted assistant transport; absent → /assistant/message 503s. */
   assistantModel?: ModelClient;
+  /** Scripted EXPLAIN_MODEL transport for explain_decision phrasing. */
+  explainModel?: ModelClient;
+  /** ASSISTANT_DAILY_SPEND_CAP_USD equivalent; unset → uncapped. */
+  assistantDailySpendCapUsd?: number;
   /** Garage search fake; default returns no results and hits no network. */
   garage?: GarageProvider;
   /** Named-place geocoder fake; default resolves nothing (geocode_place
@@ -1364,6 +1376,7 @@ export function makeTestApp(options: {
     garage,
     ...(options.geocoder ? { geocoder: options.geocoder } : {}),
     linkWallet,
+    ...(options.explainModel ? { explainModel: options.explainModel } : {}),
     now,
   });
   const auth: AuthConfig = {
@@ -1389,6 +1402,9 @@ export function makeTestApp(options: {
     ...(options.stripe ? { stripe: options.stripe } : {}),
     ...(options.assistantModel ? { assistantModel: options.assistantModel } : {}),
     assistantTools,
+    ...(options.assistantDailySpendCapUsd !== undefined
+      ? { assistantDailySpendCapUsd: options.assistantDailySpendCapUsd }
+      : {}),
     linkWallet,
     ...(options.issuingLive !== undefined ? { issuingLive: options.issuingLive } : {}),
     ...(options.apnsDelivery ? { apnsDelivery: options.apnsDelivery } : {}),

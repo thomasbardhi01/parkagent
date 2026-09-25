@@ -495,7 +495,12 @@ export interface AppDb {
       expiresAt: Date;
       usedAt: Date | null;
     } | null>;
-    update(args: { where: { token: string }; data: { usedAt: Date } }): Promise<unknown>;
+    /** The single-use claim: matches only an unused, unexpired token, so
+     * of two concurrent claims exactly one sees count 1. */
+    updateMany(args: {
+      where: { token: string; usedAt: null; expiresAt: { gt: Date } };
+      data: { usedAt: Date };
+    }): Promise<{ count: number }>;
   };
   itinerary: {
     create(args: {
@@ -623,8 +628,12 @@ export interface AppDb {
       userId: string | null;
       createdAt: Date;
     } | null>;
-    /** The /admin/summary read: today's decisions, oldest first. */
-    findMany(args: { where: { createdAt: { gte: Date } } }): Promise<
+    /** The /admin/summary read (today's decisions, oldest first) and the
+     * assistant daily-spend sum (userId + kind narrow it; the fake db
+     * ignores them, so callers re-filter in JS). */
+    findMany(args: {
+      where: { createdAt: { gte: Date }; userId?: string; kind?: string };
+    }): Promise<
       {
         kind: string;
         rule: string;

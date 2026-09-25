@@ -9,6 +9,9 @@ enum AssistantMockScenario: String, CaseIterable, Identifiable, Sendable {
     case auto
     case singleSpot
     case itinerary
+    /// A named-place plan whose street option is for a future time: no
+    /// Confirm, just "Pays automatically when you park".
+    case futureStreet
     /// The parking-only refusal sentence.
     case refuse
     case error
@@ -89,8 +92,13 @@ actor MockAssistantStore {
 }
 
 enum MockAssistantFixtures {
+    /// Facility checkout with the window prefilled, as the real SpotHero
+    /// provider now emits (docs/assistant-verification.md).
     static let museumDeepLink =
-        "https://spothero.com/search?latitude=42.3395&longitude=-71.094&starts=2026-01-05T14%3A00"
+        "https://spothero.com/checkout/135220?starts=2026-01-05T14%3A00%3A00&ends=2026-01-05T15%3A30%3A00"
+    /// ParkWhiz's own site:purchase link, the shape the live API returns.
+    static let valetDeepLink =
+        "https://www.parkwhiz.com/find_and_book/?location_id=15398&start_time=2026-01-05T14:00:00-05:00&end_time=2026-01-05T15:30:00-05:00"
 
     static var singleSpotPlan: AssistantReply.ProposedPlan {
         plan(
@@ -99,18 +107,51 @@ enum MockAssistantFixtures {
             {
               "kind": "single_spot",
               "note": "Street is cheapest; the deck is closest.",
+              "destination": {"lat": 42.3394, "lng": -71.0940, "label": "Museum of Fine Arts"},
+              "provenance": {"provider": "parkwhiz+spothero", "searchedAt": "2026-01-05T14:00:00-05:00"},
               "options": [
                 {"id": "opt-street", "type": "street", "label": "Street — Zone 81234",
                  "detail": "Boylston St meter, 2 min walk", "priceUsd": 4.10,
                  "durationMinutes": 90, "walkMinutes": 2, "zoneId": "bos-boylston-st-e-d-819305",
-                 "recommended": true},
+                 "lat": 42.3399, "lng": -71.0951, "recommended": true},
                 {"id": "opt-garage", "type": "garage", "label": "Museum Underground Deck",
                  "detail": "Self park, covered", "priceUsd": 18.00, "durationMinutes": 90,
                  "walkMinutes": 3, "entryType": "self", "garageOptionId": "g1",
+                 "lat": 42.3385, "lng": -71.0925, "provider": "spothero",
                  "deepLink": "\(museumDeepLink)", "recommended": false},
                 {"id": "opt-garage-2", "type": "garage", "label": "Fenway Valet Plaza",
                  "detail": "Valet", "priceUsd": 24.00, "durationMinutes": 90,
                  "walkMinutes": 6, "entryType": "valet", "garageOptionId": "g2",
+                 "lat": 42.3428, "lng": -71.0972, "provider": "parkwhiz",
+                 "deepLink": "\(valetDeepLink)", "recommended": false}
+              ]
+            }
+            """
+        )
+    }
+
+    /// "Garage near Fenway at 7 Saturday" — the street option is for a
+    /// future time, so it carries no Confirm at all.
+    static var futureStreetPlan: AssistantReply.ProposedPlan {
+        plan(
+            id: "mock-plan-future",
+            json: """
+            {
+              "kind": "single_spot",
+              "note": "The meter is cheapest if you're parking there Saturday.",
+              "destination": {"lat": 42.3467, "lng": -71.0972, "label": "Fenway Park"},
+              "provenance": {"provider": "spothero", "searchedAt": "2026-01-05T14:00:00-05:00"},
+              "options": [
+                {"id": "opt-street-later", "type": "street", "label": "Street — Zone 81112",
+                 "detail": "Van Ness St meter", "priceUsd": 7.50, "durationMinutes": 180,
+                 "walkMinutes": 3, "zoneId": "bos-van-ness-st-a-1",
+                 "lat": 42.3461, "lng": -71.0965,
+                 "startsAt": "2026-01-10T19:00:00-05:00", "payOnArrival": true,
+                 "recommended": true},
+                {"id": "opt-garage-fenway", "type": "garage", "label": "Landsdowne Garage",
+                 "detail": "Self park", "priceUsd": 32.00, "durationMinutes": 180,
+                 "walkMinutes": 4, "entryType": "self", "garageOptionId": "g9",
+                 "lat": 42.3475, "lng": -71.0989, "provider": "spothero",
                  "deepLink": "\(museumDeepLink)", "recommended": false}
               ]
             }
@@ -180,9 +221,16 @@ extension MockAPI {
             Task {
                 func finish(reply: String, plan: AssistantReply.ProposedPlan?) async {
                     // Stream word-by-word so the typing UI is visible.
-                    for word in reply.split(separator: " ", omittingEmptySubsequences: false) {
+                    let words = reply.split(separator: " ", omittingEmptySubsequences: false)
+                    for (index, word) in words.enumerated() {
                         continuation.yield(.delta(String(word) + " "))
                         try? await Task.sleep(for: .milliseconds(30))
+                        // The plan is its own event and lands mid-stream,
+                        // like the server's: the card renders before the
+                        // reply finishes.
+                        if index == words.count / 2, let plan {
+                            continuation.yield(.plan(plan))
+                        }
                     }
                     continuation.yield(.done(AssistantReply(
                         conversationId: conversationId ?? "mock-conv-1",
@@ -202,6 +250,11 @@ extension MockAPI {
                     continuation.finish(throwing: APIError.server(status: 500))
                 case .refuse:
                     await finish(reply: "I can only help with parking — finding a spot or planning a day of stops.", plan: nil)
+                case .futureStreet:
+                    await finish(
+                        reply: "Saturday at 7 near Fenway — the meter is cheapest.",
+                        plan: MockAssistantFixtures.futureStreetPlan
+                    )
                 case .itinerary, .singleSpot, .auto:
                     if scenario == .refuse { return }
                     if wantsDay {
@@ -246,9 +299,21 @@ extension MockAPI {
                 note: nil
             )
         }
-        guard case .singleSpot(let plan) = MockAssistantFixtures.singleSpotPlan.plan,
-              let option = plan.options.first(where: { $0.id == optionId }) else {
+        // Both single-spot fixtures confirm through here; the future-street
+        // option is unreachable by design (its card has no button), and the
+        // server 409s street_pay_on_arrival if anything ever asks.
+        let candidates: [SingleSpotOption] = [
+            MockAssistantFixtures.singleSpotPlan.plan,
+            MockAssistantFixtures.futureStreetPlan.plan,
+        ].flatMap { planCase -> [SingleSpotOption] in
+            guard case .singleSpot(let single) = planCase else { return [] }
+            return single.options
+        }
+        guard let option = candidates.first(where: { $0.id == optionId }) else {
             throw APIError.invalidRequest("unknown option")
+        }
+        if option.payOnArrival == true {
+            throw APIError.refused(code: "street_pay_on_arrival")
         }
         if option.type == "garage" {
             return AssistantConfirmResponse(
@@ -256,7 +321,11 @@ extension MockAPI {
                 providerZoneNumber: nil, durationMinutes: nil,
                 paymentSource: linked ? "link_wallet" : "issuing_card",
                 linkApproval: approval, itineraryId: nil, totalUsd: nil, linkApprovals: nil,
-                note: "Checkout finishes in SpotHero; the parking pass will live in your SpotHero account."
+                // The server's wording (garageHandoffNote): the site the
+                // option came from, not always SpotHero.
+                note: option.provider.flatMap(GarageSource.displayName).map {
+                    "Checkout finishes in \($0); the parking pass will live in your \($0) account."
+                } ?? "Checkout finishes on the garage's own site; the parking pass will live there."
             )
         }
         return AssistantConfirmResponse(

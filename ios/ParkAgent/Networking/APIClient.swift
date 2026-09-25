@@ -158,6 +158,11 @@ enum APIError: Error, LocalizedError {
         case "google_signin_disabled": "Google sign-in isn't available. Use Sign in with Apple."
         case "plate_taken": "That plate is already registered."
         case "auth_not_configured": "This server isn't set up for sign-in yet."
+        case "assistant_budget_exhausted": "You've used today's assistant allowance. It resets at midnight."
+        case "assistant_not_configured": "The assistant isn't set up on this server yet."
+        case "assistant_failed": "The assistant hit a problem. Try asking again."
+        case "conversation_not_found": "That conversation isn't available. Start a new one."
+        case "rate_limited": "That's a lot of requests at once. Wait a moment and try again."
         default: "The server refused the request (\(code))."
         }
     }

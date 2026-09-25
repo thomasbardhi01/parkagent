@@ -14,7 +14,14 @@
  * right behavior is the `blocked` error, not evasion.
  */
 
-import type { GarageBooking, GarageOption, GarageProvider, GarageSearchQuery } from "./garageProvider.js";
+import { easternWallClock, parseEasternTime } from "../hours.js";
+import { garageOptionId, newestCachedOption } from "./garageProvider.js";
+import type {
+  GarageBooking,
+  GarageOption,
+  GarageProvider,
+  GarageSearchQuery,
+} from "./garageProvider.js";
 
 const SEARCH_BASE = "https://api.spothero.com/v2/search/transient";
 const CACHE_TTL_MS = 10 * 60_000;
@@ -28,7 +35,10 @@ export type GarageSearchOutcome =
   | { ok: false; error: GarageSearchError; detail: string };
 
 interface Fetcher {
-  (url: string, init?: { headers?: Record<string, string> }): Promise<{
+  (
+    url: string,
+    init?: { headers?: Record<string, string> },
+  ): Promise<{
     ok: boolean;
     status: number;
     json(): Promise<unknown>;
@@ -46,6 +56,7 @@ function cacheKey(query: GarageSearchQuery): string {
   return `${r(query.lat)},${r(query.lng)}|${query.startsAt}|${query.endsAt}`;
 }
 
+/** The area-level search link — the fallback when no facility id exists. */
 export function spotheroDeepLink(query: {
   lat: number;
   lng: number;
@@ -55,10 +66,36 @@ export function spotheroDeepLink(query: {
   const params = new URLSearchParams({
     latitude: String(query.lat),
     longitude: String(query.lng),
-    starts: query.startsAt,
-    ends: query.endsAt,
+    starts: spotheroTime(query.startsAt),
+    ends: spotheroTime(query.endsAt),
   });
   return `https://spothero.com/search?${params.toString()}`;
+}
+
+/** The FACILITY-level checkout link (verified live 2026-09-23:
+ * /checkout/{facility_id}?starts=&ends= renders that facility with the
+ * window prefilled — the search link only showed the area). */
+export function spotheroFacilityLink(
+  facilityId: string,
+  window: { startsAt: string; endsAt: string },
+): string {
+  const params = new URLSearchParams({
+    starts: spotheroTime(window.startsAt),
+    ends: spotheroTime(window.endsAt),
+  });
+  return `https://spothero.com/checkout/${encodeURIComponent(facilityId)}?${params.toString()}`;
+}
+
+/**
+ * SpotHero reads a window as WALL-CLOCK digits and ignores any offset
+ * (verified live 2026-09-24: `starts=2026-09-26T22:00:00.000Z` — 6 PM
+ * ET — rendered a 10 PM checkout). So every window goes out as NYC wall
+ * time with no offset, the form the checkout verification used; a string
+ * we can't read passes through untouched rather than being guessed at.
+ */
+export function spotheroTime(iso: string): string {
+  const at = parseEasternTime(iso);
+  return at ? easternWallClock(at) : iso;
 }
 
 /**
@@ -84,15 +121,28 @@ export function parseSpotHeroResult(
   if (id === null || name === null || priceUsd === null) return null;
 
   const distanceM = extractDistanceM(r, common, origin);
+  const coords = extractCoords(common);
   return {
     id,
     name,
     address: extractAddress(common) ?? "",
+    ...(coords ?? {}),
     priceUsd,
     distanceM: distanceM ?? 0,
     walkMinutes: distanceM !== null ? Math.max(1, Math.round(distanceM / WALK_M_PER_MIN)) : 0,
     entryType: extractEntryType(r, common),
   };
+}
+
+/** The facility's own point (addresses[0] in the live shape) — map pins
+ * and the recomputed named-area distance guard both want it. */
+function extractCoords(common: Record<string, unknown>): { lat: number; lng: number } | null {
+  const addresses = common["addresses"];
+  const first = Array.isArray(addresses) ? (addresses[0] as Record<string, unknown>) : undefined;
+  const lat = first?.["latitude"] ?? common["latitude"];
+  const lng = first?.["longitude"] ?? common["longitude"];
+  if (typeof lat === "number" && typeof lng === "number") return { lat, lng };
+  return null;
 }
 
 function firstString(...candidates: unknown[]): string | null {
@@ -157,8 +207,7 @@ function extractEntryType(r: Record<string, unknown>, common: Record<string, unk
   const rates = r["rates"];
   if (Array.isArray(rates) && rates.length > 0) {
     const transient = (rates[0] as Record<string, unknown>)["transient"] as
-      | Record<string, unknown>
-      | undefined;
+      Record<string, unknown> | undefined;
     const redemption = transient?.["redemption_type"];
     if (typeof redemption === "string" && redemption.length > 0) return redemption;
   }
@@ -176,7 +225,8 @@ function haversineM(aLat: number, aLng: number, bLat: number, bLng: number): num
   const dLat = toRad(bLat - aLat);
   const dLng = toRad(bLng - aLng);
   const s =
-    Math.sin(dLat / 2) ** 2 + Math.cos(toRad(aLat)) * Math.cos(toRad(bLat)) * Math.sin(dLng / 2) ** 2;
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(aLat)) * Math.cos(toRad(bLat)) * Math.sin(dLng / 2) ** 2;
   return 2 * R * Math.asin(Math.sqrt(s));
 }
 
@@ -208,8 +258,8 @@ export function makeSpotHeroProvider(options: SpotHeroOptions = {}): GarageProvi
     const params = new URLSearchParams({
       lat: String(query.lat),
       lon: String(query.lng),
-      starts: query.startsAt,
-      ends: query.endsAt,
+      starts: spotheroTime(query.startsAt),
+      ends: spotheroTime(query.endsAt),
     });
     let response: Awaited<ReturnType<Fetcher>>;
     try {
@@ -243,12 +293,17 @@ export function makeSpotHeroProvider(options: SpotHeroOptions = {}): GarageProvi
     if (rows === null) {
       return { ok: false, error: "parse_failed", detail: "no results array in response" };
     }
-    const link = spotheroDeepLink(query);
     const parsed = rows
       .map((raw) => parseSpotHeroResult(raw, query))
       .filter((o): o is NonNullable<typeof o> => o !== null)
       .slice(0, MAX_RESULTS)
-      .map((o) => ({ ...o, provider: "spothero", deepLink: link }));
+      .map((o) => ({
+        ...o,
+        id: garageOptionId("spothero", o.id, query),
+        provider: "spothero",
+        // Facility checkout, window prefilled — never just the area map.
+        deepLink: spotheroFacilityLink(o.id, query),
+      }));
     if (rows.length > 0 && parsed.length === 0) {
       // The endpoint answered with rows we can no longer read — say the
       // site changed rather than claiming an empty lot map.
@@ -259,11 +314,7 @@ export function makeSpotHeroProvider(options: SpotHeroOptions = {}): GarageProvi
   }
 
   function optionById(optionId: string): GarageOption | null {
-    for (const entry of cache.values()) {
-      const option = entry.options.find((o) => o.id === optionId);
-      if (option) return option;
-    }
-    return null;
+    return newestCachedOption(cache, optionId);
   }
 
   return {
@@ -276,7 +327,9 @@ export function makeSpotHeroProvider(options: SpotHeroOptions = {}): GarageProvi
       if (option) {
         return { kind: "deeplink_handoff", option, deepLink: option.deepLink };
       }
-      throw new Error(`unknown garage option ${optionId} (search first — options expire with the cache)`);
+      throw new Error(
+        `unknown garage option ${optionId} (search first — options expire with the cache)`,
+      );
     },
   };
 }

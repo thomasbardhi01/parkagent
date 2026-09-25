@@ -68,6 +68,36 @@ enum CityCatalog {
         }
     }
 
+    /// The assistant's empty-state starters: real streets and landmarks in
+    /// the user's own city show what it understands better than a generic
+    /// example — and a user is never offered another city's landmark. No
+    /// city NAMES in the copy (the catalog's display names are the one
+    /// source of those); an unknown city gets phrasing that names no place.
+    static func assistantStarters(for city: String?) -> [String] {
+        switch city {
+        case "bos":
+            [
+                "Park me near the MFA for two hours",
+                "Garage near Fenway at 7 Saturday",
+                "Cheapest spot on Newbury Street",
+                "Plan my day of stops",
+            ]
+        case "nyc":
+            [
+                "Park me near the Met for two hours",
+                "Garage near Lincoln Center at 7",
+                "Cheapest spot in SoHo",
+                "Plan my day of stops",
+            ]
+        default:
+            [
+                "Find me a spot near here",
+                "Cheapest parking for two hours",
+                "Plan my day of stops",
+            ]
+        }
+    }
+
     /// Last-resort map center when the city is unknown too. Boston, because
     /// that is where the prototype is driven — not a claim about coverage.
     static let fallbackCenter = CLLocationCoordinate2D(latitude: 42.3555, longitude: -71.0655)

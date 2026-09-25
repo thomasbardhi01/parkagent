@@ -62,9 +62,21 @@ const schema = z
     PARKNYC_PLATE: z.string().min(1).optional(),
     // The assistant's model access; without it /assistant/* answers 503.
     ANTHROPIC_API_KEY: z.string().min(1).optional(),
-    // Which Claude model the assistant loop (and so every Anthropic call,
-    // explain_decision phrasing included) runs on.
-    ANTHROPIC_MODEL: z.string().min(1).default("claude-haiku-4-5-20251001"),
+    // Model routing (resolved in loop.ts resolveAssistantModels):
+    // ASSISTANT_MODEL runs the tool loop (falls back to the legacy
+    // ANTHROPIC_MODEL, then claude-sonnet-5); EXPLAIN_MODEL phrases
+    // explain_decision output (cheap — haiku by default).
+    ASSISTANT_MODEL: z.string().min(1).optional(),
+    ANTHROPIC_MODEL: z.string().min(1).optional(),
+    EXPLAIN_MODEL: z.string().min(1).default("claude-haiku-4-5-20251001"),
+    // Per-user daily cap on ESTIMATED model spend (USD) for the assistant.
+    // Defaults ON: a spend control that a missing env var switches off is
+    // no control. Each turn's cost estimate is logged on its
+    // assistant_turn decision row; a user over the cap gets 429.
+    ASSISTANT_DAILY_SPEND_CAP_USD: z.coerce.number().positive().default(5),
+    // ParkWhiz is a read-only public search (no credentials — verified
+    // live 2026-09-23); flip to "false" to drop back to SpotHero only.
+    PARKWHIZ_ENABLED: z.enum(["true", "false"]).default("true"),
     // Link wallet for agents (Stripe agentic commerce) — optional as a
     // set: all four present → /link/* live; any missing → 503.
     LINK_CLIENT_ID: z.string().min(1).optional(),

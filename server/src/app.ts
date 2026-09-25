@@ -89,6 +89,9 @@ export interface AppDeps {
   assistantModel?: ModelClient;
   /** Tool implementations (policy enforcement lives in them). */
   assistantTools?: AssistantTools;
+  /** ASSISTANT_DAILY_SPEND_CAP_USD: per-user daily ceiling on estimated
+   * model spend; unset → uncapped. Over the cap → /assistant/message 429. */
+  assistantDailySpendCapUsd?: number;
   /** Link wallet for agents; absent/unconfigured → /link/* answers 503. */
   linkWallet?: LinkWallet;
   /** ISSUING_LIVE env: whether the ParkAgent Issuing card may be chosen

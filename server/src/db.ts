@@ -329,6 +329,22 @@ export interface UserIdentityRow {
   createdAt: Date;
 }
 
+/** What the FR throwaway purge checks before touching a row: identity,
+ * credentials, and anything whose teardown would need a Stripe call. */
+export interface ThrowawayCheckRow {
+  id: string;
+  name: string;
+  isAdmin: boolean;
+  email: string | null;
+  appleSub: string | null;
+  googleSub: string | null;
+  apiKey: string | null;
+  apiKeyHash: string | null;
+  stripeCustomerId: string | null;
+  deletedAt: Date | null;
+  createdAt: Date;
+}
+
 export interface UserUpdate {
   name?: string;
   paymentSource?: string;
@@ -411,6 +427,11 @@ export interface AppDb {
       where: { id: string; stripeCustomerId: null };
       data: { stripeCustomerId: string };
     }): Promise<{ count: number }>;
+    /** The FR throwaway purge's read (scripts/purge-fr-throwaways.ts). */
+    findMany(args: {
+      where: { id: { in: string[] } };
+      select: Record<keyof ThrowawayCheckRow, true>;
+    }): Promise<ThrowawayCheckRow[]>;
   };
   refreshToken: {
     create(args: {
@@ -436,6 +457,8 @@ export interface AppDb {
         | { where: { id: string; rotatedAt: null; revokedAt: null }; data: { rotatedAt: Date } },
     ): Promise<{ count: number }>;
     deleteMany(args: { where: { userId: string } }): Promise<{ count: number }>;
+    /** The FR throwaway purge: does a tombstoned account still hold rows? */
+    count(args: { where: { userId: string } }): Promise<number>;
   };
   emailLoginCode: {
     create(args: {
@@ -862,7 +885,9 @@ export interface AppDb {
       where:
         | { createdAt: { gte: Date }; userId?: string; kind?: string }
         /** Activity's explanation lines: a page's session decisions. */
-        | { sessionId: { in: string[] } };
+        | { sessionId: { in: string[] } }
+        /** The FR throwaway purge: every account create-fr-throwaway minted. */
+        | { kind: string; rule: string };
     }): Promise<
       {
         id: string;

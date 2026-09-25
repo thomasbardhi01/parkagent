@@ -230,8 +230,9 @@ export interface FakeDbState {
   /** Per-user payment source ("provider_card" default when absent). */
   userPaymentSources: Record<string, string>;
   /** Full identity rows. Seeded with u1 (Thomas, admin) and u2 (Ana);
-   * auth tests create more through the routes. */
-  users: UserIdentityRow[];
+   * auth tests create more through the routes. u1/u2 hold the test api
+   * keys implicitly; a test seeding another keyed user sets apiKeyHash. */
+  users: (UserIdentityRow & { apiKeyHash?: string | null; apiKey?: string | null })[];
   refreshTokens: RefreshTokenRow[];
   emailLoginCodes: EmailLoginCodeRow[];
   parkedEvents: FakeParkedEvent[];
@@ -531,6 +532,29 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
         row.stripeCustomerId = data.stripeCustomerId;
         return { count: 1 };
       },
+      findMany: async ({ where }) =>
+        state.users
+          .filter((u) => where.id.in.includes(u.id))
+          .map((u) => ({
+            id: u.id,
+            name: u.name,
+            isAdmin: u.isAdmin,
+            email: u.email,
+            appleSub: u.appleSub,
+            googleSub: u.googleSub,
+            apiKey: u.apiKey ?? null,
+            // u1/u2 authenticate with the test keys (see findUnique above).
+            apiKeyHash:
+              u.apiKeyHash ??
+              (u.id === "u1"
+                ? hashApiKey(TEST_PEPPER, API_KEY)
+                : u.id === "u2"
+                  ? hashApiKey(TEST_PEPPER, NONADMIN_API_KEY)
+                  : null),
+            stripeCustomerId: u.stripeCustomerId ?? null,
+            deletedAt: u.deletedAt,
+            createdAt: u.createdAt,
+          })),
     },
     refreshToken: {
       create: async ({ data }) => {
@@ -572,6 +596,8 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
         state.refreshTokens = state.refreshTokens.filter((t) => t.userId !== where.userId);
         return { count: before - state.refreshTokens.length };
       },
+      count: async ({ where }) =>
+        state.refreshTokens.filter((t) => t.userId === where.userId).length,
     },
     emailLoginCode: {
       create: async ({ data }) => {
@@ -1067,7 +1093,9 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
           .filter(({ d }) =>
             "sessionId" in where
               ? d.sessionId !== undefined && where.sessionId.in.includes(d.sessionId)
-              : (d.createdAt ?? new Date(MONDAY_2PM)) >= where.createdAt.gte,
+              : "rule" in where
+                ? d.kind === where.kind && d.rule === where.rule
+                : (d.createdAt ?? new Date(MONDAY_2PM)) >= where.createdAt.gte,
           )
           .map(({ d, i }) => ({
             kind: d.kind,

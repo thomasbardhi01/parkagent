@@ -10,8 +10,9 @@
 #   FR_API_KEY — api key of the DEDICATED FR user on prod
 #                (pnpm -C server create:fr-user against the prod DB).
 #   FLY_API_TOKEN — (optional; CI's deploy token) lets the run mint FR-32's
-#                throwaway session inside the prod machine. Without it, or
-#                if minting fails, those four tests skip; nothing goes red.
+#                throwaway session inside the prod machine, and purge any
+#                throwaway a run left behind afterwards. Without it, or if
+#                minting fails, those four tests skip; nothing goes red.
 # The report artifact and the issue use the built-in GITHUB_TOKEN.
 
 name: nightly-fr
@@ -111,6 +112,34 @@ jobs:
           # an env var and not --reporter flags.
           FR_REPORT_JSON: fr-report.json
         run: pnpm -C server test:fr
+
+      # The suite deletes its throwaway however its tests end; this catches
+      # what it can't — a run that died first, or a throwaway whose access
+      # token was already dead. Same teardown as DELETE /me, run where the
+      # minting ran; only rows create-fr-throwaway minted are ever touched
+      # (see services/frThrowaways.ts). --include lifts the 30-minute age
+      # gate for THIS run's throwaway, which is minutes old; older strays
+      # from earlier runs are swept too. Never turns the run red.
+      - name: Purge FR throwaways
+        if: always() && steps.executor.conclusion != 'cancelled' && env.FR_API_BASE == 'https://parkagent-api.fly.dev'
+        continue-on-error: true
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          if [ -z "$FLY_API_TOKEN" ]; then
+            echo "::notice::FLY_API_TOKEN not set; no throwaway was minted, nothing to purge"
+            exit 0
+          fi
+          include=""
+          if [ -n "${FR_THROWAWAY_SESSION:-}" ]; then
+            id=$(node -pe 'JSON.parse(process.env.FR_THROWAWAY_SESSION).userId')
+            # A cuid; anything else never reaches the remote command line.
+            if printf '%s' "$id" | grep -Eq '^[a-z0-9]+$'; then include="--include $id"; fi
+          fi
+          flyctl ssh console -a parkagent-api \
+            -C "node dist/scripts/purge-fr-throwaways.js --apply $include" 2>/dev/null \
+            | grep -E '^(delete|clear_sessions|needs_manual|not_a_throwaway|too_fresh) |^\{"purge"' \
+            || echo "::warning::purge-fr-throwaways produced no summary; check the machine"
 
       - name: Build report
         id: report

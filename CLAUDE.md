@@ -200,6 +200,7 @@ before any customer use. Details: `executor/README.md`.
   (or `--api-key-prefix <8 chars>` in place of `--user`; on prod:
   `fly ssh console -a parkagent-api -C "node dist/scripts/attach-identity.js …"`)
 - `pnpm -C server create:fr-throwaway`  mint a throwaway session for FR-32's live tests (needs the target's DB + AUTH_JWT_SECRET)
+- `pnpm -C server purge:fr-throwaways [-- --apply]`  tear down throwaways a run left behind (dry run by default; the nightly applies it on prod)
 - `pnpm -C executor run login`     headed browser; sign in to ParkNYC once, save auth state
 - `pnpm -C executor run record`    record a real ParkNYC flow (HAR/trace/screens) to fixtures/
 - `pnpm -C executor run build`     compile (server build needs its d.ts first)

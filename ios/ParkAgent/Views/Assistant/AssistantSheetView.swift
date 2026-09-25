@@ -151,6 +151,7 @@ struct AssistantSheetView: View {
                     }
                 }
         }
+        #if DEBUG
         .overlay(alignment: .bottomTrailing) {
             if uiTesting, let link = model.externalLink {
                 Button(link.kind == .garageCheckout ? "garageCheckout" : "linkApproval") {
@@ -163,6 +164,7 @@ struct AssistantSheetView: View {
                 .accessibilityIdentifier("assistant.externalLinkProbe")
             }
         }
+        #endif
     }
 
     /// After Link approves a garage: the one-time card (Face ID) and the
@@ -261,10 +263,11 @@ struct AssistantSheetView: View {
                 plan: day,
                 confirming: model.phase == .confirming,
                 // Link pays only when it's the Wallet's active way to pay.
-                linkConnected: appModel.linkWalletConnected && appModel.wallet.activeSource == .linkWallet
+                linkConnected: appModel.linkWalletConnected && appModel.wallet.activeSource == .linkWallet,
+                price: { stops in try await model.price(planId: plan.planId, stops: stops) }
             ) { stops in
-                // Sign-off stores the day as proposed; a reorder made on
-                // the card is saved right after as its first edit.
+                // The card's edits go with the sign-off; the server
+                // re-prices them and re-checks the cap before storing.
                 Task { await model.confirm(planId: plan.planId, optionId: nil, stops: stops) }
             }
         }

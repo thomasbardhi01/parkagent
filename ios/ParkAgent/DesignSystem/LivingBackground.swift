@@ -76,6 +76,7 @@ struct LivingBackground: View {
     }
 }
 
+#if DEBUG
 #Preview("Living background — light") {
     LivingBackground()
 }
@@ -84,3 +85,4 @@ struct LivingBackground: View {
     LivingBackground()
         .preferredColorScheme(.dark)
 }
+#endif

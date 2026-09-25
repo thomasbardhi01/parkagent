@@ -75,8 +75,10 @@ final class OnboardingUITests: ParkAgentUITestCase {
 
         // 6 — Budget: preview sentence tracks the caps; save through the mock.
         XCTAssertTrue(element(app, "onboarding.budget").waitForExistence(timeout: 5))
+        // The values appear once the policy has loaded; nothing made-up
+        // is ever shown before that, so the exact cap is the policy's.
         let preview = element(app, "onboarding.budgetPreview")
-        XCTAssertTrue(preview.exists)
+        XCTAssertTrue(preview.waitForExistence(timeout: 5))
         XCTAssertTrue(preview.label.contains("$45.00"), "Preview should show the session cap")
         element(app, "onboarding.continueButton").tap()
 
@@ -213,6 +215,31 @@ final class OnboardingUITests: ParkAgentUITestCase {
             "Onboarding should resume at the budget step"
         )
         XCTAssertFalse(element(app, "onboarding.permissions").exists, "Should not restart")
+    }
+
+    /// Someone who isn't the operator (every invited friend) can't change
+    /// the shared limits: the budget step shows them with no steppers and
+    /// a plain Continue that saves nothing — instead of "Save and continue"
+    /// failing on a 403 in the middle of setup.
+    func testBudgetStepIsReadOnlyForSharedLimits() {
+        let app = launchApp(onboardingStep: 8, selectedCity: "nyc", skipOnboarding: false, policyReadOnly: true)
+
+        XCTAssertTrue(element(app, "onboarding.budget").waitForExistence(timeout: 5))
+        let sessionCap = element(app, "onboarding.budget.sessionCap")
+        XCTAssertTrue(sessionCap.waitForExistence(timeout: 5), "Limits should still be shown")
+        // The policy's own cap: the screen shows no value until it loads.
+        XCTAssertEqual(sessionCap.label, "Per stop, $45.00")
+        XCTAssertFalse(element(app, "onboarding.budget.sessionCap.plus").exists, "No steppers on shared limits")
+        XCTAssertTrue(element(app, "onboarding.budgetShared").exists, "Why they're read-only is missing")
+
+        let next = element(app, "onboarding.continueButton")
+        XCTAssertEqual(next.label, "Continue")
+        next.tap()
+        XCTAssertTrue(
+            element(app, "onboarding.budget").waitForNonExistence(timeout: 5),
+            "Continue should move past the budget step"
+        )
+        XCTAssertFalse(element(app, "onboarding.budgetSkipSave").exists, "Nothing was saved, so nothing failed")
     }
 
     /// A returning user — already onboarded — skips straight to Home.

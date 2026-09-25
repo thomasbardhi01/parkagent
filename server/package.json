@@ -19,6 +19,7 @@
     "migrate:policy-fee": "tsx src/scripts/migrate-policy-fee.ts",
     "attach-identity": "tsx src/scripts/attach-identity.ts",
     "create:fr-throwaway": "tsx src/scripts/create-fr-throwaway.ts",
+    "purge:fr-throwaways": "tsx src/scripts/purge-fr-throwaways.ts",
     "load:zone-numbers": "tsx src/scripts/load-zone-numbers.ts",
     "verify:garages": "tsx src/scripts/verify-garages.ts"
   },

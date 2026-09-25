@@ -28,6 +28,13 @@ class ParkAgentUITestCase: XCTestCase {
         appearance: String? = nil,
         paymentSource: String? = nil,
         issuingLive: Bool = false,
+        /// Diagnostics' ParkAgent-card sandbox toggle. On for tests, as a
+        /// Debug build always behaved before the toggle existed; the
+        /// toggle's own test turns it off.
+        parkAgentSandbox: Bool = true,
+        /// Sign in as someone who isn't the operator: GET /policy says the
+        /// shared limits aren't theirs to edit.
+        policyReadOnly: Bool = false,
         googleSignIn: Bool = false,
         /// The mock server's switched-on sign-in methods; nil = its
         /// default, Apple only (as a real deployment ships).
@@ -55,6 +62,8 @@ class ParkAgentUITestCase: XCTestCase {
         if let selectedCity { args += ["-selectedCity", selectedCity] }
         if let paymentSource { args += ["-paymentSource", paymentSource] }
         if issuingLive { args += ["-issuingLive", "YES"] }
+        args += ["-parkAgentSandbox", parkAgentSandbox ? "YES" : "NO"]
+        if policyReadOnly { args += ["-policyReadOnly", "YES"] }
         app.launchArguments = args
         app.launch()
         return app
@@ -84,20 +93,6 @@ class ParkAgentUITestCase: XCTestCase {
         let sheet = element(app, "account.view")
         XCTAssertTrue(sheet.waitForExistence(timeout: 5), "Account sheet did not open")
         return sheet
-    }
-
-    /// Account sheet > (five taps on the version) > Diagnostics > Simulate
-    /// park, then wait for the sheet. Mirrors how a human reaches the
-    /// hidden screen — there is no Developer section any more.
-    func simulateParkViaDiagnostics(_ app: XCUIApplication) {
-        openDiagnostics(app)
-        let simulate = element(app, "diagnostics.simulateParkButton")
-        XCTAssertTrue(simulate.waitForExistence(timeout: 5), "Simulate park button missing")
-        simulate.tap()
-        XCTAssertTrue(
-            element(app, "parkedSheet.view").waitForExistence(timeout: 5),
-            "Parking Detected sheet did not appear"
-        )
     }
 
     /// The Wallet tab, loaded (its hero is on screen).
@@ -165,7 +160,9 @@ class ParkAgentUITestCase: XCTestCase {
         )
     }
 
-    /// The Park tab's Simulate park (mock + no active session only).
+    /// The Park tab's test-only Simulate park (DEBUG + -uiTesting + mock).
+    /// It is the only way a test parks: nothing a person can reach
+    /// simulates one, Diagnostics included.
     func simulateParkFromHome(_ app: XCUIApplication) {
         app.tabBars.buttons["Park"].tap()
         let simulate = element(app, "home.simulateParkButton")

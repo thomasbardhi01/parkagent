@@ -48,7 +48,9 @@ final class SpeechRecognizer {
     private let audioEngine = AVAudioEngine()
     private var lastActivityAt = Date()
     private var silenceWatchdog: Task<Void, Never>?
+    #if DEBUG
     private var scriptedRun: Task<Void, Never>?
+    #endif
     /// True from the moment start() is entered until it resolves — the
     /// permission awaits suspend with state still .idle, and a second mic
     /// tap in that window must not double-install the audio tap (an
@@ -62,13 +64,17 @@ final class SpeechRecognizer {
     /// session for a view that's already gone, leaving the mic hot and
     /// other apps ducked until the next launch.
     private var startCancelled = false
+    #if DEBUG
     /// Tests inject a scenario directly; the UserDefaults path is for UI
-    /// tests only and is gated on the -uiTesting launch flag.
+    /// tests only and is gated on the -uiTesting launch flag. Neither
+    /// exists in a Release build.
     private let scenarioOverride: SpeechMockScenario?
+    #endif
     /// The permission gate (speech + mic), injectable so a test can hold
     /// it suspended and exercise a dismissal while the alert is up.
     private let requestPermissions: @Sendable () async -> Bool
 
+    #if DEBUG
     init(
         scenarioOverride: SpeechMockScenario? = nil,
         requestPermissions: (@Sendable () async -> Bool)? = nil
@@ -76,6 +82,11 @@ final class SpeechRecognizer {
         self.scenarioOverride = scenarioOverride
         self.requestPermissions = requestPermissions ?? Self.systemPermissions
     }
+    #else
+    init() {
+        requestPermissions = Self.systemPermissions
+    }
+    #endif
 
     /// The real prompts: speech recognition, then the microphone. The
     /// speech ask goes through the nonisolated bridge, never a closure
@@ -107,12 +118,14 @@ final class SpeechRecognizer {
         silenceCountdown = nil
         finishedTranscript = nil
 
+        #if DEBUG
         // Scripted sessions — no engine, no permission prompts,
         // deterministic timing.
         if let scenario = scenarioOverride ?? SpeechMockScenario.fromDefaults() {
             startScripted(scenario)
             return
         }
+        #endif
 
         let granted = await requestPermissions()
         // The sheet may have been dismissed while the alert was up. Bail
@@ -236,8 +249,10 @@ final class SpeechRecognizer {
         // up a mic nobody is watching.
         if isStarting { startCancelled = true }
         guard state == .listening else { return }
+        #if DEBUG
         scriptedRun?.cancel()
         scriptedRun = nil
+        #endif
         silenceWatchdog?.cancel()
         silenceWatchdog = nil
         task?.finish()
@@ -326,8 +341,9 @@ final class SpeechRecognizer {
         }
     }
 
-    // MARK: - Scripted sessions (UI tests)
+    // MARK: - Scripted sessions (tests only)
 
+    #if DEBUG
     private func startScripted(_ scenario: SpeechMockScenario) {
         switch scenario {
         case .denied:
@@ -357,8 +373,10 @@ final class SpeechRecognizer {
             }
         }
     }
+    #endif
 }
 
+#if DEBUG
 /// `-speechScenario <name>` launch override (see LaunchOverrides).
 enum SpeechMockScenario: String {
     case scripted
@@ -377,3 +395,4 @@ enum SpeechMockScenario: String {
         return SpeechMockScenario(rawValue: raw)
     }
 }
+#endif

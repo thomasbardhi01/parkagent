@@ -2,7 +2,7 @@ import Foundation
 
 /// On-device log of raw detector signals, one timestamped line per event,
 /// for reading back what fired (or didn't) during a field test. Enabled by
-/// the Debug-menu switch; exported from there with a share sheet. Plain
+/// the Diagnostics switch; exported from there with a share sheet. Plain
 /// text, capped small, never leaves the device unless the user exports it.
 @MainActor
 final class SignalLog {
@@ -47,12 +47,6 @@ final class SignalLog {
     var lineCount: Int {
         guard let text = try? String(contentsOf: fileURL, encoding: .utf8) else { return 0 }
         return text.split(separator: "\n").count
-    }
-
-    /// The last few lines, for the Debug menu's live peek.
-    func tail(_ n: Int = 8) -> [String] {
-        guard let text = try? String(contentsOf: fileURL, encoding: .utf8) else { return [] }
-        return text.split(separator: "\n").suffix(n).map(String.init)
     }
 
     func clear() {

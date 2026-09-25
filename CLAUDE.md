@@ -71,7 +71,10 @@ script-made user across with
 
 `DELETE /me` tombstones the users row rather than deleting it — the
 `decisions` ledger needs a valid user id, so the person goes and the id
-stays. See server/API.md "Identity & sessions" for the full contract.
+stays. It also revokes the person's Sign in with Apple token at Apple
+(App Store 5.1.1(v)): the sign-in's authorization code is exchanged for a
+refresh token stored sealed, which needs the `APPLE_SIGNIN_KEY` /
+`_KEY_ID` / `_TEAM_ID` group; a failed revoke is retried hourly. See server/API.md "Identity & sessions" for the full contract.
 
 A daily job (`jobs/providerHealthTick.ts`) verifies each linked provider
 session headlessly and pushes "Reconnect …" when one is expiring or
@@ -121,7 +124,8 @@ quietly sign the app out onto an empty store.
 
 The app talks to the **live API on every build**, Debug included. `MockAPI`
 activates only for a launch carrying `-useMockAPI YES` (the UI tests) or
-inside a SwiftUI preview, and the choice is never persisted — a missing
+inside a SwiftUI preview, exists only in Debug builds, and the choice is
+never persisted — a missing
 `API_BASE_URL` puts the app on `UnconfiguredAPI` (a visible error state:
 the welcome screen's sign-in failure, or Home's banner once signed in),
 never a silent swap to fixtures. Launch order is Welcome (no valid
@@ -129,7 +133,19 @@ session) → the onboarding truth gate (`State/OnboardingGate.swift`, the
 one place that decides which setup step is missing) → Home. Developer
 tools live in `Settings/DiagnosticsView.swift`, reached by tapping the
 version number in the Account sheet's About section five times, and
-compiled out of Release.
+compiled out of Release. It holds exactly the field-test kit — detector
+status, signal-log export, the effective dry run, Reset onboarding, and
+the ParkAgent-card sandbox toggle — and nothing else.
+
+**Release builds carry no debug code (FR-34).** Everything mock, scenario,
+launch-argument, UI-test-hook, preview, and Diagnostics is inside `#if
+DEBUG`; a Release build honors no launch argument. Anything new of that
+kind goes inside `#if DEBUG` too, and its type name or a 16+-byte marker
+(an accessibility identifier) goes into `ios/Tools/release-denylist.txt`.
+Proof runs in CI: `xcodebuild -scheme ParkAgentRelease test` (tests that
+run inside the Release build) and `ios/Tools/check-release-binary.sh
+<ParkAgent.app>` (`strings`). TestFlight uploads come from the manual
+`testflight` workflow; see `docs/testflight.md`.
 
 Maps use MapKit for now; Mapbox is a possible later swap and nothing outside
 the map views should depend on MapKit types.
@@ -152,10 +168,10 @@ paying — so the three never disagree. Link never pays a street meter (the
 provider keeps one saved card); see server/API.md "Wallet".
 
 The Wallet's "Add to Apple Wallet" is behind `FeatureFlags.applePayProvisioning`
-(default off, showing "coming soon"). Turning it on for real requires the
+(a constant `false`, showing "coming soon"). Turning it on for real requires the
 `com.apple.developer.payment-pass-provisioning` entitlement, which Apple
 grants only after an application through Stripe (support-issuing@stripe.com)
-— add it to `project.yml` when approved, plus `STPPushProvisioningContext`
+— add it to `project.yml` when approved, flip the constant, and add `STPPushProvisioningContext`
 (see AddToWalletButton.swift).
 
 ## Pinned versions
@@ -200,6 +216,7 @@ before any customer use. Details: `executor/README.md`.
   (or `--api-key-prefix <8 chars>` in place of `--user`; on prod:
   `fly ssh console -a parkagent-api -C "node dist/scripts/attach-identity.js …"`)
 - `pnpm -C server create:fr-throwaway`  mint a throwaway session for FR-32's live tests (needs the target's DB + AUTH_JWT_SECRET)
+- `pnpm -C server purge:fr-throwaways [-- --apply]`  tear down throwaways a run left behind (dry run by default; the nightly applies it on prod)
 - `pnpm -C executor run login`     headed browser; sign in to ParkNYC once, save auth state
 - `pnpm -C executor run record`    record a real ParkNYC flow (HAR/trace/screens) to fixtures/
 - `pnpm -C executor run build`     compile (server build needs its d.ts first)

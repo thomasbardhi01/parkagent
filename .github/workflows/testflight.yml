@@ -1,0 +1,394 @@
+# Manual TestFlight upload: archive the iOS app, sign it for App Store
+# Connect, upload it, and set the build's What to Test. Run it from the
+# Actions tab or with `gh workflow run testflight.yml --ref <branch>`.
+# Setup, secrets, and the tester notes live in docs/testflight.md.
+#
+# Signing keeps no certificates or profiles in secrets. xcodebuild signs
+# through an App Store Connect API key (-allowProvisioningUpdates plus the
+# -authenticationKey* trio): the export uses the team's cloud-managed
+# distribution certificate. The archive itself is development-signed, and on
+# a runner with an empty keychain that mints a new Apple Development
+# certificate every run, so a cleanup step revokes that one certificate at
+# the end. Without it the team hits Apple's certificate limit after a few
+# builds.
+#
+# Secrets:   APP_STORE_CONNECT_API_KEY_BASE64, APP_STORE_CONNECT_KEY_ID,
+#            APP_STORE_CONNECT_ISSUER_ID
+# Variables: APPLE_TEAM_ID (required), STRIPE_PUBLISHABLE_KEY (optional)
+
+name: testflight
+
+on:
+  workflow_dispatch:
+    inputs:
+      api_base_url:
+        description: "API the build talks to"
+        required: false
+        default: https://parkagent-api.fly.dev
+      build_number:
+        description: "Build number (default: this workflow's run number)"
+        required: false
+      what_to_test:
+        description: "What to Test (default: the tester notes in docs/testflight.md)"
+        required: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  BUNDLE_ID: com.thomasbardhi.parkagent
+
+jobs:
+  upload:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    # One upload at a time, never cancelled partway through signing or
+    # uploading. Job-level, so a run still waiting on processing in
+    # what-to-test doesn't hold up the next upload.
+    concurrency:
+      group: testflight-upload
+      cancel-in-progress: false
+    outputs:
+      version: ${{ steps.app.outputs.version }}
+      build: ${{ steps.app.outputs.build }}
+    env:
+      # Identifiers, not credentials: they do nothing without the .p8, which
+      # only the step that writes it to disk ever sees.
+      APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID || secrets.APPLE_TEAM_ID }}
+      ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+    steps:
+      # The secrets context isn't available in a job-level `if`, so the
+      # configuration is checked here, before anything is built.
+      - name: Check secrets, variables, and inputs
+        env:
+          HAS_API_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY_BASE64 != '' }}
+          INPUT_API_BASE_URL: ${{ inputs.api_base_url }}
+          INPUT_BUILD_NUMBER: ${{ inputs.build_number }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          problems=()
+          [ -n "$APPLE_TEAM_ID" ] || problems+=("APPLE_TEAM_ID (repository variable) is not set")
+          [ "$HAS_API_KEY" = true ] || problems+=("APP_STORE_CONNECT_API_KEY_BASE64 (secret) is not set")
+          [ -n "$ASC_KEY_ID" ] || problems+=("APP_STORE_CONNECT_KEY_ID (secret) is not set")
+          [ -n "$ASC_ISSUER_ID" ] || problems+=("APP_STORE_CONNECT_ISSUER_ID (secret) is not set")
+          if [ -n "$APPLE_TEAM_ID" ] && ! [[ $APPLE_TEAM_ID =~ ^[A-Z0-9]{10}$ ]]; then
+            problems+=("APPLE_TEAM_ID is not a 10-character Team ID")
+          fi
+          if [ -n "$ASC_KEY_ID" ] && ! [[ $ASC_KEY_ID =~ ^[A-Z0-9]{10}$ ]]; then
+            problems+=("APP_STORE_CONNECT_KEY_ID is not a 10-character Key ID")
+          fi
+          if [ -n "$ASC_ISSUER_ID" ] && ! [[ $ASC_ISSUER_ID =~ ^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$ ]]; then
+            problems+=("APP_STORE_CONNECT_ISSUER_ID is not an Issuer ID (a UUID)")
+          fi
+
+          build="${INPUT_BUILD_NUMBER:-$RUN_NUMBER}"
+          if ! [[ $build =~ ^[0-9]+(\.[0-9]+){0,2}$ ]]; then
+            problems+=("build_number must be digits, like 42 or 42.1")
+          fi
+          url="${INPUT_API_BASE_URL:-https://parkagent-api.fly.dev}"
+          url="${url%/}"
+          if ! [[ $url =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~/-]*)?$ ]]; then
+            problems+=("api_base_url must be an https:// URL (a phone refuses plain http)")
+          fi
+
+          if [ ${#problems[@]} -gt 0 ]; then
+            for problem in "${problems[@]}"; do
+              echo "::error title=TestFlight setup::$problem. See docs/testflight.md."
+            done
+            exit 1
+          fi
+
+          {
+            echo "BUILD_NUMBER=$build"
+            echo "API_BASE_URL=$url"
+            echo "ARCHIVE_PATH=$RUNNER_TEMP/ParkAgent.xcarchive"
+            echo "EXPORT_PATH=$RUNNER_TEMP/export"
+            echo "LOG_DIR=$RUNNER_TEMP/logs"
+            echo "ASC_KEY_PATH=$RUNNER_TEMP/asc/AuthKey.p8"
+          } >> "$GITHUB_ENV"
+          echo "Build $build of $GITHUB_REF_NAME @ ${GITHUB_SHA:0:7}, talking to $url"
+
+      - uses: actions/checkout@v7
+
+      # Same Homebrew cache as ci.yml's iOS jobs.
+      - uses: actions/cache@v6
+        with:
+          path: ~/Library/Caches/Homebrew/downloads
+          key: brew-downloads-${{ runner.os }}-xcodegen
+      - run: brew install xcodegen
+
+      # Config.xcconfig is gitignored (see Config.example.xcconfig). xcconfig
+      # reads // as a comment, so the URL is written as https:/$()/host.
+      - name: Write ios/Config.xcconfig
+        env:
+          STRIPE_PUBLISHABLE_KEY: ${{ vars.STRIPE_PUBLISHABLE_KEY || secrets.STRIPE_PUBLISHABLE_KEY }}
+        run: |
+          if [ -n "$STRIPE_PUBLISHABLE_KEY" ] && ! [[ $STRIPE_PUBLISHABLE_KEY =~ ^pk_(live|test)_[A-Za-z0-9]+$ ]]; then
+            echo "::error::STRIPE_PUBLISHABLE_KEY must be a publishable key (pk_live_… or pk_test_…). Never put a secret key in the app."
+            exit 1
+          fi
+          # shellcheck disable=SC2016 # a literal $(), not an expansion
+          escaped_url=$(printf '%s' "$API_BASE_URL" | sed 's#//#/$()/#g')
+          {
+            echo "// Written by .github/workflows/testflight.yml; never committed."
+            echo "DEVELOPMENT_TEAM = $APPLE_TEAM_ID"
+            echo "API_BASE_URL = $escaped_url"
+            echo "STRIPE_PUBLISHABLE_KEY = $STRIPE_PUBLISHABLE_KEY"
+          } > ios/Config.xcconfig
+          case "$STRIPE_PUBLISHABLE_KEY" in
+            pk_live_*) stripe_mode="live" ;;
+            pk_test_*) stripe_mode="test" ;;
+            *) stripe_mode="none" ;;
+          esac
+          echo "STRIPE_MODE=$stripe_mode" >> "$GITHUB_ENV"
+          grep -v '^STRIPE_PUBLISHABLE_KEY' ios/Config.xcconfig
+          echo "STRIPE_PUBLISHABLE_KEY: $stripe_mode"
+
+      - name: Generate the Xcode project
+        run: xcodegen generate
+        working-directory: ios
+
+      - name: Write the App Store Connect API key
+        env:
+          ASC_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_API_KEY_BASE64 }}
+        run: python3 ios/Tools/testflight_asc.py write-key --out "$ASC_KEY_PATH"
+
+      # So the cleanup at the end revokes only the certificate this run mints.
+      - name: Note the keychain's development certificates
+        id: certs
+        run: python3 ios/Tools/testflight_asc.py dev-certs --out "$RUNNER_TEMP/dev-certs-before.txt"
+
+      - name: Archive (Release)
+        id: archive
+        run: |
+          set -o pipefail
+          mkdir -p "$LOG_DIR"
+          xcodebuild -version | tee "$LOG_DIR/xcode-version.txt"
+          pretty() { if command -v xcbeautify >/dev/null 2>&1; then xcbeautify --renderer github-actions; else cat; fi; }
+          xcodebuild archive \
+            -project ios/ParkAgent.xcodeproj \
+            -scheme ParkAgent \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$ARCHIVE_PATH" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            2>&1 | tee "$LOG_DIR/archive.log" | pretty
+
+      # Read what was actually built, and stop before signing and uploading
+      # anything App Store Connect would turn away.
+      - name: Check the archived app
+        id: app
+        run: |
+          app="$ARCHIVE_PATH/Products/Applications/ParkAgent.app"
+          if [ ! -d "$app" ]; then
+            echo "::error::The archive has no Products/Applications/ParkAgent.app."
+            exit 1
+          fi
+          plist="$app/Info.plist"
+          pb() { /usr/libexec/PlistBuddy -c "Print :$1" "$plist" 2>/dev/null; }
+          version=$(pb CFBundleShortVersionString || true)
+          build=$(pb CFBundleVersion || true)
+          bundle=$(pb CFBundleIdentifier || true)
+          echo "Archived $bundle $version ($build)"
+
+          if [ "$bundle" != "$BUNDLE_ID" ]; then
+            echo "::error::The archived bundle id is '$bundle', not $BUNDLE_ID."
+            exit 1
+          fi
+          if [ "$build" != "$BUILD_NUMBER" ]; then
+            echo "::error::The archived build number is '$build', not $BUILD_NUMBER. Info.plist must take CFBundleVersion from \$(CURRENT_PROJECT_VERSION) (ios/project.yml) for this workflow to number builds."
+            exit 1
+          fi
+          # ITMS-90771: the 'processing' background mode needs the task ids.
+          if pb UIBackgroundModes | grep -qE '^[[:space:]]*processing$' && ! pb BGTaskSchedulerPermittedIdentifiers >/dev/null; then
+            echo "::error::UIBackgroundModes lists 'processing' but Info.plist has no BGTaskSchedulerPermittedIdentifiers, and App Store Connect rejects that upload (ITMS-90771). In ios/project.yml, drop 'processing' if nothing schedules a BGProcessingTask, or list the task identifiers."
+            exit 1
+          fi
+          if ! pb ITSAppUsesNonExemptEncryption >/dev/null; then
+            echo "::warning::Info.plist has no ITSAppUsesNonExemptEncryption, so TestFlight holds this build at Missing Compliance until the export-compliance question is answered in App Store Connect."
+          fi
+
+          # The archive is development-signed. The export re-signs it for
+          # distribution, where aps-environment becomes production.
+          entitlements="$LOG_DIR/archive-entitlements.plist"
+          codesign -d --entitlements - --xml "$app" > "$entitlements" 2>/dev/null || true
+          if [ -s "$entitlements" ]; then
+            echo "Entitlements in the archive (development-signed):"
+            plutil -p "$entitlements"
+          else
+            echo "::warning::Could not read the archived app's entitlements."
+          fi
+
+          {
+            echo "version=$version"
+            echo "build=$build"
+          } >> "$GITHUB_OUTPUT"
+          echo "APP_PATH=$app" >> "$GITHUB_ENV"
+
+      - name: Check the Release binary for dev and debug strings
+        run: |
+          script=ios/Tools/check-release-binary.sh
+          if [ ! -f "$script" ]; then
+            echo "::error::$script is missing. It gates every TestFlight upload, so this workflow will not upload without it."
+            exit 1
+          fi
+          bash "$script" "$APP_PATH"
+
+      # destination=upload in ExportOptions.plist: the export signs with the
+      # cloud-managed distribution certificate and uploads in one go.
+      - name: Sign for App Store Connect and upload
+        id: upload
+        run: |
+          set -o pipefail
+          options="$RUNNER_TEMP/ExportOptions.plist"
+          cp ios/ExportOptions.plist "$options"
+          plutil -replace teamID -string "$APPLE_TEAM_ID" "$options"
+          pretty() { if command -v xcbeautify >/dev/null 2>&1; then xcbeautify --renderer github-actions; else cat; fi; }
+          status=0
+          xcodebuild -exportArchive \
+            -archivePath "$ARCHIVE_PATH" \
+            -exportOptionsPlist "$options" \
+            -exportPath "$EXPORT_PATH" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            2>&1 | tee "$LOG_DIR/export.log" | pretty || status=$?
+
+          # Xcode's own distribution logs: signing, validation, upload.
+          bundle=$(grep -oE "/[^[:space:]\"']+\.xcdistributionlogs" "$LOG_DIR/export.log" | head -1 || true)
+          if [ -n "$bundle" ] && [ -d "$bundle" ]; then cp -R "$bundle" "$LOG_DIR/"; fi
+
+          # What the uploaded binary was signed with, when Xcode reports it.
+          aps="not reported"
+          if [ -f "$EXPORT_PATH/DistributionSummary.plist" ]; then
+            aps=$(python3 - "$EXPORT_PATH/DistributionSummary.plist" <<'EOF'
+          import plistlib, sys
+          def find(node):
+              if isinstance(node, dict):
+                  if "aps-environment" in node:
+                      return node["aps-environment"]
+                  node = list(node.values())
+              if isinstance(node, list):
+                  for child in node:
+                      found = find(child)
+                      if found:
+                          return found
+              return None
+          with open(sys.argv[1], "rb") as handle:
+              print(find(plistlib.load(handle)) or "not reported")
+          EOF
+            )
+          fi
+          echo "aps_environment=$aps" >> "$GITHUB_OUTPUT"
+          echo "aps-environment in the exported binary: $aps"
+          if [ "$aps" = development ]; then
+            echo "::warning::The exported binary kept aps-environment=development; TestFlight builds register production push tokens, so pushes would not arrive."
+          fi
+          exit "$status"
+
+      - name: Collect dSYMs and logs
+        if: always() && steps.archive.outcome != 'skipped'
+        run: |
+          out="$RUNNER_TEMP/artifact"
+          mkdir -p "$out"
+          if [ -d "$ARCHIVE_PATH/dSYMs" ]; then cp -R "$ARCHIVE_PATH/dSYMs" "$out/"; fi
+          if [ -d "$LOG_DIR" ]; then cp -R "$LOG_DIR" "$out/logs"; fi
+          if [ -d "$EXPORT_PATH" ]; then cp -R "$EXPORT_PATH" "$out/export"; fi
+
+      - uses: actions/upload-artifact@v6
+        if: always() && steps.archive.outcome != 'skipped'
+        with:
+          name: testflight-${{ steps.app.outputs.version || 'unarchived' }}-${{ env.BUILD_NUMBER }}
+          path: ${{ runner.temp }}/artifact
+          if-no-files-found: warn
+
+      - name: Revoke the development certificate this run created
+        if: always() && steps.certs.outcome == 'success'
+        run: python3 ios/Tools/testflight_asc.py revoke-new-dev-certs --before "$RUNNER_TEMP/dev-certs-before.txt"
+
+      - name: Summary
+        if: always() && steps.archive.outcome != 'skipped'
+        env:
+          VERSION: ${{ steps.app.outputs.version }}
+          UPLOAD: ${{ steps.upload.outcome }}
+          APS: ${{ steps.upload.outputs.aps_environment }}
+        run: |
+          xcode=unknown
+          if [ -f "$LOG_DIR/xcode-version.txt" ]; then xcode=$(tr '\n' ' ' < "$LOG_DIR/xcode-version.txt"); fi
+          {
+            if [ "$UPLOAD" = success ]; then
+              echo "### ParkAgent $VERSION ($BUILD_NUMBER) uploaded to TestFlight"
+            else
+              echo "### ParkAgent ${VERSION:-?} ($BUILD_NUMBER) was not uploaded"
+            fi
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Version | ${VERSION:-not archived} |"
+            echo "| Build | $BUILD_NUMBER |"
+            echo "| Commit | \`${GITHUB_SHA:0:7}\` on \`$GITHUB_REF_NAME\` |"
+            echo "| API | $API_BASE_URL |"
+            echo "| Stripe key | ${STRIPE_MODE:-none} |"
+            echo "| Xcode | $xcode |"
+            echo "| Push environment (uploaded binary) | ${APS:-not reported} |"
+            echo "| Upload | ${UPLOAD:-skipped} |"
+            echo
+            if [ "$UPLOAD" = success ]; then
+              echo "App Store Connect processes the build next, usually in 5 to 30 minutes. The what-to-test job waits for that and sets the tester notes; the build then shows under ParkAgent → TestFlight → iOS Builds → $VERSION. dSYMs and logs are in this run's artifact."
+            else
+              echo "The artifact on this run has archive.log, export.log, and Xcode's distribution logs."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove the API key
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/asc"
+
+  # Linux, not macOS: waiting on App Store Connect costs a tenth as much here.
+  what-to-test:
+    needs: upload
+    runs-on: ubuntu-latest
+    # Processing usually takes 5 to 30 minutes; the script stops waiting at
+    # 60 with a warning, not a failure.
+    timeout-minutes: 75
+    env:
+      ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Write the App Store Connect API key
+        env:
+          ASC_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_API_KEY_BASE64 }}
+        run: |
+          echo "ASC_KEY_PATH=$RUNNER_TEMP/asc/AuthKey.p8" >> "$GITHUB_ENV"
+          python3 ios/Tools/testflight_asc.py write-key --out "$RUNNER_TEMP/asc/AuthKey.p8"
+
+      - name: Wait for processing, then set What to Test
+        env:
+          VERSION: ${{ needs.upload.outputs.version }}
+          BUILD: ${{ needs.upload.outputs.build }}
+          WHAT_TO_TEST: ${{ inputs.what_to_test }}
+        run: |
+          echo "### ParkAgent $VERSION ($BUILD) in TestFlight" >> "$GITHUB_STEP_SUMMARY"
+          python3 ios/Tools/testflight_asc.py what-to-test \
+            --bundle-id "$BUNDLE_ID" \
+            --version "$VERSION" \
+            --build "$BUILD" \
+            --text="$WHAT_TO_TEST" \
+            --doc docs/testflight.md \
+            --timeout-minutes 60
+
+      - name: Remove the API key
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/asc"

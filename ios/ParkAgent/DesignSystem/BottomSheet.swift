@@ -33,6 +33,7 @@ struct BottomSheet<Content: View>: View {
     }
 }
 
+#if DEBUG
 #Preview("BottomSheet") {
     ZStack(alignment: .bottom) {
         Color.sky.opacity(0.4)
@@ -54,3 +55,4 @@ struct BottomSheet<Content: View>: View {
         }
     }
 }
+#endif

@@ -72,6 +72,7 @@ extension ButtonStyle where Self == DestructiveButtonStyle {
     static var destructive: DestructiveButtonStyle { DestructiveButtonStyle() }
 }
 
+#if DEBUG
 #Preview("Buttons") {
     VStack(spacing: Spacing.unit) {
         Button("Pay $7.28 for 90 min") {}
@@ -93,3 +94,4 @@ extension ButtonStyle where Self == DestructiveButtonStyle {
     .padding(Spacing.unit)
     .background(Color.appBackground)
 }
+#endif

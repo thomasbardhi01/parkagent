@@ -95,6 +95,17 @@ export function sessionExpiringPush(args: {
   };
 }
 
+/** Executor codes that can only happen before the provider charges — the
+ * only ones after which a push may say the meter is unpaid. */
+const PRE_CHARGE_CODES = new Set([
+  "auth_expired",
+  "zone_not_found",
+  "payment_declined",
+  "payment_method_missing",
+  "vehicle_missing",
+  "parking_denied",
+]);
+
 export function paymentFailedPush(args: {
   zoneNumber: string;
   what: "pay" | "extend";
@@ -103,33 +114,58 @@ export function paymentFailedPush(args: {
    * "ParkBoston"); callers pass a neutral fallback when the city has none. */
   providerName: string;
 }): Push {
-  // A card-less account, an unknown plate, or an operator lockout are
-  // distinct, actionable failures: the fix is doing something in the
-  // provider's own app (or waiting), not blindly "retry"/"tap to pay".
+  // Every body says what the driver can actually do from here (the app
+  // can't re-run a payment from a push) and never shows the raw executor
+  // code (it rides in `extra.code`). And it never claims the meter is
+  // unpaid unless that's certain: a code that can only happen before the
+  // provider charges (no card, no plate, lockout, declined, signed out, no
+  // such zone) is "unpaid"; anything that can happen after the pay click
+  // (ui_changed, network, browser_crashed, unknown) is "not confirmed —
+  // check before paying again", or a retry could pay twice.
+  const z = args.zoneNumber;
+  const p = args.providerName;
+  const extend = args.what === "extend";
+  const preCharge = PRE_CHARGE_CODES.has(args.code);
   const body =
     args.code === "payment_method_missing"
-      ? `The meter for zone ${args.zoneNumber} is unpaid — add a card to ${args.providerName}, then tap to pay.`
+      ? extend
+        ? `Zone ${z} wasn't extended — ${p} has no card saved. Add one there, then extend in ParkAgent or ${p}.`
+        : `The meter for zone ${z} is unpaid — ${p} has no card saved. Add one there and pay in ${p} for now.`
       : args.code === "vehicle_missing"
-        ? `${args.providerName} doesn't know your plate — add your vehicle there, then tap to pay zone ${args.zoneNumber}.`
+        ? extend
+          ? `Zone ${z} wasn't extended — ${p} doesn't know your plate. Add your vehicle there, then extend in ParkAgent or ${p}.`
+          : `${p} doesn't know your plate — add your vehicle there and pay zone ${z} in ${p} for now.`
         : args.code === "parking_denied"
-          ? `${args.providerName} won't let you re-park zone ${args.zoneNumber} right now (an operator lockout). Nothing was charged — wait or move the car.`
-          : `Could not ${args.what} zone ${args.zoneNumber} (${args.code}). The meter is unpaid — tap to pay.`;
+          ? `${p} won't let you re-park zone ${z} right now (an operator lockout). Nothing was charged — wait or move the car.`
+          : preCharge
+            ? extend
+              ? `Zone ${z} wasn't extended. Extend in ParkAgent or ${p} before the meter runs out.`
+              : `The meter for zone ${z} is unpaid — pay in ${p} or at the meter.`
+            : extend
+              ? `${p} didn't confirm the extension for zone ${z}. Check ${p}'s app — your time may still end as before.`
+              : `${p} didn't confirm the payment for zone ${z}. Check ${p}'s app before paying again, so you don't pay twice.`;
   return {
     type: "payment_failed",
     title:
       args.code === "payment_method_missing"
-        ? `Add a card to ${args.providerName}`
+        ? `Add a card to ${p}`
         : args.code === "vehicle_missing"
-          ? `Add your plate to ${args.providerName}`
+          ? `Add your plate to ${p}`
           : args.code === "parking_denied"
             ? "Parking blocked right now"
-            : "Payment failed",
+            : preCharge
+              ? extend
+                ? "Extension failed"
+                : "Payment failed"
+              : extend
+                ? "Extension not confirmed"
+                : "Payment not confirmed",
     body,
     extra: {
       code: args.code,
       zoneNumber: args.zoneNumber,
-      // Tap-to-pay fallback: the app opens its pay screen with the zone
-      // prefilled (and copies the zone number for the provider's app).
+      // A tap opens the Park tab (the active session, or Home), where
+      // the zone number is on screen for the provider's app.
       deepLink: `parkagent://pay?zone=${encodeURIComponent(args.zoneNumber)}`,
     },
   };
@@ -280,6 +316,27 @@ function makeJwt(config: ApnsConfig, nowMs: number): string {
   return unsigned + "." + signature.toString("base64url");
 }
 
+/**
+ * Which APNs host a token belongs to. A token is minted by ONE environment
+ * and is rejected by the other (400 BadDeviceToken, which deletes the row),
+ * so this must follow what the app registered: an Xcode (development-
+ * signed) build's sandbox token → the sandbox host; TestFlight / App Store
+ * → production. The app reads its own provisioning profile to report it
+ * (ios Support/APNsEnvironment.swift); unknown values fall to production.
+ */
+export function apnsHost(environment: string): string {
+  return environment === "development" ? "api.sandbox.push.apple.com" : "api.push.apple.com";
+}
+
+/** One HTTP/2 POST to APNs; injectable so the fan-out is testable. */
+export type ApnsPost = (
+  host: string,
+  jwt: string,
+  bundleId: string,
+  deviceToken: string,
+  payload: unknown,
+) => Promise<{ status: number; body: string }>;
+
 function postNotification(
   host: string,
   jwt: string,
@@ -350,6 +407,7 @@ export function makeApnsDelivery(
   db: ApnsDb,
   log: { info: (msg: string) => void; warn: (msg: string) => void },
   now: () => Date = () => new Date(),
+  post: ApnsPost = postNotification,
 ): (userId: string, push: Push) => Promise<ApnsSendReport> {
   let cachedJwt: { value: string; at: number } | null = null;
 
@@ -374,8 +432,7 @@ export function makeApnsDelivery(
     };
     const results: ApnsDeliveryResult[] = [];
     for (const row of tokens) {
-      const host =
-        row.environment === "development" ? "api.sandbox.push.apple.com" : "api.push.apple.com";
+      const host = apnsHost(row.environment);
       const base: ApnsDeliveryResult = {
         tokenPrefix: row.token.slice(0, 8),
         environment: row.environment,
@@ -384,13 +441,7 @@ export function makeApnsDelivery(
         deleted: false,
       };
       try {
-        const res = await postNotification(
-          host,
-          cachedJwt.value,
-          config.bundleId,
-          row.token,
-          payload,
-        );
+        const res = await post(host, cachedJwt.value, config.bundleId, row.token, payload);
         base.status = res.status;
         // APNs returns `{"reason": "..."}` on non-200.
         if (res.status !== 200 && res.body) {

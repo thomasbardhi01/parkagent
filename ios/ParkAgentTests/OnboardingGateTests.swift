@@ -100,7 +100,7 @@ final class OnboardingGateTests: XCTestCase {
 private struct HangingAPI: APIClient {
     private func hang<T>() async throws -> T {
         try await Task.sleep(for: .seconds(60))
-        throw APIError.notImplemented
+        throw APIError.transport(CancellationError())
     }
 
     func vehicles() async throws -> [VehicleSummary] { try await hang() }
@@ -110,6 +110,7 @@ private struct HangingAPI: APIClient {
     func authMethods() async throws -> AuthMethods { try await hang() }
     func signInWithApple(
         identityToken: String,
+        authorizationCode: String?,
         deviceId: String,
         fullName: (given: String?, family: String?)?
     ) async throws -> AuthSession { try await hang() }
@@ -151,7 +152,6 @@ private struct HangingAPI: APIClient {
     func nearbyZones(lat: Double, lng: Double, radiusM: Double) async throws -> NearbyZonesResponse {
         try await hang()
     }
-    func health() async throws -> HealthResponse { try await hang() }
     func detectCity(lat: Double, lng: Double) async throws -> CityDetectResponse { try await hang() }
     func linkProvider(
         _ providerId: String,
@@ -173,7 +173,12 @@ private struct HangingAPI: APIClient {
     ) -> AsyncThrowingStream<AssistantEvent, Error> {
         AsyncThrowingStream { _ in }
     }
-    func confirmPlan(planId: String, optionId: String?) async throws -> AssistantConfirmResponse { try await hang() }
+    func confirmPlan(planId: String, optionId: String?, stops: [ItineraryStop]?) async throws -> AssistantConfirmResponse {
+        try await hang()
+    }
+    func priceItinerary(planId: String, stops: [ItineraryStop]) async throws -> ItineraryPriceResponse {
+        try await hang()
+    }
     func itineraries() async throws -> ItinerariesResponse { try await hang() }
     func patchItinerary(id: String, stops: [ItineraryStop]) async throws -> ItineraryPatchResponse {
         try await hang()

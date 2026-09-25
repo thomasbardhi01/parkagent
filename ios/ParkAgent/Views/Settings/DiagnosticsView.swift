@@ -1,99 +1,37 @@
 #if DEBUG
-import CoreLocation
 import SwiftUI
 
-/// Points to fire a simulated park from, so the whole detect → quote → pay
-/// loop is testable without motion data. Every city we cover is
-/// represented, and the picker defaults to the user's own city — there is no
-/// home city. Works against mock and live APIs alike; against live, each
-/// point exercises real zone lookup around that coordinate.
-enum FixturePoint: String, CaseIterable, Identifiable {
-    case boylstonBackBay
-    case hanoverNorthEnd
-    case columbusW81
-    case grandLafayette
-    case unmeteredPark
-
-    var id: String { rawValue }
-
-    /// Which city's zone data this point exercises; nil for the
-    /// deliberately-unmetered point.
-    var city: String? {
-        switch self {
-        case .boylstonBackBay, .hanoverNorthEnd: "bos"
-        case .columbusW81, .grandLafayette: "nyc"
-        case .unmeteredPark: nil
-        }
-    }
-
-    var label: String {
-        switch self {
-        case .boylstonBackBay: "Boylston St, Back Bay"
-        case .hanoverNorthEnd: "Hanover St, North End"
-        case .columbusW81: "Columbus Ave & W 81st"
-        case .grandLafayette: "Grand St & Lafayette"
-        case .unmeteredPark: "Middle of a park (no meters)"
-        }
-    }
-
-    var coordinate: CLLocationCoordinate2D {
-        switch self {
-        case .boylstonBackBay: CLLocationCoordinate2D(latitude: 42.3503, longitude: -71.0810)
-        case .hanoverNorthEnd: CLLocationCoordinate2D(latitude: 42.3637, longitude: -71.0547)
-        case .columbusW81: CLLocationCoordinate2D(latitude: 40.7784, longitude: -73.9818)
-        case .grandLafayette: CLLocationCoordinate2D(latitude: 40.7191, longitude: -73.9987)
-        case .unmeteredPark: CLLocationCoordinate2D(latitude: 42.3383, longitude: -71.1012)
-        }
-    }
-
-    /// The first point in the given city, so the picker opens on somewhere
-    /// the user could actually be parked.
-    static func first(in city: String?) -> FixturePoint {
-        allCases.first { $0.city == city } ?? .boylstonBackBay
-    }
-}
-
-/// The hidden Diagnostics screen: everything that used to clutter Settings
-/// as a "Developer" section, reachable only by tapping the version number
-/// five times, and compiled out of Release builds entirely.
+/// The hidden Diagnostics screen: reachable only by tapping the version
+/// number five times, and compiled out of Release builds entirely.
 ///
-/// It answers the questions a field test actually raises — is the detector
-/// armed, which permissions are missing, what fired, which server am I
-/// talking to — plus the two destructive-ish tools (simulate a park, reset
-/// onboarding). No mock/scenario pickers: the mock only exists behind the
-/// UI-test launch argument now.
+/// Exactly what a field test needs and nothing else: is the detector armed
+/// (and if not, which permission is missing), the raw signal log to export
+/// after a drive, whether the server can move money right now, a way back
+/// through onboarding, and the ParkAgent card's sandbox switch. No
+/// simulated parks, no fixture points, no mock switches — the mock only
+/// exists behind the UI-test launch argument.
 struct DiagnosticsView: View {
     @Environment(AppModel.self) private var model
     @Environment(PermissionsManager.self) private var permissions
     @AppStorage(SignalLog.enabledKey) private var signalLogEnabled = false
+    @AppStorage(FeatureFlags.parkAgentSandboxKey) private var parkAgentSandbox = false
     @AppStorage("hasOnboarded") private var hasOnboarded = false
 
-    @State private var fixture: FixturePoint?
-    @State private var simulating = false
-    @State private var simulateError: String?
-    @State private var health: HealthResponse?
-    @State private var healthFailed = false
     @State private var confirmingReset = false
-
-    /// Defaults to a point in the user's own city.
-    private var selectedFixture: FixturePoint {
-        fixture ?? .first(in: model.effectiveCity)
-    }
 
     var body: some View {
         Form {
             detectionSection
-            simulateSection
             signalLogSection
-            serverSection
+            dryRunSection
+            sandboxSection
             resetSection
         }
         .navigationTitle("Diagnostics")
         .navigationBarTitleDisplayMode(.inline)
-        .task {
-            health = try? await model.api.health()
-            healthFailed = health == nil
-        }
+        // The effective dry run can change under a running app (PUT
+        // /policy, a redeploy), so read it fresh each time.
+        .task { await model.loadPolicy() }
         .accessibilityIdentifier("diagnostics.view")
     }
 
@@ -124,74 +62,11 @@ struct DiagnosticsView: View {
                 Button("Open Settings") { openSystemSettings() }
                     .foregroundStyle(Color.actionCoralLink)
             }
-            LabeledContent(
-                "Car coordinate",
-                value: model.carCoordinate.map {
-                    String(format: "%.4f, %.4f", $0.latitude, $0.longitude)
-                } ?? "none"
-            )
         } header: {
             Text("Detection")
         } footer: {
-            Text("Park detection needs Location Always and Motion; it fires on any two of motion stop, car-audio disconnect, and location settling.")
+            Text("Park detection needs Location Always and Motion. It fires on any two of motion stop, car-audio disconnect, and location settling.")
         }
-    }
-
-    // MARK: - Simulate a park
-
-    @ViewBuilder
-    private var simulateSection: some View {
-        Section {
-            Button(simulating ? "Reporting…" : "Simulate park here") {
-                Task { await simulate(at: nil) }
-            }
-            .disabled(simulating)
-            .accessibilityIdentifier("diagnostics.simulateHereButton")
-
-            Picker("Fixture point", selection: Binding(
-                get: { selectedFixture },
-                set: { fixture = $0 }
-            )) {
-                ForEach(FixturePoint.allCases) { point in
-                    Text(point.label).tag(point)
-                }
-            }
-            .accessibilityIdentifier("diagnostics.fixturePicker")
-
-            Button(simulating ? "Reporting…" : "Simulate park at \(selectedFixture.label)") {
-                Task { await simulate(at: selectedFixture.coordinate) }
-            }
-            .disabled(simulating)
-            .accessibilityIdentifier("diagnostics.simulateParkButton")
-
-            if let simulateError {
-                Text(simulateError)
-                    .font(.captionTextSemibold)
-                    .foregroundStyle(Color.danger)
-                    .accessibilityIdentifier("diagnostics.simulateError")
-            }
-        } header: {
-            Text("Simulate a park")
-        } footer: {
-            Text("Sends POST /parked and opens the parked sheet, exactly as the detector would. \"Here\" uses a real location fix, so it exercises the zone data where you actually are.")
-        }
-    }
-
-    /// nil coordinate → a real fix from where the phone is now.
-    private func simulate(at coordinate: CLLocationCoordinate2D?) async {
-        simulating = true
-        simulateError = nil
-        defer { simulating = false }
-        var point = coordinate
-        if point == nil {
-            point = await OneShotLocation.request()
-            if point == nil {
-                simulateError = "Couldn't get a location fix — allow location, or pick a fixture point."
-                return
-            }
-        }
-        guard let point else { return }
-        await model.handleDetectedPark(coordinate: point, accuracy: 12.5, signals: ["simulated"])
     }
 
     // MARK: - Signal log
@@ -203,11 +78,6 @@ struct DiagnosticsView: View {
                 .accessibilityIdentifier("diagnostics.signalLogToggle")
             if signalLogEnabled {
                 LabeledContent("Logged events", value: "\(SignalLog.shared.lineCount)")
-                ForEach(SignalLog.shared.tail(), id: \.self) { line in
-                    Text(line)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(Color.textSecondary)
-                }
                 ShareLink(item: SignalLog.shared.fileURL) {
                     Label("Export signal log", systemImage: "square.and.arrow.up")
                 }
@@ -219,50 +89,52 @@ struct DiagnosticsView: View {
         } header: {
             Text("Signal log")
         } footer: {
-            Text("Every raw motion, car-audio, and location event with its timestamp, kept on this phone. Export it after a drive to see what fired.")
+            Text("Every raw motion, car-audio, and location event with its timestamp, kept on this phone. Turn it on before a drive and export it afterwards to see what fired.")
         }
     }
 
-    // MARK: - Server
+    // MARK: - Dry run
 
     @ViewBuilder
-    private var serverSection: some View {
+    private var dryRunSection: some View {
         Section {
-            LabeledContent("API base", value: AppConfig.apiBaseURL?.absoluteString ?? "not set")
-                .accessibilityIdentifier("diagnostics.apiBase")
-            if let health {
-                LabeledContent("Commit", value: health.commit)
-                    .accessibilityIdentifier("diagnostics.commit")
-                LabeledContent("Built", value: health.builtAt)
-                // Effective dry run is env DRY_RUN OR the policy's dry_run;
-                // /health only echoes the env half, so a server with the env
-                // off but the policy on read "OFF — real money" when nothing
-                // could move. GET /policy carries the effective value.
-                let dryRun = model.policyResponse?.dryRun ?? health.dryRun
+            // GET /policy's dryRun is the EFFECTIVE flag (env DRY_RUN or the
+            // policy's dry_run) — what decides whether money can move.
+            if let dryRun = model.policyResponse?.dryRun {
                 LabeledContent("Dry run", value: dryRun ? "On — no money moves" : "OFF — real money")
                     .foregroundStyle(dryRun ? Color.textPrimary : Color.danger)
                     .accessibilityIdentifier("diagnostics.dryRun")
-            } else if healthFailed {
-                Text(model.liveAPIUnavailable
-                    ? "No API_BASE_URL in Config.xcconfig."
-                    : "Couldn't reach /health.")
+            } else if model.policyLoadFailed {
+                Text("Couldn't reach the server to read it.")
                     .font(.captionTextSemibold)
                     .foregroundStyle(Color.warningGold)
-                    .accessibilityIdentifier("diagnostics.healthFailed")
+                    .accessibilityIdentifier("diagnostics.dryRunUnknown")
             } else {
-                HStack(spacing: Spacing.half) {
-                    ProgressView()
-                    Text("Checking /health")
-                        .font(.secondaryText)
-                        .foregroundStyle(Color.textSecondary)
-                }
+                ProgressView()
             }
-            LabeledContent("Client", value: model.useMockAPI ? "MOCK (launch argument)" : "Live")
-                .accessibilityIdentifier("diagnostics.client")
         } header: {
             Text("Server")
         } footer: {
-            Text("Which server build this phone is talking to. If the commit isn't what you just deployed, the app is pointed somewhere else.")
+            Text("Whether the server can move real money right now. It is off only when both the server setting and the spending policy allow it.")
+        }
+    }
+
+    // MARK: - ParkAgent card sandbox
+
+    @ViewBuilder
+    private var sandboxSection: some View {
+        Section {
+            Toggle("ParkAgent card sandbox", isOn: $parkAgentSandbox)
+                .accessibilityIdentifier("diagnostics.sandboxToggle")
+                .onChange(of: parkAgentSandbox) {
+                    // The Wallet reads the flag when it renders; a fresh
+                    // summary re-renders every screen that shows it.
+                    Task { await model.wallet.load(api: model.api) }
+                }
+        } header: {
+            Text("ParkAgent card")
+        } footer: {
+            Text("Lets this build choose the ParkAgent card before it's approved, only while the server uses a Stripe test key, so no real money can move. Turning it off doesn't change how you pay now — switch in Wallet first.")
         }
     }
 
@@ -278,7 +150,7 @@ struct DiagnosticsView: View {
         } header: {
             Text("Reset")
         } footer: {
-            Text("Clears the stored vehicle, city, and completion flag, then quit and reopen the app to walk onboarding again. Your provider link and server-side settings are untouched.")
+            Text("Clears the stored vehicle, city, and setup progress on this phone and takes you back through setup. Your parking account link and server-side settings are untouched.")
         }
         .confirmationDialog(
             "Reset onboarding?",

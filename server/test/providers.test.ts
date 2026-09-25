@@ -23,6 +23,7 @@ import {
   makeFakeGateway,
   makeFakeProviderOps,
   makeTestApp,
+  NONADMIN_API_KEY,
   seedProviderAccount,
   testStateCrypto,
 } from "./helpers.js";
@@ -415,6 +416,29 @@ describe("POST /providers/:provider/topup", () => {
     expect(res.json()).toMatchObject({ error: "dry_run", wouldAllow: true });
     expect(moved).toBe(false);
     expect(t.state.decisions.at(-1)).toMatchObject({ kind: "provider_topup", rule: "dry_run" });
+  });
+
+  it("is admin-only: a signed-in user who isn't the operator moves nothing", async () => {
+    let moved = false;
+    const t = makeTestApp({
+      ...LIVE,
+      providerOps: () =>
+        makeFakeProviderOps({
+          topupWallet: async () => {
+            moved = true;
+            return { ok: true, walletBalanceCents: 9999 };
+          },
+        }),
+    });
+    const res = await t.app.inject({
+      method: "POST",
+      url: "/providers/parknyc/topup",
+      headers: { "x-api-key": NONADMIN_API_KEY },
+      payload: { amountUsd: 20 },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(moved).toBe(false);
+    expect(t.state.decisions.filter((d) => d.kind === "provider_topup")).toEqual([]);
   });
 
   it("caps a single top-up at daily_cap_usd and runs the real move", async () => {

@@ -241,6 +241,39 @@ final class WalletUITests: ParkAgentUITestCase {
         XCTAssertTrue(element(app, "wallet.hero.funding").waitForExistence(timeout: 5), "Should land on the Wallet")
     }
 
+    /// Diagnostics' sandbox toggle is what lets a Debug build choose the
+    /// ParkAgent card before it's live. Off, the server's sandbox option
+    /// reads Coming soon; on, the same option is selectable. (A Release
+    /// build has no toggle and always reads Coming soon.)
+    func testSandboxToggleGatesTheParkAgentCard() {
+        let app = launchApp(
+            walletScenario: "parkagentSandbox",
+            paymentSource: "provider_card",
+            parkAgentSandbox: false
+        )
+        openWallet(app)
+        XCTAssertEqual(stateTag(app, "provider_card"), "Active")
+        XCTAssertEqual(stateTag(app, "parkagent_card"), "Coming soon", "Sandbox card offered with the toggle off")
+
+        openDiagnostics(app)
+        let toggle = scrollTo(app, "diagnostics.sandboxToggle")
+        XCTAssertEqual(toggle.value as? String, "0", "Toggle should start off")
+        // A Form toggle's centre isn't the switch; tap its trailing edge.
+        toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+        let on = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == '1'"), object: toggle)
+        XCTAssertEqual(XCTWaiter().wait(for: [on], timeout: 5), .completed, "Toggle didn't turn on")
+        app.navigationBars.buttons.firstMatch.tap()
+        element(app, "account.doneButton").tap()
+
+        openWallet(app)
+        let row = scrollTo(app, "wallet.sourceRow.parkagent_card")
+        let available = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == 'Available'"), object: row)
+        XCTAssertEqual(
+            XCTWaiter().wait(for: [available], timeout: 5), .completed,
+            "Toggle on should make the sandbox card selectable; the row reads \(String(describing: row.value))"
+        )
+    }
+
     // MARK: - Helpers
 
     /// A "Change how you pay" row's state tag (Active / Available /

@@ -9,6 +9,13 @@ import SwiftUI
 /// keeps the app's usual coral as on Home.
 struct WalletView: View {
     @Environment(AppModel.self) private var model
+    #if DEBUG
+    /// Diagnostics' sandbox toggle, observed so flipping it re-renders the
+    /// rows at once (FeatureFlags reads the same key).
+    @AppStorage(FeatureFlags.parkAgentSandboxKey) private var sandboxAllowed = false
+    #else
+    private let sandboxAllowed = FeatureFlags.parkAgentSandbox
+    #endif
     @State private var changing: PaymentSource?
     @State private var relinkProviderId: String?
 
@@ -140,9 +147,9 @@ struct WalletView: View {
 
     private func sourceRow(_ option: WalletSourceOption, response: WalletResponse) -> some View {
         let active = option.source == response.activeSource
-        let comingSoon = WalletCopy.isComingSoon(option, sandboxAllowed: FeatureFlags.parkAgentSandbox)
+        let comingSoon = WalletCopy.isComingSoon(option, sandboxAllowed: sandboxAllowed)
         let provider = providerName(response)
-        let state = WalletCopy.stateLabel(option, active: active, sandboxAllowed: FeatureFlags.parkAgentSandbox)
+        let state = WalletCopy.stateLabel(option, active: active, sandboxAllowed: sandboxAllowed)
         return Button {
             guard !active, !comingSoon else { return }
             changing = option.source
@@ -416,7 +423,9 @@ struct CardActionButton: View {
     }
 }
 
+#if DEBUG
 #Preview {
     WalletView()
         .environment(AppModel())
 }
+#endif

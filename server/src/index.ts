@@ -6,6 +6,7 @@ import { asAppDb, createPrisma } from "./db.js";
 import { makeCardJanitor } from "./jobs/cardJanitor.js";
 import { makeLinkJobJanitor } from "./jobs/linkJobJanitor.js";
 import { makeExtender } from "./jobs/extendTick.js";
+import { makeAppleRevocationJob } from "./jobs/appleRevocationTick.js";
 import { makeProviderHealth } from "./jobs/providerHealthTick.js";
 import { makeResendSender } from "./services/emailer.js";
 import {
@@ -17,6 +18,7 @@ import {
   verifyIdToken,
 } from "./services/idToken.js";
 import { makeApnsDelivery, makeApnsSender } from "./services/apns.js";
+import { makeAppleTokenClient } from "./services/appleTokens.js";
 import { makeStateCrypto } from "./services/crypto.js";
 import { withDecisionLogging } from "./services/decisionLog.js";
 import { DryRunExecutor } from "./services/executor.js";
@@ -201,6 +203,20 @@ const auth = {
       : undefined,
 };
 
+// Sign in with Apple token revocation on DELETE /me (App Store 5.1.1(v)).
+// Needs the APPLE_SIGNIN_* key group and PROVIDER_STATE_KEY (the token is
+// stored sealed); without them sign-in works and nothing is revoked.
+const appleTokens =
+  env.APPLE_SIGNIN_KEY && env.APPLE_SIGNIN_KEY_ID && env.APPLE_SIGNIN_TEAM_ID
+    ? makeAppleTokenClient({
+        key: env.APPLE_SIGNIN_KEY,
+        keyId: env.APPLE_SIGNIN_KEY_ID,
+        teamId: env.APPLE_SIGNIN_TEAM_ID,
+        clientId: env.APPLE_AUDIENCE,
+      })
+    : undefined;
+if (!appleTokens) log.info("APPLE_SIGNIN_* not set; Apple tokens are not stored or revoked");
+
 const app = buildApp({
   db,
   policy,
@@ -218,6 +234,7 @@ const app = buildApp({
   ...(stripe ? { stripe } : {}),
   hasPendingSession: makePendingSessionCheck(db),
   ...(stateCrypto ? { stateCrypto } : {}),
+  ...(appleTokens ? { appleTokens } : {}),
   providerOps,
   issuingLive: env.ISSUING_LIVE === "true",
   // A test-mode Stripe key can't move real money, so a Debug build may
@@ -243,6 +260,8 @@ const walletTick = makeWalletTick({ db, policy, stripe, linkWallet, log });
 // Daily headless check of every linked provider session, so a dead or
 // dying session is re-linked from the couch, not discovered at the curb.
 const providerHealth = makeProviderHealth({ db, sendPush, stateCrypto, providerOps, log });
+// Deleted accounts whose Apple revoke didn't go through: retried hourly.
+const appleRevocations = makeAppleRevocationJob({ db, appleTokens, stateCrypto, log });
 
 app.listen({ port: env.PORT, host: "0.0.0.0" });
 extender.start();
@@ -251,6 +270,7 @@ linkJobJanitor.start();
 itineraryWorker.start();
 providerHealth.start();
 walletTick.start();
+appleRevocations.start();
 
 // Graceful shutdown: stop the jobs and close the executor's warm Chromium
 // (otherwise every Fly restart leaks the browser process to container
@@ -264,6 +284,7 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
     itineraryWorker.stop();
     providerHealth.stop();
     walletTick.stop();
+    appleRevocations.stop();
     void closeExecutorBrowser()
       .catch(() => {})
       .finally(() => {

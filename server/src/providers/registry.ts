@@ -68,10 +68,13 @@ const PROVIDERS: ProviderInfo[] = [
     cookieDomains: ["nyc.flowbirdapp.com", "flowbirdapp.com"],
     signup: {
       // The SPA's registration panel sits next to the login panel.
-      // Selectors DRAFTED from the recorded login-panel markup's naming
-      // convention (TODO-verify against a live registration recording —
-      // mirrored in test/fixtures/signup/parknyc-registration.html so the
-      // registry and the fixture can't drift apart silently).
+      // Selectors follow the recorded login-panel markup's naming
+      // convention; the registration panel itself has not been recorded
+      // live yet. That is safe by construction: prefill only types into
+      // EMPTY text inputs a selector matches, so a selector that matches
+      // nothing leaves the field for the user. Mirrored in
+      // test/fixtures/signup/parknyc-registration.html so the registry and
+      // the fixture can't drift apart silently.
       url: "https://my.nyc.flowbirdapp.com/#/Parking?panel=register",
       mode: "form",
       note: "Create your ParkNYC account on ParkNYC's own page — we never see your password.",

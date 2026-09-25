@@ -89,12 +89,13 @@ final class AssistantModel {
         // The car's spot, else where the phone is now — never a fixture on
         // the live API (a Seaport question must not carry NYC coordinates).
         // The mock keeps the fixture so UI tests stay deterministic.
-        let location: CLLocationCoordinate2D?
-        if let car = appModel.carCoordinate {
-            location = car
-        } else if appModel.useMockAPI {
-            location = AppModel.fixtureCoordinate
-        } else {
+        var location: CLLocationCoordinate2D? = appModel.carCoordinate
+        #if DEBUG
+        if location == nil, appModel.useMockAPI {
+            location = MockFixtures.fixtureCoordinate
+        }
+        #endif
+        if location == nil {
             location = await OneShotLocation.request()
         }
         do {
@@ -133,15 +134,19 @@ final class AssistantModel {
 
     /// The Confirm / Sign off tap — the ONLY path that books or spends.
     /// `stops` is the itinerary as the user left it on the card: when they
-    /// reordered it before signing off, the new order is saved right after
-    /// (the server re-checks the cap on that edit like any other).
+    /// changed it, the edits go WITH the sign-off, and the server re-prices
+    /// them and re-checks the day against the cap before storing anything.
     func confirm(planId: String, optionId: String?, stops: [ItineraryStop]? = nil) async {
         guard phase != .confirming else { return }
         phase = .confirming
         errorText = nil
         Haptics.light()
         do {
-            let response = try await api.confirmPlan(planId: planId, optionId: optionId)
+            let response = try await api.confirmPlan(
+                planId: planId,
+                optionId: optionId,
+                stops: cardEdits(planId: planId, stops: stops)
+            )
             lastPaymentSource = response.paymentSource
             switch response.kind {
             case "garage_handoff":
@@ -169,7 +174,6 @@ final class AssistantModel {
                     externalLink = ExternalLink(url: url, kind: .linkApproval)
                 }
                 appendNote("Signed off — the day is on Home. Garage links arrive 15 minutes before each stop.")
-                await saveReorder(itineraryId: response.itineraryId, planId: planId, stops: stops)
                 await appModel.refreshItineraries()
             default:
                 appendNote("Confirmed.")
@@ -181,19 +185,28 @@ final class AssistantModel {
         phase = .idle
     }
 
-    /// Sign-off stores the plan as proposed; a reorder made on the card
-    /// before the tap is applied as the day's first edit. Without this the
-    /// drag-to-reorder was silently dropped at sign-off.
-    private func saveReorder(itineraryId: String?, planId: String, stops: [ItineraryStop]?) async {
-        guard let itineraryId, let stops,
-              case .itinerary(let proposed)? = proposedPlan?.planId == planId ? proposedPlan?.plan : nil,
-              proposed.stops.map(\.id) != stops.map(\.id)
-        else { return }
-        do {
-            _ = try await api.patchItinerary(id: itineraryId, stops: stops)
-        } catch {
-            appendNote("The day is signed off in its original order — the new order didn't save.")
-        }
+    /// The card's live price after an edit, from the server — never the
+    /// card's own arithmetic (POST /assistant/plans/:planId/price).
+    func price(planId: String, stops: [ItineraryStop]) async throws -> ItineraryPriceResponse {
+        try await api.priceItinerary(planId: planId, stops: stops)
+    }
+
+    /// The card's stops to send with the sign-off, when the user changed
+    /// anything on them; nil signs off the plan as proposed.
+    private func cardEdits(planId: String, stops: [ItineraryStop]?) -> [ItineraryStop]? {
+        guard let stops,
+              case .itinerary(let proposed)? = proposedPlan?.planId == planId ? proposedPlan?.plan : nil
+        else { return stops }
+        return Self.cardEditsToSend(proposed: proposed.stops, card: stops)
+    }
+
+    /// The card's stops when anything on them differs from the proposal —
+    /// order, a time set or cleared, duration, street/garage — else nil.
+    nonisolated static func cardEditsToSend(
+        proposed: [ItineraryStop],
+        card: [ItineraryStop]
+    ) -> [ItineraryStop]? {
+        proposed == card ? nil : card
     }
 
     private func streetNote(_ response: AssistantConfirmResponse) -> String {

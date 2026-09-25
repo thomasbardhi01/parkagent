@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The Settings > Appearance choice, persisted via @AppStorage and applied
+/// The Account sheet's Appearance choice, persisted via @AppStorage and applied
 /// with .preferredColorScheme at the app root.
 enum AppearanceSetting: String, CaseIterable, Identifiable {
     case system

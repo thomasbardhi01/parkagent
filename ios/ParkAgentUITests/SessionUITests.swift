@@ -39,7 +39,11 @@ final class SessionUITests: ParkAgentUITestCase {
         XCTAssertTrue(countdown.waitForExistence(timeout: 5))
         XCTAssertEqual(countdown.label, "1:30:00")
 
-        XCTAssertTrue(element(app, "session.autoExtendToggle").exists, "Auto-extend toggle missing")
+        // What the policy will do, stated — not a switch that changes nothing.
+        let autoExtend = element(app, "session.autoExtendRow")
+        XCTAssertTrue(autoExtend.exists, "Auto-extend row missing")
+        XCTAssertTrue(autoExtend.label.contains("up to 2 times, 1 hr each"), "Auto-extend row: \(autoExtend.label)")
+        XCTAssertFalse(app.switches["Auto-extend"].exists, "Auto-extend is not a per-session switch")
         XCTAssertTrue(element(app, "session.extendButton").exists, "Extend button missing")
         XCTAssertTrue(element(app, "session.stopButton").exists, "Stop button missing")
 

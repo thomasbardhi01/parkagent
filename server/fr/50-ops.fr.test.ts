@@ -6,7 +6,7 @@
  * (create the user with `pnpm -C server create:fr-user` to get admin).
  */
 
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { frFetch, gate } from "./client.js";
 
@@ -15,8 +15,21 @@ import { frFetch, gate } from "./client.js";
 // only. APNs will reject it if anything ever pushes at it — by design.
 const FR_TOKEN = "f".repeat(63) + "0";
 
+/** Set once the token test has registered FR_TOKEN. */
+let registered = false;
+
 beforeAll(async () => {
   await gate();
+});
+
+// A token test that fails between register and release must not leave
+// the fake token bound to the FR user (every push-test would target it).
+afterAll(async () => {
+  if (!registered) return;
+  const res = await frFetch("DELETE", "/device", { token: FR_TOKEN }).catch(() => null);
+  if (res && res.status !== 200 && res.status !== 404) {
+    console.warn(`FR: couldn't release the FR device token (${res.status})`);
+  }
 });
 
 describe("FR-29 admin summary", () => {
@@ -59,6 +72,7 @@ describe("FR-28 pushes", () => {
   });
 
   it("FR-28 a device token registers idempotently and releases on delete", async () => {
+    registered = true;
     const register = await frFetch("POST", "/device", {
       token: FR_TOKEN,
       platform: "ios",

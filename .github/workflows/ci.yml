@@ -68,6 +68,38 @@ jobs:
       - run: xcodegen generate
         working-directory: ios
       - run: xcodebuild -project ios/ParkAgent.xcodeproj -scheme ParkAgent -destination 'generic/platform=iOS Simulator' build CODE_SIGNING_ALLOWED=NO
+      # The Release build is what TestFlight ships: it must carry no mock,
+      # scenario, or Diagnostics code (FR-34). ParkAgentReleaseTests runs
+      # inside the Release build and checks its own binary; the script
+      # runs `strings` over it with the same denylist.
+      - id: sim
+        run: |
+          DEVICE="iPhone 17 Pro Max"
+          if ! xcrun simctl list devices available | grep -q "$DEVICE ("; then
+            DEVICE=$(xcrun simctl list devices available | grep -oE 'iPhone [^(]+' | head -1 | sed 's/ *$//')
+          fi
+          UDID=$(xcrun simctl list devices available | grep -F "$DEVICE (" | head -1 | grep -oE '[0-9A-F]{8}(-[0-9A-F]{4}){3}-[0-9A-F]{12}')
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+          echo "Using simulator: $DEVICE ($UDID)"
+      # The unit tests gate here (the ui-tests job may fail without
+      # blocking). ReleaseDenylistTests among them proves every type the
+      # Release check says is absent really exists in Debug, so that
+      # absence can't pass vacuously.
+      - name: Unit tests (Debug)
+        run: >
+          xcodebuild -project ios/ParkAgent.xcodeproj -scheme ParkAgent
+          -destination "id=${{ steps.sim.outputs.udid }}"
+          -derivedDataPath build-debug
+          -only-testing:ParkAgentTests
+          test CODE_SIGNING_ALLOWED=NO
+      - name: Release binary tests (ParkAgentRelease)
+        run: >
+          xcodebuild -project ios/ParkAgent.xcodeproj -scheme ParkAgentRelease
+          -destination "id=${{ steps.sim.outputs.udid }}"
+          -derivedDataPath build-release
+          test CODE_SIGNING_ALLOWED=NO
+      - name: No dev strings in the Release binary
+        run: ios/Tools/check-release-binary.sh build-release/Build/Products/Release-iphonesimulator/ParkAgent.app
 
   ui-tests:
     runs-on: macos-latest

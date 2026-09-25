@@ -3,9 +3,9 @@ import Foundation
 import Observation
 
 /// While a session is active, streams background location and POSTs
-/// /location every 60 seconds. Phase 7's extender consumes the feed; until
-/// then the server 501s and the reporter quietly keeps its cadence. Also
-/// keeps the walking-distance-from-car figure fresh.
+/// /location every 60 seconds — the extension worker's view of how far the
+/// driver is from the car. Also keeps the walking-distance-from-car figure
+/// fresh.
 @MainActor
 @Observable
 final class LocationReporter: NSObject, CLLocationManagerDelegate {
@@ -66,8 +66,8 @@ final class LocationReporter: NSObject, CLLocationManagerDelegate {
                 ts: .now
             ))
         } catch {
-            // 501 until Phase 7, and transient network errors are expected
-            // on the move; next tick retries either way.
+            // Transient network errors are expected on the move; the next
+            // tick retries.
         }
     }
 

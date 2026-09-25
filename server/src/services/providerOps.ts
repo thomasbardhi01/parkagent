@@ -73,7 +73,7 @@ export interface ProviderAccountOps {
 }
 
 /** Injectable seam: real factory in parknycExecutor.ts, fakes in tests.
- * Throws for a provider with no executor (the Boston placeholder). */
+ * Throws for a provider with no executor (none today; both have one). */
 export type ProviderOpsFactory = (
   provider: ProviderId,
   state: ProviderStorageState,

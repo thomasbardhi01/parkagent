@@ -1,20 +1,23 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 
 import type { AppDeps } from "../app.js";
 import { requireAdmin } from "../app.js";
 import { snapshotPolicy } from "../services/policy.js";
 
-function policyResponse(deps: AppDeps) {
+function policyResponse(deps: AppDeps, req: FastifyRequest) {
   return {
     policy: deps.policy.get(),
     hash: deps.policy.hash(),
     dryRun: deps.policy.effectiveDryRun(),
+    // Whether THIS caller may PUT it — the app shows the shared limits
+    // read-only to everyone else instead of steppers that can't save.
+    editable: req.authedUser?.isAdmin === true,
   };
 }
 
 export function registerPolicy(app: FastifyInstance, deps: AppDeps): void {
-  app.get("/policy", async () => policyResponse(deps));
+  app.get("/policy", async (req) => policyResponse(deps, req));
 
   app.put("/policy", async (req, reply) => {
     // The policy is the shared spending contract: caps, dry_run, the rate
@@ -30,6 +33,6 @@ export function registerPolicy(app: FastifyInstance, deps: AppDeps): void {
       throw error;
     }
     await snapshotPolicy(deps.db, deps.policy.get(), "put");
-    return policyResponse(deps);
+    return policyResponse(deps, req);
   });
 }

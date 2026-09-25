@@ -3,25 +3,28 @@ import Observation
 import UIKit
 import UserNotifications
 
-/// APNs registration and notification handling. The four server push types
-/// (see server/API.md) all describe state the server already changed, so
-/// handling is: show the banner in the foreground, and on tap just bring
-/// the app up — Home and Active Session render from refreshed state.
+/// APNs registration and notification handling. The server's pushes (see
+/// server/API.md "Pushes") all describe state the server already changed,
+/// so handling is: show the banner in the foreground, and on a tap bring
+/// the app up where the push is about — Home and Active Session render
+/// from refreshed state.
 @MainActor
 @Observable
 final class PushManager: NSObject, UNUserNotificationCenterDelegate {
     static let shared = PushManager()
 
-    /// The most recent push, surfaced as an in-app notice.
-    private(set) var lastNotice: String?
-
     /// Set by AppModel: a provider_relink push routes into the link flow.
     var onProviderRelink: ((String) -> Void)?
     /// A card_declined push opens the Wallet.
     var onOpenWallet: (() -> Void)?
+    /// Every other push about the car opens the Park tab.
+    var onOpenPark: (() -> Void)?
 
     private var api: (any APIClient)?
     private var pendingToken: String?
+    /// A tap that arrived before AppModel wired the handlers above (a cold
+    /// launch from the notification); replayed once they are.
+    private var pendingOpen: (type: String, provider: String?, deepLink: String?)?
 
     private override init() {
         super.init()
@@ -62,42 +65,48 @@ final class PushManager: NSObject, UNUserNotificationCenterDelegate {
                     platform: "ios",
                     environment: apsEnvironment
                 ))
-            } catch APIError.notImplemented {
-                // /device is a 501 stub until the server grows a devices
-                // table; registration is re-sent on every launch anyway.
             } catch {
-                // Same story for transient failures.
+                // Registration is re-sent on every launch; a transient
+                // failure costs nothing but a missed push until then.
             }
         }
     }
 
-    /// Matches the aps-environment entitlement (development until a
-    /// distribution profile exists).
-    private var apsEnvironment: String {
-        #if DEBUG
-        "development"
-        #else
-        "production"
-        #endif
-    }
+    /// From the build's own signing, not its configuration (see
+    /// APNsEnvironment): the server picks the APNs host per token from it.
+    private var apsEnvironment: String { APNsEnvironment.current }
 
-    private func handle(type: String, provider: String?) {
+    /// A TAPPED push: take the driver where the push is about. Never on
+    /// arrival — a banner that yanked the app into the link flow or the
+    /// Wallet mid-payment was worse than the problem it announced.
+    private func open(type: String, provider: String?, deepLink: String?) {
+        guard onOpenPark != nil else {
+            pendingOpen = (type, provider, deepLink)
+            return
+        }
         switch type {
-        case "session_started": lastNotice = "Meter paid"
-        case "session_extended": lastNotice = "Session extended"
-        case "session_expiring": lastNotice = "Session expiring soon"
-        case "payment_failed": lastNotice = "Payment failed — the meter is unpaid"
         case "provider_relink":
-            lastNotice = "Your parking account needs a fresh sign-in"
-            if let provider {
-                onProviderRelink?(provider)
-            }
+            if let provider { onProviderRelink?(provider) }
         case "card_declined":
             // The fix is in the Wallet (update the card), not a retry.
-            lastNotice = "Your card was declined — update it in Wallet"
             onOpenWallet?()
-        default: break
+        case "itinerary_garage_link":
+            // The garage's own checkout or pass, for the entrance.
+            if let deepLink, let url = URL(string: deepLink), url.scheme == "https" {
+                UIApplication.shared.open(url)
+            }
+        default:
+            // Paid, extended, expiring, failed, free: all about the car on
+            // the Park tab (the active session, or the zone number to pay
+            // in the provider's app).
+            onOpenPark?()
         }
+    }
+
+    func replayPendingOpen() {
+        guard let pending = pendingOpen else { return }
+        pendingOpen = nil
+        open(type: pending.type, provider: pending.provider, deepLink: pending.deepLink)
     }
 
     // MARK: - UNUserNotificationCenterDelegate
@@ -106,26 +115,23 @@ final class PushManager: NSObject, UNUserNotificationCenterDelegate {
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
-        // Pull the (Sendable) strings out before hopping actors — the raw
-        // userInfo dictionary can't cross.
-        let userInfo = notification.request.content.userInfo
-        let type = userInfo["type"] as? String
-        let provider = userInfo["provider"] as? String
-        if let type {
-            await MainActor.run { self.handle(type: type, provider: provider) }
-        }
-        return [.banner, .sound]
+        // In the foreground the banner is enough; the driver taps it (or
+        // doesn't) — see `open`.
+        [.banner, .list, .sound]
     }
 
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse
     ) async {
+        // Pull the (Sendable) strings out before hopping actors — the raw
+        // userInfo dictionary can't cross.
         let userInfo = response.notification.request.content.userInfo
         let type = userInfo["type"] as? String
         let provider = userInfo["provider"] as? String
+        let deepLink = userInfo["deepLink"] as? String
         if let type {
-            await MainActor.run { self.handle(type: type, provider: provider) }
+            await MainActor.run { self.open(type: type, provider: provider, deepLink: deepLink) }
         }
     }
 }

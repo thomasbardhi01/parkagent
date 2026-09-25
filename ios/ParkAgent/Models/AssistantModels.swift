@@ -140,7 +140,9 @@ struct ItineraryStop: Codable, Identifiable, Equatable, Sendable {
     var address: String
     var lat: Double
     var lng: Double
-    var arrival: String
+    /// ISO arrival; nil when the user cleared it ("no set time"). Only an
+    /// untimed stop is placed by hand — see ItineraryOrder.
+    var arrival: String?
     var durationMinutes: Int
     /// "street" | "garage"
     var choice: String
@@ -152,6 +154,22 @@ struct ItineraryStop: Codable, Identifiable, Equatable, Sendable {
     var sessionId: String?
     var paymentSource: String?
     var garageLinkPushedAt: String?
+    /// The server carried an earlier price over instead of quoting these
+    /// inputs (no set time, or the quote couldn't be made): shown "≈".
+    var estimate: Bool?
+}
+
+/// POST /assistant/plans/:planId/price — the itinerary card's live price,
+/// computed on the server for the stops as the user left them (the app's
+/// own costs are never read). `fitsCap` is the test sign-off applies.
+struct ItineraryPriceResponse: Decodable, Sendable {
+    let planId: String
+    let stops: [ItineraryStop]
+    let totalUsd: Double
+    let capUsd: Double
+    let spentTodayUsd: Double
+    let remainingUsd: Double
+    let fitsCap: Bool
 }
 
 /// POST /assistant/confirm — what the tap unlocked.

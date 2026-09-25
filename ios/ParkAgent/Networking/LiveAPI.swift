@@ -32,6 +32,7 @@ struct LiveAPI: APIClient {
 
     func signInWithApple(
         identityToken: String,
+        authorizationCode: String?,
         deviceId: String,
         fullName: (given: String?, family: String?)?
     ) async throws -> AuthSession {
@@ -41,6 +42,7 @@ struct LiveAPI: APIClient {
         }
         struct Body: Encodable {
             let identityToken: String
+            let authorizationCode: String?
             let deviceId: String
             let fullName: Name?
         }
@@ -49,6 +51,7 @@ struct LiveAPI: APIClient {
             method: "POST",
             body: Body(
                 identityToken: identityToken,
+                authorizationCode: authorizationCode,
                 deviceId: deviceId,
                 fullName: fullName.map { Name(givenName: $0.given, familyName: $0.family) }
             ),
@@ -334,10 +337,6 @@ struct LiveAPI: APIClient {
         ])
     }
 
-    func health() async throws -> HealthResponse {
-        try await send("health")
-    }
-
     // MARK: - City & providers
 
     func detectCity(lat: Double, lng: Double) async throws -> CityDetectResponse {
@@ -554,12 +553,22 @@ struct LiveAPI: APIClient {
         }
     }
 
-    func confirmPlan(planId: String, optionId: String?) async throws -> AssistantConfirmResponse {
+    func confirmPlan(planId: String, optionId: String?, stops: [ItineraryStop]?) async throws -> AssistantConfirmResponse {
         struct Body: Encodable {
             let planId: String
             let optionId: String?
+            let stops: [ItineraryStop]?
         }
-        return try await send("assistant/confirm", method: "POST", body: Body(planId: planId, optionId: optionId))
+        return try await send(
+            "assistant/confirm",
+            method: "POST",
+            body: Body(planId: planId, optionId: optionId, stops: stops)
+        )
+    }
+
+    func priceItinerary(planId: String, stops: [ItineraryStop]) async throws -> ItineraryPriceResponse {
+        struct Body: Encodable { let stops: [ItineraryStop] }
+        return try await send("assistant/plans/\(planId)/price", method: "POST", body: Body(stops: stops))
     }
 
     func itineraries() async throws -> ItinerariesResponse {
@@ -590,7 +599,11 @@ struct LiveAPI: APIClient {
 
     // MARK: - Transport
 
-    private struct Refusal: Decodable { let error: String }
+    /// `code` is the executor's own code on a 502 executor_failed.
+    private struct Refusal: Decodable {
+        let error: String
+        var code: String?
+    }
 
     /// One round trip. `authenticated` requests carry the access token and,
     /// on a 401, refresh once and retry exactly once — the AuthStore makes
@@ -675,11 +688,12 @@ struct LiveAPI: APIClient {
             // Named refusals carry {"error": "<code>"} (dry_run,
             // funding_unavailable, assistant_budget_exhausted, …).
             if let refusal = try? decoder.decode(Refusal.self, from: data) {
+                if refusal.error == "executor_failed" {
+                    return .executorFailed(code: refusal.code)
+                }
                 return .refused(code: refusal.error)
             }
             return .server(status: status)
-        case 501:
-            return .notImplemented
         default:
             return .server(status: status)
         }

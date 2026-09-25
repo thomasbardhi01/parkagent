@@ -51,7 +51,7 @@ struct HomeView: View {
                         ErrorBanner(
                             icon: "exclamationmark.triangle.fill",
                             title: "Not connected to ParkAgent",
-                            message: "The live API isn't configured — add API_BASE_URL to Config.xcconfig and reinstall."
+                            message: APIError.notConfigured.errorDescription ?? ""
                         )
                     } else if model.policyLoadFailed {
                         ErrorBanner(
@@ -179,10 +179,7 @@ struct HomeView: View {
         var known = model.carCoordinate
         if let car = known {
             camera = .region(MKCoordinateRegion(center: car, span: Self.streetSpan))
-        } else if model.useMockAPI {
-            // The mock has no real location: it answers from the city
-            // scenario so the simulator and UI tests are deterministic.
-            let phone = MockFixtures.currentCoordinate()
+        } else if let phone = mockPhoneCoordinate {
             known = phone
             camera = .region(MKCoordinateRegion(center: phone, span: Self.streetSpan))
         } else {
@@ -204,6 +201,17 @@ struct HomeView: View {
         }
     }
 
+    /// The mock has no real location: it answers from the city scenario so
+    /// the simulator and UI tests are deterministic. Always nil live, and
+    /// in Release.
+    private var mockPhoneCoordinate: CLLocationCoordinate2D? {
+        #if DEBUG
+        model.useMockAPI ? MockFixtures.currentCoordinate() : nil
+        #else
+        nil
+        #endif
+    }
+
     /// The detected (or chosen) city at street zoom — what the map shows
     /// until a location fix arrives.
     private var cityPosition: MapCameraPosition {
@@ -217,12 +225,13 @@ struct HomeView: View {
 
     /// Locate-me: back to the user, following again.
     private func locateMe() async {
-        let phone = model.useMockAPI ? MockFixtures.currentCoordinate() : await OneShotLocation.request()
+        let mockPhone = mockPhoneCoordinate
+        let phone = mockPhone != nil ? mockPhone : await OneShotLocation.request()
         guard let phone else { return }
         withAnimation(Motion.settle) {
             camera = .region(MKCoordinateRegion(center: phone, span: Self.streetSpan))
         }
-        following = !model.useMockAPI
+        following = mockPhone == nil
     }
 
     /// Moving this far from the map's center re-centers it while following;
@@ -233,7 +242,7 @@ struct HomeView: View {
     /// The task is keyed on `following`, so turning it off (or leaving
     /// Home) cancels it and stops the location updates.
     private func followPhone() async {
-        guard following, !model.useMockAPI else { return }
+        guard following, mockPhoneCoordinate == nil else { return }
         do {
             for try await update in CLLocationUpdate.liveUpdates() {
                 guard following else { return }
@@ -473,9 +482,10 @@ struct HomeView: View {
             }
 
             #if DEBUG
-            // UI tests drive parks from here; a real user reaches "simulate"
-            // only through the hidden Diagnostics screen.
-            if LaunchOverrides.uiTesting && model.activeSession == nil {
+            // UI tests drive parks from here (mock API only). No person
+            // ever sees it: it needs the -uiTesting launch argument, and a
+            // Release build has neither the button nor the argument.
+            if LaunchOverrides.uiTesting && model.useMockAPI {
                 Button("Simulate park") {
                     Task { await model.simulatePark() }
                 }
@@ -511,8 +521,10 @@ struct HomeView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     HomeView()
         .environment(AppModel())
         .environment(PermissionsManager())
 }
+#endif

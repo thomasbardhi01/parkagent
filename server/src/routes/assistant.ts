@@ -7,8 +7,11 @@
  *                           single-use confirmation token and executes
  *                           the confirmed option THROUGH the token-gated
  *                           tools — the same enforcement the model faces
+ * POST /assistant/plans/:planId/price   re-price an itinerary card's edited
+ *                           stops on the server before sign-off
  * GET  /assistant/itineraries          today's / recent signed-off days
- * PATCH /assistant/itineraries/:id     edit or reorder stops (cap re-checked)
+ * PATCH /assistant/itineraries/:id     edit or reorder stops (re-priced on
+ *                           the server, cap re-checked)
  *
  * Every tool call and every confirmation writes a decisions row.
  */
@@ -22,7 +25,12 @@ import type { AppDeps } from "../app.js";
 import { assistantSpendTodayUsd, runAssistantTurn } from "../services/assistant/loop.js";
 import type { AssistantResult } from "../services/assistant/loop.js";
 import { CONFIRMATION_TTL_MS } from "../services/assistant/tools.js";
-import { itineraryStopSchema, itineraryTotalUsd } from "../services/assistant/plans.js";
+import type { PreviousStop, PricedStop, RepriceResult } from "../services/assistant/tools.js";
+import {
+  editedItineraryStopSchema,
+  itineraryTotalUsd,
+  orderStopsByArrival,
+} from "../services/assistant/plans.js";
 import type { ItineraryPlan, SingleSpotPlan } from "../services/assistant/plans.js";
 import { garageHandoffNote, garageProviderInfo } from "../services/garage/garageProvider.js";
 import { cityForZone, providerForCity } from "../providers/registry.js";
@@ -54,15 +62,62 @@ const messageSchema = z
     message: "text or transcript is required",
   });
 
+const editedStopsSchema = z.array(editedItineraryStopSchema).min(1).max(12);
+
 const confirmSchema = z.object({
   planId: z.string().min(1),
   /** Single-spot plans confirm one option; itineraries sign off whole. */
   optionId: z.string().optional(),
+  /** Itineraries: the stops as the user left them on the card. Re-priced
+   * on the server (their costs are never read) and signed off in arrival
+   * order; absent → the plan's own stops. */
+  stops: editedStopsSchema.optional(),
 });
 
 const patchItinerarySchema = z.object({
-  stops: z.array(itineraryStopSchema).min(1).max(12),
+  stops: editedStopsSchema,
 });
+
+const priceSchema = z.object({
+  stops: editedStopsSchema,
+});
+
+type EditedStops = z.infer<typeof editedStopsSchema>;
+
+/** A plan's or a stored day's stops, by id — the server's own versions. */
+function stopsById(stops: unknown): Map<string, PreviousStop> {
+  return new Map(
+    ((stops ?? []) as PreviousStop[])
+      .filter((s) => typeof s.id === "string")
+      .map((s) => [s.id!, s]),
+  );
+}
+
+/** Edited stops the server can't take: an id the plan doesn't have, or a
+ * time that doesn't read (it would silently order as "no set time"). */
+function editedStopsProblem(
+  stops: EditedStops,
+  known: ReadonlyMap<string, PreviousStop> | null,
+): { error: string; stopId: string; value?: unknown } | null {
+  if (known) {
+    const unknown = stops.find((s) => !known.has(s.id));
+    if (unknown) return { error: "unknown_stop", stopId: unknown.id };
+  }
+  const unreadable = stops.find((s) => s.arrival && !parseEasternTime(s.arrival));
+  if (unreadable) {
+    return { error: "unreadable_time", stopId: unreadable.id, value: unreadable.arrival };
+  }
+  return null;
+}
+
+/** What a re-price did, for the decision row. */
+function repriceAudit(result: RepriceResult) {
+  return {
+    repriced: result.repriced,
+    estimates: result.estimates,
+    costs: Object.fromEntries(result.stops.map((s) => [s.id, s.costUsd])),
+  };
+}
 
 /**
  * Who a Link spend request says the user is paying: the garage's own site
@@ -220,6 +275,17 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
     const planRow = await deps.db.assistantPlan.findUnique({ where: { id: parsed.data.planId } });
     if (!planRow || planRow.userId !== user.id) {
       return reply.code(404).send({ error: "plan_not_found" });
+    }
+
+    // Itinerary edits made on the card come with the sign-off. They are
+    // priced here, on the server — never at the prices the phone sends —
+    // before anything is minted.
+    let edited: RepriceResult | null = null;
+    if (planRow.kind === "itinerary" && parsed.data.stops) {
+      const proposed = stopsById((planRow.plan as ItineraryPlan).stops);
+      const problem = editedStopsProblem(parsed.data.stops, proposed);
+      if (problem) return reply.code(400).send(problem);
+      edited = await deps.assistantTools.repriceStops(parsed.data.stops, proposed);
     }
 
     // A future street option has nothing to confirm — the detector pays
@@ -456,11 +522,20 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
     }
 
     // Itinerary sign-off: the whole day at once. Re-check the cap at the
-    // moment of truth — spend may have moved since the proposal.
+    // moment of truth — spend may have moved since the proposal, and the
+    // card's edits were just re-priced — with the SERVER's totals.
     const plan = planRow.plan as ItineraryPlan;
-    const totalUsd = itineraryTotalUsd(plan.stops);
+    const signedStops: (ItineraryPlan["stops"][number] | PricedStop)[] = edited
+      ? orderStopsByArrival(edited.stops)
+      : plan.stops;
+    const totalUsd = itineraryTotalUsd(signedStops);
     if (spentTodayUsd + totalUsd > policy.daily_cap_usd) {
-      await decide("over_daily_cap", { allowed: false, totalUsd, spentTodayUsd });
+      await decide("over_daily_cap", {
+        allowed: false,
+        totalUsd,
+        spentTodayUsd,
+        ...(edited ? repriceAudit(edited) : {}),
+      });
       return reply.code(409).send({
         error: "over_daily_cap",
         totalUsd,
@@ -474,7 +549,7 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
     let approvals: { stopId: string; spendRequestId: string; approvalUrl: string | null }[] = [];
     let linkSkipped: string | null = null;
     if (activeSource === "link_wallet") {
-      const paidGarages = plan.stops.filter((s) => s.choice === "garage" && s.costUsd > 0);
+      const paidGarages = signedStops.filter((s) => s.choice === "garage" && s.costUsd > 0);
       const garagesTotal = paidGarages.reduce((sum, s) => sum + s.costUsd, 0);
       const overStop = paidGarages.find((s) => s.costUsd > policy.session_cap_usd);
       linkSkipped = overStop
@@ -522,7 +597,7 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
         planId: planRow.id,
         status: "signed_off",
         date: new Date(plan.date),
-        stops: plan.stops.map((s) => ({
+        stops: signedStops.map((s) => ({
           ...s,
           sessionId: null,
           garageLinkPushedAt: null,
@@ -531,8 +606,8 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
         totalUsd,
       },
     });
-    for (const s of plan.stops.filter((stop) => stop.choice === "garage")) {
-      const arrival = parseStart(s.arrival);
+    for (const s of signedStops.filter((stop) => stop.choice === "garage")) {
+      const arrival = s.arrival ? parseStart(s.arrival) : null;
       await deps.db.garageBooking.create({
         data: {
           userId: user.id,
@@ -555,7 +630,8 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
       allowed: true,
       itineraryId,
       totalUsd,
-      stops: plan.stops.length,
+      stops: signedStops.length,
+      ...(edited ? repriceAudit(edited) : {}),
       activeSource,
       linkApprovals: approvals.length,
       ...(linkSkipped && linkSkipped !== "link_not_active" ? { linkSkipped } : {}),
@@ -565,9 +641,61 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
       itineraryId,
       totalUsd,
       capUsd: policy.daily_cap_usd,
+      stops: signedStops,
       paymentSource: activeSource,
       linkApprovals: approvals,
       ...(linkSkipped && linkSkipped !== "link_not_active" ? { linkSkipped } : {}),
+    };
+  });
+
+  // The card's live price: every edit (a new time, a longer stay, street
+  // vs garage, a cleared time) is priced here, on the server, the way
+  // build_itinerary priced the plan — so the day total and the cap check
+  // the user sees before signing off are the server's, not the phone's.
+  app.post("/assistant/plans/:planId/price", { preHandler: limitOther }, async (req, reply) => {
+    if (!deps.assistantTools) {
+      return reply.code(503).send({ error: "assistant_not_configured" });
+    }
+    const parsed = priceSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: z.treeifyError(parsed.error) });
+    }
+    const user = req.authedUser!;
+    const { planId } = req.params as { planId: string };
+    const planRow = await deps.db.assistantPlan.findUnique({ where: { id: planId } });
+    if (!planRow || planRow.userId !== user.id) {
+      return reply.code(404).send({ error: "plan_not_found" });
+    }
+    if (planRow.kind !== "itinerary") {
+      return reply.code(400).send({ error: "not_an_itinerary" });
+    }
+    const proposed = stopsById((planRow.plan as ItineraryPlan).stops);
+    const problem = editedStopsProblem(parsed.data.stops, proposed);
+    if (problem) return reply.code(400).send(problem);
+
+    const result = await deps.assistantTools.repriceStops(parsed.data.stops, proposed);
+    const stops = orderStopsByArrival(result.stops);
+    const totalUsd = itineraryTotalUsd(stops);
+    const spentTodayUsd = await spentToday(deps.db, user.id, now());
+    const capUsd = deps.policy.get().daily_cap_usd;
+    const fitsCap = spentTodayUsd + totalUsd <= capUsd;
+    await deps.db.decision.create({
+      data: {
+        kind: "assistant_confirm",
+        inputs: { planId, stops: stops.length, spentTodayUsd },
+        rule: "itinerary_repriced",
+        outcome: { totalUsd, capUsd, fitsCap, ...repriceAudit(result) },
+        userId: user.id,
+      },
+    });
+    return {
+      planId,
+      stops,
+      totalUsd,
+      capUsd,
+      spentTodayUsd,
+      remainingUsd: Math.max(0, Math.round((capUsd - spentTodayUsd) * 100) / 100),
+      fitsCap,
     };
   });
 
@@ -582,7 +710,9 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
           id: r.id,
           status: r.status,
           date: r.date.toISOString(),
-          stops: r.stops,
+          // Arrival order (untimed stops where the user put them), even
+          // for a day stored before the rule existed.
+          stops: orderStopsByArrival(r.stops as { arrival?: string | null }[]),
           totalUsd: Number(r.totalUsd),
         })),
     };
@@ -602,10 +732,33 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
     if (row.status !== "signed_off") {
       return reply.code(409).send({ error: "itinerary_not_editable", status: row.status });
     }
-    const totalUsd = itineraryTotalUsd(parsed.data.stops);
+    // A time is either cleared (null — "no set time") or readable: an
+    // unreadable one would silently order as untimed and never trigger
+    // the worker's garage push. (A stop new to the day is allowed.)
+    const problem = editedStopsProblem(parsed.data.stops, null);
+    if (problem) return reply.code(400).send(problem);
+    // Priced against the STORED day: an unchanged stop keeps its stored
+    // price, a changed one is re-quoted; the phone's costs are never read.
+    const storedById = stopsById(row.stops);
+    const priced = await deps.assistantTools!.repriceStops(parsed.data.stops, storedById);
+    const totalUsd = itineraryTotalUsd(priced.stops);
     const spentTodayUsd = await spentToday(deps.db, user.id, now());
     const policy = deps.policy.get();
     if (spentTodayUsd + totalUsd > policy.daily_cap_usd) {
+      await deps.db.decision.create({
+        data: {
+          kind: "assistant_confirm",
+          inputs: { itineraryId: id, edit: true, spentTodayUsd },
+          rule: "over_daily_cap",
+          outcome: {
+            allowed: false,
+            totalUsd,
+            capUsd: policy.daily_cap_usd,
+            ...repriceAudit(priced),
+          },
+          userId: user.id,
+        },
+      });
       return reply.code(409).send({
         error: "over_daily_cap",
         totalUsd,
@@ -629,10 +782,18 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
       normalizeSource(userRow?.paymentSource) === "parkagent_card"
         ? "parkagent_card"
         : "provider_card";
-    const stops = parsed.data.stops.map((s) => ({
+    // Stored in the one canonical form sign-off uses (ET with its offset,
+    // repriceStops returns it so), and in arrival order — the same rule
+    // the app displays with, so a client can't store a later stop above an
+    // earlier one. A re-priced garage stop has a new window (and maybe a
+    // new link), so its link is pushed again before the new arrival.
+    const stops = orderStopsByArrival(priced.stops).map((s) => ({
       ...s,
       sessionId: previous.get(s.id)?.["sessionId"] ?? null,
-      garageLinkPushedAt: previous.get(s.id)?.["garageLinkPushedAt"] ?? null,
+      garageLinkPushedAt:
+        s.choice === "garage" && priced.repriced.includes(s.id)
+          ? null
+          : (previous.get(s.id)?.["garageLinkPushedAt"] ?? null),
       paymentSource:
         previous.get(s.id)?.["paymentSource"] ??
         (s.choice === "street" ? streetSource : "garage_checkout"),
@@ -641,9 +802,14 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
     await deps.db.decision.create({
       data: {
         kind: "assistant_confirm",
-        inputs: { itineraryId: id, edit: true, stops: stops.length },
+        inputs: {
+          itineraryId: id,
+          edit: true,
+          stops: stops.length,
+          untimedStops: stops.filter((s) => s.arrival === null).length,
+        },
         rule: "itinerary_edited",
-        outcome: { totalUsd },
+        outcome: { totalUsd, ...repriceAudit(priced) },
         userId: user.id,
       },
     });

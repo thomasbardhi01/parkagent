@@ -29,6 +29,7 @@ import { registerAssistant } from "./routes/assistant.js";
 import { registerLink } from "./routes/link.js";
 import { registerWallet } from "./routes/wallet.js";
 import type { ApnsSendReport, Push, PushSender } from "./services/apns.js";
+import type { AppleTokenClient } from "./services/appleTokens.js";
 import type { ModelClient } from "./services/assistant/loop.js";
 import type { AssistantTools } from "./services/assistant/tools.js";
 import type { LinkWallet } from "./services/link/linkWallet.js";
@@ -80,8 +81,12 @@ export interface AppDeps {
   /** The issuing webhook's "is a session awaiting payment?" check. */
   hasPendingSession?: PendingSessionCheck;
   /** Seals provider session state; absent when PROVIDER_STATE_KEY isn't
-   * set, and provider linking then answers 503. */
+   * set, and provider linking then answers 503. Also seals the Sign in
+   * with Apple refresh token. */
   stateCrypto?: StateCrypto;
+  /** Sign in with Apple's token + revoke endpoints (APPLE_SIGNIN_* set).
+   * Absent → no Apple token is stored at sign-in or revoked on delete. */
+  appleTokens?: AppleTokenClient;
   /** Real Playwright-backed account ops (parknycExecutor.ts) or test fakes;
    * absent → provider linking answers 503. */
   providerOps?: ProviderOpsFactory;

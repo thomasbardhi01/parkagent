@@ -49,9 +49,22 @@ extension Format {
     private static let arrivalFractional = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
 
     /// Itinerary stops carry ISO arrival strings; render as clock time.
-    static func arrivalTime(_ iso: String) -> String {
+    /// nil is a stop the user cleared the time on.
+    static func arrivalTime(_ iso: String?) -> String {
+        guard let iso else { return "Any time" }
         guard let date = parseArrival(iso) else { return iso }
         return clockTime(date)
+    }
+
+    /// Noon on an itinerary's day ("2026-01-05", or a full ISO date whose
+    /// first ten characters are the day) — where a time lands when the user
+    /// sets one on a stop that had none.
+    static func noon(onPlanDay day: String) -> Date? {
+        let parts = day.prefix(10).split(separator: "-").compactMap { Int($0) }
+        guard parts.count == 3 else { return nil }
+        return Calendar.current.date(from: DateComponents(
+            year: parts[0], month: parts[1], day: parts[2], hour: 12
+        ))
     }
 
     static func parseArrival(_ iso: String) -> Date? {

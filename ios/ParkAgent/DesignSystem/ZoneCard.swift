@@ -58,6 +58,7 @@ struct ZoneCard: View {
     }
 }
 
+#if DEBUG
 #Preview("ZoneCard") {
     VStack(spacing: Spacing.unit) {
         ZoneCard(
@@ -79,3 +80,4 @@ struct ZoneCard: View {
     .padding(Spacing.unit)
     .background(Color.appBackground)
 }
+#endif

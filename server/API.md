@@ -95,8 +95,22 @@ the victim.
 ### POST /auth/apple
 
 ```json
-{ "identityToken": "eyJ…", "deviceId": "…", "fullName": {"givenName": "Thomas", "familyName": "B"} }
+{ "identityToken": "eyJ…", "authorizationCode": "c…", "deviceId": "…", "fullName": {"givenName": "Thomas", "familyName": "B"} }
 ```
+
+`authorizationCode` (optional; the same sign-in's one-time, 5-minute
+code) is exchanged at Apple's `/auth/token` for a refresh token, stored
+**sealed** (`users.apple_refresh_token_sealed`, AES-256-GCM under
+`PROVIDER_STATE_KEY`) so `DELETE /me` can revoke it — App Store Review
+5.1.1(v). The exchange authenticates with a client secret: an ES256 JWT
+signed with the Sign in with Apple key (`APPLE_SIGNIN_KEY`,
+`APPLE_SIGNIN_KEY_ID`, `APPLE_SIGNIN_TEAM_ID`; `sub` = `APPLE_AUDIENCE`).
+It never affects the sign-in: without the key group nothing is exchanged,
+a code whose `sub` isn't the verified identity's is never stored, and a
+failed exchange is recorded (`auth_identity`, rule
+`apple_code_exchange_failed`) and retried on the next sign-in. A
+carried-over account (`attach-identity`) gets its token the first time
+its owner signs in with Apple.
 
 `fullName` is optional and only ever sent once: Apple hands the name to
 the **app** on first sign-in, never in the token, so the client forwards
@@ -207,11 +221,16 @@ Irreversible; the app confirms in two steps. In order:
    deleted (push channels released);
 4. provider accounts unlinked and their **sealed cookie state erased**;
 5. vehicles and assistant conversations deleted (sessions detach from
-   the vehicle but remain — they are the money audit);
+   the vehicle but remain — they are the money audit); then the **Sign in
+   with Apple token revoked** at Apple's `/auth/revoke` (App Store
+   5.1.1(v)), which never blocks the delete: if Apple fails (or the key
+   isn't configured yet) the sealed token stays on the tombstone and an
+   hourly job (`jobs/appleRevocationTick.ts`) retries until Apple accepts
+   — every attempt a `decisions` row;
 6. the `users` row is **tombstoned**: name becomes "Deleted account",
    `email`/`phone`/`apple_sub`/`google_sub`/api-key/`stripe_customer_id`
-   columns are nulled, the payment source reset, and `deleted_at` is
-   stamped.
+   columns are nulled (and the sealed Apple token, once revoked), the
+   payment source reset, and `deleted_at` is stamped.
 
 The row survives on purpose: `decisions` is a non-negotiable ledger with
 a `user_id` on every row, so the id must stay valid — what goes is the
@@ -697,8 +716,17 @@ the choice moves where the charge lands, never what is allowed.
 ## POST /device
 
 `{token, platform: "ios", environment: "development" | "production"}` →
-`{ok: true}`. Registering is idempotent (the app re-sends on every
-launch; `environment` picks the sandbox or production APNs host), but the
+`{ok: true}`. `environment` is the APNs environment that MINTED the token
+— an Xcode-installed build gets sandbox ("development") tokens, a
+TestFlight / App Store build production ones — and each token is pushed to
+its own host (`apnsHost` in services/apns.ts: `api.sandbox.push.apple.com`
+vs `api.push.apple.com`); a token sent to the other host is rejected as
+BadDeviceToken and deleted. The app reads it from its own signing, not its
+build configuration (ios Support/APNsEnvironment.swift: the embedded
+provisioning profile's `aps-environment`; no embedded profile → App Store
+/ TestFlight → production). Registering is idempotent (the app re-sends
+on every launch, and a new environment for the same token replaces the
+old), but the
 token is **bound to the first registering user**: another account
 presenting it gets `409 {"error": "token_bound_elsewhere"}` instead of
 silently taking over the push channel. A token Apple reports dead (410)
@@ -720,16 +748,18 @@ Pushes carry a standard `aps` payload plus `{"type": ...}`, one of:
 - `session_expiring` — expiring soon and auto-extend will not fire; carries
   `reason`: `"max_stay"` (move the car), `"budget"` (a cap would be hit),
   or `"no_auto_extend"` (disabled or max_count used up)
-- `payment_failed` — a pay or extend attempt failed; the meter is unpaid;
-  carries `code` (executor error code)
+- `payment_failed` — a pay or extend attempt failed; the meter is unpaid.
+  The body says what to do instead (pay in the provider's app or at the
+  meter; extend in the app); `code` (the executor error code) rides in
+  `extra`, never in the text
 - `card_declined` — the ParkAgent card's hold was refused by the user's
   saved card; nothing was paid (the hold comes before the provider).
   Carries `zoneNumber` and `deepLink: "parkagent://wallet"` — the fix is
   updating the card in the Wallet, not a retry
 - `provider_relink` — the linked provider session died (`auth_expired`);
   carries `provider` and a deep link into the app's link flow, `zoneNumber`, and `deepLink`
-  (`parkagent://pay?zone=<zone>` — tap-to-pay fallback with the zone
-  prefilled)
+  (`parkagent://pay?zone=<zone>` — opens the Park tab, where the zone
+  number is on screen)
 
 Sending requires the `APNS_KEY` (contents of the `.p8` auth key),
 `APNS_KEY_ID`, `APNS_TEAM_ID`, and `APNS_BUNDLE_ID` env vars; with any of
@@ -1226,8 +1256,9 @@ nag a human, and nags must be auditable.
 
 ### POST /providers/:provider/topup
 
-`{amountUsd}` → top up the provider wallet from the card on file, through
-the executor. Policy-gated and audited like every money move (kind
+**Admin only** (`403 forbidden` for anyone else) — an operator tool; the app
+has no top-up. `{amountUsd}` → top up the provider wallet from the card on
+file, through the executor. Policy-gated and audited like every money move (kind
 `provider_topup`): single move ≤ `daily_cap_usd`
 (`409 amount_over_daily_cap`), dry run refuses (`409 dry_run`,
 `wouldAllow: true`), executor failures come back typed
@@ -1245,9 +1276,14 @@ Returns the active policy plus bookkeeping:
 {
   "policy": { …policy.json… },
   "hash": "sha256:…",        // canonical-JSON hash, matches policy_snapshots
-  "dryRun": true             // effective: env DRY_RUN || policy.dry_run
+  "dryRun": true,            // effective: env DRY_RUN || policy.dry_run
+  "editable": false          // may THIS caller PUT it (admin only)
 }
 ```
+
+The policy is shared: its caps apply to every account (each person's own
+spend counts against them). The app shows them read-only when `editable`
+is false — the budget step in onboarding and Account → Spending limits.
 
 ## PUT /policy
 
@@ -1527,11 +1563,13 @@ model): its price, `deepLink`, `provider`, and pin are the search's,
 never model text;
 `itinerary` is 1–12 stops (address, arrival, duration, street|garage
 choice, cost) with `totalUsd` recomputed server-side and refused when it
-busts the remaining daily budget.
+busts the remaining daily budget. Every proposed stop has an arrival
+(pricing needs one), and the stops are stored in arrival order whatever
+order the model listed them in.
 
 ### POST /assistant/confirm
 
-`{planId, optionId?}` — the tap. Mints the single-use token
+`{planId, optionId?, stops?}` — the tap. Mints the single-use token
 (10-minute TTL) and executes the confirmed option through the same
 token-gated tools the model faces:
 
@@ -1552,11 +1590,58 @@ token-gated tools the model faces:
   number (null when the zone has none yet); `zoneId` is the internal slug
   and is not for display.
 - itinerary (no optionId) → `{kind: "itinerary_signed_off", itineraryId,
-  totalUsd, capUsd, paymentSource, linkApprovals[], linkSkipped?}` — the
-  day total is re-checked against `daily_cap_usd` at the moment of
-  sign-off. Each stop is stored with what pays it: street stops the street
-  source; garage stops `link_wallet` (one approval per paid garage stop)
-  or `garage_checkout`. Garage stops are recorded as planned bookings.
+  totalUsd, capUsd, stops, paymentSource, linkApprovals[], linkSkipped?}`
+  — the day total is re-checked against `daily_cap_usd` at the moment of
+  sign-off (`409 over_daily_cap`, nothing stored and no Link request
+  made). `stops` (optional) are the stops as the user left them on the
+  card: they are **re-priced on the server** exactly as the price route
+  below prices them (their `costUsd` is never read), and the day signs
+  off with those server prices, in arrival order; Link spend requests use
+  the re-priced garage amounts, and the per-stop session-cap check applies
+  to them. Without `stops` the plan signs off at its own prices. Each stop
+  is stored with what pays it: street stops the street source; garage
+  stops `link_wallet` (one approval per paid garage stop) or
+  `garage_checkout`. Garage stops are recorded as planned bookings. The
+  `itinerary_signed_off` decision records which stops were re-priced.
+
+### POST /assistant/plans/:planId/price
+
+`{stops}` → the itinerary card's live price before sign-off. The app calls
+it after every stop edit. Stops match the proposed plan's by `id` (`400
+unknown_stop`); a present arrival must parse (`400 unreadable_time`);
+someone else's plan or an unknown one is `404 plan_not_found`; a
+single-spot plan is `400 not_an_itinerary`.
+
+Each stop is priced on the server (`AssistantTools.repriceStops` — the
+same path `quote_street` and `build_itinerary` use). The client's
+`costUsd`, `zoneId`, `garageOptionId`, and `deepLink` are **never read**:
+
+- nothing that sets the price changed (arrival, duration, street vs
+  garage, lat/lng) → the plan's own price and fields;
+- a changed street stop → re-quoted at the nearest zone for its new
+  window (observed terms applied, the stay clamped to the zone's max);
+- a changed garage stop → the garage search for its new window, first
+  option (its id, link, and price — what `build_itinerary` would pick);
+- no set time, no zone at the point, no garage, or the search is down →
+  the last price, marked `estimate: true`.
+
+```json
+{
+  "planId": "…",
+  "stops": [ { "id": "s1", "arrival": "2026-01-05T10:00:00-05:00", "costUsd": 30.35, … },
+             { "id": "s2", "arrival": null, "costUsd": 8, "estimate": true, … } ],
+  "totalUsd": 38.35,
+  "capUsd": 60,
+  "spentTodayUsd": 0,
+  "remainingUsd": 60,
+  "fitsCap": true
+}
+```
+
+Stops come back in arrival order. `fitsCap` is `spentTodayUsd + totalUsd
+<= capUsd`, the same test sign-off applies. Writes an `assistant_confirm`
+decision (rule `itinerary_repriced`) with the re-priced ids, estimates
+and why, and each stop's server price.
 
 Link is used only when it is the Wallet's active source, connected, and
 `link_wallet_for_plans` isn't `false`. A spend request becomes a
@@ -1580,13 +1665,35 @@ the real payee — the garage's own site.
 
 ### GET /assistant/itineraries · PATCH /assistant/itineraries/:id
 
-Signed-off days (last 10) and stop editing/reordering. A PATCH re-checks
-the cap and preserves per-stop linkage (attached session ids, pushed
-garage links, payment source) across the edit. The itinerary worker
+Signed-off days (last 10) and stop editing/reordering. A PATCH
+**re-prices** the edited stops against the STORED day by the same rules as
+the price route (an unchanged stop keeps its stored price, a changed one
+is re-quoted, the client's costs are never read; a stop new to the day is
+priced fresh), re-checks the cap with those server totals (`409
+over_daily_cap`, audited, the day unchanged), and preserves per-stop
+linkage (attached session ids, pushed garage links, payment source)
+across the edit — except a re-priced garage stop, whose link is pushed
+again before its new arrival. The response carries the stored stops. The itinerary worker
 (60 s) pushes each garage stop's deep link 15 minutes before arrival
 (`itinerary_garage_link` push), attaches street sessions that start
 inside a stop's window, and marks the day `done` when the last window
 passes.
+
+**Stop order.** One rule, applied by the server on propose, PATCH, and
+GET, and by the app on every render (`plans.ts` `orderStopsByArrival`,
+iOS `ItineraryOrder`): a stop with no set time keeps the slot it is in;
+the timed stops fill the other slots in ascending arrival (ties keep
+their order). So a later stop never sits above an earlier one, and only
+an untimed stop is placed by hand — the app offers drag and Move up/down
+for those alone; changing a stop's time re-sorts it.
+
+**No set time.** A PATCH stop's `arrival` may be `null` (or omitted) —
+the user cleared it; a present arrival must parse (`400
+unreadable_time`, `stopId`) and is stored as ET with its offset. An
+untimed stop has no window: no garage-link push, no street session
+attached by time, and it keeps the day open until the end of its date.
+Its `costUsd` stays what it was priced at, marked `estimate: true`. The
+`itinerary_edited` decision records `untimedStops` and what was re-priced.
 
 ### Garage providers (SpotHero + ParkWhiz)
 

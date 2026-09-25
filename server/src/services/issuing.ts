@@ -44,7 +44,7 @@ export interface AuthorizationFacts {
   merchantCategoryCode: string | null;
   /** The authorization's card matched a row in issuing_cards. */
   knownCard: boolean;
-  /** From the PendingSessionCheck interface (stubbed until sessions merge). */
+  /** From the PendingSessionCheck interface: a session awaiting payment. */
   hasPendingSession: boolean;
   /** Approved card spend so far this NYC day, USD. */
   spentTodayUsd: number;

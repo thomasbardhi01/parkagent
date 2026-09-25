@@ -53,15 +53,17 @@ stored balance to show.
 
 ### 5. The server is the one you think it is
 
-Home → avatar → Account → scroll to About → tap the version number **five
-times** → Diagnostics → Server. Check:
+On your Mac: `curl -s https://parkagent-api.fly.dev/health` (or whatever
+`API_BASE_URL` in `ios/Config.xcconfig` points at). The `commit` must be
+what you just deployed, not an older one.
 
-- **API base** matches the server you deployed to.
-- **Commit** matches what you just deployed (not `dev`, not `mock`).
-- **Client** says `Live`. If it says `MOCK`, the build was launched with a
-  test argument.
-- **Dry run** — read it out loud. `On` means nothing can move money. `OFF`
-  is shown in red for a reason.
+Then on the phone: Home → avatar → Account → scroll to About → tap the
+version number **five times** → Diagnostics. Read **Dry run** out loud:
+`On` means nothing can move money; `OFF` is shown in red for a reason.
+It is the *effective* flag (the server's `DRY_RUN` or the policy's), so
+it can say On while `/health` says the env half is off.
+
+A Release (TestFlight) build has no Diagnostics: five taps do nothing.
 
 ### 6. Curb lines and their terms
 
@@ -105,7 +107,7 @@ transcript.
 
 ### 10. Nothing hides under the tab bar
 
-Card and Sessions tabs: scroll to the very bottom. The last row must be
+Activity and Wallet tabs: scroll to the very bottom. The last row must be
 fully visible and tappable above the floating tab bar. The Account sheet
 covers the tab bar; its last row (Version) must scroll fully into view. Switch tabs a few
 times quickly — you should never see two screens superimposed.
@@ -120,18 +122,17 @@ without Location Always you are down to one.
 Turn on **Log raw detector signals** here before a field-test drive; it is
 the only way to debug a missed or false park afterwards.
 
-### 12. A park, end to end
+### 12. The sandbox switch is off
 
-Diagnostics → **Simulate park here**. The parked sheet should appear within
-a second or two with a real quote for a zone near you — the zone number,
-the rate, the total, and "Pays through <your provider>". In dry run it also
-says "Dry run — no money moves".
+Diagnostics → ParkAgent card: **ParkAgent card sandbox** must be **off**
+for a field test (it lets a Debug build choose the ParkAgent card against
+a Stripe test key). Wallet → the ParkAgent card row then reads "Coming
+soon", as it does for everyone on a Release build.
 
-If it says the provider isn't linked, that's correct behavior for an
-unlinked account: tap through the link flow and try again.
-
-Dismiss with "Not parked here" — nothing should be left behind on the
-Sessions tab.
+There is no simulated park any more: a real park is the test. Park at a
+meter with the app in the background and a **"Parked in zone …"**
+notification should arrive within a few minutes (see
+`docs/field-test-plan.md`).
 
 ---
 

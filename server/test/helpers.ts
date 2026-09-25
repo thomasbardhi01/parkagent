@@ -37,6 +37,7 @@ import type { ModelClient } from "../src/services/assistant/loop.js";
 import { AssistantTools } from "../src/services/assistant/tools.js";
 import type { GarageProvider } from "../src/services/garage/garageProvider.js";
 import type { GeocoderProvider } from "../src/services/assistant/geocoder.js";
+import type { AppleTokenClient } from "../src/services/appleTokens.js";
 import type { LinkClient } from "../src/services/link/linkClient.js";
 import { LinkWallet } from "../src/services/link/linkWallet.js";
 import type { ProviderAccountOps, ProviderOpsFactory } from "../src/services/providerOps.js";
@@ -230,8 +231,9 @@ export interface FakeDbState {
   /** Per-user payment source ("provider_card" default when absent). */
   userPaymentSources: Record<string, string>;
   /** Full identity rows. Seeded with u1 (Thomas, admin) and u2 (Ana);
-   * auth tests create more through the routes. */
-  users: UserIdentityRow[];
+   * auth tests create more through the routes. u1/u2 hold the test api
+   * keys implicitly; a test seeding another keyed user sets apiKeyHash. */
+  users: (UserIdentityRow & { apiKeyHash?: string | null; apiKey?: string | null })[];
   refreshTokens: RefreshTokenRow[];
   emailLoginCodes: EmailLoginCodeRow[];
   parkedEvents: FakeParkedEvent[];
@@ -531,6 +533,38 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
         row.stripeCustomerId = data.stripeCustomerId;
         return { count: 1 };
       },
+      findMany: (async ({ where, take }: { where: Record<string, unknown>; take?: number }) => {
+        if (!("id" in where)) {
+          // Pending Apple revocations: tombstoned, token still sealed.
+          return state.users
+            .filter((u) => u.deletedAt !== null && (u.appleRefreshTokenSealed ?? null) !== null)
+            .slice(0, take ?? Infinity)
+            .map((u) => ({ id: u.id, appleRefreshTokenSealed: u.appleRefreshTokenSealed ?? null }));
+        }
+        const ids = (where as { id: { in: string[] } }).id.in;
+        return state.users
+          .filter((u) => ids.includes(u.id))
+          .map((u) => ({
+            id: u.id,
+            name: u.name,
+            isAdmin: u.isAdmin,
+            email: u.email,
+            appleSub: u.appleSub,
+            googleSub: u.googleSub,
+            apiKey: u.apiKey ?? null,
+            // u1/u2 authenticate with the test keys (see findUnique above).
+            apiKeyHash:
+              u.apiKeyHash ??
+              (u.id === "u1"
+                ? hashApiKey(TEST_PEPPER, API_KEY)
+                : u.id === "u2"
+                  ? hashApiKey(TEST_PEPPER, NONADMIN_API_KEY)
+                  : null),
+            stripeCustomerId: u.stripeCustomerId ?? null,
+            deletedAt: u.deletedAt,
+            createdAt: u.createdAt,
+          }));
+      }) as AppDb["user"]["findMany"],
     },
     refreshToken: {
       create: async ({ data }) => {
@@ -572,6 +606,8 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
         state.refreshTokens = state.refreshTokens.filter((t) => t.userId !== where.userId);
         return { count: before - state.refreshTokens.length };
       },
+      count: async ({ where }) =>
+        state.refreshTokens.filter((t) => t.userId === where.userId).length,
     },
     emailLoginCode: {
       create: async ({ data }) => {
@@ -1067,7 +1103,9 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
           .filter(({ d }) =>
             "sessionId" in where
               ? d.sessionId !== undefined && where.sessionId.in.includes(d.sessionId)
-              : (d.createdAt ?? new Date(MONDAY_2PM)) >= where.createdAt.gte,
+              : "rule" in where
+                ? d.kind === where.kind && d.rule === where.rule
+                : (d.createdAt ?? new Date(MONDAY_2PM)) >= where.createdAt.gte,
           )
           .map(({ d, i }) => ({
             kind: d.kind,
@@ -1658,6 +1696,8 @@ export function makeTestApp(options: {
   geocoder?: GeocoderProvider;
   /** Faked Link client; wires the LinkWallet as configured. */
   linkClient?: LinkClient;
+  /** Sign in with Apple's token + revoke endpoints (services/appleTokens.ts). */
+  appleTokens?: AppleTokenClient;
   /** u1's payment source (default "provider_card", like a fresh user). */
   paymentSource?: string;
   /** ISSUING_LIVE: whether "parkagent_card" may be chosen (default false). */
@@ -1752,6 +1792,7 @@ export function makeTestApp(options: {
     ...(options.issuingLive !== undefined ? { issuingLive: options.issuingLive } : {}),
     ...(options.issuingSandbox !== undefined ? { issuingSandbox: options.issuingSandbox } : {}),
     ...(options.apnsDelivery ? { apnsDelivery: options.apnsDelivery } : {}),
+    ...(options.appleTokens ? { appleTokens: options.appleTokens } : {}),
     now,
   };
   return { app: buildApp(deps), state, deps, pushes };

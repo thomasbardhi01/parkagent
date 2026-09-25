@@ -8,7 +8,6 @@ struct ParkingDetectedSheet: View {
     let parked: ParkedResponse
 
     @State private var selectedZoneId: String?
-    @State private var manualZoneNumber = ""
     /// The needsZoneNumber flow: what the driver read off the meter.
     @State private var zoneNumberEntry = ""
     @State private var zoneNumberSaved = false
@@ -29,9 +28,7 @@ struct ParkingDetectedSheet: View {
             if let notice = model.freePeriodNotice {
                 FreePeriodResultView(notice: notice) { model.dismissParkedSheet() }
             } else if let error = model.paymentError {
-                if case .notImplemented = error {
-                    SessionsNotBuiltView(dismiss: { model.dismissParkedSheet() })
-                } else if case .refused(let code) = error, code == "provider_not_linked" {
+                if case .refused(let code) = error, code == "provider_not_linked" {
                     // Same routing as an unlinked provider block: the fix
                     // is linking, not retrying the payment. No NYC default —
                     // the response's provider, else the effective city's.
@@ -56,7 +53,13 @@ struct ParkingDetectedSheet: View {
                         dismiss: { model.dismissParkedSheet() }
                     )
                 } else {
+                    // "The meter isn't paid" only when that's certain: a
+                    // provider step that never confirmed, or a dropped
+                    // connection, may have paid — and a blind retry would
+                    // pay twice.
                     PaymentFailedView(
+                        title: error.paymentOutcomeUnknown ? "Payment not confirmed" : "Payment failed",
+                        message: error.startFailureMessage,
                         retry: { Task { await paySelected() } },
                         dismiss: { model.dismissParkedSheet() }
                     )
@@ -269,46 +272,18 @@ struct ParkingDetectedSheet: View {
 
     // MARK: - Unknown zone
 
+    /// No zone within reach of the fix. The server has no
+    /// quote-by-zone-number endpoint, so there is nothing to type a number
+    /// into: say what is true and let the driver pay the usual way.
     @ViewBuilder
     private var unknownZone: some View {
         let providerName = CityCatalog.providerDisplayName(for: model.effectiveCity)
         header("No meter zone found here")
-        if model.useMockAPI {
-            manualZoneEntry(zoneNumberName: providerName.map { "\($0) zone number" } ?? "pay-by-app zone number")
-        } else {
-            // The server has no quote-by-zone-number endpoint yet, so on
-            // the live API an entry field here led only to a "session
-            // payment lands in a later phase" screen claiming the server
-            // had quoted the zone. Say what is true instead.
-            Text("ParkAgent doesn't have this block's meters yet, so it can't quote or pay here. Pay at the meter or in \(providerName ?? "your parking app") for now.")
-                .font(.secondaryText)
-                .foregroundStyle(Color.textSecondary)
-                .accessibilityIdentifier("parkedSheet.unknownZoneLive")
-            Spacer(minLength: 0)
-            dismissButton
-        }
-    }
-
-    /// Mock only (UI tests): type the meter's number for a fixture quote.
-    @ViewBuilder
-    private func manualZoneEntry(zoneNumberName: String) -> some View {
-        Text("If you can see a \(zoneNumberName) on the meter, enter it to get a quote.")
+        Text("ParkAgent doesn't have this block's meters yet, so it can't quote or pay here. Pay at the meter or in \(providerName ?? "your parking app") for now.")
             .font(.secondaryText)
             .foregroundStyle(Color.textSecondary)
-        TextField("Zone number", text: $manualZoneNumber)
-            .keyboardType(.numberPad)
-            .font(.bodyText)
-            .padding(Spacing.unit)
-            .background(Color.surface)
-            .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
-            .accessibilityIdentifier("parkedSheet.zoneField")
+            .accessibilityIdentifier("parkedSheet.unknownZoneLive")
         Spacer(minLength: 0)
-        Button("Get quote") {
-            model.quoteForManualZone(zoneNumber: manualZoneNumber)
-        }
-        .buttonStyle(.primary)
-        .disabled(manualZoneNumber.isEmpty)
-        .accessibilityIdentifier("parkedSheet.getQuoteButton")
         dismissButton
     }
 
@@ -426,32 +401,6 @@ struct ParkingDetectedSheet: View {
     }
 }
 
-/// The live server 501s session/start until Phase 5 wires the executor;
-/// distinct from a payment failure — nothing was attempted, nothing charged.
-struct SessionsNotBuiltView: View {
-    let dismiss: () -> Void
-
-    var body: some View {
-        VStack(spacing: Spacing.unit) {
-            Spacer(minLength: Spacing.unit)
-            Image(systemName: "hammer.circle.fill")
-                .font(.system(size: 44))
-                .foregroundStyle(Color.textSecondary)
-            Text("Paying is not wired up yet")
-                .font(.bodyTextSemibold)
-                .foregroundStyle(Color.textPrimary)
-            Text("The server quoted this zone, but session payment lands in a later phase. Nothing was charged — pay at the meter for now.")
-                .font(.secondaryText)
-                .foregroundStyle(Color.textSecondary)
-                .multilineTextAlignment(.center)
-            Spacer(minLength: 0)
-            Button("Dismiss", action: dismiss)
-                .buttonStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity)
-    }
-}
-
 /// POST /session/start answered provider_not_linked: nothing was charged,
 /// and the fix is linking the account, not retrying.
 struct ProviderNotLinkedView: View {
@@ -549,6 +498,8 @@ struct WalletFixView: View {
 }
 
 struct PaymentFailedView: View {
+    let title: String
+    let message: String
     let retry: () -> Void
     let dismiss: () -> Void
 
@@ -558,10 +509,10 @@ struct PaymentFailedView: View {
             Image(systemName: "xmark.circle.fill")
                 .font(.system(size: 44))
                 .foregroundStyle(Color.danger)
-            Text("Payment failed")
+            Text(title)
                 .font(.bodyTextSemibold)
                 .foregroundStyle(Color.textPrimary)
-            Text("The meter was not paid. You can try again, or pay at the meter directly.")
+            Text(message)
                 .font(.secondaryText)
                 .foregroundStyle(Color.textSecondary)
                 .multilineTextAlignment(.center)
@@ -575,6 +526,7 @@ struct PaymentFailedView: View {
     }
 }
 
+#if DEBUG
 #Preview("Single quote") {
     ParkingDetectedSheet(parked: MockFixtures.singleQuote())
         .environment(AppModel())
@@ -589,3 +541,4 @@ struct PaymentFailedView: View {
     ParkingDetectedSheet(parked: MockFixtures.unknownZone())
         .environment(AppModel())
 }
+#endif

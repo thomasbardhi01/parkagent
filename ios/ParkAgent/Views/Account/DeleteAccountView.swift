@@ -88,7 +88,9 @@ struct DeleteAccountView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     NavigationStack { DeleteAccountView() }
         .environment(AuthModel(api: MockAPI(), store: AuthStore()))
 }
+#endif

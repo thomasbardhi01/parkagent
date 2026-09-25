@@ -4,21 +4,18 @@
  * Wallet now (routes/wallet.ts); GET /me still reports the active source
  * so the Account sheet and the Wallet read the same fact.
  *
- * DELETE /me contract (documented here on purpose): any ParkAgent card is
- * frozen (never canceled — its ledger must keep resolving) and the Stripe
- * Customer holding the user's saved funding cards is deleted, refresh
- * tokens are deleted (every device signs out), provider accounts are
- * unlinked and their sealed cookie states erased, the Link wallet is
- * disconnected (tokens revoked and erased), vehicles, device tokens and
- * conversations are deleted, and the users row is TOMBSTONED — identity
- * fields scrubbed, deleted_at stamped, row kept — so the decisions ledger
- * (a non-negotiable) keeps a valid user id without keeping the person.
+ * DELETE /me tombstones the account: every device signs out, provider
+ * accounts are unlinked, personal data goes, and the users row stays so the
+ * decisions ledger keeps a valid id. The full contract lives with the
+ * teardown itself, services/accountDeletion.ts (the FR throwaway purge
+ * runs the same one).
  */
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
 import type { AppDeps } from "../app.js";
+import { deleteAccount } from "../services/accountDeletion.js";
 import { publicUser } from "../services/authService.js";
 import { normalizeSource } from "../services/wallet/summary.js";
 
@@ -91,108 +88,19 @@ export function registerMe(app: FastifyInstance, deps: AppDeps): void {
   });
 
   app.delete("/me", async (req) => {
-    const user = req.authedUser!;
-    const db = deps.db;
-
-    // 1. Freeze (never cancel) any issued card — its authorizations must
-    //    keep resolving against a live Stripe object. First, because it is
-    //    the one step that calls out and can fail: a Stripe error here
-    //    leaves the account untouched and the delete safely retryable,
-    //    instead of half torn down with a card still spending.
-    let cardFrozen = false;
-    const holder = await db.issuingCardholder.findUnique({
-      where: { userId: user.id },
-      include: { cards: true },
-    });
-    for (const card of holder?.cards ?? []) {
-      if (card.status === "active" && deps.stripe) {
-        const status = await deps.stripe.setCardStatus(card.stripeCardId, "inactive");
-        await db.issuingCard.update({
-          where: { stripeCardId: card.stripeCardId },
-          data: { status },
-        });
-        cardFrozen = true;
-      }
-    }
-    //    The saved funding cards go with the person: deleting the Stripe
-    //    Customer detaches them. Also a call-out, so also before anything
-    //    local changes.
-    const identity = await db.user.findUnique({
-      where: { id: user.id },
-      select: { stripeCustomerId: true },
-    });
-    let customerDeleted = false;
-    if (identity?.stripeCustomerId && deps.stripe) {
-      await deps.stripe.deleteCustomer(identity.stripeCustomerId);
-      customerDeleted = true;
-    }
-    const funding = await db.fundingMethod.findMany({
-      where: { userId: user.id, removedAt: null },
-    });
-    for (const method of funding) {
-      await db.fundingMethod.update({
-        where: { id: method.id },
-        data: { removedAt: now(), isDefault: false },
-      });
-    }
-    // The Link wallet's sealed tokens: revoked (best effort) and erased.
-    if (deps.linkWallet) {
-      await deps.linkWallet.disconnect(user.id).catch(() => undefined);
-    }
-
-    // 2. Sessions out everywhere: refresh tokens and push channels gone.
-    await db.refreshToken.deleteMany({ where: { userId: user.id } });
-    await db.deviceToken.deleteMany({ where: { userId: user.id } });
-
-    // 3. Provider accounts: unlink and erase the sealed cookie states.
-    const accounts = await db.providerAccount.findMany({ where: { userId: user.id } });
-    await db.providerAccount.updateMany({
-      where: { userId: user.id },
-      data: {
-        status: "unlinked",
-        stateEncrypted: null,
-        cardAdded: false,
-        cardBrand: null,
-        cardLast4: null,
+    // The teardown is shared with the FR throwaway purge; see
+    // services/accountDeletion.ts for what goes and what stays.
+    await deleteAccount(
+      {
+        db: deps.db,
+        stripe: deps.stripe,
+        linkWallet: deps.linkWallet,
+        appleTokens: deps.appleTokens,
+        stateCrypto: deps.stateCrypto,
+        now,
       },
-    });
-
-    // 4. Personal data: vehicles (sessions detach first — they are the
-    //    money audit and stay), and assistant conversations.
-    await db.session.updateMany({ where: { userId: user.id }, data: { vehicleId: null } });
-    await db.vehicle.deleteMany({ where: { userId: user.id } });
-    await db.conversation.deleteMany({ where: { userId: user.id } });
-
-    // 5. Tombstone the users row: the decisions ledger keeps its user id,
-    //    the person's identity is gone, and no credential works again.
-    await db.user.update({
-      where: { id: user.id },
-      data: {
-        name: "Deleted account",
-        email: null,
-        emailVerified: false,
-        phone: null,
-        phoneVerified: false,
-        appleSub: null,
-        googleSub: null,
-        apiKey: null,
-        apiKeyHash: null,
-        apiKeyPrefix: null,
-        stripeCustomerId: null,
-        paymentSource: "provider_card",
-        deletedAt: now(),
-      },
-    });
-
-    await db.decision.create({
-      data: {
-        kind: "account_delete",
-        inputs: { providersUnlinked: accounts.map((a) => a.provider) },
-        rule: "deleted",
-        outcome: { ok: true, cardFrozen, customerDeleted, fundingMethodsRemoved: funding.length },
-        userId: user.id,
-      },
-    });
+      req.authedUser!.id,
+    );
     return { ok: true, deleted: true };
   });
 

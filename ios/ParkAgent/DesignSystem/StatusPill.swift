@@ -60,6 +60,7 @@ struct TagPill: View {
     }
 }
 
+#if DEBUG
 #Preview("StatusPill") {
     HStack(spacing: Spacing.half) {
         StatusPill(status: .paid)
@@ -70,3 +71,4 @@ struct TagPill: View {
     .padding(Spacing.unit)
     .background(Color.appBackground)
 }
+#endif

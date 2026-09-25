@@ -8,8 +8,12 @@ protocol APIClient: Sendable {
     // that work signed out; everything else needs the access token.
     /// Which sign-in methods are switched on (GET /auth/methods).
     func authMethods() async throws -> AuthMethods
+    /// `authorizationCode` is Apple's one-time code from the same sign-in:
+    /// the server trades it for the refresh token it revokes if the account
+    /// is ever deleted (App Store 5.1.1(v)).
     func signInWithApple(
         identityToken: String,
+        authorizationCode: String?,
         deviceId: String,
         fullName: (given: String?, family: String?)?
     ) async throws -> AuthSession
@@ -68,9 +72,6 @@ protocol APIClient: Sendable {
     /// capped server-side at 400 m.
     func nearbyZones(lat: Double, lng: Double, radiusM: Double) async throws -> NearbyZonesResponse
 
-    /// GET /health — which server build the phone is talking to (Diagnostics).
-    func health() async throws -> HealthResponse
-
     // City & provider accounts (server/API.md "GET /city", "Provider accounts").
     func detectCity(lat: Double, lng: Double) async throws -> CityDetectResponse
     func providersStatus() async throws -> ProvidersStatusResponse
@@ -103,7 +104,12 @@ protocol APIClient: Sendable {
         location: (lat: Double, lng: Double)?
     ) -> AsyncThrowingStream<AssistantEvent, Error>
     /// The user's tap on a plan card — the only path that books or pays.
-    func confirmPlan(planId: String, optionId: String?) async throws -> AssistantConfirmResponse
+    /// For an itinerary, `stops` are the card's stops when the user changed
+    /// them: the server re-prices them and signs off those.
+    func confirmPlan(planId: String, optionId: String?, stops: [ItineraryStop]?) async throws -> AssistantConfirmResponse
+    /// The itinerary card's live price after an edit, computed on the
+    /// server (POST /assistant/plans/:planId/price).
+    func priceItinerary(planId: String, stops: [ItineraryStop]) async throws -> ItineraryPriceResponse
     func itineraries() async throws -> ItinerariesResponse
     func patchItinerary(id: String, stops: [ItineraryStop]) async throws -> ItineraryPatchResponse
 
@@ -114,33 +120,117 @@ protocol APIClient: Sendable {
     func syncLinkSpendRequest(id: String) async throws -> LinkSpendSyncResponse
 }
 
+extension APIClient {
+    /// A confirm with nothing edited: a single-spot option, or an itinerary
+    /// signed off as proposed.
+    func confirmPlan(planId: String, optionId: String?) async throws -> AssistantConfirmResponse {
+        try await confirmPlan(planId: planId, optionId: optionId, stops: nil)
+    }
+}
+
 enum APIError: Error, LocalizedError {
-    /// API_BASE_URL missing from Config.xcconfig.
+    /// API_BASE_URL missing from the build (Config.xcconfig).
     case notConfigured
     /// 401 that a token refresh could not rescue — the session is gone.
     case unauthorized
+    /// 400: the body is the server's validation detail — for a Debug
+    /// build's eyes only; a person sees a plain sentence.
     case invalidRequest(String)
-    /// 501 — the session and location endpoints are Phase 5 stubs.
-    case notImplemented
     case server(status: Int)
     case transport(Error)
-    /// Mock-only until Phase 5 wires real payment failures through.
-    case paymentFailed
-    /// A named refusal from the server (409/503 with an `error` code), e.g.
-    /// dry_run or funding_unavailable on the funding endpoints.
+    /// A named refusal from the server (4xx/5xx with an `error` code), e.g.
+    /// dry_run, executor_failed, card_declined.
     case refused(code: String)
+    /// Apple Pay / the card form couldn't save the card; Stripe's own
+    /// sentence says why.
+    case cardNotSaved(String)
+    /// 502 executor_failed: the step at the parking provider failed, with
+    /// the executor's code. Some codes are certainly before any charge;
+    /// others can come after the pay click, so whether it went through is
+    /// unknown — see `providerDeclined`.
+    case executorFailed(code: String?)
+
+    /// Executor codes that can only happen BEFORE the provider charges:
+    /// signed out, no such zone, card refused, no card or plate on file,
+    /// an operator lockout. Anything else (ui_changed, network,
+    /// browser_crashed, unknown) may have happened after the pay click.
+    static let preChargeExecutorCodes: Set<String> = [
+        "auth_expired", "zone_not_found", "payment_declined",
+        "payment_method_missing", "vehicle_missing", "parking_denied",
+    ]
+
+    /// True only when the provider certainly didn't take the money.
+    var providerDeclined: Bool {
+        if case .executorFailed(let code?) = self { return Self.preChargeExecutorCodes.contains(code) }
+        return false
+    }
+
+    /// Whether a failed payment may have gone through anyway: the provider
+    /// never confirmed (an ambiguous executor code), or the connection
+    /// dropped before the server's answer arrived (it keeps paying).
+    var paymentOutcomeUnknown: Bool {
+        switch self {
+        case .executorFailed: !providerDeclined
+        case .transport, .server: true
+        default: false
+        }
+    }
+
+    /// The parked sheet's sentence for a failed START — what is true about
+    /// the meter, and what to do before trying again.
+    var startFailureMessage: String {
+        if case .executorFailed = self {
+            return providerDeclined
+                ? "The parking provider turned the payment down, so the meter isn't paid. Try again, or pay at the meter."
+                : "The parking provider didn't confirm the payment, so it may or may not have gone through. Check your parking app before trying again, so you don't pay twice."
+        }
+        if paymentOutcomeUnknown {
+            return "The connection dropped before ParkAgent heard back, so the payment may or may not have gone through. Check Activity or your parking app before trying again."
+        }
+        return errorDescription ?? "The meter wasn't paid. Try again, or pay at the meter."
+    }
 
     var errorDescription: String? {
         switch self {
-        case .notConfigured: "The live API is not configured. Add API_BASE_URL to Config.xcconfig."
-        case .unauthorized: "Your session expired. Sign in again."
-        case .invalidRequest(let detail): "The server rejected the request: \(detail)"
-        case .notImplemented: "This part of the server is not built yet."
-        case .server(let status): "The server returned an error (\(status))."
-        case .transport: "Could not reach the server."
-        case .paymentFailed: "The payment did not go through."
-        case .refused(let code): Self.refusalMessage(code)
+        case .notConfigured:
+            #if DEBUG
+            return "The live API is not configured. Add API_BASE_URL to Config.xcconfig."
+            #else
+            return "This version of ParkAgent can't reach its server. Install the latest version."
+            #endif
+        case .unauthorized:
+            return "Your session expired. Sign in again."
+        case .invalidRequest(let detail):
+            #if DEBUG
+            return "The server rejected the request: \(detail)"
+            #else
+            _ = detail
+            return "That didn't go through. Try again."
+            #endif
+        case .server(let status):
+            return "Something went wrong on our side (\(status)). Try again in a moment."
+        case .transport:
+            return "Could not reach the server."
+        case .refused(let code):
+            return Self.refusalMessage(code)
+        case .cardNotSaved(let message):
+            return message
+        case .executorFailed:
+            // Extend and stop read this; a start uses startFailureMessage.
+            return providerDeclined
+                ? "The parking provider turned it down, so nothing changed. Try again, or use your parking app."
+                : "The parking provider didn't confirm it. Check your parking app to see where it stands before trying again."
         }
+    }
+
+    /// A code with no sentence of its own: a Debug build names it, a
+    /// person just gets a plain retry.
+    private static func fallbackRefusal(_ code: String) -> String {
+        #if DEBUG
+        "The server refused the request (\(code))."
+        #else
+        "That didn't go through. Try again in a moment."
+        #endif
     }
 
     private static func refusalMessage(_ code: String) -> String {
@@ -154,7 +244,7 @@ enum APIError: Error, LocalizedError {
         case "no_session_cookies": "No sign-in was captured. Try signing in again."
         case "consent_required": "Card setup needs your consent first."
         case "provider_linking_not_configured": "The server is not set up for account linking yet."
-        case "issuing_not_live", "parkagent_card_not_live": "The ParkAgent card is coming soon — pending approval."
+        case "parkagent_card_not_live": "The ParkAgent card is coming soon — pending approval."
         case "link_not_configured": "Link is coming soon."
         case "link_not_connected": "Connect your Link wallet first."
         case "no_funding_method": "Add a card for the ParkAgent card first."
@@ -181,7 +271,17 @@ enum APIError: Error, LocalizedError {
         case "assistant_failed": "The assistant hit a problem. Try asking again."
         case "conversation_not_found": "That conversation isn't available. Start a new one."
         case "rate_limited": "That's a lot of requests at once. Wait a moment and try again."
-        default: "The server refused the request (\(code))."
+        // Session start / extend / stop (server/API.md "Sessions").
+        case "policy_violation": "That's outside your parking limits, so nothing was paid."
+        case "session_already_active": "A parking session is already running. Stop it before starting another."
+        case "session_not_active", "session_not_found", "no_active_session": "That session has already ended."
+        case "plan_not_found": "That plan is no longer available. Ask again for a fresh one."
+        case "itinerary_not_found", "itinerary_not_editable": "That day's plan can't be changed any more."
+        case "over_daily_cap", "plan_over_daily_cap": "That would go over today's spending limit."
+        case "vehicle_not_found": "That car isn't on your account any more."
+        case "parked_event_not_found", "zone_not_found": "That parking spot is no longer available to pay. Park again to get a fresh quote."
+        case "street_pay_on_arrival": "Street parking is paid when you park, not ahead of time."
+        default: fallbackRefusal(code)
         }
     }
 }

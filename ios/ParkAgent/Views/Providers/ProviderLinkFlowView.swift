@@ -106,6 +106,7 @@ struct ProviderLinkStagesView: View {
     @ViewBuilder
     private var signIn: some View {
         if let provider = link.provider {
+            #if DEBUG
             if model.useMockAPI {
                 MockProviderLoginView(provider: provider, creatingAccount: link.creatingAccount) {
                     Task {
@@ -115,21 +116,31 @@ struct ProviderLinkStagesView: View {
                         )
                     }
                 }
-            } else if let url = link.startURL(creatingAccount: link.creatingAccount) {
-                ProviderLoginWebView(
-                    url: url,
-                    cookieDomains: provider.cookieDomains,
-                    // Types what we already know into the provider's empty
-                    // text inputs; codes, PINs, terms, and captcha stay the
-                    // user's (ProviderSignupPrefill.swift).
-                    prefillScript: link.prefillScript()
-                ) { cookies in
-                    Task { await link.cookiesCaptured(cookies, api: model.api) }
-                }
-                .ignoresSafeArea(edges: .bottom)
             } else {
-                unavailable
+                webLogin(provider)
             }
+            #else
+            webLogin(provider)
+            #endif
+        }
+    }
+
+    @ViewBuilder
+    private func webLogin(_ provider: ProviderAccountStatus) -> some View {
+        if let url = link.startURL(creatingAccount: link.creatingAccount) {
+            ProviderLoginWebView(
+                url: url,
+                cookieDomains: provider.cookieDomains,
+                // Types what we already know into the provider's empty
+                // text inputs; codes, PINs, terms, and captcha stay the
+                // user's (ProviderSignupPrefill.swift).
+                prefillScript: link.prefillScript()
+            ) { cookies in
+                Task { await link.cookiesCaptured(cookies, api: model.api) }
+            }
+            .ignoresSafeArea(edges: .bottom)
+        } else {
+            unavailable
         }
     }
 }
@@ -363,6 +374,7 @@ private struct LinkFailedView: View {
     }
 }
 
+#if DEBUG
 /// Stand-in for the provider's login page when the mock API is active, so
 /// the whole flow is walkable on the simulator and in UI tests.
 private struct MockProviderLoginView: View {
@@ -396,8 +408,11 @@ private struct MockProviderLoginView: View {
         creatingAccount ? (provider.signup?.url ?? provider.loginUrl) : provider.loginUrl
     }
 }
+#endif
 
+#if DEBUG
 #Preview {
     ProviderLinkFlowView(providerId: "parknyc")
         .environment(AppModel())
 }
+#endif

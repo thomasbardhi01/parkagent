@@ -182,6 +182,23 @@ final class AccountUITests: ParkAgentUITestCase {
         )
     }
 
+    /// Everyone but the operator sees the shared limits read-only: the
+    /// values, why, and no steppers or Save that would only fail.
+    func testSpendingLimitsReadOnlyForSharedLimits() {
+        let app = launchApp(policyReadOnly: true)
+        openAccountSheet(app)
+
+        scrollTo(app, "account.limitsLink").tap()
+        XCTAssertTrue(element(app, "limits.view").waitForExistence(timeout: 5), "Limits screen missing")
+        let sessionCap = element(app, "limits.sessionCap")
+        XCTAssertTrue(sessionCap.waitForExistence(timeout: 5))
+        // The policy's own cap: the screen shows no value until it loads.
+        XCTAssertEqual(sessionCap.label, "Per stop, $45.00")
+        XCTAssertTrue(scrollTo(app, "limits.shared", swipes: 2).exists, "Why they're read-only is missing")
+        XCTAssertFalse(element(app, "limits.sessionCap.plus").exists, "No steppers on shared limits")
+        XCTAssertFalse(element(app, "limits.saveButton").exists, "No Save on shared limits")
+    }
+
     /// Switching Appearance to Dark flips the applied color scheme, read
     /// back through the hidden probe label MainTabView exposes.
     func testAppearanceSwitchAppliesDarkScheme() {
@@ -289,17 +306,28 @@ final class AccountUITests: ParkAgentUITestCase {
 
         XCTAssertTrue(element(app, "diagnostics.view").waitForExistence(timeout: 5))
         XCTAssertTrue(element(app, "diagnostics.detectorStatus").exists, "Detector status missing")
-        // The rest of the Form is lazy: scroll each one into existence.
+        // Exactly the field-test kit. The rest of the Form is lazy: scroll
+        // each one into existence.
         for identifier in [
-            "diagnostics.simulateParkButton",
             "diagnostics.signalLogToggle",
-            "diagnostics.apiBase",
-            // The commit comes from /health; the mock answers "mock".
-            "diagnostics.commit",
             "diagnostics.dryRun",
+            "diagnostics.sandboxToggle",
             "diagnostics.resetOnboardingButton",
         ] {
             XCTAssertTrue(scrollTo(app, identifier).exists, "\(identifier) missing from Diagnostics")
+        }
+        // …and nothing else: no simulated parks, no fixture points, no
+        // server-build rows. Checked with the last section on screen (the
+        // positive above), so these can't pass on an unrendered Form.
+        for removed in [
+            "diagnostics.simulateHereButton",
+            "diagnostics.simulateParkButton",
+            "diagnostics.fixturePicker",
+            "diagnostics.apiBase",
+            "diagnostics.commit",
+            "diagnostics.client",
+        ] {
+            XCTAssertFalse(element(app, removed).exists, "\(removed) is back in Diagnostics")
         }
         // The effective dry run (GET /policy), not just env DRY_RUN; the
         // mock policy runs dry.

@@ -57,7 +57,7 @@ final class SnapshotUITests: ParkAgentUITestCase {
 
         openDiagnostics(app)
         attachScreenshot(of: app, named: "pr-diagnostics")
-        scrollTo(app, "diagnostics.apiBase")
-        attachScreenshot(of: app, named: "pr-diagnostics-server")
+        scrollTo(app, "diagnostics.resetOnboardingButton")
+        attachScreenshot(of: app, named: "pr-diagnostics-bottom")
     }
 }

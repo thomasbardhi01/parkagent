@@ -10,6 +10,7 @@ struct UnconfiguredAPI: APIClient {
     func authMethods() async throws -> AuthMethods { throw failure }
     func signInWithApple(
         identityToken: String,
+        authorizationCode: String?,
         deviceId: String,
         fullName: (given: String?, family: String?)?
     ) async throws -> AuthSession { throw failure }
@@ -55,7 +56,6 @@ struct UnconfiguredAPI: APIClient {
         throw failure
     }
 
-    func health() async throws -> HealthResponse { throw failure }
 
     func detectCity(lat: Double, lng: Double) async throws -> CityDetectResponse { throw failure }
     func providersStatus() async throws -> ProvidersStatusResponse { throw failure }
@@ -84,7 +84,10 @@ struct UnconfiguredAPI: APIClient {
         }
     }
 
-    func confirmPlan(planId: String, optionId: String?) async throws -> AssistantConfirmResponse { throw failure }
+    func confirmPlan(planId: String, optionId: String?, stops: [ItineraryStop]?) async throws -> AssistantConfirmResponse {
+        throw failure
+    }
+    func priceItinerary(planId: String, stops: [ItineraryStop]) async throws -> ItineraryPriceResponse { throw failure }
     func itineraries() async throws -> ItinerariesResponse { throw failure }
     func patchItinerary(id: String, stops: [ItineraryStop]) async throws -> ItineraryPatchResponse { throw failure }
 

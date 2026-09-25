@@ -14,7 +14,8 @@
  *    token stops working at once.
  *
  * The throwaway half self-skips when FR_THROWAWAY_SESSION isn't set. Its
- * requests go through sessionFetch, which never carries the FR key.
+ * requests go through sessionFetch, which never carries the FR key, and
+ * the throwaway is deleted however the tests end (the afterAll below).
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -126,11 +127,36 @@ describe("FR-32 refresh surface", () => {
 });
 
 const throwaway = throwawaySession();
+/** Set the moment a DELETE /me for the throwaway answers 200 — by its test
+ * or by the teardown below. */
+let throwawayDeleted = false;
+let fresh: { accessToken: string; refreshToken: string } | null = null;
+
+// The throwaway is deleted however the tests end. File level on purpose:
+// when this file's gate() beforeAll fails, vitest skips a describe's own
+// afterAll but still runs this one — and a failed gate is exactly when the
+// throwaway would otherwise be left behind. Either access token works for
+// 15 minutes whatever happened to its refresh family; past that, or on a
+// run that dies outright, the nightly's purge-fr-throwaways step takes it.
+afterAll(async () => {
+  if (!throwaway || throwawayDeleted) return;
+  for (const bearer of [fresh?.accessToken, throwaway.accessToken]) {
+    if (!bearer) continue;
+    const res = await sessionFetch("DELETE", "/me", { bearer }).catch(() => null);
+    if (res?.status === 200) {
+      throwawayDeleted = true;
+      return;
+    }
+  }
+  console.warn(
+    `FR: couldn't delete throwaway ${throwaway.userId} (its access tokens are dead); ` +
+      "purge-fr-throwaways removes it.",
+  );
+});
 
 describe.skipIf(!throwaway)("FR-32 session lifecycle (throwaway account)", () => {
   // Non-null inside: the block is skipped without it.
   const minted = throwaway!;
-  let fresh: { accessToken: string; refreshToken: string } | null = null;
 
   it("FR-32 a refresh token only works from the device it was issued to", async () => {
     const res = await sessionFetch("POST", "/auth/refresh", {
@@ -180,6 +206,7 @@ describe.skipIf(!throwaway)("FR-32 session lifecycle (throwaway account)", () =>
     expect(before.status).toBe(200);
 
     const deleted = await sessionFetch("DELETE", "/me", { bearer });
+    if (deleted.status === 200) throwawayDeleted = true;
     expect(deleted.status).toBe(200);
     expect(deleted.body).toEqual({ ok: true, deleted: true });
 

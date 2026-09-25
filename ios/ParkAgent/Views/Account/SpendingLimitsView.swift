@@ -1,48 +1,30 @@
 import SwiftUI
 
-/// The caps, editable. PUT /policy is admin-only on the server (the policy
-/// is the shared spending contract), so a non-admin sees the values and a
-/// plain "couldn't save" rather than a broken-looking screen.
+/// The caps. PUT /policy is admin-only on the server (the policy is the
+/// shared spending contract), so only the operator gets steppers and Save;
+/// everyone else sees the same values, read-only, and why.
 struct SpendingLimitsView: View {
     @Environment(AppModel.self) private var model
 
-    @State private var sessionCap: Double = 45
-    @State private var dailyCap: Double = 60
-    @State private var defaultMinutes: Int = 90
-    @State private var seeded = false
+    /// Not editable until the policy says so.
+    private var editable: Bool { model.policyResponse?.canEdit ?? false }
+
+    @State private var sessionCap: Double = 0
+    @State private var dailyCap: Double = 0
+    @State private var defaultMinutes: Int = 0
+    /// The policy hash the values came from; nil until it loads — made-up
+    /// numbers are never shown, or saved over the real caps.
+    @State private var seededHash: String?
     @State private var isSaving = false
     @State private var saveFailed = false
     @State private var savedOK = false
 
     var body: some View {
         Form {
-            Section {
-                stepperRow(
-                    "Per stop",
-                    value: Format.money(sessionCap),
-                    identifier: "limits.sessionCap",
-                    decrement: { sessionCap = max(5, sessionCap - 5) },
-                    increment: { sessionCap = min(200, sessionCap + 5) }
-                )
-                stepperRow(
-                    "Per day",
-                    value: Format.money(dailyCap),
-                    identifier: "limits.dailyCap",
-                    decrement: { dailyCap = max(5, dailyCap - 5) },
-                    increment: { dailyCap = min(400, dailyCap + 5) }
-                )
-                stepperRow(
-                    "Default stay",
-                    value: Format.minutes(defaultMinutes),
-                    identifier: "limits.defaultStay",
-                    decrement: { defaultMinutes = max(15, defaultMinutes - 15) },
-                    increment: { defaultMinutes = min(240, defaultMinutes + 15) }
-                )
-            } header: {
-                Text("Limits")
-            } footer: {
-                Text("We'll pay up to \(Format.money(sessionCap)) per stop and \(Format.money(dailyCap)) per day without asking.")
-                    .accessibilityIdentifier("limits.preview")
+            if seededHash == nil {
+                pendingSection
+            } else {
+                limitsSection
             }
 
             Section {
@@ -62,38 +44,103 @@ struct SpendingLimitsView: View {
                 Text("Every automated decision is checked against these first.")
             }
 
-            Section {
-                Button(isSaving ? "Saving…" : "Save limits") {
-                    Task { await save() }
-                }
-                .disabled(isSaving)
-                .foregroundStyle(Color.actionCoralLink)
-                .accessibilityIdentifier("limits.saveButton")
-                if saveFailed {
-                    Text("Couldn't save. Only the account owner can change the shared limits.")
-                        .font(.captionTextSemibold)
-                        .foregroundStyle(Color.warningGold)
-                        .accessibilityIdentifier("limits.saveFailed")
-                }
-                if savedOK {
-                    Text("Saved.")
-                        .font(.captionTextSemibold)
-                        .foregroundStyle(Color.success)
-                        .accessibilityIdentifier("limits.savedOK")
-                }
+            if editable && seededHash != nil {
+                saveSection
             }
         }
         .navigationTitle("Spending limits")
         .navigationBarTitleDisplayMode(.inline)
-        .task {
-            guard !seeded, let policy = model.policyResponse?.policy else { return }
-            seeded = true
-            sessionCap = policy.sessionCapUsd
-            dailyCap = policy.dailyCapUsd
-            defaultMinutes = policy.defaultStayMinutes
-        }
+        // Re-seed whenever the policy arrives or changes (a late load, or
+        // the saved values coming back).
+        .task(id: model.policyResponse?.hash) { seed() }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("limits.view")
+    }
+
+    private func seed() {
+        guard let response = model.policyResponse, response.hash != seededHash else { return }
+        seededHash = response.hash
+        sessionCap = response.policy.sessionCapUsd
+        dailyCap = response.policy.dailyCapUsd
+        defaultMinutes = response.policy.defaultStayMinutes
+    }
+
+    @ViewBuilder
+    private var pendingSection: some View {
+        Section {
+            if model.policyLoadFailed {
+                Text("Couldn't load your limits.")
+                    .foregroundStyle(Color.textSecondary)
+                    .accessibilityIdentifier("limits.unavailable")
+                Button("Try again") { Task { await model.loadPolicy() } }
+                    .foregroundStyle(Color.actionCoralLink)
+            } else {
+                ProgressView()
+                    .frame(maxWidth: .infinity)
+            }
+        } header: {
+            Text("Limits")
+        }
+    }
+
+    private var limitsSection: some View {
+        Section {
+            stepperRow(
+                "Per stop",
+                value: Format.money(sessionCap),
+                identifier: "limits.sessionCap",
+                decrement: { sessionCap = max(5, sessionCap - 5) },
+                increment: { sessionCap = min(200, sessionCap + 5) }
+            )
+            stepperRow(
+                "Per day",
+                value: Format.money(dailyCap),
+                identifier: "limits.dailyCap",
+                decrement: { dailyCap = max(5, dailyCap - 5) },
+                increment: { dailyCap = min(400, dailyCap + 5) }
+            )
+            stepperRow(
+                "Default stay",
+                value: Format.minutes(defaultMinutes),
+                identifier: "limits.defaultStay",
+                decrement: { defaultMinutes = max(15, defaultMinutes - 15) },
+                increment: { defaultMinutes = min(240, defaultMinutes + 15) }
+            )
+        } header: {
+            Text("Limits")
+        } footer: {
+            VStack(alignment: .leading, spacing: Spacing.half) {
+                Text("We'll pay up to \(Format.money(sessionCap)) per stop and \(Format.money(dailyCap)) per day without asking.")
+                    .accessibilityIdentifier("limits.preview")
+                if !editable {
+                    Text(SharedLimitsCopy.note)
+                        .accessibilityIdentifier("limits.shared")
+                }
+            }
+        }
+    }
+
+    private var saveSection: some View {
+        Section {
+            Button(isSaving ? "Saving…" : "Save limits") {
+                Task { await save() }
+            }
+            .disabled(isSaving)
+            .foregroundStyle(Color.actionCoralLink)
+            .accessibilityIdentifier("limits.saveButton")
+            if saveFailed {
+                Text("Couldn't save. Check the connection and try again.")
+                    .font(.captionTextSemibold)
+                    .foregroundStyle(Color.warningGold)
+                    .accessibilityIdentifier("limits.saveFailed")
+            }
+            if savedOK {
+                Text("Saved.")
+                    .font(.captionTextSemibold)
+                    .foregroundStyle(Color.success)
+                    .accessibilityIdentifier("limits.savedOK")
+            }
+        }
     }
 
     private func save() async {
@@ -122,15 +169,17 @@ struct SpendingLimitsView: View {
                 .font(.bodyText)
                 .foregroundStyle(Color.textPrimary)
             Spacer()
-            Button(action: decrement) {
-                Image(systemName: "minus.circle")
-                    .foregroundStyle(Color.textSecondary)
-                    // 44pt targets: the glyph alone is well under HIG size.
-                    .frame(width: 44, height: 44)
+            if editable {
+                Button(action: decrement) {
+                    Image(systemName: "minus.circle")
+                        .foregroundStyle(Color.textSecondary)
+                        // 44pt targets: the glyph alone is well under HIG size.
+                        .frame(width: 44, height: 44)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("\(identifier).minus")
+                .accessibilityLabel("Decrease \(label)")
             }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("\(identifier).minus")
-            .accessibilityLabel("Decrease \(label)")
             Text(value)
                 .font(.bodyTextSemibold)
                 .monospacedDigit()
@@ -139,16 +188,24 @@ struct SpendingLimitsView: View {
                 .accessibilityIdentifier(identifier)
                 // VoiceOver reads the field with its value ("Per stop, $45").
                 .accessibilityLabel("\(label), \(value)")
-            Button(action: increment) {
-                Image(systemName: "plus.circle")
-                    .foregroundStyle(Color.textSecondary)
-                    .frame(width: 44, height: 44)
+            if editable {
+                Button(action: increment) {
+                    Image(systemName: "plus.circle")
+                        .foregroundStyle(Color.textSecondary)
+                        .frame(width: 44, height: 44)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("\(identifier).plus")
+                .accessibilityLabel("Increase \(label)")
             }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("\(identifier).plus")
-            .accessibilityLabel("Increase \(label)")
         }
     }
+}
+
+/// Said wherever a non-operator sees the limits (onboarding's budget step,
+/// this screen), so the two never disagree.
+enum SharedLimitsCopy {
+    static let note = "These limits are the same for everyone while ParkAgent is in beta. They cap what ParkAgent can spend for you."
 }
 
 /// Plain-words help — what the app does, and what it never does.
@@ -192,7 +249,9 @@ struct HelpView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     NavigationStack { SpendingLimitsView() }
         .environment(AppModel())
 }
+#endif

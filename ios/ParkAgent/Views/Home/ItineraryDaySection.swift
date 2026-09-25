@@ -1,8 +1,9 @@
 import SwiftUI
 
 /// The signed-off day on Home: live status per stop (linked session,
-/// pushed garage link, upcoming), drag-to-reorder in edit mode, PATCHes
-/// edits back to the server.
+/// pushed garage link, upcoming), in arrival order (ItineraryOrder); in
+/// edit mode only a stop with no set time drags. PATCHes edits back to
+/// the server.
 struct ItineraryDaySection: View {
     @Environment(AppModel.self) private var model
     let day: ItinerarySummary
@@ -41,9 +42,12 @@ struct ItineraryDaySection: View {
                         row(stop)
                             .listRowInsets(EdgeInsets())
                             .listRowBackground(Color.clear)
+                            // A timed stop's place is its time: no handle.
+                            .moveDisabled(!ItineraryOrder.isMovable(stop))
                     }
                     .onMove { from, to in
                         stops.move(fromOffsets: from, toOffset: to)
+                        stops = ItineraryOrder.normalized(stops)
                     }
                 }
                 .listStyle(.plain)
@@ -72,16 +76,18 @@ struct ItineraryDaySection: View {
                     .foregroundStyle(Color.danger)
             }
         }
-        .onAppear { stops = day.stops }
-        .onChange(of: day.stops) { stops = day.stops }
+        .onAppear { stops = ItineraryOrder.normalized(day.stops) }
+        .onChange(of: day.stops) { stops = ItineraryOrder.normalized(day.stops) }
         .sheet(item: $editingStop) { stop in
-            StopEditSheet(stop: stop) { edited in
+            StopEditSheet(stop: stop, day: day.date) { edited in
                 if let index = stops.firstIndex(where: { $0.id == edited.id }) {
+                    // A changed time re-sorts the stop into its place.
                     stops[index] = edited
+                    stops = ItineraryOrder.normalized(stops)
                 }
                 Task { await save() }
             }
-            .presentationDetents([.medium])
+            .presentationDetents([.medium, .large])
         }
         // No container identifier: this VStack sits inside home.view's
         // .contain element, which flattens nested containers — tests pin
@@ -124,11 +130,11 @@ struct ItineraryDaySection: View {
         saveError = false
         do {
             let updated = try await model.api.patchItinerary(id: day.id, stops: stops)
-            stops = updated.stops
+            stops = ItineraryOrder.normalized(updated.stops)
             await model.refreshItineraries()
         } catch {
             saveError = true
-            stops = day.stops
+            stops = ItineraryOrder.normalized(day.stops)
         }
     }
 }

@@ -21,6 +21,7 @@ import {
   MONDAY_2PM,
   makeTestApp,
   seedLinkSpendRequest,
+  seedSession,
   testStateCrypto,
 } from "./helpers.js";
 
@@ -513,6 +514,79 @@ describe("routes and plan integration", () => {
       "link_wallet",
       "link_wallet",
     ]);
+  });
+
+  // #131: the card's edits ride the sign-off and are re-priced on the
+  // server — Link is asked for the SERVER's amount, and a re-price that
+  // busts the day is refused before any request is made.
+  test("an edited itinerary asks Link for the re-priced garage amount; over the cap, no request at all", async () => {
+    const searchOption = {
+      id: "g-new",
+      provider: "spothero",
+      name: "Deck on 5th",
+      address: "5 Fifth Ave",
+      priceUsd: 21,
+      distanceM: 100,
+      walkMinutes: 2,
+      entryType: "self",
+      deepLink: "https://spothero.com/checkout/new",
+    };
+    const garage = {
+      id: "fake-garage",
+      canReserve: false,
+      search: async () => ({ ok: true as const, options: [searchOption], fromCache: false }),
+      optionById: () => null,
+      book: async () => {
+        throw new Error("not in this test");
+      },
+    };
+    const planStops = [
+      {
+        id: "g1",
+        label: "Garage",
+        address: "1 Main St",
+        lat: 42.35,
+        lng: -71.07,
+        arrival: "2026-01-05T15:00:00-05:00",
+        durationMinutes: 60,
+        choice: "garage" as const,
+        costUsd: 9,
+        garageOptionId: "g-old",
+        deepLink: "https://spothero.com/checkout/old",
+      },
+    ];
+    const seed = (t: ReturnType<typeof makeTestApp>) =>
+      t.state.assistantPlans.push({
+        id: "plan1",
+        userId: "u1",
+        conversationId: "c1",
+        kind: "itinerary",
+        plan: { kind: "itinerary", date: "2026-01-05", stops: planStops, totalUsd: 9, capUsd: 60 },
+      });
+    const signOff = (t: ReturnType<typeof makeTestApp>, durationMinutes: number) =>
+      t.app.inject({
+        method: "POST",
+        url: "/assistant/confirm",
+        headers: HEADERS,
+        // The phone says $1; the server's search says $21.
+        payload: { planId: "plan1", stops: [{ ...planStops[0]!, durationMinutes, costUsd: 1 }] },
+      });
+
+    const ok = await connectedWallet(() => NOW, { ...LINK_LIVE, garage });
+    seed(ok.t);
+    const res = await signOff(ok.t, 120);
+    expect(res.statusCode).toBe(200);
+    expect(ok.link.createdArgs.map((a) => a.amountUsd)).toEqual([21]);
+
+    // $45 already spent today: the re-priced $21 garage no longer fits $60.
+    const full = await connectedWallet(() => NOW, { ...LINK_LIVE, garage });
+    seedSession(full.t.state, { status: "stopped", dryRun: false, amountUsd: 44.5, feeUsd: 0.5 });
+    seed(full.t);
+    const refused = await signOff(full.t, 120);
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json()).toMatchObject({ error: "over_daily_cap" });
+    expect(full.link.requests.size).toBe(0);
+    expect(full.t.state.itineraries).toHaveLength(0);
   });
 
   test("policy link_wallet_for_plans:false keeps garages on their own checkout", async () => {

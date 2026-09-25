@@ -34,6 +34,7 @@ struct SessionRow: View {
     }
 }
 
+#if DEBUG
 #Preview("SessionRow") {
     VStack(spacing: Spacing.half) {
         SessionRow(
@@ -61,3 +62,4 @@ struct SessionRow: View {
     .padding(Spacing.unit)
     .background(Color.appBackground)
 }
+#endif

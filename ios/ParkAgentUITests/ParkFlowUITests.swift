@@ -1,11 +1,11 @@
 import XCTest
 
 final class ParkFlowUITests: ParkAgentUITestCase {
-    /// Debug-menu park → sheet with zone, rate, max stay, and a dollar total;
+    /// A park → sheet with zone, rate, max stay, and a dollar total;
     /// "Not parked here" dismisses.
     func testSimulatedParkShowsQuoteSheet() {
         let app = launchApp(scenario: "singleQuote")
-        simulateParkViaDiagnostics(app)
+        simulateParkFromHome(app)
 
         XCTAssertTrue(app.staticTexts["Zone 110436"].exists, "Zone number missing")
         XCTAssertTrue(app.staticTexts["$5.00 first hr, $8.25 after"].exists, "Rate ladder missing")
@@ -26,7 +26,7 @@ final class ParkFlowUITests: ParkAgentUITestCase {
     /// until one side is chosen.
     func testTwoCandidatesRequireSelectionBeforePay() {
         let app = launchApp(scenario: "twoCandidates")
-        simulateParkViaDiagnostics(app)
+        simulateParkFromHome(app)
 
         let nearest = element(app, "parkedSheet.candidate.110436")
         let other = element(app, "parkedSheet.candidate.110437")
@@ -83,7 +83,7 @@ final class ParkFlowUITests: ParkAgentUITestCase {
         XCTAssertTrue(app.staticTexts["Zone 81234"].exists, "Session should carry the saved number")
 
         // Second park at the block: the stored number makes it automatic.
-        simulateParkViaDiagnostics(app)
+        simulateParkFromHome(app)
         XCTAssertTrue(
             element(app, "parkedSheet.payButton").waitForExistence(timeout: 5),
             "Second park should offer plain Pay"
@@ -132,7 +132,7 @@ final class ParkFlowUITests: ParkAgentUITestCase {
         element(app, "parkedSheet.saveAndPayButton").tap()
 
         // The applied-number notice is transient: it shows only for the pay
-        // round-trip (a 400 ms mock pause here; seconds in prod) and then the
+        // round-trip (2 s in this mock scenario; seconds in prod) and then the
         // sheet dismisses. Match identifier AND label in ONE predicate wait so
         // there is no gap between confirming it exists and reading its label —
         // reading `.label` after the sheet had already dismissed was the flake
@@ -161,25 +161,60 @@ final class ParkFlowUITests: ParkAgentUITestCase {
         XCTAssertFalse(app.staticTexts["Zone 81234"].exists, "The outranked typed number must not show")
     }
 
-    /// Unknown-zone fixture: the manual zone-number input appears and
-    /// resubmits for a quote.
-    func testUnknownZoneManualEntryResubmits() {
+    /// No zone near the fix: the sheet says plainly that ParkAgent can't
+    /// quote or pay here and names the city's own app — no zone-number
+    /// field (there is no quote-by-number endpoint to feed it), no Pay.
+    func testUnknownZoneSaysWhatIsTrue() {
         let app = launchApp(scenario: "unknownZone")
-        simulateParkViaDiagnostics(app)
+        simulateParkFromHome(app)
 
-        let field = element(app, "parkedSheet.zoneField")
-        XCTAssertTrue(field.waitForExistence(timeout: 5), "Zone-number field missing")
+        let copy = element(app, "parkedSheet.unknownZoneLive")
+        XCTAssertTrue(copy.waitForExistence(timeout: 5), "Unknown-zone explanation missing")
+        XCTAssertTrue(
+            copy.label.contains("can't quote or pay here"),
+            "Unexpected unknown-zone copy: \(copy.label)"
+        )
+        XCTAssertFalse(element(app, "parkedSheet.zoneField").exists, "No manual zone entry any more")
+        XCTAssertFalse(element(app, "parkedSheet.payButton").exists, "Nothing to pay at an unknown zone")
+    }
 
-        let quote = element(app, "parkedSheet.getQuoteButton")
-        XCTAssertFalse(quote.isEnabled, "Get quote should be disabled while the field is empty")
+    /// /parked priced the stay at $0 (outside posted hours): the sheet says
+    /// it's free and offers nothing to pay.
+    func testFreePeriodParkOffersNothingToPay() {
+        let app = launchApp(scenario: "freePeriod")
+        simulateParkFromHome(app)
 
-        field.tap()
-        field.typeText("110436")
-        XCTAssertTrue(quote.isEnabled)
-        quote.tap()
+        XCTAssertTrue(
+            app.staticTexts["Meters here are free right now"].waitForExistence(timeout: 5),
+            "Free-period header missing"
+        )
+        XCTAssertFalse(element(app, "parkedSheet.payButton").exists, "A free period must not offer Pay")
+    }
 
-        // The sheet swaps in a single quote for the entered zone.
-        XCTAssertTrue(app.staticTexts["Zone 110436"].waitForExistence(timeout: 5))
-        XCTAssertTrue(element(app, "parkedSheet.total").waitForExistence(timeout: 5))
+    /// The provider step failed AFTER the pay click (executor_failed,
+    /// ui_changed): nobody knows whether it paid. The sheet must say so and
+    /// warn against paying twice — never "the meter isn't paid", and never
+    /// the raw code.
+    func testUnconfirmedPaymentWarnsBeforeRetrying() {
+        let app = launchApp(scenario: "paymentFailed")
+        simulateParkFromHome(app)
+
+        let pay = element(app, "parkedSheet.payButton")
+        XCTAssertTrue(pay.waitForExistence(timeout: 5), "Pay button missing")
+        pay.tap()
+        XCTAssertTrue(
+            app.staticTexts["Payment not confirmed"].waitForExistence(timeout: 5),
+            "An unconfirmed payment must not read as a plain failure"
+        )
+        let warning = app.staticTexts.containing(
+            NSPredicate(format: "label CONTAINS %@", "so you don't pay twice")
+        ).firstMatch
+        XCTAssertTrue(warning.exists, "No warning against paying twice")
+        for raw in ["executor_failed", "ui_changed", "isn't paid"] {
+            XCTAssertFalse(
+                app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", raw)).firstMatch.exists,
+                "\(raw) leaked into the sheet"
+            )
+        }
     }
 }

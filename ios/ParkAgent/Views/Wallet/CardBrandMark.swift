@@ -63,6 +63,7 @@ struct CardBrandMark: View {
     }
 }
 
+#if DEBUG
 #Preview("Brand marks") {
     VStack(spacing: Spacing.unit) {
         CardBrandMark(brand: "Mastercard")
@@ -72,3 +73,4 @@ struct CardBrandMark: View {
     .padding(Spacing.double)
     .background(Color.ink)
 }
+#endif

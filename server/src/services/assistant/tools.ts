@@ -26,8 +26,22 @@ import type { CandidateFetcher } from "../zoneLookup.js";
 import { lookupRadiusM, resolveCandidates } from "../zoneLookup.js";
 import { applyObservedToCandidates } from "../zoneTermsObserved.js";
 import { currentTimeLine } from "./loop.js";
-import { MODEL_PLAN_JSON_SCHEMA, itineraryTotalUsd, planSchema } from "./plans.js";
-import type { AssistantPlanBody, SingleSpotOption, SingleSpotPlan } from "./plans.js";
+import {
+  MODEL_PLAN_JSON_SCHEMA,
+  itineraryTotalUsd,
+  orderStopsByArrival,
+  planSchema,
+} from "./plans.js";
+import type {
+  AssistantPlanBody,
+  EditedItineraryStop,
+  ItineraryStop,
+  SingleSpotOption,
+  SingleSpotPlan,
+} from "./plans.js";
+import type { GarageOption } from "../garage/garageProvider.js";
+import type { StayPrice } from "../quote.js";
+import type { Candidate } from "../zoneLookup.js";
 
 export interface AssistantDeps {
   db: AppDb;
@@ -112,7 +126,8 @@ export const TOOL_DEFINITIONS = [
       properties: {
         query: {
           type: "string",
-          description: "The named place, e.g. 'Newbury Street' or 'Fenway'",
+          description:
+            "The named place: a street, neighborhood, or landmark, e.g. 'Newbury Street' or 'SoHo'",
         },
         city: {
           type: "string",
@@ -304,6 +319,73 @@ export function groundStreetOptions(
 
 const TIME_FORMAT_HINT =
   "Send times as ISO 8601 with the UTC offset, e.g. 2026-09-26T18:00:00-04:00.";
+
+/** What a street stay costs at a point and window — found or not. */
+type StreetPrice =
+  | { found: false }
+  | {
+      found: true;
+      zone: Candidate & { termsSource?: "observed" | "dataset" };
+      price: StayPrice;
+      clampedMinutes: number;
+      ambiguous: boolean;
+    };
+
+/**
+ * An itinerary stop priced by the server. The client's costUsd, zoneId,
+ * garageOptionId, and deepLink are never read: a stop keeps its previous
+ * SERVER value when nothing that sets the price changed, or is re-quoted
+ * the way build_itinerary quotes it (the nearest zone for street, the
+ * search's first option for a garage).
+ */
+export type PricedStop = Omit<ItineraryStop, "arrival"> & {
+  arrival: string | null;
+  /** The price is a carry-over, not a fresh quote for these inputs: the
+   * stop has no set time, or the quote couldn't be made (no zone there,
+   * no garage, or the garage search was down). */
+  estimate?: true;
+};
+
+/** The server's previous version of a stop: a plan stop or a stored
+ * itinerary stop (whose arrival may be null, and which may carry an
+ * estimate flag from an earlier re-price). */
+export type PreviousStop = Partial<Omit<ItineraryStop, "arrival">> & {
+  arrival?: string | null;
+  estimate?: boolean;
+};
+
+export interface RepriceResult {
+  stops: PricedStop[];
+  /** Ids actually re-quoted (their price-setting inputs changed). */
+  repriced: string[];
+  /** Ids that kept a carried-over price, and why. */
+  estimates: { id: string; reason: "untimed" | "no_zone" | "no_garage" | "search_unavailable" }[];
+}
+
+/** Arrival as an instant; null for no set time (or an unreadable one). */
+function arrivalInstant(arrival: string | null | undefined): number | null {
+  return arrival ? (parseEasternTime(arrival)?.getTime() ?? null) : null;
+}
+
+/** Whether any input that sets a stop's price changed. */
+function priceInputsChanged(
+  edited: EditedItineraryStop,
+  previous: {
+    arrival?: string | null;
+    durationMinutes: number;
+    choice: string;
+    lat: number;
+    lng: number;
+  },
+): boolean {
+  return (
+    edited.choice !== previous.choice ||
+    edited.durationMinutes !== previous.durationMinutes ||
+    edited.lat !== previous.lat ||
+    edited.lng !== previous.lng ||
+    arrivalInstant(edited.arrival) !== arrivalInstant(previous.arrival)
+  );
+}
 
 export class AssistantTools {
   constructor(private readonly deps: AssistantDeps) {}
@@ -558,6 +640,151 @@ export class AssistantTools {
     };
   }
 
+  /**
+   * The one street pricing path — quote_street, build_itinerary, and the
+   * re-pricing of an edited itinerary all come through here. The nearest
+   * zone within 25 m, provider-observed terms over the dataset (e.g.
+   * Boston's real "Max 5 Hr" vs the data's assumed 2-hour cap — the same
+   * override /parked and session start apply), the stay clamped to the
+   * zone's max, priced through the ladder at that time.
+   */
+  private async priceStreet(
+    lat: number,
+    lng: number,
+    when: Date,
+    minutes: number,
+  ): Promise<StreetPrice> {
+    const policy = this.deps.policy.get();
+    const raw = await this.deps.findCandidates({ lat, lng, radiusM: lookupRadiusM(25) });
+    const found = await applyObservedToCandidates(this.deps.db, raw);
+    const resolution = resolveCandidates(found, when, policy.respect_enforcement_hours);
+    if (resolution.kind === "unknown") return { found: false };
+    const zone = resolution.nearest;
+    const clampedMinutes = Math.min(minutes, zone.maxStayMinutes ?? minutes);
+    const price = priceStay(
+      {
+        city: zone.city,
+        rateFirstHourUsd: zone.rateFirstHourUsd,
+        rateAdditionalHourUsd: zone.rateAdditionalHourUsd,
+        hours: zone.hours as HoursInterval[],
+      },
+      policy,
+      when,
+      clampedMinutes,
+    );
+    return { found: true, zone, price, clampedMinutes, ambiguous: resolution.kind === "disagree" };
+  }
+
+  /** The garage search build_itinerary runs for a stop's window, in the
+   * canonical ET form the providers and the cache key on. */
+  private searchGarageWindow(lat: number, lng: number, arrivalAt: Date, minutes: number) {
+    return this.deps.garage.search({
+      lat,
+      lng,
+      startsAt: easternIso(arrivalAt),
+      endsAt: easternIso(new Date(arrivalAt.getTime() + minutes * 60_000)),
+    });
+  }
+
+  /**
+   * Price an edited itinerary's stops on the server. `previous` holds the
+   * SERVER's version of each stop (the proposed plan's, or the stored
+   * itinerary's), by id. The client's cost, zone, and garage fields are
+   * never read:
+   *  - nothing that sets the price changed (time, duration, street vs
+   *    garage, position) → the previous server price and fields;
+   *  - no set time → the last price, marked an estimate (pricing needs a
+   *    time);
+   *  - otherwise re-quoted like build_itinerary: street at the nearest
+   *    zone for the new window; garage = the search's first option for
+   *    the new window (its id, link, and price). A quote that can't be
+   *    made keeps the last price, marked an estimate.
+   * The arrival comes back canonical (ET with its offset) or null.
+   */
+  async repriceStops(
+    edited: EditedItineraryStop[],
+    previous: ReadonlyMap<string, PreviousStop>,
+  ): Promise<RepriceResult> {
+    const stops: PricedStop[] = [];
+    const repriced: string[] = [];
+    const estimates: RepriceResult["estimates"] = [];
+    for (const stop of edited) {
+      const prior = previous.get(stop.id);
+      const arrivalAt = stop.arrival ? parseEasternTime(stop.arrival) : null;
+      const base = {
+        id: stop.id,
+        label: stop.label,
+        address: stop.address,
+        lat: stop.lat,
+        lng: stop.lng,
+        arrival: arrivalAt ? easternIso(arrivalAt) : null,
+        durationMinutes: stop.durationMinutes,
+        choice: stop.choice,
+      };
+      /** The server's previous price and fields, carried over. */
+      const carried = (estimate: boolean): PricedStop => ({
+        ...base,
+        costUsd: typeof prior?.costUsd === "number" ? prior.costUsd : 0,
+        ...(prior?.zoneId ? { zoneId: prior.zoneId } : {}),
+        ...(prior?.garageOptionId ? { garageOptionId: prior.garageOptionId } : {}),
+        ...(prior?.deepLink ? { deepLink: prior.deepLink } : {}),
+        ...(estimate || prior?.estimate === true ? { estimate: true as const } : {}),
+      });
+      if (!arrivalAt) {
+        stops.push(carried(true));
+        estimates.push({ id: stop.id, reason: "untimed" });
+        continue;
+      }
+      if (
+        prior &&
+        typeof prior.durationMinutes === "number" &&
+        (prior.choice === "street" || prior.choice === "garage") &&
+        typeof prior.lat === "number" &&
+        typeof prior.lng === "number" &&
+        !priceInputsChanged(stop, {
+          arrival: prior.arrival ?? null,
+          durationMinutes: prior.durationMinutes,
+          choice: prior.choice,
+          lat: prior.lat,
+          lng: prior.lng,
+        })
+      ) {
+        stops.push(carried(false));
+        continue;
+      }
+      repriced.push(stop.id);
+      if (stop.choice === "street") {
+        const priced = await this.priceStreet(stop.lat, stop.lng, arrivalAt, stop.durationMinutes);
+        if (!priced.found) {
+          stops.push(carried(true));
+          estimates.push({ id: stop.id, reason: "no_zone" });
+          continue;
+        }
+        stops.push({ ...base, costUsd: priced.price.totalUsd, zoneId: priced.zone.zoneId });
+        continue;
+      }
+      const garages = await this.searchGarageWindow(
+        stop.lat,
+        stop.lng,
+        arrivalAt,
+        stop.durationMinutes,
+      );
+      const option: GarageOption | undefined = garages.ok ? garages.options[0] : undefined;
+      if (!option) {
+        stops.push(carried(true));
+        estimates.push({ id: stop.id, reason: garages.ok ? "no_garage" : "search_unavailable" });
+        continue;
+      }
+      stops.push({
+        ...base,
+        costUsd: option.priceUsd,
+        garageOptionId: option.id,
+        deepLink: option.deepLink,
+      });
+    }
+    return { stops, repriced, estimates };
+  }
+
   private async quoteStreet(
     ctx: ToolContext,
     input: Record<string, unknown>,
@@ -574,37 +801,20 @@ export class AssistantTools {
     const minutes = num(input["duration_minutes"]);
     // Readable by construction: pastWindowError bounced anything else.
     const when = parseEasternTime(String(input["when"]))!;
-    const policy = this.deps.policy.get();
-    const raw = await this.deps.findCandidates({ lat, lng, radiusM: lookupRadiusM(25) });
-    // Provider-observed terms beat the dataset (e.g. Boston's real "Max 5 Hr"
-    // vs the data's assumed 2-hour cap) — the same override /parked and
-    // session start apply, so a named-area quote matches what the curb pays.
-    const found = await applyObservedToCandidates(this.deps.db, raw);
-    const resolution = resolveCandidates(found, when, policy.respect_enforcement_hours);
-    if (resolution.kind === "unknown") {
+    const priced = await this.priceStreet(lat, lng, when, minutes);
+    if (!priced.found) {
       await this.audit(ctx, "quote_street", input, "unknown_zone", {});
       return { result: { found: false, reason: "no metered zone within 25 m of that point" } };
     }
-    const zone = resolution.nearest;
-    const price = priceStay(
-      {
-        city: zone.city,
-        rateFirstHourUsd: zone.rateFirstHourUsd,
-        rateAdditionalHourUsd: zone.rateAdditionalHourUsd,
-        hours: zone.hours as HoursInterval[],
-      },
-      policy,
-      when,
-      Math.min(minutes, zone.maxStayMinutes ?? minutes),
-    );
+    const { zone, price } = priced;
     const result = {
       found: true,
       zoneId: zone.zoneId,
       city: zone.city,
       zoneNumber: zone.providerZoneNumber || null,
       maxStayMinutes: zone.maxStayMinutes,
-      ambiguousWithOtherSide: resolution.kind === "disagree",
-      clampedMinutes: Math.min(minutes, zone.maxStayMinutes ?? minutes),
+      ambiguousWithOtherSide: priced.ambiguous,
+      clampedMinutes: priced.clampedMinutes,
       costUsd: price.totalUsd,
       chargedMinutes: price.chargedMinutes,
       freePeriod: price.totalUsd === 0,
@@ -652,13 +862,12 @@ export class AssistantTools {
         duration_minutes: minutes,
         when: arrival,
       });
-      const endsAt = easternIso(new Date(arrivalAt.getTime() + minutes * 60_000));
-      const garages = await this.deps.garage.search({
-        lat: num(stop["lat"]),
-        lng: num(stop["lng"]),
-        startsAt: arrival,
-        endsAt,
-      });
+      const garages = await this.searchGarageWindow(
+        num(stop["lat"]),
+        num(stop["lng"]),
+        arrivalAt,
+        minutes,
+      );
       out.push({
         label: stop["label"],
         address: stop["address"] ?? "",
@@ -736,7 +945,9 @@ export class AssistantTools {
         ...plan,
         totalUsd,
         capUsd: policy.daily_cap_usd,
-        stops: plan.stops.map((stop) => {
+        // Stored in arrival order, whatever order the model listed them
+        // in: the card shows the day as it will happen.
+        stops: orderStopsByArrival(plan.stops).map((stop) => {
           // Arrivals are stored in one canonical form: the itinerary tick
           // pushes each garage link 15 minutes before this instant, and an
           // offset-less string meant a different instant on every host.

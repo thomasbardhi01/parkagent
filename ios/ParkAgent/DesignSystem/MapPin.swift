@@ -54,6 +54,7 @@ struct MapPin: View {
     }
 }
 
+#if DEBUG
 #Preview("MapPin") {
     HStack(spacing: Spacing.double) {
         MapPin(kind: .car)
@@ -62,3 +63,4 @@ struct MapPin: View {
     .padding(Spacing.double)
     .background(Color.sky.opacity(0.4))
 }
+#endif

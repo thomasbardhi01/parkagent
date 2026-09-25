@@ -97,6 +97,7 @@ struct PermissionBanner: View {
     }
 }
 
+#if DEBUG
 #Preview("Empty state") {
     EmptyStateView(
         icon: "clock.arrow.circlepath",
@@ -110,3 +111,4 @@ struct PermissionBanner: View {
         .padding(Spacing.unit)
         .background(Color.appBackground)
 }
+#endif

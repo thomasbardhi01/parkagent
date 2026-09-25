@@ -140,7 +140,10 @@ describe("PATCH /assistant/itineraries/:id", () => {
     expect(body.stops[1]).toMatchObject({ id: "s1", sessionId: "sess-99" });
   });
 
-  test("an edit that would bust the cap is refused; the day is unchanged", async () => {
+  // The phone's costUsd is never read (#131): a stop's price comes from the
+  // server — the stored price while nothing that sets it changed. (An edit
+  // whose server re-price busts the cap: itineraryReprice.test.ts.)
+  test("a cost the phone sends changes nothing; the stored price stands", async () => {
     const t = makeTestApp({});
     const id = await signedOffDay(t);
     const res = await t.app.inject({
@@ -149,8 +152,9 @@ describe("PATCH /assistant/itineraries/:id", () => {
       headers: HEADERS,
       payload: { stops: [stop("s1", { costUsd: 100 })] },
     });
-    expect(res.statusCode).toBe(409);
-    expect(itineraryTotalUsd(t.state.itineraries[0]!.stops as { costUsd: number }[])).toBe(13);
+    expect(res.statusCode).toBe(200);
+    expect(res.json().stops[0]).toMatchObject({ id: "s1", costUsd: 5 });
+    expect(itineraryTotalUsd(t.state.itineraries[0]!.stops as { costUsd: number }[])).toBe(5);
   });
 
   test("editing someone else's or a done itinerary is refused", async () => {

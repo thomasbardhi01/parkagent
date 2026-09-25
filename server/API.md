@@ -1569,7 +1569,7 @@ order the model listed them in.
 
 ### POST /assistant/confirm
 
-`{planId, optionId?}` — the tap. Mints the single-use token
+`{planId, optionId?, stops?}` — the tap. Mints the single-use token
 (10-minute TTL) and executes the confirmed option through the same
 token-gated tools the model faces:
 
@@ -1590,11 +1590,58 @@ token-gated tools the model faces:
   number (null when the zone has none yet); `zoneId` is the internal slug
   and is not for display.
 - itinerary (no optionId) → `{kind: "itinerary_signed_off", itineraryId,
-  totalUsd, capUsd, paymentSource, linkApprovals[], linkSkipped?}` — the
-  day total is re-checked against `daily_cap_usd` at the moment of
-  sign-off. Each stop is stored with what pays it: street stops the street
-  source; garage stops `link_wallet` (one approval per paid garage stop)
-  or `garage_checkout`. Garage stops are recorded as planned bookings.
+  totalUsd, capUsd, stops, paymentSource, linkApprovals[], linkSkipped?}`
+  — the day total is re-checked against `daily_cap_usd` at the moment of
+  sign-off (`409 over_daily_cap`, nothing stored and no Link request
+  made). `stops` (optional) are the stops as the user left them on the
+  card: they are **re-priced on the server** exactly as the price route
+  below prices them (their `costUsd` is never read), and the day signs
+  off with those server prices, in arrival order; Link spend requests use
+  the re-priced garage amounts, and the per-stop session-cap check applies
+  to them. Without `stops` the plan signs off at its own prices. Each stop
+  is stored with what pays it: street stops the street source; garage
+  stops `link_wallet` (one approval per paid garage stop) or
+  `garage_checkout`. Garage stops are recorded as planned bookings. The
+  `itinerary_signed_off` decision records which stops were re-priced.
+
+### POST /assistant/plans/:planId/price
+
+`{stops}` → the itinerary card's live price before sign-off. The app calls
+it after every stop edit. Stops match the proposed plan's by `id` (`400
+unknown_stop`); a present arrival must parse (`400 unreadable_time`);
+someone else's plan or an unknown one is `404 plan_not_found`; a
+single-spot plan is `400 not_an_itinerary`.
+
+Each stop is priced on the server (`AssistantTools.repriceStops` — the
+same path `quote_street` and `build_itinerary` use). The client's
+`costUsd`, `zoneId`, `garageOptionId`, and `deepLink` are **never read**:
+
+- nothing that sets the price changed (arrival, duration, street vs
+  garage, lat/lng) → the plan's own price and fields;
+- a changed street stop → re-quoted at the nearest zone for its new
+  window (observed terms applied, the stay clamped to the zone's max);
+- a changed garage stop → the garage search for its new window, first
+  option (its id, link, and price — what `build_itinerary` would pick);
+- no set time, no zone at the point, no garage, or the search is down →
+  the last price, marked `estimate: true`.
+
+```json
+{
+  "planId": "…",
+  "stops": [ { "id": "s1", "arrival": "2026-01-05T10:00:00-05:00", "costUsd": 30.35, … },
+             { "id": "s2", "arrival": null, "costUsd": 8, "estimate": true, … } ],
+  "totalUsd": 38.35,
+  "capUsd": 60,
+  "spentTodayUsd": 0,
+  "remainingUsd": 60,
+  "fitsCap": true
+}
+```
+
+Stops come back in arrival order. `fitsCap` is `spentTodayUsd + totalUsd
+<= capUsd`, the same test sign-off applies. Writes an `assistant_confirm`
+decision (rule `itinerary_repriced`) with the re-priced ids, estimates
+and why, and each stop's server price.
 
 Link is used only when it is the Wallet's active source, connected, and
 `link_wallet_for_plans` isn't `false`. A spend request becomes a
@@ -1618,9 +1665,15 @@ the real payee — the garage's own site.
 
 ### GET /assistant/itineraries · PATCH /assistant/itineraries/:id
 
-Signed-off days (last 10) and stop editing/reordering. A PATCH re-checks
-the cap and preserves per-stop linkage (attached session ids, pushed
-garage links, payment source) across the edit. The itinerary worker
+Signed-off days (last 10) and stop editing/reordering. A PATCH
+**re-prices** the edited stops against the STORED day by the same rules as
+the price route (an unchanged stop keeps its stored price, a changed one
+is re-quoted, the client's costs are never read; a stop new to the day is
+priced fresh), re-checks the cap with those server totals (`409
+over_daily_cap`, audited, the day unchanged), and preserves per-stop
+linkage (attached session ids, pushed garage links, payment source)
+across the edit — except a re-priced garage stop, whose link is pushed
+again before its new arrival. The response carries the stored stops. The itinerary worker
 (60 s) pushes each garage stop's deep link 15 minutes before arrival
 (`itinerary_garage_link` push), attaches street sessions that start
 inside a stop's window, and marks the day `done` when the last window
@@ -1639,8 +1692,8 @@ the user cleared it; a present arrival must parse (`400
 unreadable_time`, `stopId`) and is stored as ET with its offset. An
 untimed stop has no window: no garage-link push, no street session
 attached by time, and it keeps the day open until the end of its date.
-Its `costUsd` stays what it was priced at. The `itinerary_edited`
-decision records `untimedStops`.
+Its `costUsd` stays what it was priced at, marked `estimate: true`. The
+`itinerary_edited` decision records `untimedStops` and what was re-priced.
 
 ### Garage providers (SpotHero + ParkWhiz)
 

@@ -85,6 +85,10 @@ export const itineraryStopSchema = z.object({
  */
 export const editedItineraryStopSchema = itineraryStopSchema.extend({
   arrival: z.string().min(1).nullable().optional(),
+  // Accepted for compatibility, never read: the server prices every
+  // edited stop itself (AssistantTools.repriceStops).
+  costUsd: z.number().nonnegative().optional(),
+  estimate: z.boolean().optional(),
 });
 
 export const itineraryPlanSchema = z.object({
@@ -149,6 +153,7 @@ export const MODEL_PLAN_JSON_SCHEMA: Record<string, unknown> = (() => {
 export type SingleSpotOption = z.infer<typeof singleSpotOptionSchema>;
 export type SingleSpotPlan = z.infer<typeof singleSpotPlanSchema>;
 export type ItineraryStop = z.infer<typeof itineraryStopSchema>;
+export type EditedItineraryStop = z.infer<typeof editedItineraryStopSchema>;
 export type ItineraryPlan = z.infer<typeof itineraryPlanSchema>;
 export type AssistantPlanBody = z.infer<typeof planSchema>;
 

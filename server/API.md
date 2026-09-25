@@ -1649,11 +1649,13 @@ spendable card once approved, so it is a money path and is **checked
 before it is made**: `linkSkipped` says why none was — `dry_run` (either
 dry-run switch on, unless `LINK_TEST_MODE`, whose requests carry
 `test: true` and can't charge), `session_cap_exceeded` (a garage over
-`session_cap_usd`), `daily_cap_exceeded` (today's real spend — sessions
-and garages already approved in Link — plus requests still awaiting
-approval today, plus this confirm's request(s), over `daily_cap_usd`; a
-pending request holds its room because approving it makes it spendable),
-or `link_failed`. None of these block the handoff — the user can still
+`session_cap_usd` — each garage stop is its own purchase, so the cap
+binds each stop, never their sum), `daily_cap_exceeded` (today's real
+spend — sessions and garages already approved in Link — plus requests
+still awaiting approval today, plus this confirm's whole plan — an
+itinerary's street stops included — over `daily_cap_usd`; a pending
+request holds its room because approving it makes it spendable), or
+`link_failed`. None of these block the handoff — the user can still
 pay at the garage's own checkout. The confirm's decision row records
 `spentTodayUsd` and `linkPendingTodayUsd`.
 

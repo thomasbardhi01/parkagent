@@ -333,6 +333,51 @@ function confirm(t: ReturnType<typeof makeTestApp>, optionId: string) {
   });
 }
 
+function itineraryStop(id: string, choice: "street" | "garage", costUsd: number) {
+  return {
+    id,
+    label: `Stop ${id}`,
+    address: "1 Main St",
+    lat: 42.35,
+    lng: -71.07,
+    arrival: "2026-01-05T15:00:00-05:00",
+    durationMinutes: 60,
+    choice,
+    costUsd,
+    ...(choice === "street"
+      ? { zoneId: "nyc-417371" }
+      : { deepLink: `https://spothero.com/checkout/${id}` }),
+  };
+}
+
+function seedItinerary(
+  t: ReturnType<typeof makeTestApp>,
+  stops: ReturnType<typeof itineraryStop>[],
+) {
+  t.state.assistantPlans.push({
+    id: "plan1",
+    userId: "u1",
+    conversationId: "c1",
+    kind: "itinerary",
+    plan: {
+      kind: "itinerary",
+      date: "2026-01-05",
+      stops,
+      totalUsd: stops.reduce((sum, s) => sum + s.costUsd, 0),
+      capUsd: 60,
+    },
+  });
+}
+
+function confirmItinerary(t: ReturnType<typeof makeTestApp>) {
+  return t.app.inject({
+    method: "POST",
+    url: "/assistant/confirm",
+    headers: HEADERS,
+    payload: { planId: "plan1" },
+  });
+}
+
 /** Link as the active Wallet source, outside dry run. */
 const LINK_LIVE = {
   paymentSource: "link_wallet",
@@ -514,6 +559,48 @@ describe("routes and plan integration", () => {
       "link_wallet",
       "link_wallet",
     ]);
+  });
+
+  // Each garage stop is its own Link purchase: the per-session cap binds
+  // each one, never their sum. Under the default policy ($45 a session,
+  // $60 a day) two $30 garages are two in-cap purchases that exactly fill
+  // the day — both go to Link.
+  test("two $30 garage stops keep Link: the per-session cap binds each stop, not the sum", async () => {
+    const { t, link } = await connectedWallet(() => NOW, LINK_LIVE);
+    seedItinerary(t, [itineraryStop("a", "garage", 30), itineraryStop("b", "garage", 30)]);
+    const res = await confirmItinerary(t);
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.linkSkipped).toBeUndefined();
+    expect(body.linkApprovals).toHaveLength(2);
+    expect(link.createdArgs.map((a) => a.amountUsd)).toEqual([30, 30]);
+    const stops = t.state.itineraries[0]!.stops as { paymentSource: string }[];
+    expect(stops.map((s) => s.paymentSource)).toEqual(["link_wallet", "link_wallet"]);
+  });
+
+  test("a single garage stop over the per-session cap still keeps the whole plan off Link", async () => {
+    const { t, link } = await connectedWallet(() => NOW, LINK_LIVE);
+    seedItinerary(t, [itineraryStop("a", "garage", 10), itineraryStop("b", "garage", 46)]);
+    const res = await confirmItinerary(t);
+    expect(res.json()).toMatchObject({ linkApprovals: [], linkSkipped: "session_cap_exceeded" });
+    expect(link.requests.size).toBe(0);
+  });
+
+  test("the whole plan — street stops too — must fit what's left of today's cap", async () => {
+    const { t, link } = await connectedWallet(() => NOW, LINK_LIVE);
+    // $20 still awaiting approval in Link leaves $40 of the $60 day. The
+    // garages alone ($30) would fit; with the $20 street stop the plan
+    // ($50) doesn't, so Link isn't asked for any of it.
+    seedLinkSpendRequest(t.state, { amountUsd: 20, status: "pending_approval", createdAt: NOW });
+    seedItinerary(t, [
+      itineraryStop("a", "street", 20),
+      itineraryStop("b", "garage", 15),
+      itineraryStop("c", "garage", 15),
+    ]);
+    const res = await confirmItinerary(t);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ linkApprovals: [], linkSkipped: "daily_cap_exceeded" });
+    expect(link.requests.size).toBe(0);
   });
 
   // #131: the card's edits ride the sign-off and are re-priced on the

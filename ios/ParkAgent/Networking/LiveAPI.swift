@@ -334,10 +334,6 @@ struct LiveAPI: APIClient {
         ])
     }
 
-    func health() async throws -> HealthResponse {
-        try await send("health")
-    }
-
     // MARK: - City & providers
 
     func detectCity(lat: Double, lng: Double) async throws -> CityDetectResponse {
@@ -678,8 +674,6 @@ struct LiveAPI: APIClient {
                 return .refused(code: refusal.error)
             }
             return .server(status: status)
-        case 501:
-            return .notImplemented
         default:
             return .server(status: status)
         }

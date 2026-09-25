@@ -3,9 +3,10 @@ import SwiftUI
 
 /// The first screen anyone sees. Sign in with Apple is the primary action
 /// and, by default, the only one. "Continue with email" (a 6-digit code
-/// flow) and "Continue with Google" appear only when the server reports
-/// them switched on (GET /auth/methods) — Google also needs a build that
-/// can mint its token (FeatureFlags.googleSignIn).
+/// flow) appears only when the server reports it switched on (GET
+/// /auth/methods). "Continue with Google" also needs a build that can mint
+/// its token, which no build can yet (FeatureFlags.googleSignIn), so it is
+/// test-only and absent from Release.
 ///
 /// Sign-in and sign-up are the same act here — the server creates the
 /// account on first use, so there is nothing to choose between.
@@ -56,6 +57,8 @@ struct WelcomeView: View {
                     .accessibilityIdentifier("welcome.emailButton")
             }
 
+            #if DEBUG
+            // Test-only until the Google SDK ships (FeatureFlags.googleSignIn).
             if auth.methods.google && FeatureFlags.googleSignIn {
                 Button("Continue with Google") {
                     Task { await auth.signInWithGoogle() }
@@ -63,6 +66,7 @@ struct WelcomeView: View {
                 .buttonStyle(.secondary)
                 .accessibilityIdentifier("welcome.googleButton")
             }
+            #endif
 
             Text("We never see your parking provider's password.")
                 .font(.captionText)
@@ -84,6 +88,7 @@ struct WelcomeView: View {
 
     @ViewBuilder
     private var appleButton: some View {
+        #if DEBUG
         if auth.usesMockSignIn {
             // The real ASAuthorization sheet is system UI and can't be
             // driven in UI tests; the mock path stands in for it.
@@ -93,16 +98,23 @@ struct WelcomeView: View {
             .buttonStyle(.primary)
             .accessibilityIdentifier("welcome.appleButton")
         } else {
-            SignInWithAppleButton(.signIn) { request in
-                request.requestedScopes = [.fullName, .email]
-            } onCompletion: { result in
-                auth.handleAppleCompletion(result)
-            }
-            .signInWithAppleButtonStyle(colorScheme == .dark ? .white : .black)
-            .frame(height: 50)
-            .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
-            .accessibilityIdentifier("welcome.appleButton")
+            systemAppleButton
         }
+        #else
+        systemAppleButton
+        #endif
+    }
+
+    private var systemAppleButton: some View {
+        SignInWithAppleButton(.signIn) { request in
+            request.requestedScopes = [.fullName, .email]
+        } onCompletion: { result in
+            auth.handleAppleCompletion(result)
+        }
+        .signInWithAppleButtonStyle(colorScheme == .dark ? .white : .black)
+        .frame(height: 50)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
+        .accessibilityIdentifier("welcome.appleButton")
     }
 }
 
@@ -265,7 +277,9 @@ struct EmailSignInView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     WelcomeView()
         .environment(AuthModel(api: MockAPI(), store: AuthStore()))
 }
+#endif

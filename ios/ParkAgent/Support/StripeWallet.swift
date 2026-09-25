@@ -11,6 +11,16 @@ import UIKit
 /// charged here: a SetupIntent only saves the card. Mock secrets
 /// (seti_mock_…) never reach the SDK.
 enum StripeWallet {
+    /// No STRIPE_PUBLISHABLE_KEY in this build: a developer-facing hint in
+    /// Debug, a plain sentence for everyone else.
+    private static var notConfiguredMessage: String {
+        #if DEBUG
+        "Stripe is not configured. Add STRIPE_PUBLISHABLE_KEY to Config.xcconfig."
+        #else
+        "Saving a card isn't available in this version of ParkAgent."
+        #endif
+    }
+
     /// Call once at launch; a missing key just means the live paths report
     /// "not configured" when reached.
     @MainActor
@@ -47,7 +57,7 @@ enum StripeWallet {
     static func saveWithApplePay(clientSecret: String, merchantId: String) async -> Outcome {
         if isMockSecret(clientSecret) { return .saved }
         guard AppConfig.stripePublishableKey != nil else {
-            return .failed("Stripe is not configured. Add STRIPE_PUBLISHABLE_KEY to Config.xcconfig.")
+            return .failed(notConfiguredMessage)
         }
         let request = StripeAPI.paymentRequest(
             withMerchantIdentifier: merchantId,
@@ -83,7 +93,7 @@ enum StripeWallet {
     static func saveWithCardForm(clientSecret: String, merchantId: String) async -> Outcome {
         if isMockSecret(clientSecret) { return .saved }
         guard AppConfig.stripePublishableKey != nil else {
-            return .failed("Stripe is not configured. Add STRIPE_PUBLISHABLE_KEY to Config.xcconfig.")
+            return .failed(notConfiguredMessage)
         }
         guard let presenter = topViewController() else {
             return .failed("Nothing to present the card form from.")

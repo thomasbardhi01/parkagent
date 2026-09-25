@@ -1,8 +1,12 @@
+// UI tests and SwiftUI previews only. The whole file is compiled out of
+// Release builds (ParkAgentReleaseTests proves it): a TestFlight build has
+// no mock server, no fixtures, and no scenario switches.
+#if DEBUG
 import Foundation
 
 /// Which Wallet state the mock serves (UI tests: `-walletScenario <name>`).
-/// Orthogonal to the park-flow scenarios, like the other mock pickers.
-enum WalletMockScenario: String, CaseIterable, Identifiable, Sendable {
+/// Orthogonal to the park-flow scenarios (`-walletScenario`).
+enum WalletMockScenario: String, Sendable {
     /// The default: the card on the provider account pays; Link is
     /// configured but not connected; the ParkAgent card is coming soon.
     case providerCard
@@ -18,17 +22,6 @@ enum WalletMockScenario: String, CaseIterable, Identifiable, Sendable {
 
     static let defaultsKey = "walletScenario"
 
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .providerCard: "Card on provider (default)"
-        case .linkActive: "Link active"
-        case .linkNotConfigured: "Link not configured"
-        case .parkagentSandbox: "ParkAgent card (sandbox)"
-        case .empty: "Empty"
-        }
-    }
 
     static var current: WalletMockScenario {
         WalletMockScenario(rawValue: UserDefaults.standard.string(forKey: defaultsKey) ?? "")
@@ -53,7 +46,11 @@ actor MockWalletStore {
         if let source { return source }
         switch scenario {
         case .linkActive: return .linkWallet
-        case .parkagentSandbox: return .parkagentCard
+        case .parkagentSandbox:
+            // Active by default; `-paymentSource` starts it elsewhere with
+            // the sandbox card still selectable (the Diagnostics toggle test).
+            return UserDefaults.standard.string(forKey: PaymentSource.defaultsKey) != nil
+                ? PaymentSource.stored : .parkagentCard
         default: return PaymentSource.stored
         }
     }
@@ -492,3 +489,4 @@ extension ActivityItem {
         self.bookingId = String(id.dropFirst("garage:".count))
     }
 }
+#endif

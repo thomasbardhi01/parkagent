@@ -21,6 +21,7 @@ struct ProgressBar: View {
     }
 }
 
+#if DEBUG
 #Preview("ProgressBar") {
     VStack(spacing: Spacing.unit) {
         ProgressBar(value: 0.12)
@@ -31,3 +32,4 @@ struct ProgressBar: View {
     .padding(Spacing.unit)
     .background(Color.appBackground)
 }
+#endif

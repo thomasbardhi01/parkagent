@@ -17,8 +17,14 @@ final class AppModel {
     let detector = ParkDetector()
     let reporter = LocationReporter()
 
+    #if DEBUG
     /// Launch-time only (UI tests and previews); see LaunchOverrides.
     let useMockAPI: Bool
+    #else
+    /// Never in Release. Computed, not stored, so not even the property's
+    /// name ships (stored properties carry reflection metadata).
+    var useMockAPI: Bool { false }
+    #endif
 
     var policyResponse: PolicyResponse?
     var policyLoadFailed = false
@@ -112,7 +118,11 @@ final class AppModel {
     /// mock skips CoreLocation so the simulator and UI tests stay
     /// deterministic; nil means "couldn't tell — offer the manual choice".
     func detectCityFromCurrentLocation() async -> CityDetectResponse? {
-        let coordinate = useMockAPI ? Self.fixtureCoordinate : await OneShotLocation.request()
+        #if DEBUG
+        let coordinate = useMockAPI ? MockFixtures.fixtureCoordinate : await OneShotLocation.request()
+        #else
+        let coordinate = await OneShotLocation.request()
+        #endif
         guard let coordinate else { return nil }
         return await detectCity(lat: coordinate.latitude, lng: coordinate.longitude)
     }
@@ -148,21 +158,19 @@ final class AppModel {
     }
     var distanceFromCarMeters: Double?
 
-    /// Columbus Ave near W 81st St — the worked example in server/API.md.
-    /// MOCK ONLY: the fixtures are built around this point, so UI tests and
-    /// previews are deterministic. Nothing on a live launch may default to
-    /// it (see CityCatalog.center for the city fallbacks).
-    static let fixtureCoordinate = CLLocationCoordinate2D(latitude: 40.7784, longitude: -73.9818)
-
     /// Supplies the access token to LiveAPI and performs silent refresh.
     private let authStore: AuthStore
 
     init(authStore: AuthStore = AuthStore()) {
         self.authStore = authStore
-        let mock = LaunchOverrides.useMockAPI
-        useMockAPI = mock
-        if mock {
-            api = MockAPI()
+        #if DEBUG
+        useMockAPI = LaunchOverrides.useMockAPI
+        let mockAPI: (any APIClient)? = useMockAPI ? MockAPI() : nil
+        #else
+        let mockAPI: (any APIClient)? = nil
+        #endif
+        if let mockAPI {
+            api = mockAPI
         } else if let live = LiveAPI.fromConfig(tokens: Self.tokenSource(authStore)) {
             api = live
         } else {
@@ -240,8 +248,9 @@ final class AppModel {
     /// Called once the user is past onboarding. Wires the detector to the
     /// /parked report and starts push registration.
     func startBackgroundWork() {
-        // UI tests drive parks through the Debug menu; real motion, location,
-        // and the notification permission prompt would only add flakiness.
+        // UI tests drive parks through Home's test-only button; real motion,
+        // location, and the notification permission prompt would only add
+        // flakiness.
         guard !LaunchOverrides.uiTesting else { return }
         detector.onPark = { [weak self] coordinate, accuracy, signals in
             Task { await self?.handleDetectedPark(coordinate: coordinate, accuracy: accuracy, signals: signals) }
@@ -258,6 +267,10 @@ final class AppModel {
         // A card_declined push lands on the Wallet, where the card is fixed.
         PushManager.shared.onOpenWallet = { [weak self] in
             self?.selectedTab = .wallet
+        }
+        // Every other push is about the car: the Park tab.
+        PushManager.shared.onOpenPark = { [weak self] in
+            self?.selectedTab = .park
         }
         if activeSession != nil {
             reporter.start(api: api, carCoordinate: carCoordinate)
@@ -280,8 +293,8 @@ final class AppModel {
 
     // MARK: - Park flow
 
-    /// The real path: the detector saw a park (or the Debug menu simulated
-    /// one), so report it and let the response drive the sheet.
+    /// The real path: the detector saw a park (or a UI test simulated one),
+    /// so report it and let the response drive the sheet.
     func handleDetectedPark(coordinate: CLLocationCoordinate2D, accuracy: Double, signals: [String]) async {
         let request = ParkedRequest(
             lat: coordinate.latitude,
@@ -304,27 +317,17 @@ final class AppModel {
         }
     }
 
-    /// Home-sheet convenience (DEBUG + mock): a park at the API.md fixture.
+    #if DEBUG
+    /// UI tests only (Home's test-only button, mock API): a park at the
+    /// API.md fixture point.
     func simulatePark() async {
         await handleDetectedPark(
-            coordinate: Self.fixtureCoordinate,
+            coordinate: MockFixtures.fixtureCoordinate,
             accuracy: 12.5,
             signals: ["simulated"]
         )
     }
-
-    /// Manual zone-number entry from the unknown-zone state. The server has
-    /// no quote-by-zone-number endpoint yet: the mock fabricates a fixture
-    /// quote so the flow stays walkable in UI tests. The live sheet doesn't
-    /// offer entry at all; the guard stays so nothing can ever put a
-    /// fabricated price in front of a real payment.
-    func quoteForManualZone(zoneNumber: String) {
-        guard useMockAPI else {
-            paymentError = .notImplemented
-            return
-        }
-        pendingParked = MockFixtures.singleQuote(zoneNumber: zoneNumber)
-    }
+    #endif
 
     func pay(candidate: Candidate) async {
         guard let parked = pendingParked else { return }
@@ -357,12 +360,17 @@ final class AppModel {
                 extendCount: 0,
                 maxExtendCount: autoExtendPolicy?.maxCount ?? 2,
                 maxStayReached: false,
-                autoExtend: autoExtendPolicy?.enabled ?? true,
                 paymentSource: wallet.activeSource == .parkagentCard ? .parkagentCard : .providerCard
             )
             // Today's spend and Activity come from the server.
             Task { await wallet.load(api: api) }
+            #if DEBUG
+            // The mock has no reporter behind it; give the session screen a
+            // distance to show.
             distanceFromCarMeters = useMockAPI ? 120 : nil
+            #else
+            distanceFromCarMeters = nil
+            #endif
             pendingParked = nil
             reporter.start(api: api, carCoordinate: carCoordinate)
             Haptics.success()
@@ -423,16 +431,4 @@ final class AppModel {
             sessionActionError = error as? APIError ?? .transport(error)
         }
     }
-
-    // MARK: - Debug helpers (Settings > Developer)
-
-    #if DEBUG
-    func debugMakeSessionExpiring() {
-        activeSession?.expiresAt = AppClock.now.addingTimeInterval(8 * 60)
-    }
-
-    func debugMarkMaxStayReached() {
-        activeSession?.maxStayReached = true
-    }
-    #endif
 }

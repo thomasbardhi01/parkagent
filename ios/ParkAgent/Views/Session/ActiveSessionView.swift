@@ -84,15 +84,11 @@ struct ActiveSessionView: View {
                     .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
                 }
 
-                ToggleRow(
-                    title: "Auto-extend",
-                    subtitle: autoExtendSubtitle,
-                    isOn: Binding(
-                        get: { model.activeSession?.autoExtend ?? false },
-                        set: { model.activeSession?.autoExtend = $0 }
-                    )
-                )
-                .accessibilityIdentifier("session.autoExtendToggle")
+                // Read-only on purpose: auto-extend follows the spending
+                // policy on the server. There is no per-session switch —
+                // the old toggle here changed nothing the extension worker
+                // reads, so turning it off still extended (and spent).
+                autoExtendRow
 
                 Button {
                     Task { await model.extendSession() }
@@ -175,17 +171,39 @@ struct ActiveSessionView: View {
     }
 
     private var sessionErrorMessage: String {
-        if case .notImplemented = model.sessionActionError {
-            return "The server cannot extend or stop sessions yet — that lands in a later phase. The meter keeps its current time."
-        }
-        return model.sessionActionError?.errorDescription ?? ""
+        model.sessionActionError?.errorDescription ?? ""
     }
 
-    private var autoExtendSubtitle: String {
-        guard let policy = model.policyResponse?.policy.autoExtend else {
-            return "Follows your policy limits"
+    private var autoExtendRow: some View {
+        let policy = model.policyResponse?.policy.autoExtend
+        let on = policy?.enabled ?? true
+        return HStack(alignment: .top, spacing: Spacing.unit) {
+            VStack(alignment: .leading, spacing: Spacing.quarter) {
+                Text("Auto-extend")
+                    .font(.bodyText)
+                    .foregroundStyle(Color.textPrimary)
+                Text(autoExtendSubtitle(policy))
+                    .font(.captionText)
+                    .foregroundStyle(Color.textSecondary)
+            }
+            Spacer()
+            Text(on ? "On" : "Off")
+                .font(.bodyTextSemibold)
+                .foregroundStyle(on ? Color.textPrimary : Color.textSecondary)
         }
-        return "Up to \(policy.maxCount) times, \(Format.minutes(policy.maxMinutesEach)) each"
+        .padding(Spacing.unit)
+        .background(Color.surface)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("session.autoExtendRow")
+    }
+
+    private func autoExtendSubtitle(_ policy: AutoExtendPolicy?) -> String {
+        guard let policy else { return "Follows your spending limits" }
+        guard policy.enabled else {
+            return "You'll get a reminder before the meter runs out"
+        }
+        return "When you're far from the car: up to \(policy.maxCount) times, \(Format.minutes(policy.maxMinutesEach)) each"
     }
 
     private var extendTitle: String {
@@ -194,12 +212,14 @@ struct ActiveSessionView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     NavigationStack {
         ActiveSessionView()
             .environment(previewModel())
     }
 }
+#endif
 
 @MainActor
 private func previewModel() -> AppModel {
@@ -213,8 +233,7 @@ private func previewModel() -> AppModel {
         amountUsd: 9.28,
         extendCount: 0,
         maxExtendCount: 2,
-        maxStayReached: false,
-        autoExtend: true
+        maxStayReached: false
     )
     model.distanceFromCarMeters = 120
     return model

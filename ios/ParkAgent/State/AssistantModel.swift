@@ -89,12 +89,13 @@ final class AssistantModel {
         // The car's spot, else where the phone is now — never a fixture on
         // the live API (a Seaport question must not carry NYC coordinates).
         // The mock keeps the fixture so UI tests stay deterministic.
-        let location: CLLocationCoordinate2D?
-        if let car = appModel.carCoordinate {
-            location = car
-        } else if appModel.useMockAPI {
-            location = AppModel.fixtureCoordinate
-        } else {
+        var location: CLLocationCoordinate2D? = appModel.carCoordinate
+        #if DEBUG
+        if location == nil, appModel.useMockAPI {
+            location = MockFixtures.fixtureCoordinate
+        }
+        #endif
+        if location == nil {
             location = await OneShotLocation.request()
         }
         do {

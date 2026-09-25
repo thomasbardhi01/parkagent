@@ -100,7 +100,7 @@ final class OnboardingGateTests: XCTestCase {
 private struct HangingAPI: APIClient {
     private func hang<T>() async throws -> T {
         try await Task.sleep(for: .seconds(60))
-        throw APIError.notImplemented
+        throw APIError.transport(CancellationError())
     }
 
     func vehicles() async throws -> [VehicleSummary] { try await hang() }
@@ -151,7 +151,6 @@ private struct HangingAPI: APIClient {
     func nearbyZones(lat: Double, lng: Double, radiusM: Double) async throws -> NearbyZonesResponse {
         try await hang()
     }
-    func health() async throws -> HealthResponse { try await hang() }
     func detectCity(lat: Double, lng: Double) async throws -> CityDetectResponse { try await hang() }
     func linkProvider(
         _ providerId: String,

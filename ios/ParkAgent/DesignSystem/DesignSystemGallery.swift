@@ -1,11 +1,12 @@
+// Previews only: a design reference, never shown in the app, and compiled
+// out of Release builds.
+#if DEBUG
 import SwiftUI
 
 // Everything in one scrollable canvas for design review. Preview-only; no
 // screen ships this view.
 
 private struct DesignSystemGallery: View {
-    @State private var autoExtend = true
-
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Spacing.unitAndHalf) {
@@ -79,15 +80,8 @@ private struct DesignSystemGallery: View {
                     )
                 }
 
-                section("Progress + toggle") {
-                    VStack(spacing: Spacing.unit) {
-                        ProgressBar(value: 0.55)
-                        ToggleRow(
-                            title: "Auto-extend",
-                            subtitle: "Up to 2 times, 60 min each",
-                            isOn: $autoExtend
-                        )
-                    }
+                section("Progress") {
+                    ProgressBar(value: 0.55)
                 }
 
                 section("Map pins") {
@@ -141,3 +135,4 @@ private struct DesignSystemGallery: View {
     DesignSystemGallery()
         .preferredColorScheme(.dark)
 }
+#endif

@@ -246,7 +246,7 @@ private struct OnboardingVehicleStep: View {
             field("Plate", text: $plate, identifier: "onboarding.plateField")
                 .textInputAutocapitalization(.characters)
                 .autocorrectionDisabled()
-            field("State (e.g. NY)", text: $state, identifier: "onboarding.stateField")
+            field("State (2 letters)", text: $state, identifier: "onboarding.stateField")
                 .textInputAutocapitalization(.characters)
                 .autocorrectionDisabled()
             field("Nickname (optional)", text: $nickname, identifier: "onboarding.nicknameField")
@@ -451,7 +451,7 @@ private struct OnboardingElsewhereStep: View {
             Text("We're not there yet")
                 .font(.numeral)
                 .foregroundStyle(Color.textPrimary)
-            Text("ParkAgent pays meters in \(CityCatalog.supportedCitiesSentence) for now. You can still browse the app, and pick a city later in Settings when you're in one.")
+            Text("ParkAgent pays meters in \(CityCatalog.supportedCitiesSentence) for now. You can still browse the app, and pick a city later in your Account when you're in one.")
                 .font(.bodyText)
                 .foregroundStyle(Color.textSecondary)
                 .multilineTextAlignment(.center)
@@ -731,6 +731,11 @@ private struct OnboardingBudgetStep: View {
     @State private var isSaving = false
     @State private var saveFailed = false
 
+    /// Only the operator can change the shared limits (PUT /policy is
+    /// admin-only); everyone else is shown them, not handed steppers that
+    /// can't save.
+    private var editable: Bool { model.policyResponse?.canEdit ?? true }
+
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.unit) {
             Spacer()
@@ -764,6 +769,12 @@ private struct OnboardingBudgetStep: View {
                 .font(.secondaryText)
                 .foregroundStyle(Color.textSecondary)
                 .accessibilityIdentifier("onboarding.budgetPreview")
+            if !editable {
+                Text(SharedLimitsCopy.note)
+                    .font(.captionText)
+                    .foregroundStyle(Color.textSecondary)
+                    .accessibilityIdentifier("onboarding.budgetShared")
+            }
 
             if saveFailed {
                 Text("Couldn't save to the server. Try again, or continue with the server's current limits.")
@@ -772,8 +783,12 @@ private struct OnboardingBudgetStep: View {
             }
 
             Spacer()
-            Button(isSaving ? "Saving…" : "Save and continue") {
-                Task { await save() }
+            Button(editable ? (isSaving ? "Saving…" : "Save and continue") : "Continue") {
+                if editable {
+                    Task { await save() }
+                } else {
+                    onContinue()
+                }
             }
             .buttonStyle(.primary)
             .disabled(isSaving)
@@ -824,14 +839,16 @@ private struct OnboardingBudgetStep: View {
                 .font(.bodyText)
                 .foregroundStyle(Color.textPrimary)
             Spacer()
-            Button(action: decrement) {
-                Image(systemName: "minus.circle")
-                    .foregroundStyle(Color.textSecondary)
-                    // 44pt targets: the glyph alone is well under HIG size.
-                    .frame(width: 44, height: 44)
+            if editable {
+                Button(action: decrement) {
+                    Image(systemName: "minus.circle")
+                        .foregroundStyle(Color.textSecondary)
+                        // 44pt targets: the glyph alone is well under HIG size.
+                        .frame(width: 44, height: 44)
+                }
+                .accessibilityIdentifier("\(identifier).minus")
+                .accessibilityLabel("Decrease \(label)")
             }
-            .accessibilityIdentifier("\(identifier).minus")
-            .accessibilityLabel("Decrease \(label)")
             Text(value)
                 .font(.bodyTextSemibold)
                 .monospacedDigit()
@@ -840,13 +857,15 @@ private struct OnboardingBudgetStep: View {
                 .accessibilityIdentifier(identifier)
                 // VoiceOver reads the field with its value ("Per stop, $45").
                 .accessibilityLabel("\(label), \(value)")
-            Button(action: increment) {
-                Image(systemName: "plus.circle")
-                    .foregroundStyle(Color.textSecondary)
-                    .frame(width: 44, height: 44)
+            if editable {
+                Button(action: increment) {
+                    Image(systemName: "plus.circle")
+                        .foregroundStyle(Color.textSecondary)
+                        .frame(width: 44, height: 44)
+                }
+                .accessibilityIdentifier("\(identifier).plus")
+                .accessibilityLabel("Increase \(label)")
             }
-            .accessibilityIdentifier("\(identifier).plus")
-            .accessibilityLabel("Increase \(label)")
         }
         .padding(Spacing.unit)
         .background(Color.surface)
@@ -883,8 +902,10 @@ private struct OnboardingDoneStep: View {
     }
 }
 
+#if DEBUG
 #Preview {
     OnboardingView()
         .environment(AppModel())
         .environment(PermissionsManager())
 }
+#endif

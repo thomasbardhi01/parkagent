@@ -104,6 +104,7 @@ struct CardArtView: View {
     }
 }
 
+#if DEBUG
 #Preview("Active") {
     CardArtView(card: CardArtView.previewCard(frozen: false), revealed: nil)
         .padding(Spacing.unit)
@@ -138,3 +139,4 @@ extension CardArtView {
         )
     }
 }
+#endif

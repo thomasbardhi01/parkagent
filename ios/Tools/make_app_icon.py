@@ -58,7 +58,9 @@ def draw_p(background, mark):
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
 
-    draw_p(INK, CORAL).save(OUT / "AppIcon.png")
+    # RGB, not RGBA: App Store Connect rejects an upload whose 1024 icon
+    # carries an alpha channel, even a fully opaque one.
+    draw_p(INK, CORAL).convert("RGB").save(OUT / "AppIcon.png")
     # Transparent ground; iOS supplies the dark backdrop.
     draw_p(None, CORAL_DARK).save(OUT / "AppIcon-Dark.png")
     # Tinted: iOS wants a grayscale mark it can recolor. White reads as full

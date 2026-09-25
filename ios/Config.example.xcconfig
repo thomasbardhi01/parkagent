@@ -11,10 +11,11 @@ DEVELOPMENT_TEAM =
 // so the scheme's slashes are escaped as $() to keep the URL intact.
 API_BASE_URL = http:$()/$()/localhost:3000
 
-// No API key here any more: the app signs in as a user (Sign in with Apple
-// or an email code) and authenticates with the JWT it gets back. API keys
-// are the server's admin/script credential now.
+// No API key here any more: the app signs in as a user (Sign in with
+// Apple) and authenticates with the JWT it gets back. API keys are the
+// server's admin/script credential now.
 
-// Stripe publishable key (pk_test_…), only needed to confirm real Apple Pay
-// or card top-ups. Empty is fine — dry run and the mock never reach Stripe.
+// Stripe publishable key (pk_test_…), only needed to save a real card for
+// the ParkAgent card (Apple Pay / PaymentSheet). Empty is fine — dry run
+// and the mock never reach Stripe.
 STRIPE_PUBLISHABLE_KEY =

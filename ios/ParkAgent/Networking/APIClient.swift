@@ -68,9 +68,6 @@ protocol APIClient: Sendable {
     /// capped server-side at 400 m.
     func nearbyZones(lat: Double, lng: Double, radiusM: Double) async throws -> NearbyZonesResponse
 
-    /// GET /health — which server build the phone is talking to (Diagnostics).
-    func health() async throws -> HealthResponse
-
     // City & provider accounts (server/API.md "GET /city", "Provider accounts").
     func detectCity(lat: Double, lng: Double) async throws -> CityDetectResponse
     func providersStatus() async throws -> ProvidersStatusResponse
@@ -115,32 +112,58 @@ protocol APIClient: Sendable {
 }
 
 enum APIError: Error, LocalizedError {
-    /// API_BASE_URL missing from Config.xcconfig.
+    /// API_BASE_URL missing from the build (Config.xcconfig).
     case notConfigured
     /// 401 that a token refresh could not rescue — the session is gone.
     case unauthorized
+    /// 400: the body is the server's validation detail — for a Debug
+    /// build's eyes only; a person sees a plain sentence.
     case invalidRequest(String)
-    /// 501 — the session and location endpoints are Phase 5 stubs.
-    case notImplemented
     case server(status: Int)
     case transport(Error)
-    /// Mock-only until Phase 5 wires real payment failures through.
-    case paymentFailed
-    /// A named refusal from the server (409/503 with an `error` code), e.g.
-    /// dry_run or funding_unavailable on the funding endpoints.
+    /// A named refusal from the server (4xx/5xx with an `error` code), e.g.
+    /// dry_run, executor_failed, card_declined.
     case refused(code: String)
+    /// Apple Pay / the card form couldn't save the card; Stripe's own
+    /// sentence says why.
+    case cardNotSaved(String)
 
     var errorDescription: String? {
         switch self {
-        case .notConfigured: "The live API is not configured. Add API_BASE_URL to Config.xcconfig."
-        case .unauthorized: "Your session expired. Sign in again."
-        case .invalidRequest(let detail): "The server rejected the request: \(detail)"
-        case .notImplemented: "This part of the server is not built yet."
-        case .server(let status): "The server returned an error (\(status))."
-        case .transport: "Could not reach the server."
-        case .paymentFailed: "The payment did not go through."
-        case .refused(let code): Self.refusalMessage(code)
+        case .notConfigured:
+            #if DEBUG
+            return "The live API is not configured. Add API_BASE_URL to Config.xcconfig."
+            #else
+            return "This version of ParkAgent can't reach its server. Install the latest version."
+            #endif
+        case .unauthorized:
+            return "Your session expired. Sign in again."
+        case .invalidRequest(let detail):
+            #if DEBUG
+            return "The server rejected the request: \(detail)"
+            #else
+            _ = detail
+            return "That didn't go through. Try again."
+            #endif
+        case .server(let status):
+            return "Something went wrong on our side (\(status)). Try again in a moment."
+        case .transport:
+            return "Could not reach the server."
+        case .refused(let code):
+            return Self.refusalMessage(code)
+        case .cardNotSaved(let message):
+            return message
         }
+    }
+
+    /// A code with no sentence of its own: a Debug build names it, a
+    /// person just gets a plain retry.
+    private static func fallbackRefusal(_ code: String) -> String {
+        #if DEBUG
+        "The server refused the request (\(code))."
+        #else
+        "That didn't go through. Try again in a moment."
+        #endif
     }
 
     private static func refusalMessage(_ code: String) -> String {
@@ -154,7 +177,7 @@ enum APIError: Error, LocalizedError {
         case "no_session_cookies": "No sign-in was captured. Try signing in again."
         case "consent_required": "Card setup needs your consent first."
         case "provider_linking_not_configured": "The server is not set up for account linking yet."
-        case "issuing_not_live", "parkagent_card_not_live": "The ParkAgent card is coming soon — pending approval."
+        case "parkagent_card_not_live": "The ParkAgent card is coming soon — pending approval."
         case "link_not_configured": "Link is coming soon."
         case "link_not_connected": "Connect your Link wallet first."
         case "no_funding_method": "Add a card for the ParkAgent card first."
@@ -181,7 +204,14 @@ enum APIError: Error, LocalizedError {
         case "assistant_failed": "The assistant hit a problem. Try asking again."
         case "conversation_not_found": "That conversation isn't available. Start a new one."
         case "rate_limited": "That's a lot of requests at once. Wait a moment and try again."
-        default: "The server refused the request (\(code))."
+        // Session start / extend / stop (server/API.md "Sessions").
+        case "executor_failed": "The payment didn't go through, so the meter isn't paid. Try again, or pay at the meter."
+        case "policy_violation": "That's outside your parking limits, so nothing was paid."
+        case "session_already_active": "A parking session is already running. Stop it before starting another."
+        case "session_not_active": "That session has already ended."
+        case "parked_event_not_found", "zone_not_found": "That parking spot is no longer available to pay. Park again to get a fresh quote."
+        case "street_pay_on_arrival": "Street parking is paid when you park, not ahead of time."
+        default: fallbackRefusal(code)
         }
     }
 }

@@ -215,6 +215,30 @@ final class OnboardingUITests: ParkAgentUITestCase {
         XCTAssertFalse(element(app, "onboarding.permissions").exists, "Should not restart")
     }
 
+    /// Someone who isn't the operator (every invited friend) can't change
+    /// the shared limits: the budget step shows them with no steppers and
+    /// a plain Continue that saves nothing — instead of "Save and continue"
+    /// failing on a 403 in the middle of setup.
+    func testBudgetStepIsReadOnlyForSharedLimits() {
+        let app = launchApp(onboardingStep: 8, selectedCity: "nyc", skipOnboarding: false, policyReadOnly: true)
+
+        XCTAssertTrue(element(app, "onboarding.budget").waitForExistence(timeout: 5))
+        let sessionCap = element(app, "onboarding.budget.sessionCap")
+        XCTAssertTrue(sessionCap.waitForExistence(timeout: 5), "Limits should still be shown")
+        XCTAssertTrue(sessionCap.label.contains("$"), "Per-stop cap missing its value: \(sessionCap.label)")
+        XCTAssertFalse(element(app, "onboarding.budget.sessionCap.plus").exists, "No steppers on shared limits")
+        XCTAssertTrue(element(app, "onboarding.budgetShared").exists, "Why they're read-only is missing")
+
+        let next = element(app, "onboarding.continueButton")
+        XCTAssertEqual(next.label, "Continue")
+        next.tap()
+        XCTAssertTrue(
+            element(app, "onboarding.budget").waitForNonExistence(timeout: 5),
+            "Continue should move past the budget step"
+        )
+        XCTAssertFalse(element(app, "onboarding.budgetSkipSave").exists, "Nothing was saved, so nothing failed")
+    }
+
     /// A returning user — already onboarded — skips straight to Home.
     func testReturningUserSkipsOnboarding() {
         let app = launchApp(skipOnboarding: true)

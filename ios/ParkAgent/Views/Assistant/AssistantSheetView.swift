@@ -151,6 +151,7 @@ struct AssistantSheetView: View {
                     }
                 }
         }
+        #if DEBUG
         .overlay(alignment: .bottomTrailing) {
             if uiTesting, let link = model.externalLink {
                 Button(link.kind == .garageCheckout ? "garageCheckout" : "linkApproval") {
@@ -163,6 +164,7 @@ struct AssistantSheetView: View {
                 .accessibilityIdentifier("assistant.externalLinkProbe")
             }
         }
+        #endif
     }
 
     /// After Link approves a garage: the one-time card (Face ID) and the

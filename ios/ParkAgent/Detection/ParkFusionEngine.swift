@@ -2,7 +2,7 @@ import CoreLocation
 import Foundation
 
 /// One raw detector observation, as fed to the fusion engine and (when the
-/// Debug-menu switch is on) written to the on-device signal log.
+/// Diagnostics switch is on) written to the on-device signal log.
 enum RawDetectorSignal: String {
     case motionDriving = "motion_driving"
     case motionStop = "motion_stop"

@@ -18,6 +18,8 @@ import Foundation
 ///   -speechScenario <name> script the assistant's dictation (scripted|denied|unavailable)
 ///   -paymentSource <raw>   preset the payment source (provider_card|link_wallet|parkagent_card)
 ///   -issuingLive YES       the mock reports the ParkAgent card as live
+///   -parkAgentSandbox YES  preset Diagnostics' ParkAgent-card sandbox toggle
+///   -policyReadOnly YES    the mock policy isn't editable by this user
 ///   -authScenario <name>   preset the mock sign-in (returning|newUser|badCode|appleFails)
 ///   -signedIn YES          seed a mock session so the app starts past the
 ///                          welcome screen (most tests want this)
@@ -38,7 +40,13 @@ import Foundation
 /// domain and then clears the volatile argument domain. Without that step the
 /// argument domain would shadow every later write — a test that flips the
 /// appearance picker would see the launch argument win forever.
+///
+/// All of it is DEBUG-only. A Release build honors no launch argument at
+/// all: `uiTesting` and `useMockAPI` are the constant `false`, and nothing
+/// here — the argument names, the scenario keys, the session seeding — is
+/// compiled into it (ParkAgentReleaseTests checks the binary).
 enum LaunchOverrides {
+    #if DEBUG
     static let uiTesting: Bool = flagValue("-uiTesting") == "YES"
 
     /// The mock API is a launch-time decision, never persisted: the UI tests
@@ -66,6 +74,7 @@ enum LaunchOverrides {
         SpeechMockScenario.defaultsKey,
         AuthMockScenario.defaultsKey,
         MockAPI.authMethodsKey,
+        MockAPI.policyReadOnlyKey,
     ]
 
     /// Call once, before any UserDefaults key is read (ParkAgentApp.init).
@@ -95,6 +104,10 @@ enum LaunchOverrides {
         let paymentSource = argued[PaymentSource.defaultsKey] != nil
             ? defaults.string(forKey: PaymentSource.defaultsKey) : nil
         let issuingLive = argued["issuingLive"] != nil ? defaults.bool(forKey: "issuingLive") : nil
+        let policyReadOnly = argued[MockAPI.policyReadOnlyKey] != nil
+            && defaults.bool(forKey: MockAPI.policyReadOnlyKey)
+        let parkAgentSandbox = argued[FeatureFlags.parkAgentSandboxKey] != nil
+            ? defaults.bool(forKey: FeatureFlags.parkAgentSandboxKey) : nil
         let onboardingStep = argued[OnboardingStep.defaultsKey] != nil
             ? defaults.integer(forKey: OnboardingStep.defaultsKey) : nil
         let selectedCity = argued["selectedCity"] != nil
@@ -125,10 +138,8 @@ enum LaunchOverrides {
         for key in mockDefaultsKeys {
             defaults.removeObject(forKey: key)
         }
-        #if DEBUG
         // A seeded session: tests that aren't about signing in start inside
-        // the app. Mock tokens only, and compiled out of Release — the
-        // seeding helper itself is DEBUG-only.
+        // the app (mock tokens), and live-path checks start with a real one.
         if signedIn { Keychain.seedTestSession() }
         if let seededSession, let data = seededSession.data(using: .utf8),
            let seed = try? JSONDecoder().decode([String: String].self, from: data),
@@ -136,9 +147,6 @@ enum LaunchOverrides {
            let deviceId = seed["deviceId"] {
             Keychain.seedSession(access: access, refresh: refresh, deviceId: deviceId)
         }
-        #else
-        _ = (signedIn, seededSession)
-        #endif
         if skipOnboarding { defaults.set(true, forKey: "hasOnboarded") }
         if let appearance { defaults.set(appearance, forKey: AppearanceSetting.defaultsKey) }
         if let scenario { defaults.set(scenario, forKey: MockScenario.defaultsKey) }
@@ -154,6 +162,8 @@ enum LaunchOverrides {
         if let speechScenario { defaults.set(speechScenario, forKey: SpeechMockScenario.defaultsKey) }
         if let paymentSource { defaults.set(paymentSource, forKey: PaymentSource.defaultsKey) }
         if let issuingLive { defaults.set(issuingLive, forKey: "issuingLive") }
+        if let parkAgentSandbox { defaults.set(parkAgentSandbox, forKey: FeatureFlags.parkAgentSandboxKey) }
+        if policyReadOnly { defaults.set(true, forKey: MockAPI.policyReadOnlyKey) }
         if let onboardingStep { defaults.set(onboardingStep, forKey: OnboardingStep.defaultsKey) }
         if let selectedCity { defaults.set(selectedCity, forKey: "selectedCity") }
         if let authScenario { defaults.set(authScenario, forKey: AuthMockScenario.defaultsKey) }
@@ -166,4 +176,9 @@ enum LaunchOverrides {
         guard let index = args.firstIndex(of: flag), index + 1 < args.count else { return nil }
         return args[index + 1]
     }
+    #else
+    static let uiTesting = false
+    static let useMockAPI = false
+    static func applyToDefaults() {}
+    #endif
 }

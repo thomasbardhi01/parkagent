@@ -41,11 +41,15 @@ struct RootView: View {
         let model = AppModel(authStore: store)
         _authStore = State(initialValue: store)
         _model = State(initialValue: model)
+        #if DEBUG
         _auth = State(initialValue: AuthModel(
             api: model.api,
             store: store,
             usesMockSignIn: model.useMockAPI
         ))
+        #else
+        _auth = State(initialValue: AuthModel(api: model.api, store: store))
+        #endif
     }
 
     var body: some View {
@@ -257,10 +261,15 @@ struct MainTabView: View {
             case "wallet":
                 // The card_declined push: fix the card in the Wallet.
                 model.selectedTab = .wallet
+            case "pay":
+                // The payment_failed push's link: the Park tab, where the
+                // session (or the zone number to pay elsewhere) is.
+                model.selectedTab = .park
             default:
                 break
             }
         }
+        #if DEBUG
         .overlay(alignment: .bottomLeading) {
             if LaunchOverrides.uiTesting {
                 // UI tests read this to assert the appearance setting took.
@@ -270,9 +279,12 @@ struct MainTabView: View {
                     .accessibilityIdentifier("root.colorSchemeProbe")
             }
         }
+        #endif
     }
 }
 
+#if DEBUG
 #Preview {
     RootView()
 }
+#endif

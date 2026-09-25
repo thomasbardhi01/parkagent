@@ -114,7 +114,6 @@ struct ActiveSession: Identifiable {
     var extendCount: Int
     var maxExtendCount: Int
     var maxStayReached: Bool
-    var autoExtend: Bool
     /// Which card pays this street session: the card on the provider
     /// account or the ParkAgent card (Link never pays a street meter).
     var paymentSource: PaymentSource = .providerCard

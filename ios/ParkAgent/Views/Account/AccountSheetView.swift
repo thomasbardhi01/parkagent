@@ -513,9 +513,11 @@ struct AccountAvatar: View {
     }
 }
 
+#if DEBUG
 #Preview {
     AccountSheetView()
         .environment(AppModel())
         .environment(AuthModel(api: MockAPI(), store: AuthStore()))
         .environment(PermissionsManager())
 }
+#endif

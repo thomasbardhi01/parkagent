@@ -1,10 +1,14 @@
+// UI tests and SwiftUI previews only. The whole file is compiled out of
+// Release builds (ParkAgentReleaseTests proves it): a TestFlight build has
+// no mock server, no fixtures, and no scenario switches.
+#if DEBUG
 import Foundation
 
 // Mock assistant + Link wallet: scripted plans for both jobs so the
 // sheet, plan cards, itinerary board, and UI tests all run without a
 // server or an Anthropic key.
 
-enum AssistantMockScenario: String, CaseIterable, Identifiable, Sendable {
+enum AssistantMockScenario: String, Sendable {
     /// Text mentioning a day/multiple stops gets the itinerary; else single.
     case auto
     case singleSpot
@@ -17,17 +21,15 @@ enum AssistantMockScenario: String, CaseIterable, Identifiable, Sendable {
     case error
 
     static let defaultsKey = "assistantScenario"
-    var id: String { rawValue }
 }
 
-enum LinkMockScenario: String, CaseIterable, Identifiable, Sendable {
+enum LinkMockScenario: String, Sendable {
     case disconnected
     case connected
     /// Configured but the approval flow denies.
     case denies
 
     static let defaultsKey = "linkScenario"
-    var id: String { rawValue }
 }
 
 /// Mutable mock state: signed-off days, Link connection, spend requests.
@@ -388,3 +390,4 @@ extension MockAPI {
         LinkSpendSyncResponse(id: id, status: await MockAssistantStore.shared.syncSpend(id: id, scenario: linkScenario))
     }
 }
+#endif

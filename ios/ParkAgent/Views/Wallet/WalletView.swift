@@ -416,7 +416,9 @@ struct CardActionButton: View {
     }
 }
 
+#if DEBUG
 #Preview {
     WalletView()
         .environment(AppModel())
 }
+#endif

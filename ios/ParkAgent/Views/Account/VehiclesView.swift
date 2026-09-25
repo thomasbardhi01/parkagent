@@ -130,7 +130,7 @@ struct VehicleEditorView: View {
                         .textInputAutocapitalization(.characters)
                         .autocorrectionDisabled()
                         .accessibilityIdentifier("vehicleEditor.plateField")
-                    TextField("State (e.g. NY)", text: $state)
+                    TextField("State (2 letters)", text: $state)
                         .textInputAutocapitalization(.characters)
                         .autocorrectionDisabled()
                         .accessibilityIdentifier("vehicleEditor.stateField")
@@ -199,7 +199,9 @@ struct VehicleEditorView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     NavigationStack { VehiclesView() }
         .environment(AppModel())
 }
+#endif

@@ -34,9 +34,9 @@ struct ProfileEditView: View {
                 LabeledContent("Email", value: authStore.user?.email ?? "—")
                     .accessibilityIdentifier("profile.emailRow")
             } header: {
-                Text("Sign-in")
+                Text("Account")
             } footer: {
-                Text("This is how you sign in. Contact support to change it.")
+                Text("From your Apple ID when you signed in. If you chose Hide My Email, this is the private address Apple forwards to you.")
             }
             if let errorMessage {
                 Text(errorMessage)
@@ -85,8 +85,10 @@ struct ProfileEditView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     NavigationStack { ProfileEditView() }
         .environment(AppModel())
         .environment(AuthStore())
 }
+#endif

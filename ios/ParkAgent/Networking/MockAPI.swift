@@ -1,9 +1,13 @@
+// UI tests and SwiftUI previews only. The whole file is compiled out of
+// Release builds (ParkAgentReleaseTests proves it): a TestFlight build has
+// no mock server, no fixtures, and no scenario switches.
+#if DEBUG
 import CoreLocation
 import Foundation
 
-/// Which canned `/parked` outcome the mock serves. Persisted so the Settings
-/// picker survives relaunches; `MockAPI` reads it on every call.
-enum MockScenario: String, CaseIterable, Identifiable, Sendable {
+/// Which canned `/parked` outcome the mock serves (`-mockScenario`); `MockAPI`
+/// reads it on every call.
+enum MockScenario: String, Sendable {
     case singleQuote
     case twoCandidates
     case freePeriod
@@ -24,27 +28,11 @@ enum MockScenario: String, CaseIterable, Identifiable, Sendable {
     case cardDeclined
 
     static let defaultsKey = "mockScenario"
-
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .singleQuote: "Single quote"
-        case .twoCandidates: "Two candidates"
-        case .freePeriod: "Free period"
-        case .unknownZone: "Unknown zone"
-        case .paymentFailed: "Payment failed"
-        case .bostonNeedsZone: "Boston — zone number needed"
-        case .freePeriodAtStart: "Free period at start"
-        case .bostonImportConflict: "Boston — import conflicts with report"
-        case .cardDeclined: "Card declined (ParkAgent card hold)"
-        }
-    }
 }
 
 /// Which canned provider-account state the mock serves (link flow, parked
-/// sheet routing, Settings "Linked accounts"). Persisted like MockScenario.
-enum ProviderMockScenario: String, CaseIterable, Identifiable, Sendable {
+/// sheet routing, the Account sheet's accounts). Set by `-providerScenario`.
+enum ProviderMockScenario: String, Sendable {
     /// ParkNYC linked — pay flows work.
     case linked
     /// Nothing linked: the parked sheet routes into the link flow.
@@ -59,43 +47,21 @@ enum ProviderMockScenario: String, CaseIterable, Identifiable, Sendable {
     case linkFails
 
     static let defaultsKey = "providerScenario"
-
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .linked: "ParkNYC linked"
-        case .notLinked: "Not linked"
-        case .expired: "Link expired"
-        case .expiring: "Link expiring soon"
-        case .linkFails: "Card setup fails once"
-        }
-    }
 }
 
-/// Which city the mock GET /city detects. Persisted like MockScenario.
-enum CityMockScenario: String, CaseIterable, Identifiable, Sendable {
+/// Which city the mock GET /city detects (`-cityScenario`).
+enum CityMockScenario: String, Sendable {
     case nyc
     case bos
     /// Nowhere near a metered zone — "we're not there yet".
     case none
 
     static let defaultsKey = "cityScenario"
-
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .nyc: "New York City"
-        case .bos: "Boston"
-        case .none: "Somewhere else"
-        }
-    }
 }
 
 /// Which canned sign-in behavior the mock serves. UI tests drive the
 /// welcome screen through this (a real Apple sheet can't be automated).
-enum AuthMockScenario: String, CaseIterable, Identifiable, Sendable {
+enum AuthMockScenario: String, Sendable {
     /// Every sign-in succeeds and returns an existing account.
     case returning
     /// Every sign-in succeeds and reports `created`. Where either lands is
@@ -107,22 +73,13 @@ enum AuthMockScenario: String, CaseIterable, Identifiable, Sendable {
     case appleFails
 
     static let defaultsKey = "authScenario"
-
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .returning: "Returning user"
-        case .newUser: "New user"
-        case .badCode: "Wrong email code"
-        case .appleFails: "Apple sign-in fails"
-        }
-    }
 }
 
 /// In-memory fixtures shaped by server/API.md, for UI tests and previews
 /// only: a launch opts in with `-useMockAPI YES` and nothing persists it.
 struct MockAPI: APIClient {
+    static let policyReadOnlyKey = "policyReadOnly"
+
     private let store = MockSessionStore()
     private let providerStore = MockProviderStore()
     private let policyStore = MockPolicyStore()
@@ -324,7 +281,8 @@ struct MockAPI: APIClient {
 
     func startSession(_ request: SessionStartRequest) async throws -> SessionStartOutcome {
         try await pause()
-        if scenario == .paymentFailed { throw APIError.paymentFailed }
+        // What the server answers when the executor fails at the provider.
+        if scenario == .paymentFailed { throw APIError.refused(code: "executor_failed") }
         if scenario == .cardDeclined { throw APIError.refused(code: "card_declined") }
         if scenario == .freePeriodAtStart {
             // Mirrors the server's 200 {status: "free_period"}: quoted as
@@ -385,11 +343,6 @@ struct MockAPI: APIClient {
         return MockFixtures.nearbyZones(around: (lat: lat, lng: lng), radiusM: radiusM)
     }
 
-    func health() async throws -> HealthResponse {
-        try await pause()
-        return HealthResponse(ok: true, dryRun: true, commit: "mock", builtAt: "mock")
-    }
-
     // MARK: - City & providers
 
     func detectCity(lat: Double, lng: Double) async throws -> CityDetectResponse {
@@ -441,7 +394,6 @@ struct MockAPI: APIClient {
         )
         return ProviderLinkResponse(
             status: "linked",
-            walletBalanceCents: 1250,
             cardBrand: "Visa",
             cardLast4: providerId == "passport" ? "1234" : "4242",
             jobId: jobId
@@ -700,7 +652,13 @@ private actor MockPolicyStore {
     }
 
     private func wrap(_ policy: Policy) -> PolicyResponse {
-        PolicyResponse(policy: policy, hash: "sha256:mock", dryRun: true)
+        PolicyResponse(
+            policy: policy,
+            hash: "sha256:mock",
+            dryRun: true,
+            // `-policyReadOnly YES`: sign in as someone who isn't the operator.
+            editable: !UserDefaults.standard.bool(forKey: MockAPI.policyReadOnlyKey)
+        )
     }
 }
 
@@ -885,8 +843,7 @@ enum MockFixtures {
             // The Wallet mock's cards: ParkBoston ••1234, ParkNYC ••4242
             // (live, both read the same provider-account row).
             cardBrand: usable ? "Visa" : nil,
-            cardLast4: usable ? (base.city == "bos" ? "1234" : "4242") : nil,
-            walletBalanceCents: usable ? 1250 : nil
+            cardLast4: usable ? (base.city == "bos" ? "1234" : "4242") : nil
         )
     }
 
@@ -950,11 +907,15 @@ enum MockFixtures {
 
     // MARK: - Map fixtures
 
+    /// Columbus Ave near W 81st St — the worked example in server/API.md.
+    /// The NYC fixtures are built around this point, so UI tests and
+    /// previews are deterministic. Nothing on a live launch may default to
+    /// it (see CityCatalog.center for the city fallbacks).
+    static let fixtureCoordinate = CLLocationCoordinate2D(latitude: 40.7784, longitude: -73.9818)
+
     /// Where the mock says the phone is: the city scenario's center, so a
     /// `-cityScenario bos` launch sees a Boston map rather than the NYC
-    /// quote fixtures' coordinate. `@MainActor` because the NYC fallback is
-    /// AppModel's fixture point, which is main-actor isolated.
-    @MainActor
+    /// quote fixtures' coordinate.
     static func currentCoordinate() -> CLLocationCoordinate2D {
         let scenario = CityMockScenario(
             rawValue: UserDefaults.standard.string(forKey: CityMockScenario.defaultsKey) ?? ""
@@ -966,7 +927,7 @@ enum MockFixtures {
             // the middle of the Common, where no curb line belongs.
             return CLLocationCoordinate2D(latitude: 42.3503, longitude: -71.0810)
         case .nyc, .none:
-            return AppModel.fixtureCoordinate
+            return fixtureCoordinate
         }
     }
 
@@ -1077,3 +1038,4 @@ enum MockFixtures {
         (value * 100).rounded() / 100
     }
 }
+#endif

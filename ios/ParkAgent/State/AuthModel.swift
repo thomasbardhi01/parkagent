@@ -18,18 +18,27 @@ final class AuthModel {
     private(set) var errorMessage: String?
     private(set) var isWorking = false
 
+    #if DEBUG
     /// True when the mock API is in play: the real Sign in with Apple sheet
     /// is system UI that can't be driven on the simulator or in UI tests.
     let usesMockSignIn: Bool
+    #endif
 
     var signedOutReason: String? { store.signedOutReason }
     var user: AuthUser? { store.user }
 
+    #if DEBUG
     init(api: any APIClient, store: AuthStore, usesMockSignIn: Bool = false) {
         self.api = api
         self.store = store
         self.usesMockSignIn = usesMockSignIn
     }
+    #else
+    init(api: any APIClient, store: AuthStore) {
+        self.api = api
+        self.store = store
+    }
+    #endif
 
     // MARK: - Apple
 
@@ -67,6 +76,7 @@ final class AuthModel {
         }
     }
 
+    #if DEBUG
     /// Stand-in for the Apple sheet under the mock API.
     func signInWithAppleMock() async {
         await signIn {
@@ -80,10 +90,11 @@ final class AuthModel {
 
     // MARK: - Google
 
+    /// The Google SDK is not a dependency, so there is no real Google token
+    /// to send: this path exists only for UI tests against the mock (the
+    /// server contract), and a Release build has none of it. Turning Google
+    /// on means adding GoogleSignIn-iOS and handing its id token here.
     func signInWithGoogle() async {
-        // The Google SDK is not a dependency: the flag ships off, and
-        // turning it on means adding GoogleSignIn-iOS and handing its id
-        // token here. The mock path exercises the server contract.
         await signIn {
             try await self.api.signInWithGoogle(
                 idToken: "mock-google-id-token",
@@ -91,6 +102,7 @@ final class AuthModel {
             )
         }
     }
+    #endif
 
     // MARK: - Email
 

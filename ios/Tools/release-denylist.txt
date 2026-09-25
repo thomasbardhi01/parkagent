@@ -1,0 +1,92 @@
+# What must never ship in a Release (TestFlight / App Store) binary, and
+# what must. Read by BOTH ios/Tools/check-release-binary.sh (`strings` on
+# the built app) and ParkAgentReleaseTests (a byte scan of its own host
+# binary, running inside the Release build).
+#
+#   <text>        forbidden: a case-sensitive substring that must not appear
+#   + <text>      required: must appear — proves the scan is reading the right
+#                 binary, so a clean result can't come from scanning nothing
+#   type N K      forbidden TYPE (ParkAgentReleaseTests looks it up in the
+#                 Swift runtime by mangled name 9ParkAgent<len>N<K>; K is V
+#                 struct, O enum, C class/actor). `+ type N K` must exist.
+#                 ParkAgentTests proves every entry resolves in a Debug
+#                 build, so a wrong name or kind can't pass vacuously.
+#
+# Blind spot: Swift stores string literals of 15 bytes or fewer INLINE in
+# the instruction stream, not as C strings, so neither `strings` nor a byte
+# scan can see short literals like "Simulate park" or "-uiTesting". Every
+# entry here is therefore a type name (type metadata keeps it as a C
+# string), a stored-property name (reflection metadata), or a literal of 16+
+# bytes — debug UI is caught through its accessibility identifiers. The
+# type check in ParkAgentReleaseTests covers the rest.
+
+# Mock server, fixtures, and the scenario switches.
+MockAPI
+MockFixtures
+MockWallet
+MockAssistant
+MockScenario
+MockProviderLoginView
+MockZoneNumberStore
+useMockAPI
+usesMockSignIn
+scenarioOverride
+mock-access-token
+mock-identity-token
+mock-google-id-token
+lsrq_mock
+seti_mock
+ParkAgent/Mock
+
+# The hidden Diagnostics screen and the design gallery.
+DiagnosticsView
+DesignSystemGallery
+FixturePoint
+diagnostics.view
+account.diagnosticsLink
+diagnostics.sandboxToggle
+Log raw detector signals
+ParkAgent card sandbox
+Reset onboarding?
+
+# Test-only UI: the simulated park, probes, the mock sign-in.
+home.simulateParkButton
+Simulate park here
+root.colorSchemeProbe
+assistant.externalLinkProbe
+link.mockSignInButton
+welcome.googleButton
+Continue with Google
+
+# Developer-facing copy and fixture data.
+Config.xcconfig
+not built yet
+later phase
+The server refused the request
+The server rejected the request
+Deck on Clarendon
+Boylston St
+
++ account.deleteAccountLink
++ welcome.appleButton
++ wallet.sourceRow
+
+# Types compiled out of Release entirely (the runtime lookup can't be fooled
+# by a renamed string), with three that must be there.
+type MockAPI V
+type MockFixtures O
+type MockWalletStore C
+type MockAssistantStore C
+type MockAssistantFixtures O
+type MockScenario O
+type WalletMockScenario O
+type ProviderMockScenario O
+type CityMockScenario O
+type AuthMockScenario O
+type AssistantMockScenario O
+type LinkMockScenario O
+type SpeechMockScenario O
+type DiagnosticsView V
++ type LiveAPI V
++ type AppModel C
++ type DeleteAccountView V

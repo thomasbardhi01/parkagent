@@ -141,7 +141,7 @@ final class WalletModel {
             case .canceled:
                 return false
             case .failed(let message):
-                actionError = .invalidRequest(message)
+                actionError = .cardNotSaved(message)
                 return false
             }
         } catch {

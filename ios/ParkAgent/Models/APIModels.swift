@@ -215,10 +215,15 @@ struct PolicyResponse: Codable, Sendable {
     var policy: Policy
     var hash: String
     var dryRun: Bool
+    /// May this user PUT the policy? It is shared by every account and only
+    /// the operator edits it, so everyone else sees the limits read-only.
+    /// nil (an older server) reads as editable, as before.
+    var editable: Bool?
+
+    var canEdit: Bool { editable ?? true }
 }
 
-// Session endpoints are 501 stubs server-side until Phase 5; these are the
-// planned shapes from API.md so the app can code against them now.
+// Sessions (server/API.md "Sessions").
 
 struct SessionStartRequest: Codable, Sendable {
     var parkedEventId: String
@@ -630,7 +635,6 @@ struct ProviderAccountStatus: Codable, Sendable, Identifiable, Equatable {
     /// read at link time — brand and last4 only, for display.
     var cardBrand: String?
     var cardLast4: String?
-    var walletBalanceCents: Int?
 
     /// Usable for paying: "expiring" still works, it just wants a re-link
     /// before the session dies (mirrors the server's providerStatusUsable).
@@ -673,7 +677,6 @@ struct ProviderLinkRequest: Codable, Sendable {
 
 struct ProviderLinkResponse: Codable, Sendable {
     var status: String
-    var walletBalanceCents: Int?
     /// The provider account's own card, read at link time (provider_card).
     var cardBrand: String?
     var cardLast4: String?
@@ -749,15 +752,6 @@ struct CardPrepareResponse: Codable, Sendable {
         var last4: String
         var status: String
     }
-}
-
-/// GET /health — unauthenticated; the Diagnostics screen shows which build
-/// the phone is actually talking to.
-struct HealthResponse: Codable, Sendable {
-    var ok: Bool
-    var dryRun: Bool
-    var commit: String
-    var builtAt: String
 }
 
 // MARK: - Map layer (server/API.md "GET /zones/near")

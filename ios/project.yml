@@ -58,33 +58,44 @@ targets:
         STRIPE_PUBLISHABLE_KEY: $(STRIPE_PUBLISHABLE_KEY)
 
         CFBundleDisplayName: ParkAgent
-        CFBundleShortVersionString: "1.0"
-        CFBundleVersion: "1"
+        # 1.0.0 (MARKETING_VERSION below); the build number is
+        # CURRENT_PROJECT_VERSION, which the TestFlight workflow sets to its
+        # run number (.github/workflows/testflight.yml).
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSRequiresIPhoneOS: true
-        UILaunchScreen: {}
+        # HTTPS only, through the system's own TLS — exempt, so no export
+        # compliance questions on every TestFlight upload.
+        ITSAppUsesNonExemptEncryption: false
+        # The app's background color, so a dark-mode launch never flashes
+        # white before the first frame.
+        UILaunchScreen:
+          UIColorName: Background
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
 
-        # Apple reviews these strings and users see them verbatim.
+        # Apple reviews these strings and users see them verbatim: plain
+        # English, what it's for, nothing more.
         NSLocationAlwaysAndWhenInUseUsageDescription: >-
-          ParkAgent needs your location in the background to notice when you have
-          parked and to find the right meter zone, so it can pay before the meter
-          starts running.
+          ParkAgent uses your location in the background to notice when you
+          have parked, even when the app is closed. It uses where you parked
+          to find the meter zone and its rate. Your location is only used for
+          parking, never for ads.
         NSLocationWhenInUseUsageDescription: >-
-          ParkAgent uses your location to find the meter zone you parked in and
-          quote the correct rate.
+          ParkAgent uses your location to show the meters around you and find
+          the zone you parked in.
         NSMotionUsageDescription: >-
-          ParkAgent uses motion activity to tell driving from walking, so it only
-          starts a parking session once you have actually parked and left the car.
+          ParkAgent uses motion activity to tell when you have stopped
+          driving, so it only offers to pay once you have actually parked.
         NSFaceIDUsageDescription: >-
-          ParkAgent asks for Face ID before revealing your full card number, so
+          ParkAgent asks for Face ID before showing a full card number, so
           only you can see it.
         NSSpeechRecognitionUsageDescription: >-
-          ParkAgent transcribes what you say to the parking assistant, on this
-          device when it can, so you can ask for a spot without typing.
+          ParkAgent turns what you say to the parking assistant into text, on
+          your iPhone when it can, so you can ask for parking without typing.
         NSMicrophoneUsageDescription: >-
-          ParkAgent listens only while you hold the assistant's mic button, to
-          hear your parking question.
+          ParkAgent listens only after you tap the assistant's microphone
+          button, to hear your parking question.
 
         # parkagent:// deep links: tap-to-pay pushes, assistant, the Link
         # wallet OAuth bounce-back.
@@ -92,14 +103,20 @@ targets:
           - CFBundleURLName: com.thomasbardhi.parkagent
             CFBundleURLSchemes: [parkagent]
 
+        # Background location is the whole unattended-park loop. Nothing
+        # else runs in the background: pushes are plain alerts (no silent
+        # pushes), and there are no BGTaskScheduler tasks — a declared mode
+        # with no use is an App Review rejection, and `processing` without
+        # BGTaskSchedulerPermittedIdentifiers fails the upload itself.
         UIBackgroundModes:
           - location
-          - remote-notification
-          - processing
 
     entitlements:
       path: ParkAgent/ParkAgent.entitlements
       properties:
+        # Xcode rewrites this to "production" when it signs an App Store
+        # export (TestFlight); PushManager reports the matching environment
+        # per build so the server picks the right APNs host.
         aps-environment: development
         com.apple.developer.usernotifications.time-sensitive: true
         # Sign in with Apple — the welcome screen's primary action. Also
@@ -117,6 +134,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.thomasbardhi.parkagent
         PRODUCT_NAME: ParkAgent
+        MARKETING_VERSION: 1.0.0
+        CURRENT_PROJECT_VERSION: "1"
         TARGETED_DEVICE_FAMILY: "1"
         ENABLE_USER_SCRIPT_SANDBOXING: YES
         SWIFT_STRICT_CONCURRENCY: complete
@@ -126,6 +145,11 @@ targets:
     platform: iOS
     sources:
       - path: ParkAgentTests
+      # Proves the Release denylist's type entries are real names (see
+      # ReleaseDenylistTests).
+      - path: Tools/ReleaseDenylist.swift
+      - path: Tools/release-denylist.txt
+        buildPhase: resources
     dependencies:
       - target: ParkAgent
     settings:
@@ -133,6 +157,26 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.thomasbardhi.parkagent.tests
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/ParkAgent.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ParkAgent"
         BUNDLE_LOADER: "$(TEST_HOST)"
+        GENERATE_INFOPLIST_FILE: YES
+
+  # Runs INSIDE the Release build (scheme ParkAgentRelease): proves the
+  # shipping binary carries no mock, scenario, or Diagnostics code and none
+  # of the dev strings in Tools/release-denylist.txt. No @testable import —
+  # a Release build isn't testable, which is the point.
+  ParkAgentReleaseTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: ParkAgentReleaseTests
+      - path: Tools/ReleaseDenylist.swift
+      - path: Tools/release-denylist.txt
+        buildPhase: resources
+    dependencies:
+      - target: ParkAgent
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.thomasbardhi.parkagent.releasetests
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/ParkAgent.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ParkAgent"
         GENERATE_INFOPLIST_FILE: YES
 
   ParkAgentUITests:
@@ -170,3 +214,17 @@ schemes:
       config: Debug
     archive:
       config: Release
+
+  # The Release binary's own checks (ParkAgentReleaseTests), in the Release
+  # configuration: `xcodebuild -scheme ParkAgentRelease test`.
+  ParkAgentRelease:
+    build:
+      targets:
+        ParkAgent: all
+        ParkAgentReleaseTests: [test]
+    run:
+      config: Release
+    test:
+      config: Release
+      targets:
+        - ParkAgentReleaseTests

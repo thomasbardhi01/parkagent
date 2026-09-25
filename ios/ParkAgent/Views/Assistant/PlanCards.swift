@@ -332,8 +332,11 @@ struct PlanMiniMap: View {
             )
         }
         guard let first = points.first else {
+            // No pins at all (the plan carries its options' own points, so
+            // this is a malformed plan): the metro fallback, never a fixed
+            // NYC point.
             return MKCoordinateRegion(
-                center: AppModel.fixtureCoordinate,
+                center: CityCatalog.fallbackCenter,
                 span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
             )
         }

@@ -376,16 +376,20 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
       ...(linkActive ? { linkPendingTodayUsd } : {}),
     });
 
-    /** Whether Link may be asked for `amountUsd` right now, and why not. */
-    const linkGate = (amountUsd: number, alreadyRequestedUsd = 0): string | null => {
+    /**
+     * Whether Link may be asked for one spend request per amount in
+     * `stopsUsd` right now, and why not. Each request is one purchase, so
+     * each is held to the per-session cap on its own; the plan as a whole
+     * (`planTotalUsd`, every stop whatever pays it) has to fit what is left
+     * of today's cap. The sum is never held to the per-session cap — two
+     * $30 garages are two purchases, not one $60 one.
+     */
+    const linkGate = (stopsUsd: number[], planTotalUsd: number): string | null => {
       if (!linkActive) return "link_not_active";
-      if (amountUsd <= 0) return "free";
+      if (!stopsUsd.some((usd) => usd > 0)) return "free";
       if (linkBlockedByDryRun) return "dry_run";
-      if (amountUsd > policy.session_cap_usd) return "session_cap_exceeded";
-      if (
-        spentTodayUsd + linkPendingTodayUsd + alreadyRequestedUsd + amountUsd >
-        policy.daily_cap_usd
-      ) {
+      if (stopsUsd.some((usd) => usd > policy.session_cap_usd)) return "session_cap_exceeded";
+      if (spentTodayUsd + linkPendingTodayUsd + planTotalUsd > policy.daily_cap_usd) {
         return "daily_cap_exceeded";
       }
       return null;
@@ -406,7 +410,7 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
         // the garage's checkout — and the response says why.
         let linkApproval: { spendRequestId: string; approvalUrl: string | null } | null = null;
         let linkSkipped: string | null =
-          activeSource === "link_wallet" ? linkGate(option.priceUsd) : null;
+          activeSource === "link_wallet" ? linkGate([option.priceUsd], option.priceUsd) : null;
         if (activeSource === "link_wallet" && linkSkipped === null) {
           try {
             const created = await deps.linkWallet!.createSpendRequestsForStops(user.id, {
@@ -550,13 +554,13 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
     let linkSkipped: string | null = null;
     if (activeSource === "link_wallet") {
       const paidGarages = signedStops.filter((s) => s.choice === "garage" && s.costUsd > 0);
-      const garagesTotal = paidGarages.reduce((sum, s) => sum + s.costUsd, 0);
-      const overStop = paidGarages.find((s) => s.costUsd > policy.session_cap_usd);
-      linkSkipped = overStop
-        ? "session_cap_exceeded"
-        : paidGarages.length === 0
+      linkSkipped =
+        paidGarages.length === 0
           ? null
-          : linkGate(garagesTotal);
+          : linkGate(
+              paidGarages.map((s) => s.costUsd),
+              totalUsd,
+            );
       if (linkSkipped === "free") linkSkipped = null;
       if (linkSkipped === null && paidGarages.length > 0) {
         try {

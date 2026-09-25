@@ -30,6 +30,7 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 
 import type { AppDeps } from "../app.js";
+import type { FundingMethodRow } from "../db.js";
 import { providerById, providerStatusUsable } from "../providers/registry.js";
 import { LinkJobStore, runSetupCard } from "../services/providerLink.js";
 import { makeRateLimiter } from "../services/rateLimit.js";
@@ -258,10 +259,15 @@ export function registerWallet(app: FastifyInstance, deps: AppDeps): void {
     if (intent.status !== "succeeded" || !intent.paymentMethodId) {
       return reply.code(409).send({ error: "setup_not_complete", status: intent.status });
     }
+    const customerId = row.stripeCustomerId;
     const existing = await deps.db.fundingMethod.findUnique({
       where: { stripePaymentMethodId: intent.paymentMethodId },
     });
-    if (existing && existing.userId === user.id && existing.removedAt === null) {
+    // Someone else's card reads exactly like a missing intent.
+    if (existing && existing.userId !== user.id) {
+      return reply.code(404).send({ error: "unknown_setup_intent" });
+    }
+    if (existing && existing.removedAt === null) {
       return { fundingMethod: fundingMethodBody(existing) };
     }
     const pm = await stripe.retrievePaymentMethod(intent.paymentMethodId);
@@ -269,27 +275,79 @@ export function registerWallet(app: FastifyInstance, deps: AppDeps): void {
       where: { userId: user.id, removedAt: null },
     });
     const makeDefault = parsed.data.makeDefault !== false || !active.some((m) => m.isDefault);
-    if (makeDefault) {
+    /** The default moves only once the card's row exists, so neither a
+     * reactivation nor a racing duplicate can leave the user without one. */
+    const setDefault = async (method: FundingMethodRow) => {
+      if (!makeDefault || method.isDefault) return method;
       await deps.db.fundingMethod.updateMany({
         where: { userId: user.id },
         data: { isDefault: false },
       });
+      const updated = await deps.db.fundingMethod.update({
+        where: { id: method.id },
+        data: { isDefault: true },
+      });
+      await stripe.setCustomerDefaultPaymentMethod(customerId, method.stripePaymentMethodId);
+      return updated;
+    };
+
+    // The same setup posted again after its card was removed — a retry
+    // that raced the delete, or a client replaying its last setup. The
+    // card keeps its row (stripe_payment_method_id is unique), so it is
+    // reactivated rather than inserted — but only while Stripe still has
+    // it on this Customer: removing detaches it, and Stripe never lets a
+    // detached card pay or be attached again. Otherwise it stays removed,
+    // and the app adds the card afresh (a new SetupIntent, a new id).
+    if (existing) {
+      const inputs = { setupIntentId: intent.setupIntentId, fundingMethodId: existing.id };
+      if (pm.customerId !== customerId) {
+        const decision = await decide(
+          user.id,
+          "wallet_funding",
+          "funding_method_readd_refused",
+          inputs,
+          { allowed: false, attachedTo: pm.customerId },
+        );
+        return reply.code(409).send({ error: "funding_method_removed", decisionId: decision.id });
+      }
+      const reactivated = await setDefault(
+        await deps.db.fundingMethod.update({
+          where: { id: existing.id },
+          data: { removedAt: null, isDefault: false },
+        }),
+      );
+      await decide(user.id, "wallet_funding", "funding_method_reactivated", inputs, {
+        fundingMethodId: reactivated.id,
+        isDefault: reactivated.isDefault,
+      });
+      return { fundingMethod: fundingMethodBody(reactivated) };
     }
-    const created = await deps.db.fundingMethod.create({
-      data: {
-        userId: user.id,
-        stripePaymentMethodId: pm.paymentMethodId,
-        brand: pm.brand,
-        last4: pm.last4,
-        expMonth: pm.expMonth,
-        expYear: pm.expYear,
-        wallet: pm.wallet,
-        isDefault: makeDefault,
-      },
-    });
-    if (makeDefault) {
-      await stripe.setCustomerDefaultPaymentMethod(row.stripeCustomerId, pm.paymentMethodId);
+
+    let inserted: FundingMethodRow;
+    try {
+      inserted = await deps.db.fundingMethod.create({
+        data: {
+          userId: user.id,
+          stripePaymentMethodId: pm.paymentMethodId,
+          brand: pm.brand,
+          last4: pm.last4,
+          expMonth: pm.expMonth,
+          expYear: pm.expYear,
+          wallet: pm.wallet,
+          isDefault: false,
+        },
+      });
+    } catch (err) {
+      // A duplicate post of this setup, overlapping the first, inserted it
+      // first — the same card, so its row is this answer too.
+      if ((err as { code?: string }).code !== "P2002") throw err;
+      const winner = await deps.db.fundingMethod.findUnique({
+        where: { stripePaymentMethodId: pm.paymentMethodId },
+      });
+      if (winner?.userId !== user.id || winner.removedAt !== null) throw err;
+      return { fundingMethod: fundingMethodBody(await setDefault(winner)) };
     }
+    const created = await setDefault(inserted);
     await decide(
       user.id,
       "wallet_funding",
@@ -300,7 +358,7 @@ export function registerWallet(app: FastifyInstance, deps: AppDeps): void {
         brand: pm.brand,
         last4: pm.last4,
         wallet: pm.wallet,
-        isDefault: makeDefault,
+        isDefault: created.isDefault,
       },
     );
     return { fundingMethod: fundingMethodBody(created) };

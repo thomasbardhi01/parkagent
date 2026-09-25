@@ -687,11 +687,13 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
       ? "extend_ok"
       : outcome.code === "free_period"
         ? "free_period"
-        : outcome.code === "card_declined"
-          ? "hold_declined"
-          : outcome.code === "wallet_not_ready" || outcome.code === "hold_failed"
-            ? "hold_failed"
-            : "executor_failed";
+        : outcome.code === "extension_in_progress"
+          ? "extension_in_progress"
+          : outcome.code === "card_declined"
+            ? "hold_declined"
+            : outcome.code === "wallet_not_ready" || outcome.code === "hold_failed"
+              ? "hold_failed"
+              : "executor_failed";
     await deps.db.decision.create({
       data: {
         kind: "session_extend",
@@ -725,6 +727,12 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
         // Not an executor failure: the provider says this zone is free
         // right now, so there is nothing to extend (and nothing charged).
         return reply.code(409).send({ error: "free_period", notice: outcome.message });
+      }
+      if (outcome.code === "extension_in_progress") {
+        // Another extension of this session (the auto-extender, or a
+        // second tap) is on its way or just landed; nothing was held or
+        // charged for this one.
+        return reply.code(409).send({ error: "extension_in_progress" });
       }
       if (outcome.code === "card_declined") {
         // The hold was refused before the provider was touched.

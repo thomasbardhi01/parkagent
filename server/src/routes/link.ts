@@ -12,12 +12,33 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
 import type { AppDeps } from "../app.js";
+import type { LinkOneTimeCard } from "../services/link/linkClient.js";
 import { makeRateLimiter } from "../services/rateLimit.js";
 
 const callbackSchema = z.object({
   state: z.string().min(1).max(200),
   code: z.string().min(1).max(500),
 });
+
+/** The reveal's refusals, and what each answers. Anything else is a
+ * generic 500 reveal_failed — see the route. */
+const REVEAL_REFUSALS = new Map<string, number>([
+  ["unknown_spend_request", 404],
+  // The card was shown once already; it is never shown again.
+  ["card_already_revealed", 410],
+  ["not_approved", 409],
+  ["card_used", 409],
+  ["card_expired", 409],
+  ["card_unreadable", 409],
+  ["link_not_configured", 503],
+]);
+
+/** Sync's refusals; anything else is a generic 502 sync_failed. */
+const SYNC_REFUSALS = new Map<string, number>([
+  ["unknown_spend_request", 404],
+  ["link_not_connected", 409],
+  ["link_not_configured", 503],
+]);
 
 export function registerLink(app: FastifyInstance, deps: AppDeps): void {
   const limit = makeRateLimiter({ max: 30, windowMs: 60_000 });
@@ -110,19 +131,25 @@ export function registerLink(app: FastifyInstance, deps: AppDeps): void {
       const { status } = await deps.linkWallet.syncSpendRequest(user.id, id);
       return { id, status };
     } catch (err) {
-      const message = err instanceof Error ? err.message : "sync_failed";
-      if (message === "unknown_spend_request") {
-        return reply.code(404).send({ error: message });
+      // Sync fetches the one-time card, so an unknown error here (a body
+      // that failed to parse quotes the body) never reaches the caller or
+      // the log — only a known code does.
+      const status = err instanceof Error ? SYNC_REFUSALS.get(err.message) : undefined;
+      if (status === undefined) {
+        req.log.warn({ errorName: err instanceof Error ? err.name : typeof err }, "sync failed");
+        return reply.code(502).send({ error: "sync_failed" });
       }
-      return reply.code(409).send({ error: message });
+      return reply.code(status).send({ error: (err as Error).message });
     }
   });
 
   // The approved one-time card, for the user to pay the garage's own
   // checkout with (we never automate that checkout, so the card has to
   // reach the person at it). The app asks for Face ID first and hides the
-  // details after 30 seconds. Only the owner's approved, unexpired, unused
-  // card; never cached, never logged; every reveal is a decisions row.
+  // details after 30 seconds. Only the owner's approved, unexpired card,
+  // and only once — the first successful retrieval claims it, and every
+  // later one answers 410 card_already_revealed. Never cached, never
+  // logged; every attempt is a decisions row.
   const limitReveal = makeRateLimiter({ max: 10, windowMs: 60_000 });
   app.post("/link/spend-requests/:id/card", { preHandler: limitReveal }, async (req, reply) => {
     if (!deps.linkWallet?.configured) {
@@ -130,39 +157,47 @@ export function registerLink(app: FastifyInstance, deps: AppDeps): void {
     }
     const user = req.authedUser!;
     const { id } = req.params as { id: string };
+    let card: LinkOneTimeCard;
     try {
-      const card = await deps.linkWallet.revealCard(user.id, id);
-      await deps.db.decision.create({
-        data: {
-          kind: "link_card_reveal",
-          inputs: { spendRequestId: id },
-          rule: "reveal_ok",
-          outcome: { ok: true, validUntil: card.validUntil },
-          userId: user.id,
-        },
-      });
-      return reply.header("cache-control", "no-store").send({
-        spendRequestId: id,
-        brand: card.brand,
-        number: card.number,
-        cvc: card.cvc,
-        expMonth: card.expMonth,
-        expYear: card.expYear,
-        validUntil: card.validUntil,
-      });
+      card = await deps.linkWallet.revealCard(user.id, id);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "reveal_failed";
+      // Only a known refusal code ever leaves this route — in the body, the
+      // decision, or the log. Anything else answers the generic
+      // reveal_failed, because an unknown error's message could quote
+      // what it was handling, and here that is a card number and CVC.
+      const status = err instanceof Error ? REVEAL_REFUSALS.get(err.message) : undefined;
+      const code = status === undefined ? "reveal_failed" : (err as Error).message;
+      if (status === undefined) {
+        req.log.warn({ errorName: err instanceof Error ? err.name : typeof err }, "reveal failed");
+      }
       await deps.db.decision.create({
         data: {
           kind: "link_card_reveal",
           inputs: { spendRequestId: id },
-          rule: message,
+          rule: code,
           outcome: { ok: false },
           userId: user.id,
         },
       });
-      if (message === "unknown_spend_request") return reply.code(404).send({ error: message });
-      return reply.code(409).send({ error: message });
+      return reply.code(status ?? 500).send({ error: code });
     }
+    await deps.db.decision.create({
+      data: {
+        kind: "link_card_reveal",
+        inputs: { spendRequestId: id },
+        rule: "reveal_ok",
+        outcome: { ok: true, validUntil: card.validUntil },
+        userId: user.id,
+      },
+    });
+    return reply.header("cache-control", "no-store").send({
+      spendRequestId: id,
+      brand: card.brand,
+      number: card.number,
+      cvc: card.cvc,
+      expMonth: card.expMonth,
+      expYear: card.expYear,
+      validUntil: card.validUntil,
+    });
   });
 }

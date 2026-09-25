@@ -690,6 +690,20 @@ worker alike. A declined hold answers `409 card_declined` (decision rule
 `hold_declined`; the worker records `extend_failed` with
 `code: "card_declined"`) and pushes `card_declined`; nothing is charged.
 
+One extension at a time per session, whatever pays it. Auto-extend fires
+in the same minutes the user is prompted to tap Extend, and an
+extension's number (its hold's leg), its cap room and the totals it adds
+to all come from the session row, which moves only once the executor has
+paid. So each extension runs start to finish under a transaction-scoped
+Postgres advisory lock on its session (`pg_try_advisory_xact_lock`) and
+re-reads the row inside it. A second extension arriving meanwhile — or
+one priced from a read another extension has since overtaken — is
+refused at once with `409 {"error": "extension_in_progress"}`: nothing
+held, nothing charged, no push (decision rule `extension_in_progress`;
+the worker records the same rule with `action: "none"` and it doesn't
+start the hysteresis window, so the next tick decides from the new
+expiry). Trying again afterwards is safe.
+
 ## POST /session/stop
 
 `{sessionId}` → `{sessionId, stoppedAt}`. Marks the session `stopped` and
@@ -850,7 +864,13 @@ Redelivery is idempotent: a replayed `.request` answers the recorded
 decision (deciding twice could flip the answer once spend moved) and its
 decisions row records `replayed: true`; a `.request` retry that arrives
 after a lifecycle `.created` already created the row (decision
-`"external"`) decides for real and updates that row in place.
+`"external"`) decides for real and updates that row in place. That holds
+for deliveries in flight at the same time too: the decision, its claim on
+the hold, and the ledger row commit in one transaction that starts by
+upserting the row by `stripe_authorization_id` (unique), which inserts it
+or locks it until commit — a concurrent duplicate waits there, then
+answers the stored decision, so an authorization reserves hold room
+exactly once in either arrival order.
 
 ### Ledger events
 
@@ -1649,11 +1669,13 @@ spendable card once approved, so it is a money path and is **checked
 before it is made**: `linkSkipped` says why none was — `dry_run` (either
 dry-run switch on, unless `LINK_TEST_MODE`, whose requests carry
 `test: true` and can't charge), `session_cap_exceeded` (a garage over
-`session_cap_usd`), `daily_cap_exceeded` (today's real spend — sessions
-and garages already approved in Link — plus requests still awaiting
-approval today, plus this confirm's request(s), over `daily_cap_usd`; a
-pending request holds its room because approving it makes it spendable),
-or `link_failed`. None of these block the handoff — the user can still
+`session_cap_usd` — each garage stop is its own purchase, so the cap
+binds each stop, never their sum), `daily_cap_exceeded` (today's real
+spend — sessions and garages already approved in Link — plus requests
+still awaiting approval today, plus this confirm's whole plan — an
+itinerary's street stops included — over `daily_cap_usd`; a pending
+request holds its room because approving it makes it spendable), or
+`link_failed`. None of these block the handoff — the user can still
 pay at the garage's own checkout. The confirm's decision row records
 `spentTodayUsd` and `linkPendingTodayUsd`.
 
@@ -1791,12 +1813,22 @@ PROVIDER_STATE_KEY crypto), and `POST /link/spend-requests/:id/card`.
 **`POST /link/spend-requests/:id/card`** — the approved one-time card, for
 the user to pay the garage's own checkout with (we never automate that
 checkout, so the card has to reach the person at it). Only the caller's
-own request, only while `approved`, unexpired, and unused;
+own request, only while `approved`, unexpired, and unused — and only
+ONCE: the first successful retrieval claims the card by stamping
+`revealed_at` with a compare-and-set (only where it is still null), so of
+any number of calls, concurrent ones included, exactly one gets the
+number, and every later one answers `410 card_already_revealed`.
 `Cache-Control: no-store`; the app asks for Face ID first and hides it
 after 30 seconds. Every reveal — and every refusal (`404
-unknown_spend_request`, `409 not_approved` / `card_expired` /
-`card_used`) — writes a `decisions` row (kind `link_card_reveal`) that
-never carries the number. `revealed_at` is stamped.
+unknown_spend_request`, `410 card_already_revealed`, `409 not_approved` /
+`card_expired` / `card_used` / `card_unreadable`) — writes a `decisions`
+row (kind `link_card_reveal`) that never carries the number. Only those
+named codes ever leave the route, in the body, the decision, or the log:
+any other error answers `500 reveal_failed` and is logged by its class
+name alone, since an error's message can quote what it was handling.
+`POST /link/spend-requests/:id/sync`, which fetches the card to seal it,
+does the same (`404` / `409` / `503` named codes, else `502
+sync_failed`).
 
 **Approval timeout.** Each request stores its `approval_expires_at`
 (creation + 10 minutes). The wallet job expires every request still
@@ -1949,8 +1981,16 @@ accepted. Every call writes a `decisions` row (kind `payment_source`).
    `{fundingMethod}`. The intent must be the caller's (else `404
    unknown_setup_intent`) and `succeeded` (else `409 setup_not_complete`);
    brand, last4, expiry, and the Apple Pay wallet flag are stored — Stripe
-   ids only, never a number. Idempotent per payment method. The first card
-   (or `makeDefault`, the default) becomes the default here and on Stripe.
+   ids only, never a number. Idempotent per payment method, overlapping
+   duplicates included (the one that loses the unique insert answers with
+   the winner's row). The first card (or `makeDefault`, the default)
+   becomes the default here and on Stripe. The same setup posted again
+   after its card was removed reactivates the removed row — but only while
+   Stripe still has the payment method on this Customer; removing detaches
+   it, and Stripe never lets a detached card pay or be attached again, so
+   otherwise it answers `409 funding_method_removed` (decision rule
+   `funding_method_readd_refused`) and the card is added afresh through a
+   new SetupIntent.
 
 `PUT /wallet/funding-methods/:id/default` switches the default.
 `DELETE /wallet/funding-methods/:id` detaches it — refused `409

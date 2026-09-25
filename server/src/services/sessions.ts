@@ -136,9 +136,15 @@ export type ExtensionOutcome =
     }
   | {
       ok: false;
-      /** Executor codes, plus the parkagent_card hold's own refusals —
-       * those happen BEFORE the executor, so nothing was charged. */
-      code: ExecutorErrorCode | "card_declined" | "wallet_not_ready" | "hold_failed";
+      /** Executor codes, plus the parkagent_card hold's own refusals and
+       * extension_in_progress — those happen BEFORE the executor, so
+       * nothing was charged. */
+      code:
+        | ExecutorErrorCode
+        | "card_declined"
+        | "wallet_not_ready"
+        | "hold_failed"
+        | "extension_in_progress";
       message: string;
       price: StayPrice;
       durationMs: number;
@@ -146,12 +152,94 @@ export type ExtensionOutcome =
       hold?: HoldOutcome;
     };
 
+/** How long one extension may hold its session's lock: far longer than
+ * any executor run. It matches Neon's idle_in_transaction_session_timeout
+ * (5 minutes), which is what the lock's transaction is while the executor
+ * runs; past it, an extension loses the lock but keeps its result. */
+export const EXTENSION_LOCK_TIMEOUT_MS = 5 * 60_000;
+
+/**
+ * Run `fn` holding this session's extension lock, or come back at once
+ * with `locked: false` when another extension of it holds the lock. The
+ * lock is a transaction-scoped Postgres advisory lock taken with the
+ * non-blocking try, on a transaction that does nothing else — `fn` writes
+ * through the ordinary client, so nothing it does waits on the lock's
+ * connection, and the lock can't outlive the process (a crash drops the
+ * connection and the lock with it).
+ */
+async function withExtensionLock<T>(
+  db: AppDb,
+  sessionId: string,
+  fn: () => Promise<T>,
+): Promise<{ locked: true; value: T } | { locked: false }> {
+  const run: { done: boolean; value?: T } = { done: false };
+  let acquired = false;
+  try {
+    await db.$transaction(
+      async (tx) => {
+        const key = `session-extension:${sessionId}`;
+        const [row] = await tx.$queryRaw<{ locked: boolean }[]>`
+          SELECT pg_try_advisory_xact_lock(hashtextextended(${key}, 0)) AS locked`;
+        if (row?.locked !== true) return;
+        acquired = true;
+        run.value = await fn();
+        run.done = true;
+      },
+      { timeout: EXTENSION_LOCK_TIMEOUT_MS },
+    );
+  } catch (err) {
+    // The extension finished and its writes stand (none went through the
+    // lock's transaction); only closing that transaction failed.
+    if (run.done) return { locked: true, value: run.value as T };
+    throw err;
+  }
+  return acquired ? { locked: true, value: run.value as T } : { locked: false };
+}
+
 /**
  * Run an already-policy-checked extension through the executor and record
  * what happened (session row, session_events, push). The caller writes the
  * decisions row — route and worker log different inputs.
+ *
+ * One extension at a time per session. Auto-extend fires in exactly the
+ * minutes the user is prompted to tap Extend, and everything an extension
+ * decides comes from the session row — its number (the hold's leg,
+ * `extend-<n>`), the caps' room, the totals it adds to — and moves only
+ * when the executor has paid. So the whole extension, from choosing that
+ * number and placing its hold to recording the result, runs under the
+ * session's lock, on a row read inside it. A second extension arriving
+ * meanwhile is refused at once with `extension_in_progress` — nothing
+ * held, nothing charged — and so is one priced from a read that another
+ * extension has since overtaken: it would reuse that extension's number
+ * and hold. Either can simply try again.
  */
 export async function applyExtension(
+  deps: SessionDeps,
+  session: SessionRow,
+  minutes: number,
+  price: StayPrice,
+  source: "manual" | "auto",
+): Promise<ExtensionOutcome> {
+  const locked = await withExtensionLock(deps.db, session.id, async () => {
+    const fresh = await deps.db.session.findUnique({ where: { id: session.id } });
+    if (!fresh || fresh.status !== session.status || fresh.extendCount !== session.extendCount) {
+      return null;
+    }
+    return extendLocked(deps, fresh, minutes, price, source);
+  });
+  if (locked.locked && locked.value !== null) return locked.value;
+  return {
+    ok: false,
+    code: "extension_in_progress",
+    message: locked.locked
+      ? "another extension of this session landed since it was priced"
+      : "another extension of this session is in progress",
+    price,
+    durationMs: 0,
+  };
+}
+
+async function extendLocked(
   deps: SessionDeps,
   session: SessionRow,
   minutes: number,

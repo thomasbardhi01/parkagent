@@ -203,20 +203,37 @@ export class LinkWallet {
   /**
    * The one-time card of an approved garage request, for the user to pay
    * with at the garage's own checkout (we never automate it). Only the
-   * owner, only while approved, unexpired, and unused; every reveal is
-   * stamped (and audited by the route). Throws a typed message otherwise.
+   * owner, only while approved and unexpired, and only ONCE: the first
+   * successful retrieval stamps revealed_at with a compare-and-set (only
+   * where it is still null), so of any number of calls — a retry, a second
+   * tap, a stolen token — exactly one ever gets the number, and every
+   * later one throws `card_already_revealed`. Throws a typed message
+   * otherwise, and never one carrying card data: the sealed card is opened
+   * only after every check passed, and a card that won't open is
+   * `card_unreadable`, never the parser's own message (which quotes its
+   * input).
    */
   async revealCard(userId: string, id: string): Promise<LinkOneTimeCard> {
     if (!this.deps.stateCrypto) throw new Error("link_not_configured");
     const row = await this.deps.db.linkSpendRequest.findUnique({ where: { id } });
     if (!row || row.userId !== userId) throw new Error("unknown_spend_request");
+    if (row.revealedAt != null) throw new Error("card_already_revealed");
     if (row.status !== "approved" || !row.cardEncrypted) throw new Error("not_approved");
     if (row.cardUsedAt !== null) throw new Error("card_used");
     if (row.validUntil !== null && row.validUntil.getTime() <= this.now().getTime()) {
       throw new Error("card_expired");
     }
-    const card = JSON.parse(this.deps.stateCrypto.open(row.cardEncrypted)) as LinkOneTimeCard;
-    await this.deps.db.linkSpendRequest.update({ where: { id }, data: { revealedAt: this.now() } });
+    let card: LinkOneTimeCard;
+    try {
+      card = JSON.parse(this.deps.stateCrypto.open(row.cardEncrypted)) as LinkOneTimeCard;
+    } catch {
+      throw new Error("card_unreadable");
+    }
+    const claim = await this.deps.db.linkSpendRequest.updateMany({
+      where: { id, status: "approved", revealedAt: null },
+      data: { revealedAt: this.now() },
+    });
+    if (claim.count !== 1) throw new Error("card_already_revealed");
     return card;
   }
 

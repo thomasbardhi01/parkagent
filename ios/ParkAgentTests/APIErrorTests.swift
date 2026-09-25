@@ -40,6 +40,18 @@ final class APIErrorTests: XCTestCase {
         XCTAssertTrue(error.startFailureMessage.contains("may or may not have gone through"), error.startFailureMessage)
     }
 
+    /// The Link one-time card is shown once; the server answers any later
+    /// reveal 410, and that must read as its own sentence, not a server
+    /// error.
+    func testAnAlreadyRevealedLinkCardSaysSo() {
+        let error = LiveAPI.failure(status: 410, data: Data(#"{"error":"card_already_revealed"}"#.utf8))
+        guard case .refused(let code) = error else {
+            return XCTFail("410 card_already_revealed should decode as .refused, got \(error)")
+        }
+        XCTAssertEqual(code, "card_already_revealed")
+        XCTAssertEqual(error.errorDescription, "That Link card was already shown once, and it can't be shown again.")
+    }
+
     func testAPlainRefusalKeepsItsOwnSentence() {
         let error = LiveAPI.failure(status: 409, data: Data(#"{"error":"session_already_active"}"#.utf8))
         XCTAssertFalse(error.paymentOutcomeUnknown)

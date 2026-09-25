@@ -393,10 +393,12 @@ export async function settleHold(
  * The Issuing webhook's side: find a live hold of this user with room for
  * `amountUsd` and claim that room (authorized_usd += amount), atomically.
  * Newest hold first — one open session per user means at most one leg is in
- * flight. Returns the claimed hold, or why none fit.
+ * flight. Returns the claimed hold, or why none fit. `db` may be a
+ * transaction's client: the webhook claims inside the transaction that
+ * records the authorization, so the claim and the row commit together.
  */
 export async function claimHoldForAuthorization(
-  db: AppDb,
+  db: Pick<AppDb, "sessionHold">,
   userId: string,
   amountUsd: number,
   at: Date,

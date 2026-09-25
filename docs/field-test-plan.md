@@ -27,14 +27,12 @@ using the app; friends join only while the server is back in dry run.
    later. `curl -s https://parkagent-api.fly.dev/health` must show that
    commit and `"dryRun": true`. After a merge, `waitdeploy <PR>` blocks
    until it does (see CLAUDE.md).
-2. **Give the server room for the browser.** Paying runs headless Chromium
+2. **The server has room for the browser.** Paying runs headless Chromium
    on the one Fly machine, and nothing has run the executor on Fly yet.
-   `fly.toml` pins `[[vm]] memory = '512mb'`, and **every `fly deploy`
-   resets the machine to that**, so `fly scale memory` alone is undone by
-   the next merge. Raise it in `fly.toml` (a PR), or scale again after
-   the last deploy before the drive, and check:
+   The size lives in `fly.toml`'s `[[vm]]` block (1 GB), and every deploy
+   re-applies it. Don't use `fly scale memory`: the next merge undoes it.
+   Check:
 
-       fly scale memory 1024 -a parkagent-api
        fly scale show -a parkagent-api      # MEMORY 1024 MB
 
 3. **Install** the Debug build from Xcode (Product → Run on your phone).

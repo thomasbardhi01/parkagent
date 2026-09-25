@@ -34,6 +34,9 @@ primary_region = 'ewr'
     method = 'GET'
     path = '/health'
 
+# Machine size lives here, not in `fly scale`: every `fly deploy` (rollbacks
+# included) re-applies this block and undoes `fly scale memory`/`fly scale vm`.
+# 1 GB because paying runs the executor's headless Chromium on this machine.
 [[vm]]
   size = 'shared-cpu-1x'
-  memory = '512mb'
+  memory = '1gb'

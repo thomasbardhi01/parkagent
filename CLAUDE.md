@@ -285,8 +285,13 @@ prints the commit it tested).
     curl -s https://parkagent-api.fly.dev/health
 
 Then fix forward in a PR. A rollback doesn't revert migrations, so keep
-them additive. `fly deploy` re-applies `fly.toml`'s `[[vm]]` block
-(memory 512 MB), which undoes any `fly scale memory`.
+them additive.
+
+**Machine size lives in `fly.toml`.** The `[[vm]]` block is
+`shared-cpu-1x` with 1 GB, which the executor's Chromium needs. Every `fly
+deploy`, rollbacks included, re-applies it and undoes any `fly scale
+memory` or `fly scale vm`. Change the size in `fly.toml` through a PR, and
+check it with `fly scale show -a parkagent-api`.
 
 ## Commands
 - `pnpm -C server dev`         start the API locally

@@ -59,7 +59,8 @@ curl -s https://parkagent-api.fly.dev/health  # commit is the old one, ok: true
 
 A rollback redeploys only the image. Migrations aren't reverted, so this
 works only while the new migrations are additive. Every migration so far
-has been. The `[[vm]]` block in `fly.toml` is re-applied too.
+has been. The `[[vm]]` block in `fly.toml` (machine size) is re-applied
+too.
 
 **Fix (#133).** `app.ts` gained `createFastify()`, which returns the bare,
 logger-configured instance. `index.ts` creates `app` right after

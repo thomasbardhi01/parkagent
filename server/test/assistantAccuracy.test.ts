@@ -224,7 +224,7 @@ describe("itinerary sign-off, reorder, and the cap", () => {
     }
   });
 
-  test("PATCH reorders the stops and preserves per-stop linkage", async () => {
+  test("PATCH moves a stop only once its time is cleared; timed stops keep arrival order", async () => {
     const t = makeTestApp({});
     seedItineraryPlan(t, stopRows);
     await t.app.inject({
@@ -234,22 +234,26 @@ describe("itinerary sign-off, reorder, and the cap", () => {
       payload: { planId: "plan-day" },
     });
     const id = t.state.itineraries[0]!.id;
-    const reordered = [
-      stopRows[5],
-      stopRows[0],
-      stopRows[1],
-      stopRows[2],
-      stopRows[3],
-      stopRows[4],
-    ];
-    const res = await t.app.inject({
-      method: "PATCH",
-      url: `/assistant/itineraries/${id}`,
-      headers: HEADERS,
-      payload: { stops: reordered },
-    });
-    expect(res.statusCode).toBe(200);
-    const stops = (res.json() as { stops: { label: string }[] }).stops;
+    const [s1, s2, s3, s4, s5, fenway] = stopRows as Record<string, unknown>[];
+    const patch = (stops: unknown[]) =>
+      t.app.inject({
+        method: "PATCH",
+        url: `/assistant/itineraries/${id}`,
+        headers: HEADERS,
+        payload: { stops },
+      });
+
+    // Still timed: the evening game can't be dragged above the morning.
+    const timed = await patch([fenway, s1, s2, s3, s4, s5]);
+    expect(timed.statusCode).toBe(200);
+    expect((timed.json() as { stops: { label: string }[] }).stops.at(-1)!.label).toBe(
+      "Fenway game",
+    );
+
+    // Time cleared: it goes where the user put it.
+    const untimed = await patch([{ ...fenway, arrival: null }, s1, s2, s3, s4, s5]);
+    expect(untimed.statusCode).toBe(200);
+    const stops = (untimed.json() as { stops: { label: string }[] }).stops;
     expect(stops[0]!.label).toBe("Fenway game");
     expect(stops).toHaveLength(6);
   });

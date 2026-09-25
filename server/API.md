@@ -1535,7 +1535,9 @@ model): its price, `deepLink`, `provider`, and pin are the search's,
 never model text;
 `itinerary` is 1–12 stops (address, arrival, duration, street|garage
 choice, cost) with `totalUsd` recomputed server-side and refused when it
-busts the remaining daily budget.
+busts the remaining daily budget. Every proposed stop has an arrival
+(pricing needs one), and the stops are stored in arrival order whatever
+order the model listed them in.
 
 ### POST /assistant/confirm
 
@@ -1595,6 +1597,22 @@ garage links, payment source) across the edit. The itinerary worker
 (`itinerary_garage_link` push), attaches street sessions that start
 inside a stop's window, and marks the day `done` when the last window
 passes.
+
+**Stop order.** One rule, applied by the server on propose, PATCH, and
+GET, and by the app on every render (`plans.ts` `orderStopsByArrival`,
+iOS `ItineraryOrder`): a stop with no set time keeps the slot it is in;
+the timed stops fill the other slots in ascending arrival (ties keep
+their order). So a later stop never sits above an earlier one, and only
+an untimed stop is placed by hand — the app offers drag and Move up/down
+for those alone; changing a stop's time re-sorts it.
+
+**No set time.** A PATCH stop's `arrival` may be `null` (or omitted) —
+the user cleared it; a present arrival must parse (`400
+unreadable_time`, `stopId`) and is stored as ET with its offset. An
+untimed stop has no window: no garage-link push, no street session
+attached by time, and it keeps the day open until the end of its date.
+Its `costUsd` stays what it was priced at. The `itinerary_edited`
+decision records `untimedStops`.
 
 ### Garage providers (SpotHero + ParkWhiz)
 

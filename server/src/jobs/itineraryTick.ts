@@ -6,12 +6,16 @@
  *   started inside a stop's window links in, so Home can show live
  *   status per stop.
  * - A day whose last stop's window has passed is marked done.
+ * A stop with no set time (the user cleared it) has no window: no garage
+ * push, no session attached by time, and it keeps the day open until the
+ * end of its date, since it could still happen any time that day.
  * Every push writes a decisions row.
  */
 
 import type { AppDb } from "../db.js";
 import { itineraryGaragePush } from "../services/apns.js";
 import type { PushSender } from "../services/apns.js";
+import { parseEasternTime } from "../services/hours.js";
 
 const GARAGE_PUSH_LEAD_MS = 15 * 60_000;
 
@@ -26,7 +30,8 @@ interface StopState {
   id: string;
   label: string;
   choice: "street" | "garage";
-  arrival: string;
+  /** null: no set time. */
+  arrival: string | null;
   durationMinutes: number;
   deepLink?: string;
   sessionId?: string | null;
@@ -40,25 +45,46 @@ export interface ItineraryWorker {
   stop(): void;
 }
 
+/** The last second of the plan's calendar day, Eastern. `date` is stored
+ * from the plan's "YYYY-MM-DD" (UTC midnight), so its UTC date IS the
+ * plan's day. 0 when it can't be read: the day then closes on its timed
+ * stops alone. */
+function endOfPlanDay(date: Date): number {
+  const ymd = date.toISOString().slice(0, 10);
+  return parseEasternTime(`${ymd}T23:59:59`)?.getTime() ?? 0;
+}
+
 export function makeItineraryWorker(deps: ItineraryTickDeps): ItineraryWorker {
   const now = () => deps.now?.() ?? new Date();
 
   async function evaluate(itinerary: {
     id: string;
     userId: string;
+    date: Date;
     stops: unknown;
   }): Promise<void> {
     const at = now();
     const stops = itinerary.stops as StopState[];
     let changed = false;
     let lastEnd = 0;
+    let untimed = false;
 
     const sessions = await deps.db.session.findMany({
-      where: { userId: itinerary.userId, createdAt: { gte: new Date(at.getTime() - 24 * 60 * 60_000) } },
+      where: {
+        userId: itinerary.userId,
+        createdAt: { gte: new Date(at.getTime() - 24 * 60 * 60_000) },
+      },
     });
 
     for (const stop of stops) {
-      const arrival = new Date(stop.arrival).getTime();
+      // Explicitly skipped, never read as a time: `new Date(null)` is the
+      // epoch, which only happened to fall outside every window.
+      const arrivalAt = stop.arrival ? parseEasternTime(stop.arrival) : null;
+      if (!arrivalAt) {
+        untimed = true;
+        continue;
+      }
+      const arrival = arrivalAt.getTime();
       const end = arrival + stop.durationMinutes * 60_000;
       lastEnd = Math.max(lastEnd, end);
 
@@ -106,7 +132,8 @@ export function makeItineraryWorker(deps: ItineraryTickDeps): ItineraryWorker {
     if (changed) {
       await deps.db.itinerary.update({ where: { id: itinerary.id }, data: { stops } });
     }
-    if (lastEnd > 0 && at.getTime() > lastEnd) {
+    const doneAfter = untimed ? Math.max(lastEnd, endOfPlanDay(itinerary.date)) : lastEnd;
+    if (doneAfter > 0 && at.getTime() > doneAfter) {
       await deps.db.itinerary.update({ where: { id: itinerary.id }, data: { status: "done" } });
     }
   }

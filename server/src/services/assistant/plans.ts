@@ -7,6 +7,8 @@
 
 import { z } from "zod";
 
+import { parseEasternTime } from "../hours.js";
+
 export const singleSpotOptionSchema = z.object({
   id: z.string().min(1),
   type: z.enum(["street", "garage"]),
@@ -73,6 +75,16 @@ export const itineraryStopSchema = z.object({
   zoneId: z.string().optional(),
   garageOptionId: z.string().optional(),
   deepLink: z.string().url().optional(),
+});
+
+/**
+ * A stop as the user edits it after sign-off (PATCH): the model's shape,
+ * except the arrival may be cleared — `null` (or omitted) is "no set
+ * time". The model must still give every stop a time, because pricing
+ * needs one; only the edit path is looser.
+ */
+export const editedItineraryStopSchema = itineraryStopSchema.extend({
+  arrival: z.string().min(1).nullable().optional(),
 });
 
 export const itineraryPlanSchema = z.object({
@@ -144,4 +156,29 @@ export type AssistantPlanBody = z.infer<typeof planSchema>;
  * the model typed. Half-up to the cent. */
 export function itineraryTotalUsd(stops: { costUsd: number }[]): number {
   return Math.round(stops.reduce((sum, s) => sum + s.costUsd, 0) * 100) / 100;
+}
+
+/**
+ * The one ordering rule for an itinerary's stops. The app applies the same
+ * rule (ios ItineraryOrder.swift), so the stored order is the order shown.
+ * A stop with no set time keeps the slot it occupies — the user put it
+ * there; the timed stops fill the remaining slots in ascending arrival,
+ * ties keeping their relative order. A later stop can never sit above an
+ * earlier one, and only an untimed stop is ever placed by hand. An arrival
+ * that doesn't parse orders like no time at all (callers refuse those
+ * before storing).
+ */
+export function orderStopsByArrival<T extends { arrival?: string | null }>(
+  stops: readonly T[],
+): T[] {
+  const instant = (stop: T): number | null => {
+    if (!stop.arrival) return null;
+    return parseEasternTime(stop.arrival)?.getTime() ?? null;
+  };
+  const timed = stops
+    .map((stop, index) => ({ stop, index, at: instant(stop) }))
+    .filter((entry): entry is { stop: T; index: number; at: number } => entry.at !== null)
+    .sort((a, b) => a.at - b.at || a.index - b.index);
+  let next = 0;
+  return stops.map((stop) => (instant(stop) === null ? stop : timed[next++]!.stop));
 }

@@ -26,7 +26,12 @@ import type { CandidateFetcher } from "../zoneLookup.js";
 import { lookupRadiusM, resolveCandidates } from "../zoneLookup.js";
 import { applyObservedToCandidates } from "../zoneTermsObserved.js";
 import { currentTimeLine } from "./loop.js";
-import { MODEL_PLAN_JSON_SCHEMA, itineraryTotalUsd, planSchema } from "./plans.js";
+import {
+  MODEL_PLAN_JSON_SCHEMA,
+  itineraryTotalUsd,
+  orderStopsByArrival,
+  planSchema,
+} from "./plans.js";
 import type { AssistantPlanBody, SingleSpotOption, SingleSpotPlan } from "./plans.js";
 
 export interface AssistantDeps {
@@ -737,7 +742,9 @@ export class AssistantTools {
         ...plan,
         totalUsd,
         capUsd: policy.daily_cap_usd,
-        stops: plan.stops.map((stop) => {
+        // Stored in arrival order, whatever order the model listed them
+        // in: the card shows the day as it will happen.
+        stops: orderStopsByArrival(plan.stops).map((stop) => {
           // Arrivals are stored in one canonical form: the itinerary tick
           // pushes each garage link 15 minutes before this instant, and an
           // offset-less string meant a different instant on every host.

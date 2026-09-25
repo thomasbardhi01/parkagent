@@ -22,11 +22,15 @@ import type { AppDeps } from "../app.js";
 import { assistantSpendTodayUsd, runAssistantTurn } from "../services/assistant/loop.js";
 import type { AssistantResult } from "../services/assistant/loop.js";
 import { CONFIRMATION_TTL_MS } from "../services/assistant/tools.js";
-import { itineraryStopSchema, itineraryTotalUsd } from "../services/assistant/plans.js";
+import {
+  editedItineraryStopSchema,
+  itineraryTotalUsd,
+  orderStopsByArrival,
+} from "../services/assistant/plans.js";
 import type { ItineraryPlan, SingleSpotPlan } from "../services/assistant/plans.js";
 import { garageHandoffNote, garageProviderInfo } from "../services/garage/garageProvider.js";
 import { cityForZone, providerForCity } from "../providers/registry.js";
-import { nycStartOfDay, parseEasternTime } from "../services/hours.js";
+import { easternIso, nycStartOfDay, parseEasternTime } from "../services/hours.js";
 import { LINK_PENDING_STATUSES, linkSpentSince } from "../services/link/linkSpend.js";
 import { makeRateLimiter } from "../services/rateLimit.js";
 import { spentToday } from "../services/sessions.js";
@@ -61,7 +65,7 @@ const confirmSchema = z.object({
 });
 
 const patchItinerarySchema = z.object({
-  stops: z.array(itineraryStopSchema).min(1).max(12),
+  stops: z.array(editedItineraryStopSchema).min(1).max(12),
 });
 
 /**
@@ -582,7 +586,9 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
           id: r.id,
           status: r.status,
           date: r.date.toISOString(),
-          stops: r.stops,
+          // Arrival order (untimed stops where the user put them), even
+          // for a day stored before the rule existed.
+          stops: orderStopsByArrival(r.stops as { arrival?: string | null }[]),
           totalUsd: Number(r.totalUsd),
         })),
     };
@@ -601,6 +607,15 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
     }
     if (row.status !== "signed_off") {
       return reply.code(409).send({ error: "itinerary_not_editable", status: row.status });
+    }
+    // A time is either cleared (null — "no set time") or readable: an
+    // unreadable one would silently order as untimed and never trigger
+    // the worker's garage push.
+    const unreadable = parsed.data.stops.find((s) => s.arrival && !parseEasternTime(s.arrival));
+    if (unreadable) {
+      return reply
+        .code(400)
+        .send({ error: "unreadable_time", stopId: unreadable.id, value: unreadable.arrival });
     }
     const totalUsd = itineraryTotalUsd(parsed.data.stops);
     const spentTodayUsd = await spentToday(deps.db, user.id, now());
@@ -629,7 +644,14 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
       normalizeSource(userRow?.paymentSource) === "parkagent_card"
         ? "parkagent_card"
         : "provider_card";
-    const stops = parsed.data.stops.map((s) => ({
+    // Stored in the one canonical form sign-off uses (ET with its offset),
+    // and in arrival order — the same rule the app displays with, so a
+    // client can't store a later stop above an earlier one.
+    const edited = parsed.data.stops.map((s) => ({
+      ...s,
+      arrival: s.arrival ? easternIso(parseEasternTime(s.arrival)!) : null,
+    }));
+    const stops = orderStopsByArrival(edited).map((s) => ({
       ...s,
       sessionId: previous.get(s.id)?.["sessionId"] ?? null,
       garageLinkPushedAt: previous.get(s.id)?.["garageLinkPushedAt"] ?? null,
@@ -641,7 +663,12 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
     await deps.db.decision.create({
       data: {
         kind: "assistant_confirm",
-        inputs: { itineraryId: id, edit: true, stops: stops.length },
+        inputs: {
+          itineraryId: id,
+          edit: true,
+          stops: stops.length,
+          untimedStops: stops.filter((s) => s.arrival === null).length,
+        },
         rule: "itinerary_edited",
         outcome: { totalUsd },
         userId: user.id,

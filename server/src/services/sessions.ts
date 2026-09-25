@@ -9,7 +9,12 @@
 import type { AppDb, SessionRow } from "../db.js";
 import { cityForZone, providerForCity } from "../providers/registry.js";
 import type { PushSender } from "./apns.js";
-import { freePeriodPush, paymentFailedPush, sessionExtendedPush } from "./apns.js";
+import {
+  cardDeclinedPush,
+  freePeriodPush,
+  paymentFailedPush,
+  sessionExtendedPush,
+} from "./apns.js";
 import type { ExecutorDiagnostics, ExecutorErrorCode, ExecutorProvider } from "./executor.js";
 import type { HoursInterval } from "./hours.js";
 import { nycStartOfDay } from "./hours.js";
@@ -19,6 +24,9 @@ import { priceStay } from "./quote.js";
 import type { ShadowResult } from "./shadow.js";
 import { fireShadowAuthorization } from "./shadow.js";
 import type { StripeGateway } from "./stripeGateway.js";
+import type { SettleReason } from "./wallet/holds.js";
+import { placeHold, settleHold } from "./wallet/holds.js";
+import { parkAgentCardReadiness } from "./wallet/parkagentCard.js";
 
 export interface SessionDeps {
   db: AppDb;
@@ -104,6 +112,9 @@ export function priceExtension(session: SessionRow, policy: Policy, minutes: num
   );
 }
 
+/** What happened to a parkagent_card leg's hold (absent for other sources). */
+export type HoldOutcome = Record<string, unknown>;
+
 export type ExtensionOutcome =
   | {
       ok: true;
@@ -113,14 +124,18 @@ export type ExtensionOutcome =
       durationMs: number;
       /** Present when shadow mode fired (or tried to fire) a test auth. */
       shadow?: ShadowResult;
+      hold?: HoldOutcome;
     }
   | {
       ok: false;
-      code: ExecutorErrorCode;
+      /** Executor codes, plus the parkagent_card hold's own refusals —
+       * those happen BEFORE the executor, so nothing was charged. */
+      code: ExecutorErrorCode | "card_declined" | "wallet_not_ready" | "hold_failed";
       message: string;
       price: StayPrice;
       durationMs: number;
       diagnostics?: ExecutorDiagnostics;
+      hold?: HoldOutcome;
     };
 
 /**
@@ -137,6 +152,73 @@ export async function applyExtension(
 ): Promise<ExtensionOutcome> {
   const now = deps.now?.() ?? new Date();
   const dryRun = deps.policy.effectiveDryRun();
+  const providerName = providerForCity(session.city)?.displayName ?? "your parking account";
+
+  // parkagent_card: every extension is its own leg with its own hold,
+  // placed before the provider is asked to charge our card.
+  let settle: (reason: SettleReason) => Promise<HoldOutcome | undefined> = async () => undefined;
+  if (session.paymentSource === "parkagent_card") {
+    const refuse = async (
+      code: "card_declined" | "wallet_not_ready" | "hold_failed",
+      message: string,
+    ): Promise<ExtensionOutcome> => {
+      await deps.db.sessionEvent.create({
+        data: {
+          sessionId: session.id,
+          kind: "failed",
+          at: now,
+          minutes,
+          dryRun,
+          details: { source, op: "extend", code, message },
+        },
+      });
+      await deps.sendPush(
+        session.userId,
+        code === "card_declined"
+          ? cardDeclinedPush({ zoneNumber: session.providerZoneNumber, what: "extend" })
+          : paymentFailedPush({
+              zoneNumber: session.providerZoneNumber,
+              what: "extend",
+              code,
+              providerName,
+            }),
+      );
+      return { ok: false, code, message, price, durationMs: 0 };
+    };
+    const provider = providerForCity(session.city);
+    const readiness = await parkAgentCardReadiness(
+      deps.db,
+      session.userId,
+      provider?.id ?? null,
+      dryRun,
+    );
+    if (!readiness.ready) return refuse("wallet_not_ready", readiness.reason);
+    const hold = await placeHold(deps, {
+      userId: session.userId,
+      sessionId: session.id,
+      leg: `extend-${session.extendCount + 1}`,
+      quoteUsd: price.totalUsd,
+    });
+    if (!hold.ok) {
+      return hold.reason === "declined"
+        ? refuse("card_declined", `hold declined (${hold.declineCode})`)
+        : refuse(
+            hold.reason === "no_funding_method" ? "wallet_not_ready" : "hold_failed",
+            hold.message,
+          );
+    }
+    settle = async (reason) => {
+      if (hold.simulated) return { simulated: true, wouldHold: hold.heldUsd };
+      const settled = await settleHold(deps, hold.hold.id, reason);
+      return {
+        holdId: settled.holdId,
+        heldUsd: settled.heldUsd,
+        status: settled.status,
+        capturedUsd: settled.capturedUsd,
+      };
+    };
+  }
+
   const executor = deps.executorFor({
     userId: session.userId,
     city: cityForZone(session.zoneId),
@@ -171,6 +253,7 @@ export async function applyExtension(
       session.userId,
       freePeriodPush({ zoneNumber: session.providerZoneNumber, notice: result.message }),
     );
+    const hold = await settle("free_period");
     return {
       ok: false,
       code: result.code,
@@ -178,6 +261,7 @@ export async function applyExtension(
       price,
       durationMs,
       ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}),
+      ...(hold ? { hold } : {}),
     };
   }
 
@@ -198,9 +282,10 @@ export async function applyExtension(
         zoneNumber: session.providerZoneNumber,
         what: "extend",
         code: result.code,
-        providerName: providerForCity(session.city)?.displayName ?? "your parking account",
+        providerName,
       }),
     );
+    const hold = await settle("leg_failed");
     return {
       ok: false,
       code: result.code,
@@ -208,8 +293,11 @@ export async function applyExtension(
       price,
       durationMs,
       ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}),
+      ...(hold ? { hold } : {}),
     };
   }
+
+  const hold = await settle("leg_paid");
 
   const updated = await deps.db.session.update({
     where: { id: session.id },
@@ -262,5 +350,6 @@ export async function applyExtension(
     expiresAt: result.expiresAt,
     durationMs,
     ...(shadow ? { shadow } : {}),
+    ...(hold ? { hold } : {}),
   };
 }

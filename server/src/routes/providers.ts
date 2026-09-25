@@ -29,6 +29,7 @@ import {
   runSetupCard,
 } from "../services/providerLink.js";
 import type { ProviderStorageState } from "../services/providerOps.js";
+import { normalizeSource } from "../services/wallet/summary.js";
 
 const cookieSchema = z.object({
   name: z.string().min(1).max(256),
@@ -115,19 +116,18 @@ export function registerProviders(app: FastifyInstance, deps: AppDeps): void {
     const user = req.authedUser!;
     const at = now();
 
-    // provider_card (the default payment source): sessions pay with the
-    // card already on the user's provider account, so linking neither
-    // replaces the payment method nor needs consent for it — the chained
-    // setup-card is skipped outright. shadow_mode no longer skips it: it
-    // only adds a test authorization alongside real spends, whatever the
-    // source.
+    // Only the ParkAgent card puts OUR card on the account (the chained
+    // setup-card, behind its consent gate). provider_card — and link_wallet,
+    // whose street meters pay with the account's own card too — never
+    // touches the account's payment method. shadow_mode doesn't change
+    // this: it only adds a test authorization alongside real spends.
     const userRow = await deps.db.user.findUnique({
       where: { id: user.id },
       select: { paymentSource: true },
     });
-    const paymentSource = userRow?.paymentSource ?? "provider_card";
+    const paymentSource = normalizeSource(userRow?.paymentSource);
     const shadowMode = deps.policy.get().shadow_mode === true;
-    const setUpCard = body.set_up_card && paymentSource === "issuing_card";
+    const setUpCard = body.set_up_card && paymentSource === "parkagent_card";
 
     // Replacing the account's payment method is consequential enough to
     // demand explicit consent up front, before anything runs.
@@ -192,12 +192,13 @@ export function registerProviders(app: FastifyInstance, deps: AppDeps): void {
       return reply.code(409).send({ error: "verification_failed", code: verify.code });
     }
 
-    // provider_card users pay with the card already on the account: read
-    // its brand/last4 off the provider's Your Cards screen for display.
-    // Best effort — a miss stores nulls and never blocks the link.
+    // Everyone but the ParkAgent card pays street meters with the card
+    // already on the account: read its brand/last4 off the provider's Your
+    // Cards screen for display ("Your card on …  ••4242"). Best effort — a
+    // miss stores nulls and never blocks the link.
     let cardBrand: string | null = null;
     let cardLast4: string | null = null;
-    if (paymentSource === "provider_card") {
+    if (paymentSource !== "parkagent_card") {
       try {
         const saved = await ops.readSavedCard();
         if (saved.ok) {

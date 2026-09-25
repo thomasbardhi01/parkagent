@@ -37,7 +37,8 @@ import { NominatimGeocoder } from "./services/assistant/geocoder.js";
 import { makeLinkHttpClient } from "./services/link/linkClient.js";
 import { LinkWallet } from "./services/link/linkWallet.js";
 import { makeItineraryWorker } from "./jobs/itineraryTick.js";
-import { makeStripeGateway } from "./services/stripeGateway.js";
+import { isTestModeKey, makeStripeGateway } from "./services/stripeGateway.js";
+import { makeWalletTick } from "./jobs/walletTick.js";
 import { makeCandidateFetcher, makeNearbyZoneFetcher } from "./services/zoneLookup.js";
 
 // Secrets live in the repo-root .env (see .env.example), not in server/.
@@ -135,7 +136,12 @@ const linkClient =
         testMode: env.LINK_TEST_MODE === "true",
       })
     : undefined;
-const linkWallet = new LinkWallet({ db, stateCrypto, linkClient });
+const linkWallet = new LinkWallet({
+  db,
+  stateCrypto,
+  linkClient,
+  testMode: env.LINK_TEST_MODE === "true",
+});
 // Model routing: ASSISTANT_MODEL (→ ANTHROPIC_MODEL → sonnet) runs the
 // tool loop; EXPLAIN_MODEL (haiku) phrases explanations.
 const models = resolveAssistantModels(env);
@@ -214,6 +220,9 @@ const app = buildApp({
   ...(stateCrypto ? { stateCrypto } : {}),
   providerOps,
   issuingLive: env.ISSUING_LIVE === "true",
+  // A test-mode Stripe key can't move real money, so a Debug build may
+  // choose the ParkAgent card against it before ISSUING_LIVE.
+  issuingSandbox: isTestModeKey(env.STRIPE_SECRET_KEY),
 });
 
 const extender = makeExtender({
@@ -228,6 +237,9 @@ const extender = makeExtender({
 const cardJanitor = makeCardJanitor({ db, stripe, log });
 const linkJobJanitor = makeLinkJobJanitor({ db, log });
 const itineraryWorker = makeItineraryWorker({ db, sendPush, log });
+// Settles ParkAgent-card holds past their grace period and expires Link
+// approvals nobody gave inside Link's window.
+const walletTick = makeWalletTick({ db, policy, stripe, linkWallet, log });
 // Daily headless check of every linked provider session, so a dead or
 // dying session is re-linked from the couch, not discovered at the curb.
 const providerHealth = makeProviderHealth({ db, sendPush, stateCrypto, providerOps, log });
@@ -238,6 +250,7 @@ cardJanitor.start();
 linkJobJanitor.start();
 itineraryWorker.start();
 providerHealth.start();
+walletTick.start();
 
 // Graceful shutdown: stop the jobs and close the executor's warm Chromium
 // (otherwise every Fly restart leaks the browser process to container
@@ -250,6 +263,7 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
     linkJobJanitor.stop();
     itineraryWorker.stop();
     providerHealth.stop();
+    walletTick.stop();
     void closeExecutorBrowser()
       .catch(() => {})
       .finally(() => {

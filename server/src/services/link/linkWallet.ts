@@ -2,20 +2,51 @@
  * Link wallet orchestration: OAuth connect state, sealed token storage
  * (same AES-256-GCM StateCrypto as provider cookies — tokens never leave
  * the server unsealed), per-stop spend requests on plan confirmation, and
- * the one-time-card lifecycle with the Issuing-card expiry fallback.
+ * the one-time-card lifecycle.
+ *
+ * Scope (the Wallet's "Link" choice): assistant plans and garages. A
+ * spend request is made for each paid GARAGE stop — the user approves it
+ * in Link, then pays at the garage's own checkout with the one-time card
+ * (revealCard, Face ID in the app). Street meters never use Link: the
+ * executor would have to put the one-time card on the provider account,
+ * whose single saved card is the user's own and can't be restored after.
  */
 
 import { createHash, randomBytes } from "node:crypto";
 
 import type { AppDb } from "../../db.js";
 import type { StateCrypto } from "../crypto.js";
-import type { LinkClient, LinkOneTimeCard, LinkTokens } from "./linkClient.js";
+import type {
+  LinkClient,
+  LinkOneTimeCard,
+  LinkPaymentMethodSummary,
+  LinkTokens,
+} from "./linkClient.js";
+import { LINK_APPROVAL_WINDOW_MS } from "./linkClient.js";
 
 export interface LinkWalletDeps {
   db: AppDb;
   stateCrypto?: StateCrypto | undefined;
   linkClient?: LinkClient | undefined;
+  /** LINK_TEST_MODE: spend requests carry test:true and never charge —
+   * the only way one may be created while dry run is on. */
+  testMode?: boolean | undefined;
   now?: (() => Date) | undefined;
+}
+
+/** Link's statuses for a request still waiting on the user. */
+export const LINK_AWAITING_APPROVAL = ["created", "pending_approval", "requires_action"];
+
+/** How stale the cached Link payment method may get before GET /wallet
+ * asks Link again (best effort — a failure keeps the cached one). */
+const PAYMENT_METHOD_MAX_AGE_MS = 10 * 60_000;
+
+export interface PendingLinkApproval {
+  spendRequestId: string;
+  amountUsd: number;
+  merchantName: string | null;
+  approvalUrl: string | null;
+  expiresAt: string;
 }
 
 /** How close to access-token expiry we refresh proactively. */
@@ -38,6 +69,11 @@ export class LinkWallet {
 
   get configured(): boolean {
     return this.deps.linkClient !== undefined && this.deps.stateCrypto !== undefined;
+  }
+
+  /** Sandbox spend requests (test:true) — nothing can charge. */
+  get testMode(): boolean {
+    return this.deps.testMode === true;
   }
 
   private now(): Date {
@@ -79,7 +115,109 @@ export class LinkWallet {
       codeVerifier: pending.codeVerifier,
     });
     await this.persistTokens(pending.userId, tokens);
+    // Display only: which card/bank the wallet pays with. Best effort.
+    await this.refreshPaymentMethod(pending.userId, { force: true }).catch(() => undefined);
     return { userId: pending.userId };
+  }
+
+  /** The cached Link payment method ("Link · Visa ••1234"), refreshed from
+   * Link when stale. Never throws: a failed refresh keeps what we had. */
+  async paymentMethod(userId: string): Promise<LinkPaymentMethodSummary | null> {
+    await this.refreshPaymentMethod(userId).catch(() => undefined);
+    const row = await this.deps.db.linkAccount.findUnique({ where: { userId } });
+    if (row?.status !== "connected" || !row.pmType) return null;
+    return {
+      type: row.pmType === "bank_account" ? "bank_account" : "card",
+      brand: row.pmBrand ?? null,
+      last4: row.pmLast4 ?? null,
+    };
+  }
+
+  private async refreshPaymentMethod(userId: string, options: { force?: boolean } = {}) {
+    if (!this.deps.linkClient) return;
+    const row = await this.deps.db.linkAccount.findUnique({ where: { userId } });
+    if (row?.status !== "connected") return;
+    const fresh =
+      row.pmFetchedAt &&
+      this.now().getTime() - row.pmFetchedAt.getTime() < PAYMENT_METHOD_MAX_AGE_MS;
+    if (fresh && !options.force) return;
+    const token = await this.accessToken(userId);
+    if (!token) return;
+    const pm = await this.deps.linkClient.defaultPaymentMethod(token);
+    await this.deps.db.linkAccount.update({
+      where: { userId },
+      data: {
+        pmType: pm?.type ?? null,
+        pmBrand: pm?.brand ?? null,
+        pmLast4: pm?.last4 ?? null,
+        pmFetchedAt: this.now(),
+      },
+    });
+  }
+
+  /** Requests still waiting for the user's approval in Link, inside the
+   * approval window — the Wallet shows them with their approval links. */
+  async pendingApprovals(userId: string): Promise<PendingLinkApproval[]> {
+    const at = this.now().getTime();
+    const rows = await this.deps.db.linkSpendRequest.findMany({ where: { userId } });
+    return rows
+      .filter((r) => LINK_AWAITING_APPROVAL.includes(r.status))
+      .map((r) => ({ row: r, expiresAt: approvalDeadline(r) }))
+      .filter(({ expiresAt }) => expiresAt.getTime() > at)
+      .sort((a, b) => b.row.createdAt.getTime() - a.row.createdAt.getTime())
+      .map(({ row, expiresAt }) => ({
+        spendRequestId: row.id,
+        amountUsd: Number(row.amountUsd),
+        merchantName: row.merchantName ?? null,
+        approvalUrl: row.approvalUrl,
+        expiresAt: expiresAt.toISOString(),
+      }));
+  }
+
+  /**
+   * The approval timeout: every request still awaiting approval past
+   * Link's window becomes `expired` here, claimed with a compare-and-set so
+   * an approval that lands mid-sweep is never overwritten. Nothing was
+   * charged — an unapproved request never produced a card. Returns the
+   * expired rows so the caller can audit them.
+   */
+  async expireStaleApprovals(): Promise<{ id: string; userId: string; amountUsd: number }[]> {
+    const at = this.now().getTime();
+    const waiting = await this.deps.db.linkSpendRequest.findMany({
+      where: { status: { in: LINK_AWAITING_APPROVAL } },
+    });
+    const expired: { id: string; userId: string; amountUsd: number }[] = [];
+    for (const row of waiting) {
+      if (approvalDeadline(row).getTime() > at) continue;
+      const claim = await this.deps.db.linkSpendRequest.updateMany({
+        where: { id: row.id, status: { in: LINK_AWAITING_APPROVAL } },
+        data: { status: "expired" },
+      });
+      if (claim.count === 1) {
+        expired.push({ id: row.id, userId: row.userId, amountUsd: Number(row.amountUsd) });
+      }
+    }
+    return expired;
+  }
+
+  /**
+   * The one-time card of an approved garage request, for the user to pay
+   * with at the garage's own checkout (we never automate it). Only the
+   * owner, only while approved, unexpired, and unused; every reveal is
+   * stamped (and audited by the route). Throws a typed message otherwise.
+   */
+  async revealCard(userId: string, id: string): Promise<LinkOneTimeCard> {
+    if (!this.deps.stateCrypto) throw new Error("link_not_configured");
+    const row = await this.deps.db.linkSpendRequest.findUnique({ where: { id } });
+    if (!row || row.userId !== userId) throw new Error("unknown_spend_request");
+    if (row.status !== "approved" || !row.cardEncrypted) throw new Error("not_approved");
+    if (row.cardUsedAt !== null) throw new Error("card_used");
+    if (row.validUntil !== null && row.validUntil.getTime() <= this.now().getTime()) {
+      throw new Error("card_expired");
+    }
+    const card = JSON.parse(this.deps.stateCrypto.open(row.cardEncrypted)) as LinkOneTimeCard;
+    await this.deps.db.linkSpendRequest.update({ where: { id }, data: { revealedAt: this.now() } });
+    return card;
   }
 
   private async persistTokens(userId: string, tokens: LinkTokens): Promise<void> {
@@ -100,7 +238,14 @@ export class LinkWallet {
     await this.deps.db.linkAccount.upsert({
       where: { userId },
       create: { userId, status: "disconnected", tokensEncrypted: null },
-      update: { status: "disconnected", tokensEncrypted: null },
+      update: {
+        status: "disconnected",
+        tokensEncrypted: null,
+        pmType: null,
+        pmBrand: null,
+        pmLast4: null,
+        pmFetchedAt: null,
+      },
     });
   }
 
@@ -148,7 +293,13 @@ export class LinkWallet {
     args: {
       planId: string;
       itineraryId?: string;
-      stops: { stopId: string; label: string; amountUsd: number; merchantName: string; merchantUrl: string }[];
+      stops: {
+        stopId: string;
+        label: string;
+        amountUsd: number;
+        merchantName: string;
+        merchantUrl: string;
+      }[];
       test?: boolean;
     },
   ): Promise<{ stopId: string; spendRequestId: string; approvalUrl: string | null }[]> {
@@ -166,7 +317,7 @@ export class LinkWallet {
         context,
         merchantName: stop.merchantName,
         merchantUrl: stop.merchantUrl,
-        ...(args.test !== undefined ? { test: args.test } : {}),
+        ...(args.test !== undefined ? { test: args.test } : this.testMode ? { test: true } : {}),
       });
       await this.deps.db.linkSpendRequest.create({
         data: {
@@ -179,9 +330,15 @@ export class LinkWallet {
           status: created.status,
           approvalUrl: created.approvalUrl,
           validUntil: created.validUntil ? new Date(created.validUntil) : null,
+          merchantName: stop.merchantName,
+          approvalExpiresAt: new Date(this.now().getTime() + LINK_APPROVAL_WINDOW_MS),
         },
       });
-      out.push({ stopId: stop.stopId, spendRequestId: created.id, approvalUrl: created.approvalUrl });
+      out.push({
+        stopId: stop.stopId,
+        spendRequestId: created.id,
+        approvalUrl: created.approvalUrl,
+      });
     }
     return out;
   }
@@ -191,6 +348,9 @@ export class LinkWallet {
     if (!this.deps.linkClient || !this.deps.stateCrypto) throw new Error("link_not_configured");
     const row = await this.deps.db.linkSpendRequest.findUnique({ where: { id } });
     if (!row || row.userId !== userId) throw new Error("unknown_spend_request");
+    // Our timeout sweep already closed it: a late approval can't revive a
+    // request the plan has moved past.
+    if (row.status === "expired") return { status: "expired" };
     const token = await this.accessToken(userId);
     if (!token) throw new Error("link_not_connected");
     const remote = await this.deps.linkClient.retrieveSpendRequest(token, id, {
@@ -210,33 +370,10 @@ export class LinkWallet {
     });
     return { status: remote.status };
   }
+}
 
-  /**
-   * The stop's one-time card if it is approved, unexpired, and unused —
-   * else null and the caller falls back to the Issuing card (and says so).
-   */
-  async usableCardForStop(
-    userId: string,
-    stopId: string,
-  ): Promise<{ spendRequestId: string; card: LinkOneTimeCard } | null> {
-    if (!this.deps.stateCrypto) return null;
-    const rows = await this.deps.db.linkSpendRequest.findMany({ where: { userId } });
-    const row = rows.find((r) => r.stopId === stopId && r.status === "approved");
-    if (!row?.cardEncrypted || row.cardUsedAt !== null) return null;
-    if (row.validUntil !== null && row.validUntil.getTime() <= this.now().getTime()) return null;
-    try {
-      const card = JSON.parse(this.deps.stateCrypto.open(row.cardEncrypted)) as LinkOneTimeCard;
-      return { spendRequestId: row.id, card };
-    } catch {
-      return null;
-    }
-  }
-
-  /** A virtual card is single-use — record the use so nothing retries it. */
-  async markCardUsed(id: string): Promise<void> {
-    await this.deps.db.linkSpendRequest.update({
-      where: { id },
-      data: { cardUsedAt: this.now() },
-    });
-  }
+/** When a request's approval window closes (rows from before the column
+ * existed fall back to creation + the window). */
+function approvalDeadline(row: { approvalExpiresAt?: Date | null; createdAt: Date }): Date {
+  return row.approvalExpiresAt ?? new Date(row.createdAt.getTime() + LINK_APPROVAL_WINDOW_MS);
 }

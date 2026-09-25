@@ -27,6 +27,7 @@ import { registerStripeWebhook } from "./routes/webhooksStripe.js";
 import { registerZones } from "./routes/zones.js";
 import { registerAssistant } from "./routes/assistant.js";
 import { registerLink } from "./routes/link.js";
+import { registerWallet } from "./routes/wallet.js";
 import type { ApnsSendReport, Push, PushSender } from "./services/apns.js";
 import type { ModelClient } from "./services/assistant/loop.js";
 import type { AssistantTools } from "./services/assistant/tools.js";
@@ -94,10 +95,14 @@ export interface AppDeps {
   assistantDailySpendCapUsd?: number;
   /** Link wallet for agents; absent/unconfigured → /link/* answers 503. */
   linkWallet?: LinkWallet;
-  /** ISSUING_LIVE env: whether the ParkAgent Issuing card may be chosen
-   * as a payment source (PUT /me/payment-source). Default false — the app
-   * shows "coming soon". */
+  /** ISSUING_LIVE env: whether the ParkAgent card may be chosen as the
+   * Wallet's payment source (PUT /wallet/source). Default false — the app
+   * shows "Coming soon — pending approval". */
   issuingLive?: boolean;
+  /** STRIPE_SECRET_KEY is a test-mode key: before ISSUING_LIVE, a Debug
+   * build may still choose the ParkAgent card (sandbox: true) — test-mode
+   * keys can't move real money. */
+  issuingSandbox?: boolean;
   /** Injectable clock for tests; routes fall back to `new Date()`. */
   now?: () => Date;
 }
@@ -253,6 +258,7 @@ export function buildApp(deps?: AppDeps): FastifyInstance {
     registerAdmin(app, deps);
     registerAssistant(app, deps);
     registerLink(app, deps);
+    registerWallet(app, deps);
     registerStripeWebhook(app, deps);
   }
   return app;

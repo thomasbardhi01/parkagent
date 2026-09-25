@@ -392,7 +392,8 @@ describe("confirmation-token enforcement", () => {
     expect(confirm.json()).toMatchObject({
       kind: "garage_handoff",
       deepLink: GARAGE.deepLink,
-      paymentSource: "issuing_card",
+      // No Link: the user pays at the garage's own checkout.
+      paymentSource: "garage_checkout",
     });
     // The token the tap minted is single-use — it was consumed by the
     // confirm itself; replaying it is refused.
@@ -438,7 +439,7 @@ describe("confirmation-token enforcement", () => {
       zoneId: "nyc-417371",
       providerZoneNumber: "417371",
       durationMinutes: 90,
-      paymentSource: "issuing_card",
+      paymentSource: "provider_card",
     });
     expect(t.state.decisions.some((d) => d.rule === "street_confirmed")).toBe(true);
   });

@@ -1,16 +1,15 @@
 /**
  * The signed-in user's own surface: profile (GET/PATCH /me), account
- * deletion (DELETE /me), vehicles CRUD, and the payment source —
- * "provider_card" (the card already on the user's ParkNYC / ParkBoston
- * account; onboarding default, skips card setup and funding) or
- * "issuing_card" (the ParkAgent Issuing card, selectable only when the
- * ISSUING_LIVE env flag is on). The daily and session caps apply to every
- * source — the choice moves where the charge lands, never what is allowed.
+ * deletion (DELETE /me), and vehicles CRUD. How the user pays lives in the
+ * Wallet now (routes/wallet.ts); GET /me still reports the active source
+ * so the Account sheet and the Wallet read the same fact.
  *
- * DELETE /me contract (documented here on purpose): refresh tokens are
- * deleted (every device signs out), provider accounts are unlinked and
- * their sealed cookie states erased, any Issuing card is frozen (never
- * canceled — its ledger must keep resolving), vehicles, device tokens and
+ * DELETE /me contract (documented here on purpose): any ParkAgent card is
+ * frozen (never canceled — its ledger must keep resolving) and the Stripe
+ * Customer holding the user's saved funding cards is deleted, refresh
+ * tokens are deleted (every device signs out), provider accounts are
+ * unlinked and their sealed cookie states erased, the Link wallet is
+ * disconnected (tokens revoked and erased), vehicles, device tokens and
  * conversations are deleted, and the users row is TOMBSTONED — identity
  * fields scrubbed, deleted_at stamped, row kept — so the decisions ledger
  * (a non-negotiable) keeps a valid user id without keeping the person.
@@ -21,10 +20,7 @@ import { z } from "zod";
 
 import type { AppDeps } from "../app.js";
 import { publicUser } from "../services/authService.js";
-
-const putSchema = z.object({
-  paymentSource: z.enum(["provider_card", "issuing_card"]),
-});
+import { normalizeSource } from "../services/wallet/summary.js";
 
 const patchMeSchema = z.object({
   name: z.string().min(1).max(100).optional(),
@@ -70,7 +66,11 @@ export function registerMe(app: FastifyInstance, deps: AppDeps): void {
       select: profileSelect,
     });
     if (!row) return reply.code(401).send({ error: "unauthorized" });
-    return { user: publicUser(row), paymentSource: row.paymentSource, issuingLive };
+    return {
+      user: publicUser(row),
+      paymentSource: normalizeSource(row.paymentSource),
+      issuingLive,
+    };
   });
 
   app.patch("/me", async (req, reply) => {
@@ -114,6 +114,31 @@ export function registerMe(app: FastifyInstance, deps: AppDeps): void {
         cardFrozen = true;
       }
     }
+    //    The saved funding cards go with the person: deleting the Stripe
+    //    Customer detaches them. Also a call-out, so also before anything
+    //    local changes.
+    const identity = await db.user.findUnique({
+      where: { id: user.id },
+      select: { stripeCustomerId: true },
+    });
+    let customerDeleted = false;
+    if (identity?.stripeCustomerId && deps.stripe) {
+      await deps.stripe.deleteCustomer(identity.stripeCustomerId);
+      customerDeleted = true;
+    }
+    const funding = await db.fundingMethod.findMany({
+      where: { userId: user.id, removedAt: null },
+    });
+    for (const method of funding) {
+      await db.fundingMethod.update({
+        where: { id: method.id },
+        data: { removedAt: now(), isDefault: false },
+      });
+    }
+    // The Link wallet's sealed tokens: revoked (best effort) and erased.
+    if (deps.linkWallet) {
+      await deps.linkWallet.disconnect(user.id).catch(() => undefined);
+    }
 
     // 2. Sessions out everywhere: refresh tokens and push channels gone.
     await db.refreshToken.deleteMany({ where: { userId: user.id } });
@@ -153,6 +178,8 @@ export function registerMe(app: FastifyInstance, deps: AppDeps): void {
         apiKey: null,
         apiKeyHash: null,
         apiKeyPrefix: null,
+        stripeCustomerId: null,
+        paymentSource: "provider_card",
         deletedAt: now(),
       },
     });
@@ -162,7 +189,7 @@ export function registerMe(app: FastifyInstance, deps: AppDeps): void {
         kind: "account_delete",
         inputs: { providersUnlinked: accounts.map((a) => a.provider) },
         rule: "deleted",
-        outcome: { ok: true, cardFrozen },
+        outcome: { ok: true, cardFrozen, customerDeleted, fundingMethodsRemoved: funding.length },
         userId: user.id,
       },
     });
@@ -244,54 +271,5 @@ export function registerMe(app: FastifyInstance, deps: AppDeps): void {
     await deps.db.session.updateMany({ where: { vehicleId: id }, data: { vehicleId: null } });
     await deps.db.vehicle.delete({ where: { id } });
     return { ok: true };
-  });
-
-  app.get("/me/payment-source", async (req) => {
-    const user = req.authedUser!;
-    const row = await deps.db.user.findUnique({
-      where: { id: user.id },
-      select: { paymentSource: true },
-    });
-    return { paymentSource: row?.paymentSource ?? "provider_card", issuingLive };
-  });
-
-  app.put("/me/payment-source", async (req, reply) => {
-    const parsed = putSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return reply.code(400).send({ error: z.treeifyError(parsed.error) });
-    }
-    const user = req.authedUser!;
-    const wanted = parsed.data.paymentSource;
-
-    // The Issuing card isn't live yet: the app shows it as "coming soon",
-    // and the server refuses to let it become what pays.
-    if (wanted === "issuing_card" && !issuingLive) {
-      const decision = await deps.db.decision.create({
-        data: {
-          kind: "payment_source",
-          inputs: { paymentSource: wanted, issuingLive },
-          rule: "issuing_not_live",
-          outcome: { allowed: false },
-          userId: user.id,
-        },
-      });
-      return reply.code(409).send({ error: "issuing_not_live", decisionId: decision.id });
-    }
-
-    const updated = await deps.db.user.update({
-      where: { id: user.id },
-      data: { paymentSource: wanted },
-      select: { paymentSource: true },
-    });
-    await deps.db.decision.create({
-      data: {
-        kind: "payment_source",
-        inputs: { paymentSource: wanted, issuingLive },
-        rule: "set",
-        outcome: { allowed: true, paymentSource: updated.paymentSource },
-        userId: user.id,
-      },
-    });
-    return { paymentSource: updated.paymentSource, issuingLive };
   });
 }

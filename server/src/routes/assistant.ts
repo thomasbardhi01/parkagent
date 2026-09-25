@@ -26,8 +26,19 @@ import { itineraryStopSchema, itineraryTotalUsd } from "../services/assistant/pl
 import type { ItineraryPlan, SingleSpotPlan } from "../services/assistant/plans.js";
 import { garageHandoffNote, garageProviderInfo } from "../services/garage/garageProvider.js";
 import { cityForZone, providerForCity } from "../providers/registry.js";
+import { parseEasternTime } from "../services/hours.js";
 import { makeRateLimiter } from "../services/rateLimit.js";
 import { spentToday } from "../services/sessions.js";
+import { normalizeSource } from "../services/wallet/summary.js";
+
+/** A plan time (offset honored, offset-less read as ET wall clock). */
+function parseStart(value: string): Date | null {
+  return parseEasternTime(value);
+}
+
+function endOf(start: Date | null, minutes: number): Date | null {
+  return start ? new Date(start.getTime() + minutes * 60_000) : null;
+}
 
 const messageSchema = z
   .object({
@@ -258,10 +269,43 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
       });
     const ctx = { userId: user.id, conversationId: planRow.conversationId };
 
-    const linkEnabled =
+    // How this confirm pays. The user's Wallet source decides:
+    //  - street meters: the card on their provider account, or the
+    //    ParkAgent card (paid at the curb through /session/start). Link
+    //    never pays a street meter — see linkWallet.ts.
+    //  - garages: Link when it's the active source (one spend request per
+    //    paid garage stop, approved in Link, used at the garage's own
+    //    checkout); otherwise the user pays at that checkout themselves.
+    const userRow = await deps.db.user.findUnique({
+      where: { id: user.id },
+      select: { paymentSource: true },
+    });
+    const activeSource = normalizeSource(userRow?.paymentSource);
+    const streetSource = activeSource === "parkagent_card" ? "parkagent_card" : "provider_card";
+    const policy = deps.policy.get();
+    const dryRun = deps.policy.effectiveDryRun();
+    const linkActive =
+      activeSource === "link_wallet" &&
       deps.linkWallet?.configured === true &&
-      deps.policy.get().link_wallet_for_plans !== false &&
+      policy.link_wallet_for_plans !== false &&
       (await deps.linkWallet.status(user.id)).connected;
+    // A spend request becomes a spendable card once approved, so it is a
+    // money path: never under dry run unless Link itself is in test mode
+    // (test requests carry test:true and can't charge).
+    const linkBlockedByDryRun = linkActive && dryRun && deps.linkWallet?.testMode !== true;
+    const spentTodayUsd = await spentToday(deps.db, user.id, at);
+
+    /** Whether Link may be asked for `amountUsd` right now, and why not. */
+    const linkGate = (amountUsd: number, alreadyRequestedUsd = 0): string | null => {
+      if (!linkActive) return "link_not_active";
+      if (amountUsd <= 0) return "free";
+      if (linkBlockedByDryRun) return "dry_run";
+      if (amountUsd > policy.session_cap_usd) return "session_cap_exceeded";
+      if (spentTodayUsd + alreadyRequestedUsd + amountUsd > policy.daily_cap_usd) {
+        return "daily_cap_exceeded";
+      }
+      return null;
+    };
 
     if (planRow.kind === "single_spot") {
       const plan = planRow.plan as SingleSpotPlan;
@@ -271,74 +315,91 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
         return reply.code(400).send({ error: "unknown_option" });
       }
 
-      // Link leg: one spend request for this option, approved by the
-      // user at the returned URL. Failure to create one never blocks the
-      // confirm — it falls back to the Issuing card and says so.
-      let linkApproval: { spendRequestId: string; approvalUrl: string | null } | null = null;
-      if (linkEnabled && option.priceUsd > 0) {
-        try {
-          const created = await deps.linkWallet!.createSpendRequestsForStops(user.id, {
-            planId: planRow.id,
-            stops: [
-              {
-                stopId: option.id,
-                label: option.label,
-                amountUsd: option.priceUsd,
-                ...merchantFor(option),
-              },
-            ],
-          });
-          linkApproval = created[0]
-            ? { spendRequestId: created[0].spendRequestId, approvalUrl: created[0].approvalUrl }
-            : null;
-        } catch (err) {
-          req.log.warn(
-            { linkError: err instanceof Error ? err.message.split("\n")[0] : String(err) },
-            "link spend request failed; falling back to issuing card",
-          );
-        }
-      }
-      const paymentSource = linkApproval ? "link_wallet" : "issuing_card";
-
       if (option.type === "garage") {
+        // Link leg: one spend request for this garage, approved by the user
+        // at the returned URL. A refusal (dry run, a cap) or a failure to
+        // create one never blocks the handoff — the user can still pay at
+        // the garage's checkout — and the response says why.
+        let linkApproval: { spendRequestId: string; approvalUrl: string | null } | null = null;
+        let linkSkipped: string | null =
+          activeSource === "link_wallet" ? linkGate(option.priceUsd) : null;
+        if (activeSource === "link_wallet" && linkSkipped === null) {
+          try {
+            const created = await deps.linkWallet!.createSpendRequestsForStops(user.id, {
+              planId: planRow.id,
+              stops: [
+                {
+                  stopId: option.id,
+                  label: option.label,
+                  amountUsd: option.priceUsd,
+                  ...merchantFor(option),
+                },
+              ],
+            });
+            linkApproval = created[0]
+              ? { spendRequestId: created[0].spendRequestId, approvalUrl: created[0].approvalUrl }
+              : null;
+          } catch (err) {
+            linkSkipped = "link_failed";
+            req.log.warn(
+              { linkError: err instanceof Error ? err.message.split("\n")[0] : String(err) },
+              "link spend request failed; the garage's own checkout still works",
+            );
+          }
+        }
+        const paymentSource = linkApproval ? "link_wallet" : "garage_checkout";
+
         const outcome = await deps.assistantTools.execute(ctx, "book_garage", {
           option_id: option.garageOptionId ?? option.id,
           confirmation_token: token,
         });
         const booked = outcome.result as { deepLink?: string | null; error?: string };
-        if (booked.error && booked.error !== "needs_confirmation" && option.deepLink) {
-          // The provider's search cache expired (10 min, per process) —
-          // the stored plan's own deepLink still hands the user off.
-          await decide("garage_confirmed", {
-            allowed: true,
-            optionId: option.id,
-            paymentSource,
-            cacheExpired: true,
-            linkSpendRequestId: linkApproval?.spendRequestId ?? null,
-          });
-          return {
-            kind: "garage_handoff",
-            deepLink: option.deepLink,
-            paymentSource,
-            linkApproval,
-            note: garageHandoffNote(option.provider, option.deepLink),
-          };
-        }
-        if (booked.error) {
+        const cacheExpired =
+          booked.error !== undefined && booked.error !== "needs_confirmation" && !!option.deepLink;
+        if (booked.error && !cacheExpired) {
           await decide("book_failed", { allowed: true, error: booked.error });
           return reply.code(409).send({ error: "book_failed", detail: booked.error });
         }
+        // The provider's search cache expires (10 min, per process); the
+        // stored plan's own deepLink still hands the user off.
+        const deepLink = cacheExpired
+          ? option.deepLink!
+          : (booked.deepLink ?? option.deepLink ?? null);
+        const booking = await deps.db.garageBooking.create({
+          data: {
+            userId: user.id,
+            planId: planRow.id,
+            optionId: option.id,
+            provider: option.provider ?? null,
+            label: option.label,
+            priceUsd: option.priceUsd,
+            startsAt: option.startsAt ? parseStart(option.startsAt) : null,
+            endsAt: option.startsAt
+              ? endOf(parseStart(option.startsAt), option.durationMinutes)
+              : null,
+            deepLink,
+            paymentSource: activeSource,
+            linkSpendRequestId: linkApproval?.spendRequestId ?? null,
+            status: "handed_off",
+          },
+        });
         await decide("garage_confirmed", {
           allowed: true,
           optionId: option.id,
           paymentSource,
+          activeSource,
+          ...(cacheExpired ? { cacheExpired: true } : {}),
+          bookingId: booking.id,
           linkSpendRequestId: linkApproval?.spendRequestId ?? null,
+          ...(linkSkipped && linkSkipped !== "link_not_active" ? { linkSkipped } : {}),
         });
         return {
           kind: "garage_handoff",
-          deepLink: booked.deepLink ?? option.deepLink ?? null,
+          deepLink,
           paymentSource,
           linkApproval,
+          ...(linkSkipped && linkSkipped !== "link_not_active" ? { linkSkipped } : {}),
+          bookingId: booking.id,
           note: garageHandoffNote(option.provider, option.deepLink),
         };
       }
@@ -357,8 +418,8 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
         allowed: true,
         optionId: option.id,
         zoneId: option.zoneId,
-        paymentSource,
-        linkSpendRequestId: linkApproval?.spendRequestId ?? null,
+        paymentSource: streetSource,
+        activeSource,
       });
       // The pay-by-app number, so the client can show something the user
       // can verify against the posted sign — zoneId is an internal slug
@@ -371,8 +432,8 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
         zoneId: option.zoneId,
         providerZoneNumber: zoneRow?.providerZoneNumber || null,
         durationMinutes: option.durationMinutes,
-        paymentSource,
-        linkApproval,
+        paymentSource: streetSource,
+        linkApproval: null,
       };
     }
 
@@ -380,8 +441,6 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
     // moment of truth — spend may have moved since the proposal.
     const plan = planRow.plan as ItineraryPlan;
     const totalUsd = itineraryTotalUsd(plan.stops);
-    const spentTodayUsd = await spentToday(deps.db, user.id, at);
-    const policy = deps.policy.get();
     if (spentTodayUsd + totalUsd > policy.daily_cap_usd) {
       await decide("over_daily_cap", { allowed: false, totalUsd, spentTodayUsd });
       return reply.code(409).send({
@@ -392,32 +451,52 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
       });
     }
     const itineraryId = randomUUID();
+    // Link approves each paid GARAGE stop (no batch approval exists);
+    // street stops pay at the curb with the street source.
     let approvals: { stopId: string; spendRequestId: string; approvalUrl: string | null }[] = [];
-    if (linkEnabled) {
-      const paidStops = plan.stops.filter((s) => s.costUsd > 0);
-      try {
-        approvals = await deps.linkWallet!.createSpendRequestsForStops(user.id, {
-          planId: planRow.id,
-          itineraryId,
-          stops: paidStops.map((s) => ({
-            stopId: s.id,
-            label: s.label,
-            amountUsd: s.costUsd,
-            ...merchantFor({
-              type: s.choice,
-              zoneId: s.zoneId,
-              ...(s.deepLink ? { deepLink: s.deepLink } : {}),
-            }),
-          })),
-        });
-      } catch (err) {
-        req.log.warn(
-          { linkError: err instanceof Error ? err.message.split("\n")[0] : String(err) },
-          "link spend requests failed; itinerary falls back to issuing card",
-        );
-        approvals = [];
+    let linkSkipped: string | null = null;
+    if (activeSource === "link_wallet") {
+      const paidGarages = plan.stops.filter((s) => s.choice === "garage" && s.costUsd > 0);
+      const garagesTotal = paidGarages.reduce((sum, s) => sum + s.costUsd, 0);
+      const overStop = paidGarages.find((s) => s.costUsd > policy.session_cap_usd);
+      linkSkipped = overStop
+        ? "session_cap_exceeded"
+        : paidGarages.length === 0
+          ? null
+          : linkGate(garagesTotal);
+      if (linkSkipped === "free") linkSkipped = null;
+      if (linkSkipped === null && paidGarages.length > 0) {
+        try {
+          approvals = await deps.linkWallet!.createSpendRequestsForStops(user.id, {
+            planId: planRow.id,
+            itineraryId,
+            stops: paidGarages.map((s) => ({
+              stopId: s.id,
+              label: s.label,
+              amountUsd: s.costUsd,
+              ...merchantFor({
+                type: s.choice,
+                zoneId: s.zoneId,
+                ...(s.deepLink ? { deepLink: s.deepLink } : {}),
+              }),
+            })),
+          });
+        } catch (err) {
+          linkSkipped = "link_failed";
+          req.log.warn(
+            { linkError: err instanceof Error ? err.message.split("\n")[0] : String(err) },
+            "link spend requests failed; garage stops fall back to their own checkout",
+          );
+          approvals = [];
+        }
       }
     }
+    const stopSource = (s: { id: string; choice: "street" | "garage" }) =>
+      s.choice === "street"
+        ? streetSource
+        : approvals.some((a) => a.stopId === s.id)
+          ? "link_wallet"
+          : "garage_checkout";
     await deps.db.itinerary.create({
       data: {
         id: itineraryId,
@@ -429,25 +508,48 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
           ...s,
           sessionId: null,
           garageLinkPushedAt: null,
-          paymentSource: approvals.some((a) => a.stopId === s.id) ? "link_wallet" : "issuing_card",
+          paymentSource: stopSource(s),
         })),
         totalUsd,
       },
     });
+    for (const s of plan.stops.filter((stop) => stop.choice === "garage")) {
+      const arrival = parseStart(s.arrival);
+      await deps.db.garageBooking.create({
+        data: {
+          userId: user.id,
+          planId: planRow.id,
+          itineraryId,
+          optionId: s.id,
+          provider: garageProviderInfo(undefined, s.deepLink)?.id ?? null,
+          label: s.label,
+          priceUsd: s.costUsd,
+          startsAt: arrival,
+          endsAt: arrival ? endOf(arrival, s.durationMinutes) : null,
+          deepLink: s.deepLink ?? null,
+          paymentSource: activeSource,
+          linkSpendRequestId: approvals.find((a) => a.stopId === s.id)?.spendRequestId ?? null,
+          status: "planned",
+        },
+      });
+    }
     await decide("itinerary_signed_off", {
       allowed: true,
       itineraryId,
       totalUsd,
       stops: plan.stops.length,
+      activeSource,
       linkApprovals: approvals.length,
+      ...(linkSkipped && linkSkipped !== "link_not_active" ? { linkSkipped } : {}),
     });
     return {
       kind: "itinerary_signed_off",
       itineraryId,
       totalUsd,
       capUsd: policy.daily_cap_usd,
-      paymentSource: approvals.length > 0 ? "link_wallet" : "issuing_card",
+      paymentSource: activeSource,
       linkApprovals: approvals,
+      ...(linkSkipped && linkSkipped !== "link_not_active" ? { linkSkipped } : {}),
     };
   });
 
@@ -498,11 +600,24 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
     const previous = new Map(
       (row.stops as Record<string, unknown>[]).map((s) => [String(s["id"]), s]),
     );
+    // A stop new to the day pays like a fresh one: street with the user's
+    // street source, a garage at its own checkout (no Link request exists
+    // for it).
+    const userRow = await deps.db.user.findUnique({
+      where: { id: user.id },
+      select: { paymentSource: true },
+    });
+    const streetSource =
+      normalizeSource(userRow?.paymentSource) === "parkagent_card"
+        ? "parkagent_card"
+        : "provider_card";
     const stops = parsed.data.stops.map((s) => ({
       ...s,
       sessionId: previous.get(s.id)?.["sessionId"] ?? null,
       garageLinkPushedAt: previous.get(s.id)?.["garageLinkPushedAt"] ?? null,
-      paymentSource: previous.get(s.id)?.["paymentSource"] ?? "issuing_card",
+      paymentSource:
+        previous.get(s.id)?.["paymentSource"] ??
+        (s.choice === "street" ? streetSource : "garage_checkout"),
     }));
     await deps.db.itinerary.update({ where: { id }, data: { stops, totalUsd } });
     await deps.db.decision.create({

@@ -27,8 +27,9 @@ export interface SessionRow {
   amountUsd: unknown;
   feeUsd: unknown;
   parknycConfirmation: string | null;
-  /** "issuing_card" | "provider_card" | "link_wallet"; pre-assistant
-   * fakes may omit it. */
+  /** "provider_card" | "parkagent_card" (street sessions never carry
+   * link_wallet — see sessions.payment_source); pre-assistant fakes may
+   * omit it. */
   paymentSource?: string;
   parkedEventId: string | null;
   carLat: number | null;
@@ -81,7 +82,7 @@ export interface SessionWhere {
   zoneId?: string;
   dryRun?: boolean;
   status?: string | { in: string[] };
-  createdAt?: { gte: Date };
+  createdAt?: { gte?: Date; lt?: Date };
 }
 
 export interface ZoneTermsRow {
@@ -218,10 +219,94 @@ export interface LinkSpendRequestRow {
   amountUsd: unknown;
   status: string;
   approvalUrl: string | null;
+  /** Who the approval screen names as the payee (garage site). Optional
+   * so pre-wallet fakes stay valid. */
+  merchantName?: string | null;
+  /** Link's 10-minute approval window; past it, unapproved → expired. */
+  approvalExpiresAt?: Date | null;
+  revealedAt?: Date | null;
   cardEncrypted: string | null;
   validUntil: Date | null;
   cardUsedAt: Date | null;
   createdAt: Date;
+}
+
+/** A Link account row, with the display-only payment method. */
+export interface LinkAccountRow {
+  userId: string;
+  status: string;
+  tokensEncrypted: string | null;
+  connectedAt: Date | null;
+  pmType?: string | null;
+  pmBrand?: string | null;
+  pmLast4?: string | null;
+  pmFetchedAt?: Date | null;
+}
+
+/** One of the user's own cards on their Stripe Customer (display + ids). */
+export interface FundingMethodRow {
+  id: string;
+  userId: string;
+  stripePaymentMethodId: string;
+  brand: string;
+  last4: string;
+  expMonth: number | null;
+  expYear: number | null;
+  wallet: string | null;
+  isDefault: boolean;
+  createdAt: Date;
+  removedAt: Date | null;
+}
+
+/** One authorization hold for one paid leg of a parkagent_card session. */
+export interface SessionHoldRow {
+  id: string;
+  sessionId: string;
+  userId: string;
+  leg: string;
+  paymentIntentId: string | null;
+  fundingMethodId: string | null;
+  quoteUsd: unknown;
+  amountUsd: unknown;
+  authorizedUsd: unknown;
+  capturedUsd: unknown;
+  status: string;
+  declineCode: string | null;
+  settledAt: Date | null;
+  createdAt: Date;
+}
+
+export interface GarageBookingRow {
+  id: string;
+  userId: string;
+  planId: string | null;
+  itineraryId: string | null;
+  optionId: string;
+  provider: string | null;
+  label: string;
+  priceUsd: unknown;
+  startsAt: Date | null;
+  endsAt: Date | null;
+  deepLink: string | null;
+  paymentSource: string;
+  linkSpendRequestId: string | null;
+  status: string;
+  createdAt: Date;
+}
+
+/** A session_events row as the Activity timeline reads it. */
+export interface SessionEventRow {
+  id: string;
+  sessionId: string;
+  kind: string;
+  at: Date;
+  minutes: number | null;
+  amountUsd: unknown;
+  feeUsd: unknown;
+  expiresAt: Date | null;
+  providerSessionId: string | null;
+  dryRun: boolean;
+  details: unknown;
 }
 
 /** The identity view of a users row. Callers that pass `select` must only
@@ -238,6 +323,8 @@ export interface UserIdentityRow {
   phoneVerified: boolean;
   appleSub: string | null;
   googleSub: string | null;
+  /** The ParkAgent card's Stripe Customer (POST /wallet/setup-intent). */
+  stripeCustomerId?: string | null;
   deletedAt: Date | null;
   createdAt: Date;
 }
@@ -245,6 +332,7 @@ export interface UserIdentityRow {
 export interface UserUpdate {
   name?: string;
   paymentSource?: string;
+  stripeCustomerId?: string | null;
   email?: string | null;
   emailVerified?: boolean;
   phone?: string | null;
@@ -317,6 +405,12 @@ export interface AppDb {
       data: UserUpdate;
       select?: Partial<Record<keyof UserIdentityRow, true>>;
     }): Promise<UserIdentityRow>;
+    /** First-writer-wins attach of the Stripe Customer: matches only while
+     * the column is still empty, so two racing setup-intents keep one. */
+    updateMany(args: {
+      where: { id: string; stripeCustomerId: null };
+      data: { stripeCustomerId: string };
+    }): Promise<{ count: number }>;
   };
   refreshToken: {
     create(args: {
@@ -522,12 +616,7 @@ export interface AppDb {
     }): Promise<unknown>;
   };
   linkAccount: {
-    findUnique(args: { where: { userId: string } }): Promise<{
-      userId: string;
-      status: string;
-      tokensEncrypted: string | null;
-      connectedAt: Date | null;
-    } | null>;
+    findUnique(args: { where: { userId: string } }): Promise<LinkAccountRow | null>;
     upsert(args: {
       where: { userId: string };
       create: {
@@ -536,7 +625,24 @@ export interface AppDb {
         tokensEncrypted?: string | null;
         connectedAt?: Date;
       };
-      update: { status: string; tokensEncrypted?: string | null; connectedAt?: Date };
+      update: {
+        status: string;
+        tokensEncrypted?: string | null;
+        connectedAt?: Date;
+        pmType?: string | null;
+        pmBrand?: string | null;
+        pmLast4?: string | null;
+        pmFetchedAt?: Date | null;
+      };
+    }): Promise<unknown>;
+    update(args: {
+      where: { userId: string };
+      data: {
+        pmType?: string | null;
+        pmBrand?: string | null;
+        pmLast4?: string | null;
+        pmFetchedAt?: Date | null;
+      };
     }): Promise<unknown>;
   };
   linkSpendRequest: {
@@ -551,10 +657,16 @@ export interface AppDb {
         status: string;
         approvalUrl: string | null;
         validUntil: Date | null;
+        merchantName?: string;
+        approvalExpiresAt?: Date;
       };
     }): Promise<unknown>;
     findUnique(args: { where: { id: string } }): Promise<LinkSpendRequestRow | null>;
-    findMany(args: { where: { userId: string } }): Promise<LinkSpendRequestRow[]>;
+    /** A user's requests (wallet, activity), or every request still
+     * awaiting approval (the wallet job's timeout sweep). */
+    findMany(args: {
+      where: { userId: string } | { status: { in: string[] } };
+    }): Promise<LinkSpendRequestRow[]>;
     update(args: {
       where: { id: string };
       data: {
@@ -562,8 +674,123 @@ export interface AppDb {
         cardEncrypted?: string;
         validUntil?: Date;
         cardUsedAt?: Date;
+        revealedAt?: Date;
       };
     }): Promise<unknown>;
+    /** The timeout sweep's claim: expire only a request still waiting, so
+     * an approval that lands mid-sweep is never overwritten. */
+    updateMany(args: {
+      where: { id: string; status: { in: string[] } };
+      data: { status: string };
+    }): Promise<{ count: number }>;
+  };
+  fundingMethod: {
+    findMany(args: { where: { userId: string; removedAt: null } }): Promise<FundingMethodRow[]>;
+    findUnique(args: {
+      where: { id: string } | { stripePaymentMethodId: string };
+    }): Promise<FundingMethodRow | null>;
+    create(args: {
+      data: {
+        userId: string;
+        stripePaymentMethodId: string;
+        brand: string;
+        last4: string;
+        expMonth?: number | null;
+        expYear?: number | null;
+        wallet?: string | null;
+        isDefault: boolean;
+      };
+    }): Promise<FundingMethodRow>;
+    update(args: {
+      where: { id: string };
+      data: { isDefault?: boolean; removedAt?: Date };
+    }): Promise<FundingMethodRow>;
+    /** Clear the default flag across a user's methods before setting one. */
+    updateMany(args: {
+      where: { userId: string };
+      data: { isDefault: boolean };
+    }): Promise<{ count: number }>;
+  };
+  sessionHold: {
+    create(args: {
+      data: {
+        sessionId: string;
+        userId: string;
+        leg: string;
+        paymentIntentId?: string | null;
+        fundingMethodId?: string | null;
+        quoteUsd: number;
+        amountUsd: number;
+        status: string;
+        declineCode?: string | null;
+      };
+    }): Promise<SessionHoldRow>;
+    findUnique(args: {
+      where: { id: string } | { paymentIntentId: string };
+    }): Promise<SessionHoldRow | null>;
+    /** A user's holds (webhook matching, activity), a session's legs, or
+     * the settle sweep's still-open holds older than a cutoff. */
+    findMany(args: {
+      where:
+        | { userId: string; status?: string }
+        | { sessionId: { in: string[] } }
+        | { status: string; createdAt: { lt: Date } };
+    }): Promise<SessionHoldRow[]>;
+    update(args: {
+      where: { id: string };
+      data: {
+        paymentIntentId?: string;
+        status?: string;
+        declineCode?: string | null;
+        capturedUsd?: number;
+        settledAt?: Date;
+      };
+    }): Promise<SessionHoldRow>;
+    /** Two compare-and-sets: the webhook's claim of room on a live hold
+     * (authorized_usd may only grow while it stays ≤ the hold), and the
+     * settle claim (held → captured|released exactly once). count 0 means
+     * someone else got there, or the amount no longer fits. */
+    updateMany(
+      args:
+        | {
+            where: { id: string; status: "held"; authorizedUsd: { lte: number } };
+            data: { authorizedUsd: { increment: number } };
+          }
+        | {
+            where: { id: string; status: "held" };
+            data: { status: string; capturedUsd?: number; settledAt: Date };
+          }
+        | {
+            // Give room back: a claimed authorization that was never
+            // recorded (a racing duplicate) or that the provider reversed.
+            where: { id: string; status: "held" };
+            data: { authorizedUsd: { decrement: number } };
+          },
+    ): Promise<{ count: number }>;
+  };
+  garageBooking: {
+    create(args: {
+      data: {
+        userId: string;
+        planId?: string | null;
+        itineraryId?: string | null;
+        optionId: string;
+        provider?: string | null;
+        label: string;
+        priceUsd: number;
+        startsAt?: Date | null;
+        endsAt?: Date | null;
+        deepLink?: string | null;
+        paymentSource: string;
+        linkSpendRequestId?: string | null;
+        status: string;
+      };
+    }): Promise<GarageBookingRow>;
+    findMany(args: {
+      where: { userId: string; createdAt?: { lt: Date } };
+      orderBy: { createdAt: "desc" };
+      take: number;
+    }): Promise<GarageBookingRow[]>;
   };
   processedTopup: {
     findUnique(args: {
@@ -632,9 +859,13 @@ export interface AppDb {
      * assistant daily-spend sum (userId + kind narrow it; the fake db
      * ignores them, so callers re-filter in JS). */
     findMany(args: {
-      where: { createdAt: { gte: Date }; userId?: string; kind?: string };
+      where:
+        | { createdAt: { gte: Date }; userId?: string; kind?: string }
+        /** Activity's explanation lines: a page's session decisions. */
+        | { sessionId: { in: string[] } };
     }): Promise<
       {
+        id: string;
         kind: string;
         rule: string;
         outcome: unknown;
@@ -715,9 +946,14 @@ export interface AppDb {
     deleteMany(args: { where: { cardholderId: string } }): Promise<unknown>;
   };
   issuingAuthorization: {
-    findUnique(args: {
-      where: { stripeAuthorizationId: string };
-    }): Promise<{ id: string; approved?: boolean; decision?: string } | null>;
+    findUnique(args: { where: { stripeAuthorizationId: string } }): Promise<{
+      id: string;
+      approved?: boolean;
+      decision?: string;
+      status?: string;
+      amountUsd?: unknown;
+      holdId?: string | null;
+    } | null>;
     /** "Has this card ever transacted?" — the janitor's cancel-vs-freeze test. */
     findFirst(args: { where: { stripeCardId: string } }): Promise<{ id: string } | null>;
     // Two shapes share findMany (interface overloads): the daily/monthly spend
@@ -744,6 +980,8 @@ export interface AppDb {
         approved: boolean;
         decision: string;
         status: string;
+        sessionId?: string | null;
+        holdId?: string | null;
       };
     }): Promise<{ id: string }>;
     update(args: {
@@ -755,6 +993,8 @@ export interface AppDb {
         amountUsd?: number;
         stripeTransactionId?: string;
         capturedUsd?: number;
+        sessionId?: string | null;
+        holdId?: string | null;
       };
     }): Promise<unknown>;
   };
@@ -763,7 +1003,12 @@ export interface AppDb {
     update(args: { where: { id: string }; data: SessionWrite }): Promise<SessionRow>;
     findUnique(args: { where: { id: string } }): Promise<SessionRow | null>;
     findFirst(args: { where: SessionWhere }): Promise<SessionRow | null>;
-    findMany(args: { where: SessionWhere }): Promise<SessionRow[]>;
+    /** orderBy/take: the Activity page read (newest first). */
+    findMany(args: {
+      where: SessionWhere;
+      orderBy?: { createdAt: "desc" };
+      take?: number;
+    }): Promise<SessionRow[]>;
     /** Vehicle/account deletion: detach sessions from vehicles being
      * deleted (sessions themselves stay — they are the money audit). */
     updateMany(args: {
@@ -772,6 +1017,11 @@ export interface AppDb {
     }): Promise<{ count: number }>;
   };
   sessionEvent: {
+    /** The Activity timeline: every event of a page's sessions. */
+    findMany(args: {
+      where: { sessionId: { in: string[] } };
+      orderBy: { at: "asc" };
+    }): Promise<SessionEventRow[]>;
     create(args: {
       data: {
         sessionId: string;

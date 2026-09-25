@@ -16,8 +16,11 @@ import { hashApiKey } from "../src/services/apiKeys.js";
 import type {
   AppDb,
   EmailLoginCodeRow,
+  FundingMethodRow,
+  GarageBookingRow,
   ItineraryRow,
   LinkSpendRequestRow,
+  SessionHoldRow,
   ProviderAccountRow,
   RefreshTokenRow,
   SessionRow,
@@ -40,6 +43,7 @@ import type { ProviderAccountOps, ProviderOpsFactory } from "../src/services/pro
 import type { Push } from "../src/services/apns.js";
 import type { Executor } from "../src/services/executor.js";
 import { DryRunExecutor } from "../src/services/executor.js";
+import { makePendingSessionCheck } from "../src/services/pendingSession.js";
 import type { Policy } from "../src/services/policy.js";
 import { PolicyService } from "../src/services/policy.js";
 import type { StripeGateway } from "../src/services/stripeGateway.js";
@@ -205,6 +209,8 @@ export interface FakeFix {
 }
 
 export interface FakeIssuingAuthorizationRow {
+  sessionId?: string | null;
+  holdId?: string | null;
   stripeAuthorizationId: string;
   stripeCardId: string;
   userId: string | null;
@@ -296,8 +302,15 @@ export interface FakeDbState {
     status: string;
     tokensEncrypted: string | null;
     connectedAt: Date | null;
+    pmType?: string | null;
+    pmBrand?: string | null;
+    pmLast4?: string | null;
+    pmFetchedAt?: Date | null;
   }[];
   linkSpendRequests: LinkSpendRequestRow[];
+  fundingMethods: FundingMethodRow[];
+  sessionHolds: SessionHoldRow[];
+  garageBookings: GarageBookingRow[];
   linkJobs: {
     id: string;
     userId: string;
@@ -363,6 +376,7 @@ function matchesSessionWhere(s: SessionRow, where: SessionWhere): boolean {
     return false;
   }
   if (where.createdAt?.gte !== undefined && s.createdAt < where.createdAt.gte) return false;
+  if (where.createdAt?.lt !== undefined && s.createdAt >= where.createdAt.lt) return false;
   return true;
 }
 
@@ -387,7 +401,16 @@ const seedUser = (
   ...overrides,
 });
 
+/** Creation time for fake hold/booking rows. Tests that need the sweep's
+ * grace period to pass (or a row "older" than another) set it. */
+let fakeRowClock: () => Date = () => new Date(MONDAY_2PM);
+export function setFakeRowClock(clock: () => Date): void {
+  fakeRowClock = clock;
+}
+const holdClock = () => fakeRowClock();
+
 export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
+  fakeRowClock = () => new Date(MONDAY_2PM);
   const state: FakeDbState = {
     userPaymentSources: {},
     users: [seedUser("u1", "Thomas", true), seedUser("u2", "Ana", false)],
@@ -417,6 +440,9 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
     itineraries: [],
     linkAccounts: [],
     linkSpendRequests: [],
+    fundingMethods: [],
+    sessionHolds: [],
+    garageBookings: [],
   };
   const cardholderFor = (userId: string) => {
     const explicit = state.issuingCardholders.find((c) => c.userId === userId);
@@ -497,6 +523,13 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
         delete rest.paymentSource;
         Object.assign(row, rest);
         return withSource(row);
+      },
+      updateMany: async ({ where, data }) => {
+        // Compare-and-set, like the real UPDATE … WHERE stripe_customer_id IS NULL.
+        const row = state.users.find((u) => u.id === where.id);
+        if (!row || (row.stripeCustomerId ?? null) !== null) return { count: 0 };
+        row.stripeCustomerId = data.stripeCustomerId;
+        return { count: 1 };
       },
     },
     refreshToken: {
@@ -771,6 +804,11 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
     linkAccount: {
       findUnique: async ({ where }) =>
         state.linkAccounts.find((r) => r.userId === where.userId) ?? null,
+      update: async ({ where, data }) => {
+        const row = state.linkAccounts.find((r) => r.userId === where.userId);
+        if (row) Object.assign(row, data);
+        return {};
+      },
       upsert: async ({ where, create, update }) => {
         const existing = state.linkAccounts.find((r) => r.userId === where.userId);
         if (existing) Object.assign(existing, update);
@@ -801,12 +839,162 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
       findUnique: async ({ where }) =>
         state.linkSpendRequests.find((r) => r.id === where.id) ?? null,
       findMany: async ({ where }) =>
-        state.linkSpendRequests.filter((r) => r.userId === where.userId),
+        state.linkSpendRequests.filter((r) =>
+          "userId" in where ? r.userId === where.userId : where.status.in.includes(r.status),
+        ),
       update: async ({ where, data }) => {
         const row = state.linkSpendRequests.find((r) => r.id === where.id);
         if (row) Object.assign(row, data);
         return {};
       },
+      updateMany: async ({ where, data }) => {
+        const row = state.linkSpendRequests.find(
+          (r) => r.id === where.id && where.status.in.includes(r.status),
+        );
+        if (!row) return { count: 0 };
+        Object.assign(row, data);
+        return { count: 1 };
+      },
+    },
+    fundingMethod: {
+      findMany: async ({ where }) =>
+        state.fundingMethods.filter((m) => m.userId === where.userId && m.removedAt === null),
+      findUnique: async ({ where }) =>
+        state.fundingMethods.find((m) =>
+          "id" in where
+            ? m.id === where.id
+            : m.stripePaymentMethodId === where.stripePaymentMethodId,
+        ) ?? null,
+      create: async ({ data }) => {
+        if (
+          state.fundingMethods.some((m) => m.stripePaymentMethodId === data.stripePaymentMethodId)
+        ) {
+          throw Object.assign(new Error("Unique constraint failed: funding_methods_pm"), {
+            code: "P2002",
+          });
+        }
+        const row: FundingMethodRow = {
+          id: `fm${state.fundingMethods.length + 1}`,
+          expMonth: null,
+          expYear: null,
+          wallet: null,
+          createdAt: new Date(MONDAY_2PM),
+          removedAt: null,
+          ...data,
+        } as FundingMethodRow;
+        state.fundingMethods.push(row);
+        return row;
+      },
+      update: async ({ where, data }) => {
+        const row = state.fundingMethods.find((m) => m.id === where.id);
+        if (!row) throw new Error(`fake fundingMethod.update: no ${where.id}`);
+        Object.assign(row, data);
+        return row;
+      },
+      updateMany: async ({ where, data }) => {
+        let count = 0;
+        for (const m of state.fundingMethods) {
+          if (m.userId === where.userId) {
+            Object.assign(m, data);
+            count += 1;
+          }
+        }
+        return { count };
+      },
+    },
+    sessionHold: {
+      create: async ({ data }) => {
+        // unique (session_id, leg) and unique payment_intent_id, as in Postgres.
+        if (
+          state.sessionHolds.some(
+            (h) =>
+              (h.sessionId === data.sessionId && h.leg === data.leg) ||
+              (data.paymentIntentId && h.paymentIntentId === data.paymentIntentId),
+          )
+        ) {
+          throw Object.assign(new Error("Unique constraint failed: session_holds"), {
+            code: "P2002",
+          });
+        }
+        const row: SessionHoldRow = {
+          id: `hold${state.sessionHolds.length + 1}`,
+          paymentIntentId: null,
+          fundingMethodId: null,
+          authorizedUsd: 0,
+          capturedUsd: null,
+          declineCode: null,
+          settledAt: null,
+          createdAt: holdClock(),
+          ...data,
+        } as SessionHoldRow;
+        state.sessionHolds.push(row);
+        return row;
+      },
+      findUnique: async ({ where }) =>
+        state.sessionHolds.find((h) =>
+          "id" in where ? h.id === where.id : h.paymentIntentId === where.paymentIntentId,
+        ) ?? null,
+      findMany: async ({ where }) =>
+        state.sessionHolds.filter((h) => {
+          if ("sessionId" in where) return where.sessionId.in.includes(h.sessionId);
+          if ("userId" in where) {
+            return (
+              h.userId === where.userId && (where.status === undefined || h.status === where.status)
+            );
+          }
+          return h.status === where.status && h.createdAt < where.createdAt.lt;
+        }),
+      update: async ({ where, data }) => {
+        const row = state.sessionHolds.find((h) => h.id === where.id);
+        if (!row) throw new Error(`fake sessionHold.update: no ${where.id}`);
+        Object.assign(row, data);
+        return row;
+      },
+      updateMany: async ({ where, data }) => {
+        // Synchronous check-and-set, standing in for the conditional UPDATE.
+        const row = state.sessionHolds.find((h) => h.id === where.id && h.status === "held");
+        if (!row) return { count: 0 };
+        if ("authorizedUsd" in data) {
+          const authorized = Number(row.authorizedUsd ?? 0);
+          if ("increment" in data.authorizedUsd) {
+            const limit = (where as { authorizedUsd?: { lte: number } }).authorizedUsd?.lte;
+            if (limit !== undefined && authorized > limit + 1e-9) return { count: 0 };
+            row.authorizedUsd = Math.round((authorized + data.authorizedUsd.increment) * 100) / 100;
+          } else {
+            row.authorizedUsd = Math.round((authorized - data.authorizedUsd.decrement) * 100) / 100;
+          }
+          return { count: 1 };
+        }
+        Object.assign(row, data);
+        return { count: 1 };
+      },
+    },
+    garageBooking: {
+      create: async ({ data }) => {
+        const row: GarageBookingRow = {
+          id: `gb${state.garageBookings.length + 1}`,
+          planId: null,
+          itineraryId: null,
+          provider: null,
+          startsAt: null,
+          endsAt: null,
+          deepLink: null,
+          linkSpendRequestId: null,
+          createdAt: holdClock(),
+          ...data,
+        } as GarageBookingRow;
+        state.garageBookings.push(row);
+        return row;
+      },
+      findMany: async ({ where, take }) =>
+        state.garageBookings
+          .filter(
+            (b) =>
+              b.userId === where.userId &&
+              (where.createdAt?.lt === undefined || b.createdAt < where.createdAt.lt),
+          )
+          .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+          .slice(0, take),
     },
     processedTopup: {
       findUnique: async ({ where }) =>
@@ -875,8 +1063,13 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
       },
       findMany: async ({ where }) =>
         state.decisions
-          .filter((d) => (d.createdAt ?? new Date(MONDAY_2PM)) >= where.createdAt.gte)
-          .map((d, i) => ({
+          .map((d, i) => ({ d, i }))
+          .filter(({ d }) =>
+            "sessionId" in where
+              ? d.sessionId !== undefined && where.sessionId.in.includes(d.sessionId)
+              : (d.createdAt ?? new Date(MONDAY_2PM)) >= where.createdAt.gte,
+          )
+          .map(({ d, i }) => ({
             kind: d.kind,
             rule: d.rule,
             outcome: d.outcome,
@@ -915,7 +1108,11 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
       findUnique: async ({ where }) => state.sessions.find((s) => s.id === where.id) ?? null,
       findFirst: async ({ where }) =>
         state.sessions.find((s) => matchesSessionWhere(s, where)) ?? null,
-      findMany: async ({ where }) => state.sessions.filter((s) => matchesSessionWhere(s, where)),
+      findMany: async ({ where, orderBy, take }) => {
+        const rows = state.sessions.filter((s) => matchesSessionWhere(s, where));
+        if (orderBy) rows.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+        return take === undefined ? rows : rows.slice(0, take);
+      },
       updateMany: async ({ where, data }) => {
         let count = 0;
         for (const s of state.sessions) {
@@ -935,6 +1132,19 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
         state.sessionEvents.push(row);
         return { id: row.id };
       },
+      findMany: async ({ where }) =>
+        state.sessionEvents
+          .filter((e) => where.sessionId.in.includes(e.sessionId))
+          .sort((a, b) => a.at.getTime() - b.at.getTime())
+          .map((e) => ({
+            minutes: null,
+            amountUsd: null,
+            feeUsd: null,
+            expiresAt: null,
+            providerSessionId: null,
+            details: null,
+            ...e,
+          })),
     },
     locationFix: {
       create: async ({ data }) => {
@@ -1117,7 +1327,14 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
           (a) => a.stripeAuthorizationId === where.stripeAuthorizationId,
         );
         return row
-          ? { id: row.stripeAuthorizationId, approved: row.approved, decision: row.decision }
+          ? {
+              id: row.stripeAuthorizationId,
+              approved: row.approved,
+              decision: row.decision,
+              status: row.status,
+              amountUsd: row.amountUsd,
+              holdId: row.holdId ?? null,
+            }
           : null;
       },
       findFirst: async ({ where }) => {
@@ -1151,6 +1368,16 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
         }));
       }) as AppDb["issuingAuthorization"]["findMany"],
       create: async ({ data }) => {
+        // stripe_authorization_id is UNIQUE in Postgres.
+        if (
+          state.issuingAuthorizations.some(
+            (a) => a.stripeAuthorizationId === data.stripeAuthorizationId,
+          )
+        ) {
+          throw Object.assign(new Error("Unique constraint failed: issuing_authorizations"), {
+            code: "P2002",
+          });
+        }
         state.issuingAuthorizations.push({ ...data, createdAt: new Date() });
         return { id: data.stripeAuthorizationId };
       },
@@ -1228,6 +1455,35 @@ export function makeFakeGateway(overrides: Partial<StripeGateway> = {}): StripeG
     }),
     moveToFinancialAccount: async () => {},
     createTestAuthorization: async () => ({ authorizationId: "iauth_test_1", approved: true }),
+    createCustomer: async ({ userId }) => ({ customerId: `cus_${userId}` }),
+    deleteCustomer: async () => {},
+    createSetupIntent: async () => ({
+      setupIntentId: "seti_test_1",
+      clientSecret: "seti_test_1_secret_abc",
+    }),
+    retrieveSetupIntent: async (id) => ({
+      setupIntentId: id,
+      status: "succeeded",
+      customerId: "cus_u1",
+      paymentMethodId: "pm_test_visa",
+    }),
+    retrievePaymentMethod: async (id) => ({
+      paymentMethodId: id,
+      customerId: "cus_u1",
+      brand: "Visa",
+      last4: "4242",
+      expMonth: 12,
+      expYear: 2031,
+      wallet: "apple_pay",
+    }),
+    setCustomerDefaultPaymentMethod: async () => {},
+    detachPaymentMethod: async () => {},
+    createHold: async ({ idempotencyKey }) => ({
+      ok: true,
+      paymentIntentId: `pi_${idempotencyKey.replace(/[^a-z0-9]/gi, "_")}`,
+    }),
+    captureHold: async () => ({ status: "succeeded" }),
+    cancelHold: async () => ({ status: "canceled" }),
     ...overrides,
   };
 }
@@ -1249,6 +1505,59 @@ export function makeFakeProviderOps(
     readSavedCard: async () => ({ ok: true, brand: "Visa", last4: "4242" }),
     ...overrides,
   };
+}
+
+/** Seed a live ParkAgent-card hold (what the Issuing webhook approves
+ * against). Defaults: u1, $10 held on session "seed-session", created now. */
+export function seedHold(
+  state: FakeDbState,
+  overrides: Partial<SessionHoldRow> = {},
+): SessionHoldRow {
+  const row: SessionHoldRow = {
+    id: `hold${state.sessionHolds.length + 1}`,
+    sessionId: "seed-session",
+    userId: "u1",
+    leg: "start",
+    paymentIntentId: `pi_seed_${state.sessionHolds.length + 1}`,
+    fundingMethodId: null,
+    quoteUsd: 8,
+    amountUsd: 10,
+    authorizedUsd: 0,
+    capturedUsd: null,
+    status: "held",
+    declineCode: null,
+    settledAt: null,
+    createdAt: new Date(MONDAY_2PM),
+    ...overrides,
+  };
+  state.sessionHolds.push(row);
+  return row;
+}
+
+/** Seed a saved funding card on u1's Stripe Customer (default by default). */
+export function seedFundingMethod(
+  state: FakeDbState,
+  overrides: Partial<FundingMethodRow> = {},
+): FundingMethodRow {
+  const userId = overrides.userId ?? "u1";
+  const user = state.users.find((u) => u.id === userId);
+  if (user && !user.stripeCustomerId) user.stripeCustomerId = `cus_${userId}`;
+  const row: FundingMethodRow = {
+    id: `fm${state.fundingMethods.length + 1}`,
+    userId,
+    stripePaymentMethodId: `pm_seed_${state.fundingMethods.length + 1}`,
+    brand: "Visa",
+    last4: "4242",
+    expMonth: 12,
+    expYear: 2031,
+    wallet: "apple_pay",
+    isDefault: true,
+    createdAt: new Date(MONDAY_2PM),
+    removedAt: null,
+    ...overrides,
+  };
+  state.fundingMethods.push(row);
+  return row;
 }
 
 /** Seed a saved vehicle (the session's plate, passed to the executor). */
@@ -1325,8 +1634,12 @@ export function makeTestApp(options: {
   linkClient?: LinkClient;
   /** u1's payment source (default "provider_card", like a fresh user). */
   paymentSource?: string;
-  /** ISSUING_LIVE: whether "issuing_card" may be chosen (default false). */
+  /** ISSUING_LIVE: whether "parkagent_card" may be chosen (default false). */
   issuingLive?: boolean;
+  /** A test-mode Stripe key: a Debug build's sandbox choice is honored. */
+  issuingSandbox?: boolean;
+  /** LINK_TEST_MODE: spend requests are test requests (allowed in dry run). */
+  linkTestMode?: boolean;
   /** Reporting APNs delivery for the admin push-test endpoint; absent →
    * that endpoint answers 503. */
   apnsDelivery?: AppDeps["apnsDelivery"];
@@ -1367,6 +1680,7 @@ export function makeTestApp(options: {
     db,
     stateCrypto: testStateCrypto(),
     linkClient: options.linkClient,
+    testMode: options.linkTestMode,
     now,
   });
   const assistantTools = new AssistantTools({
@@ -1397,6 +1711,9 @@ export function makeTestApp(options: {
     sendPush: async (userId, push) => {
       pushes.push({ userId, push });
     },
+    // The real "is a session awaiting payment?" check over the fake tables,
+    // so webhook requests posted through a test app decide like prod.
+    hasPendingSession: makePendingSessionCheck(db),
     stateCrypto: testStateCrypto(),
     ...(options.providerOps ? { providerOps: options.providerOps } : {}),
     ...(options.stripe ? { stripe: options.stripe } : {}),
@@ -1407,6 +1724,7 @@ export function makeTestApp(options: {
       : {}),
     linkWallet,
     ...(options.issuingLive !== undefined ? { issuingLive: options.issuingLive } : {}),
+    ...(options.issuingSandbox !== undefined ? { issuingSandbox: options.issuingSandbox } : {}),
     ...(options.apnsDelivery ? { apnsDelivery: options.apnsDelivery } : {}),
     now,
   };

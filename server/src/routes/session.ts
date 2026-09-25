@@ -15,7 +15,12 @@ import { z } from "zod";
 import type { AppDeps } from "../app.js";
 import type { SessionRow } from "../db.js";
 import { cityForZone, providerForCity, providerStatusUsable } from "../providers/registry.js";
-import { freePeriodPush, paymentFailedPush, sessionStartedPush } from "../services/apns.js";
+import {
+  cardDeclinedPush,
+  freePeriodPush,
+  paymentFailedPush,
+  sessionStartedPush,
+} from "../services/apns.js";
 import type { HoursInterval } from "../services/hours.js";
 import { priceStay } from "../services/quote.js";
 import {
@@ -25,6 +30,9 @@ import {
   spentToday,
 } from "../services/sessions.js";
 import { fireShadowAuthorization } from "../services/shadow.js";
+import type { PlaceHoldResult, SettleReason, SettleResult } from "../services/wallet/holds.js";
+import { placeHold, settleHold } from "../services/wallet/holds.js";
+import { parkAgentCardReadiness } from "../services/wallet/parkagentCard.js";
 import {
   effectiveTerms,
   observedTermsFor,
@@ -200,16 +208,20 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
       rule = "daily_cap_exceeded";
     }
 
-    // Which source pays this session: the user's setting, snapshotted at
-    // start. provider_card = the card already on their provider account
-    // (the executor pays with the account's own default card either way —
-    // with issuing_card that default IS our card, put there by setup-card).
-    // The caps above apply regardless of source.
+    // Which card pays this session: the user's Wallet source, snapshotted
+    // at start. The executor always pays with the provider account's own
+    // saved card — for parkagent_card that card IS ours (put there by
+    // setup-card) and the session pays against a hold on the user's card.
+    // A link_wallet user's street meters stay on the card on their provider
+    // account: a Link one-time card can't be added to the provider's single
+    // saved card without replacing (and losing) the user's own. The caps
+    // above apply regardless of source.
     const userRow = await deps.db.user.findUnique({
       where: { id: user.id },
       select: { paymentSource: true },
     });
-    const paymentSource = userRow?.paymentSource ?? "provider_card";
+    const requestedSource = userRow?.paymentSource ?? "provider_card";
+    const paymentSource = requestedSource === "parkagent_card" ? "parkagent_card" : "provider_card";
 
     const decisionInputs = {
       body,
@@ -218,6 +230,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
       spentTodayUsd,
       dryRun,
       paymentSource,
+      ...(requestedSource !== paymentSource ? { requestedSource } : {}),
       policyHash: deps.policy.hash(),
       // Which terms priced this: the observed row's values when one
       // overrode the dataset.
@@ -243,6 +256,35 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
         },
       });
       return reply.code(409).send({ error: "policy_violation", rule, decisionId: decision.id });
+    }
+
+    // The ParkAgent card pays only against a hold on the user's own card,
+    // and only on an account that carries it: refuse up front, before any
+    // row, hold, or executor call, with a reason the Wallet can fix.
+    if (paymentSource === "parkagent_card") {
+      const readiness = await parkAgentCardReadiness(
+        deps.db,
+        user.id,
+        provider?.id ?? null,
+        dryRun,
+      );
+      if (!readiness.ready) {
+        const decision = await deps.db.decision.create({
+          data: {
+            kind: "session_start",
+            inputs: decisionInputs,
+            rule: "wallet_not_ready",
+            outcome: { allowed: false, reason: readiness.reason },
+            userId: user.id,
+            parkedEventId: parkedEvent.id,
+          },
+        });
+        return reply.code(409).send({
+          error: "wallet_not_ready",
+          reason: readiness.reason,
+          decisionId: decision.id,
+        });
+      }
     }
 
     // The session's vehicle: the caller's saved plate, passed through the
@@ -286,6 +328,89 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
       throw err;
     }
 
+    // parkagent_card: hold quote + buffer on the user's card BEFORE the
+    // provider is asked to charge ours. A refused hold pays nothing.
+    let hold: PlaceHoldResult | null = null;
+    if (paymentSource === "parkagent_card") {
+      hold = await placeHold(deps, {
+        userId: user.id,
+        sessionId: session.id,
+        leg: "start",
+        quoteUsd: price.totalUsd,
+      });
+      if (!hold.ok) {
+        const code = hold.reason === "declined" ? "card_declined" : hold.reason;
+        await deps.db.session.update({ where: { id: session.id }, data: { status: "failed" } });
+        await deps.db.sessionEvent.create({
+          data: {
+            sessionId: session.id,
+            kind: "failed",
+            at,
+            minutes,
+            dryRun,
+            details: {
+              op: "start",
+              code,
+              ...(hold.reason === "declined" ? { declineCode: hold.declineCode } : {}),
+            },
+          },
+        });
+        const decision = await deps.db.decision.create({
+          data: {
+            kind: "session_start",
+            inputs: decisionInputs,
+            rule: hold.reason === "declined" ? "hold_declined" : "hold_failed",
+            outcome: {
+              allowed: true,
+              ok: false,
+              code,
+              ...(hold.reason === "declined" ? { declineCode: hold.declineCode } : {}),
+            },
+            userId: user.id,
+            parkedEventId: parkedEvent.id,
+            sessionId: session.id,
+          },
+        });
+        if (hold.reason === "declined") {
+          await deps.sendPush(
+            user.id,
+            cardDeclinedPush({ zoneNumber: zone.providerZoneNumber, what: "pay" }),
+          );
+          return reply
+            .code(409)
+            .send({ error: "card_declined", sessionId: session.id, decisionId: decision.id });
+        }
+        await deps.sendPush(
+          user.id,
+          paymentFailedPush({
+            zoneNumber: zone.providerZoneNumber,
+            what: "pay",
+            code,
+            providerName: provider?.displayName ?? "your parking account",
+          }),
+        );
+        return reply.code(hold.reason === "no_funding_method" ? 409 : 502).send({
+          error: hold.reason === "no_funding_method" ? "wallet_not_ready" : "hold_failed",
+          ...(hold.reason === "no_funding_method" ? { reason: hold.reason } : {}),
+          decisionId: decision.id,
+        });
+      }
+    }
+    /** Settle the leg's hold (capture what our card paid, release the rest). */
+    const settle = async (reason: SettleReason): Promise<Record<string, unknown>> => {
+      if (!hold?.ok) return {};
+      if (hold.simulated) return { hold: { simulated: true, wouldHold: hold.heldUsd } };
+      const settled: SettleResult = await settleHold(deps, hold.hold.id, reason);
+      return {
+        hold: {
+          holdId: settled.holdId,
+          heldUsd: settled.heldUsd,
+          status: settled.status,
+          capturedUsd: settled.capturedUsd,
+        },
+      };
+    };
+
     const startedAtMs = Date.now();
     const result = await deps.executorFor({ userId: user.id, city, dryRun }).startSession({
       zoneNumber: zone.providerZoneNumber,
@@ -326,6 +451,8 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
       // provider's hours alongside our zone data so the two can be
       // compared, and tell the user parking is free — no tap-to-pay.
       await deps.db.session.update({ where: { id: session.id }, data: { status: "free_period" } });
+      // Nothing to pay: the hold goes back at once.
+      const holdOutcome = await settle("free_period");
       const providerHours = result.freePeriod?.hours ?? null;
       const decision = await deps.db.decision.create({
         data: {
@@ -339,7 +466,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
             zoneHours: zone.hoursJson,
           },
           rule: "free_period",
-          outcome: { allowed: false, freePeriod: true, providerHours, durationMs },
+          outcome: { allowed: false, freePeriod: true, providerHours, durationMs, ...holdOutcome },
           userId: user.id,
           parkedEventId: parkedEvent.id,
           sessionId: session.id,
@@ -360,8 +487,11 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
 
     if (!result.ok) {
       // The session stays unpaid (status "failed"); the push below carries
-      // the tap-to-pay deep link with the zone number.
+      // the tap-to-pay deep link with the zone number. The hold captures
+      // only what our card was actually charged before the flow derailed
+      // (usually nothing) and releases the rest.
       await deps.db.session.update({ where: { id: session.id }, data: { status: "failed" } });
+      const holdOutcome = await settle("leg_failed");
       await deps.db.sessionEvent.create({
         data: {
           sessionId: session.id,
@@ -387,6 +517,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
             // the decision row (non-negotiable: decisions carry the inputs).
             ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}),
             ...providerTermsOutcome,
+            ...holdOutcome,
           },
           userId: user.id,
           parkedEventId: parkedEvent.id,
@@ -417,6 +548,9 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
     const chargedMeterUsd = result.receipt?.meterUsd ?? price.meterUsd;
     const chargedFeeUsd = result.receipt?.feeUsd ?? price.feeUsd;
     const chargedTotalUsd = result.receipt?.totalUsd ?? price.totalUsd;
+    // The provider charged our card: capture exactly what it paid (the
+    // Issuing authorization the webhook attached), release the rest.
+    const holdOutcome = await settle("leg_paid");
     await deps.db.session.update({
       where: { id: session.id },
       data: {
@@ -478,6 +612,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
           ...(result.zoneResolution ? { zoneResolution: result.zoneResolution } : {}),
           ...providerTermsOutcome,
           ...(shadow ? { shadow } : {}),
+          ...holdOutcome,
         },
         userId: user.id,
         parkedEventId: parkedEvent.id,
@@ -546,13 +681,20 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
     }
 
     const outcome = await applyExtension(deps, session, body.minutes, price, "manual");
-    const failRule =
-      !outcome.ok && outcome.code === "free_period" ? "free_period" : "executor_failed";
+    const failRule = outcome.ok
+      ? "extend_ok"
+      : outcome.code === "free_period"
+        ? "free_period"
+        : outcome.code === "card_declined"
+          ? "hold_declined"
+          : outcome.code === "wallet_not_ready" || outcome.code === "hold_failed"
+            ? "hold_failed"
+            : "executor_failed";
     await deps.db.decision.create({
       data: {
         kind: "session_extend",
         inputs: decisionInputs,
-        rule: outcome.ok ? "extend_ok" : failRule,
+        rule: failRule,
         outcome: outcome.ok
           ? {
               allowed: true,
@@ -561,6 +703,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
               price,
               durationMs: outcome.durationMs,
               ...(outcome.shadow ? { shadow: outcome.shadow } : {}),
+              ...(outcome.hold ? { hold: outcome.hold } : {}),
             }
           : {
               allowed: true,
@@ -569,6 +712,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
               message: outcome.message,
               durationMs: outcome.durationMs,
               ...(outcome.diagnostics ? { diagnostics: outcome.diagnostics } : {}),
+              ...(outcome.hold ? { hold: outcome.hold } : {}),
             },
         userId: user.id,
         sessionId: session.id,
@@ -579,6 +723,15 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
         // Not an executor failure: the provider says this zone is free
         // right now, so there is nothing to extend (and nothing charged).
         return reply.code(409).send({ error: "free_period", notice: outcome.message });
+      }
+      if (outcome.code === "card_declined") {
+        // The hold was refused before the provider was touched.
+        return reply.code(409).send({ error: "card_declined" });
+      }
+      if (outcome.code === "wallet_not_ready" || outcome.code === "hold_failed") {
+        return reply.code(outcome.code === "wallet_not_ready" ? 409 : 502).send({
+          error: outcome.code,
+        });
       }
       return reply.code(502).send({ error: "executor_failed", code: outcome.code });
     }

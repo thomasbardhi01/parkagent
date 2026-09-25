@@ -47,6 +47,15 @@ const RULE_TEXT: Record<string, string> = {
   declined_no_pending_session: "no parking session was awaiting payment",
   declined_over_daily_cap: "the charge would exceed the daily cap",
   declined_dry_run: "dry-run mode was on, so no money could move",
+  declined_no_hold: "the ParkAgent card only pays against a hold on your card, and none was live",
+  declined_over_hold: "the charge was more than the hold placed on your card for this session",
+  hold_placed: "a hold for the quote plus a small buffer was placed on your card",
+  hold_declined: "your card declined the hold, so nothing was paid",
+  hold_captured: "the hold captured what the ParkAgent card paid and released the rest",
+  hold_released: "the hold was released in full — nothing was charged",
+  capture_deferred: "the provider's charge hadn't arrived yet, so capture waited",
+  wallet_not_ready: "the chosen way to pay isn't set up yet",
+  hold_failed: "the hold on your card couldn't be placed, so nothing was paid",
   replayed: "a duplicate delivery was answered from the recorded decision",
 };
 
@@ -57,6 +66,8 @@ const KIND_TEXT: Record<string, string> = {
   session_stop: "Session stop",
   extend_tick: "Auto-extend check",
   issuing_authorization: "Card authorization",
+  wallet_hold: "Card hold",
+  payment_source: "Payment method change",
   zone_number_report: "Zone number report",
   assistant_tool: "Assistant tool call",
   assistant_plan: "Assistant plan proposal",
@@ -66,7 +77,12 @@ const KIND_TEXT: Record<string, string> = {
 export function explainDecision(row: DecisionRowForExplain): string {
   const what = KIND_TEXT[row.kind] ?? `Decision (${row.kind})`;
   const why = RULE_TEXT[row.rule] ?? `rule "${row.rule}" fired`;
-  const outcome = row.outcome as { action?: string; allowed?: boolean; ok?: boolean; code?: string };
+  const outcome = row.outcome as {
+    action?: string;
+    allowed?: boolean;
+    ok?: boolean;
+    code?: string;
+  };
   const parts = [`${what} at ${row.createdAt.toISOString()}: ${why}.`];
   if (outcome?.action) parts.push(`Resulting action: ${outcome.action}.`);
   if (outcome?.allowed === false) parts.push("The request was refused.");

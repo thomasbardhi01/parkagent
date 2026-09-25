@@ -1,7 +1,8 @@
 /**
  * Link wallet for agents: connect (OAuth against login.link.com),
- * status, disconnect, and spend-request sync (the app polls after
- * sending the user to a Link approval URL).
+ * status, disconnect, spend-request sync (the app polls after sending the
+ * user to a Link approval URL), and the one-time card reveal for paying
+ * an approved garage at the garage's own checkout.
  *
  * /link/callback is PUBLIC (the browser redirect carries no api key);
  * the CSRF `state` minted at /link/connect is what binds it to a user.
@@ -98,7 +99,7 @@ export function registerLink(app: FastifyInstance, deps: AppDeps): void {
   });
 
   // The app polls this after opening an approval URL; on approval the
-  // wallet seals the one-time card server-side (it is never returned).
+  // wallet seals the one-time card server-side.
   app.post("/link/spend-requests/:id/sync", { preHandler: limit }, async (req, reply) => {
     if (!deps.linkWallet?.configured) {
       return reply.code(503).send({ error: "link_not_configured" });
@@ -113,6 +114,54 @@ export function registerLink(app: FastifyInstance, deps: AppDeps): void {
       if (message === "unknown_spend_request") {
         return reply.code(404).send({ error: message });
       }
+      return reply.code(409).send({ error: message });
+    }
+  });
+
+  // The approved one-time card, for the user to pay the garage's own
+  // checkout with (we never automate that checkout, so the card has to
+  // reach the person at it). The app asks for Face ID first and hides the
+  // details after 30 seconds. Only the owner's approved, unexpired, unused
+  // card; never cached, never logged; every reveal is a decisions row.
+  const limitReveal = makeRateLimiter({ max: 10, windowMs: 60_000 });
+  app.post("/link/spend-requests/:id/card", { preHandler: limitReveal }, async (req, reply) => {
+    if (!deps.linkWallet?.configured) {
+      return reply.code(503).send({ error: "link_not_configured" });
+    }
+    const user = req.authedUser!;
+    const { id } = req.params as { id: string };
+    try {
+      const card = await deps.linkWallet.revealCard(user.id, id);
+      await deps.db.decision.create({
+        data: {
+          kind: "link_card_reveal",
+          inputs: { spendRequestId: id },
+          rule: "reveal_ok",
+          outcome: { ok: true, validUntil: card.validUntil },
+          userId: user.id,
+        },
+      });
+      return reply.header("cache-control", "no-store").send({
+        spendRequestId: id,
+        brand: card.brand,
+        number: card.number,
+        cvc: card.cvc,
+        expMonth: card.expMonth,
+        expYear: card.expYear,
+        validUntil: card.validUntil,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "reveal_failed";
+      await deps.db.decision.create({
+        data: {
+          kind: "link_card_reveal",
+          inputs: { spendRequestId: id },
+          rule: message,
+          outcome: { ok: false },
+          userId: user.id,
+        },
+      });
+      if (message === "unknown_spend_request") return reply.code(404).send({ error: message });
       return reply.code(409).send({ error: message });
     }
   });

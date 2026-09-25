@@ -19,6 +19,7 @@ import {
   makeFakeGateway,
   makePolicyService,
   MONDAY_2PM,
+  seedHold,
   seedSession,
   TEST_PEPPER,
 } from "./helpers.js";
@@ -50,10 +51,16 @@ function makeWebhookApp(options: {
   /** Use the real sessions-table check instead of the boolean stub. */
   realPendingCheck?: boolean;
   knownCard?: boolean;
+  /** A live ParkAgent-card hold of this many dollars (the card pays only
+   * against one); false for none. Default $10. */
+  hold?: number | false;
 }) {
   const { db, state } = makeFakeDb();
   if (options.knownCard !== false) {
     state.issuingCards.push({ stripeCardId: CARD_ID, userId: USER_ID });
+  }
+  if (options.hold !== false) {
+    seedHold(state, { amountUsd: options.hold ?? 10 });
   }
   const stripe = makeFakeStripe();
   const deps: AppDeps = {

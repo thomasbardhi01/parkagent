@@ -9,6 +9,13 @@
  * and a decisions row are written before we reply, so the audit persists
  * even if the response is slow. issuing_authorization.created/updated and
  * issuing_transaction.created keep the issuing_authorizations ledger in sync.
+ *
+ * The ParkAgent card spends only against a hold: after every other check
+ * passes, the approval must claim room on a live session hold (see
+ * services/wallet/holds.ts); the claim is stored on the ledger row
+ * (hold_id, session_id) so a replay answers from the row and never claims
+ * twice. payment_intent events for session holds reconcile a hold Stripe
+ * itself settled (the 7-day auto-cancel), idempotently.
  */
 
 import type { FastifyInstance, FastifyReply } from "fastify";
@@ -16,8 +23,9 @@ import type Stripe from "stripe";
 
 import type { AppDeps } from "../app.js";
 import { nycStartOfDay } from "../services/hours.js";
-import { centsToUsd, decideAuthorization } from "../services/issuing.js";
+import { applyHoldClaim, centsToUsd, decideAuthorization } from "../services/issuing.js";
 import { noPendingSessions } from "../services/pendingSession.js";
+import { claimHoldForAuthorization, releaseHoldClaim } from "../services/wallet/holds.js";
 
 function cardId(auth: Stripe.Issuing.Authorization): string {
   return typeof auth.card === "string" ? auth.card : auth.card.id;
@@ -57,7 +65,16 @@ export function registerStripeWebhook(app: FastifyInstance, deps: AppDeps): void
           await recordTransaction(deps, event.data.object);
           return { received: true };
         case "payment_intent.succeeded":
-          await handleTopupSucceeded(deps, event.data.object);
+          if (event.data.object.metadata?.["parkagent"] === "session_hold") {
+            await reconcileHold(deps, event.data.object, "captured");
+          } else {
+            await handleTopupSucceeded(deps, event.data.object);
+          }
+          return { received: true };
+        case "payment_intent.canceled":
+          if (event.data.object.metadata?.["parkagent"] === "session_hold") {
+            await reconcileHold(deps, event.data.object, "released");
+          }
           return { received: true };
         default:
           return { received: true };
@@ -129,7 +146,7 @@ async function handleAuthorizationRequest(
       .send({ approved: existing.approved, metadata: { reason: existing.decision } });
   }
 
-  const decision = decideAuthorization(
+  let decision = decideAuthorization(
     {
       amountUsd,
       merchantCategory,
@@ -141,6 +158,16 @@ async function handleAuthorizationRequest(
     },
     policy,
   );
+  // Last gate, and the only write: the ParkAgent card pays only against a
+  // live hold on the user's own card with room for this amount.
+  let claimedHold: { id: string; sessionId: string } | null = null;
+  let holdCheck: string = "not_checked";
+  if (decision.approve && userId) {
+    const claim = await claimHoldForAuthorization(deps.db, userId, amountUsd, at);
+    holdCheck = claim.claimed ? "claimed" : claim.reason;
+    if (claim.claimed) claimedHold = { id: claim.hold.id, sessionId: claim.hold.sessionId };
+    decision = applyHoldClaim(decision, claim);
+  }
 
   // Persist the audit BEFORE answering, so the decision survives even a slow
   // or dropped response (Stripe's Autopilot may then approve/decline on our
@@ -156,6 +183,8 @@ async function handleAuthorizationRequest(
     approved: decision.approve,
     decision: decision.reason,
     status: "pending",
+    sessionId: claimedHold?.sessionId ?? null,
+    holdId: claimedHold?.id ?? null,
   };
   if (existing) {
     await deps.db.issuingAuthorization.update({
@@ -165,10 +194,20 @@ async function handleAuthorizationRequest(
         decision: decision.reason,
         status: "pending",
         amountUsd,
+        sessionId: row.sessionId,
+        holdId: row.holdId,
       },
     });
   } else {
-    await deps.db.issuingAuthorization.create({ data: row });
+    try {
+      await deps.db.issuingAuthorization.create({ data: row });
+    } catch (err) {
+      // A duplicate delivery racing this one won the insert. Its decision
+      // stands; the room this one claimed on the hold must go back, or the
+      // hold would later capture the charge twice.
+      if (claimedHold) await releaseHoldClaim(deps.db, claimedHold.id, amountUsd);
+      throw err;
+    }
   }
   await deps.db.decision.create({
     data: {
@@ -183,12 +222,18 @@ async function handleAuthorizationRequest(
         knownCard: card !== null,
         hasPendingSession,
         spentTodayUsd,
+        holdCheck,
         dryRun: deps.policy.effectiveDryRun(),
         policyHash: deps.policy.hash(),
       },
       rule: decision.reason,
-      outcome: { approved: decision.approve, wouldApprove: decision.wouldApprove },
+      outcome: {
+        approved: decision.approve,
+        wouldApprove: decision.wouldApprove,
+        ...(claimedHold && decision.approve ? { holdId: claimedHold.id } : {}),
+      },
       userId,
+      ...(claimedHold && decision.approve ? { sessionId: claimedHold.sessionId } : {}),
     },
   });
 
@@ -210,6 +255,38 @@ async function upsertAuthorization(deps: AppDeps, auth: Stripe.Issuing.Authoriza
     where: { stripeAuthorizationId: auth.id },
   });
   if (existing) {
+    // A reversal of an approval that holds room on a still-open hold gives
+    // the room back, so the leg captures only what was really charged.
+    // Guarded on the stored status, so a replayed .updated never releases
+    // twice.
+    if (
+      auth.status === "reversed" &&
+      existing.status !== "reversed" &&
+      existing.approved === true &&
+      existing.holdId
+    ) {
+      const releasedUsd = Number(existing.amountUsd ?? 0);
+      const applied = await releaseHoldClaim(deps.db, existing.holdId, releasedUsd);
+      const hold = await deps.db.sessionHold.findUnique({ where: { id: existing.holdId } });
+      await deps.db.decision.create({
+        data: {
+          kind: "wallet_hold",
+          inputs: { stripeAuthorizationId: auth.id, holdId: existing.holdId },
+          rule: "authorization_reversed",
+          // Not applied = the hold already captured this charge: the user
+          // paid for a charge the provider took back, and needs a refund
+          // (surfaced here for the operator; there is no automatic refund).
+          outcome: {
+            releasedUsd,
+            applied,
+            holdStatus: hold?.status ?? null,
+            ...(!applied && hold?.status === "captured" ? { needsRefund: true } : {}),
+          },
+          userId: hold?.userId ?? null,
+          ...(hold ? { sessionId: hold.sessionId } : {}),
+        },
+      });
+    }
     await deps.db.issuingAuthorization.update({
       where: { stripeAuthorizationId: auth.id },
       data: {
@@ -298,6 +375,39 @@ async function handleTopupSucceeded(deps: AppDeps, intent: Stripe.PaymentIntent)
       rule: moved ? "funded" : "funding_move_failed",
       outcome: moved ? { ok: true, ...(error ? { note: error } : {}) } : { ok: false, error },
       userId,
+    },
+  });
+}
+
+/**
+ * payment_intent.succeeded / .canceled for a session hold. Our own settle
+ * (services/wallet/holds.ts) already moved the hold out of `held` before
+ * these land, so for those this is a replay and changes nothing. What it
+ * catches is Stripe settling a hold on its own — an uncaptured intent is
+ * auto-canceled after 7 days — which must not leave a phantom `held` row
+ * the webhook could approve charges against. Compare-and-set on `held`:
+ * a redelivery finds nothing to change.
+ */
+async function reconcileHold(
+  deps: AppDeps,
+  intent: Stripe.PaymentIntent,
+  status: "captured" | "released",
+): Promise<void> {
+  const hold = await deps.db.sessionHold.findUnique({ where: { paymentIntentId: intent.id } });
+  if (!hold) return;
+  const capturedUsd = status === "captured" ? centsToUsd(intent.amount_received ?? 0) : 0;
+  const changed = await deps.db.sessionHold.updateMany({
+    where: { id: hold.id, status: "held" },
+    data: { status, capturedUsd, settledAt: deps.now?.() ?? new Date() },
+  });
+  await deps.db.decision.create({
+    data: {
+      kind: "wallet_hold",
+      inputs: { holdId: hold.id, paymentIntentId: intent.id, stripeStatus: intent.status },
+      rule: changed.count === 1 ? `reconciled_${status}` : "replayed",
+      outcome: { changed: changed.count === 1, capturedUsd },
+      userId: hold.userId,
+      sessionId: hold.sessionId,
     },
   });
 }

@@ -334,10 +334,13 @@ export function makeExtender(deps: ExtenderDeps): Extender {
           expiresAt: result.expiresAt.toISOString(),
           durationMs: result.durationMs,
           ...(result.shadow ? { shadow: result.shadow } : {}),
+          ...(result.hold ? { hold: result.hold } : {}),
         };
       } else {
         // free_period is a HOLD, not a failure: applyExtension already
-        // pushed "parking is free now" and nothing was charged.
+        // pushed "parking is free now" and nothing was charged. A declined
+        // ParkAgent-card hold is an extend_failed whose code says so (the
+        // push already told the user to update the card in Wallet).
         rule = result.code === "free_period" ? "free_period" : "extend_failed";
         outcome = {
           action: result.code === "free_period" ? "hold" : "extend",
@@ -347,6 +350,7 @@ export function makeExtender(deps: ExtenderDeps): Extender {
           message: result.message,
           durationMs: result.durationMs,
           ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}),
+          ...(result.hold ? { hold: result.hold } : {}),
         };
       }
     } else if (expiringReason !== null && changed) {

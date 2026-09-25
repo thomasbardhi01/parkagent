@@ -406,6 +406,116 @@ describe("saving a card for the ParkAgent card", () => {
     expect(res.json()).toMatchObject({ error: "setup_not_complete" });
   });
 
+  // The card's row outlives its removal (stripe_payment_method_id is
+  // unique), so the same setup posted again — a retry that raced the
+  // delete, or a client replaying its last setup — must never insert it a
+  // second time.
+  describe("the same setup posted again after its card was removed", () => {
+    /** A gateway that, like Stripe, detaches on remove for good. */
+    function detachingGateway() {
+      const detached = new Set<string>();
+      return makeFakeGateway({
+        detachPaymentMethod: async (id) => {
+          detached.add(id);
+        },
+        retrievePaymentMethod: async (id) => ({
+          paymentMethodId: id,
+          customerId: detached.has(id) ? null : "cus_u1",
+          brand: "Visa",
+          last4: "4242",
+          expMonth: 12,
+          expYear: 2031,
+          wallet: "apple_pay",
+        }),
+      });
+    }
+
+    async function addThenRemove(t: ReturnType<typeof makeTestApp>) {
+      await call(t, "POST", "/wallet/setup-intent", { sandbox: true });
+      const added = await call(t, "POST", "/wallet/funding-methods", {
+        setupIntentId: "seti_test_1",
+      });
+      expect(added.json().fundingMethod.id).toBe("fm1");
+      expect((await call(t, "DELETE", "/wallet/funding-methods/fm1")).json()).toMatchObject({
+        ok: true,
+      });
+    }
+
+    test("detached at Stripe (what remove does): refused twice, cleanly; the card stays removed", async () => {
+      const t = makeTestApp({ issuingSandbox: true, stripe: detachingGateway() });
+      await addThenRemove(t);
+      for (const attempt of [1, 2]) {
+        const res = await call(t, "POST", "/wallet/funding-methods", {
+          setupIntentId: "seti_test_1",
+        });
+        expect(res.statusCode, `attempt ${attempt}`).toBe(409);
+        expect(res.json()).toMatchObject({ error: "funding_method_removed" });
+      }
+      expect(t.state.fundingMethods).toHaveLength(1);
+      expect(t.state.fundingMethods[0]!.removedAt).not.toBeNull();
+      expect(
+        t.state.decisions.filter((d) => d.rule === "funding_method_readd_refused"),
+      ).toHaveLength(2);
+    });
+
+    test("still attached at Stripe: reactivated once, then answered idempotently", async () => {
+      // The default fake never detaches — Stripe still has the card.
+      const t = makeTestApp({ issuingSandbox: true, stripe: makeFakeGateway() });
+      await addThenRemove(t);
+      const first = await call(t, "POST", "/wallet/funding-methods", {
+        setupIntentId: "seti_test_1",
+      });
+      const second = await call(t, "POST", "/wallet/funding-methods", {
+        setupIntentId: "seti_test_1",
+      });
+      expect([first.statusCode, second.statusCode]).toEqual([200, 200]);
+      expect(first.json().fundingMethod).toMatchObject({ id: "fm1", isDefault: true });
+      expect(second.json().fundingMethod).toMatchObject({ id: "fm1", isDefault: true });
+      expect(t.state.fundingMethods).toHaveLength(1);
+      expect(t.state.fundingMethods[0]).toMatchObject({ removedAt: null, isDefault: true });
+      expect(t.state.decisions.filter((d) => d.rule === "funding_method_reactivated")).toHaveLength(
+        1,
+      );
+    });
+  });
+
+  test("two overlapping posts of one fresh setup: one row, both answered with it, one default", async () => {
+    const t = makeTestApp({ issuingSandbox: true, stripe: makeFakeGateway() });
+    await call(t, "POST", "/wallet/setup-intent", { sandbox: true });
+    // Both look the card up before either inserts it.
+    const db = t.deps.db;
+    let waiting: (() => void)[] = [];
+    let lookups = 0;
+    t.deps.db = {
+      ...db,
+      fundingMethod: {
+        ...db.fundingMethod,
+        findUnique: async (args) => {
+          lookups += 1;
+          if (lookups <= 2) {
+            await new Promise<void>((resolve) => {
+              waiting.push(resolve);
+              if (waiting.length === 2) {
+                waiting.forEach((r) => r());
+                waiting = [];
+              }
+            });
+          }
+          return db.fundingMethod.findUnique(args);
+        },
+      },
+    };
+    const [a, b] = await Promise.all([
+      call(t, "POST", "/wallet/funding-methods", { setupIntentId: "seti_test_1" }),
+      call(t, "POST", "/wallet/funding-methods", { setupIntentId: "seti_test_1" }),
+    ]);
+    expect([a.statusCode, b.statusCode]).toEqual([200, 200]);
+    expect(a.json().fundingMethod.id).toBe("fm1");
+    expect(b.json().fundingMethod.id).toBe("fm1");
+    expect(t.state.fundingMethods).toHaveLength(1);
+    expect(t.state.fundingMethods[0]!.isDefault).toBe(true);
+  });
+
   test("remove: refused while it's the ParkAgent card's only card or holding a leg", async () => {
     const t = makeTestApp({ stripe: makeFakeGateway(), paymentSource: "parkagent_card" });
     const only = seedFundingMethod(t.state);

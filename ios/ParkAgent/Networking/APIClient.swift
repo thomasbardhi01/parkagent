@@ -254,6 +254,7 @@ enum APIError: Error, LocalizedError {
         case "extension_in_progress": "An extension for this spot is already going through. Check your time, then try again."
         case "wallet_not_ready": "How you pay needs attention — fix it in Wallet."
         case "setup_not_complete": "The card wasn't saved. Try again."
+        case "funding_method_removed": "That card was removed. Add it again to use it."
         case "not_approved": "That Link payment hasn't been approved yet."
         case "card_expired": "That Link card has expired."
         case "card_used": "That Link card was already used."

@@ -1971,8 +1971,16 @@ accepted. Every call writes a `decisions` row (kind `payment_source`).
    `{fundingMethod}`. The intent must be the caller's (else `404
    unknown_setup_intent`) and `succeeded` (else `409 setup_not_complete`);
    brand, last4, expiry, and the Apple Pay wallet flag are stored — Stripe
-   ids only, never a number. Idempotent per payment method. The first card
-   (or `makeDefault`, the default) becomes the default here and on Stripe.
+   ids only, never a number. Idempotent per payment method, overlapping
+   duplicates included (the one that loses the unique insert answers with
+   the winner's row). The first card (or `makeDefault`, the default)
+   becomes the default here and on Stripe. The same setup posted again
+   after its card was removed reactivates the removed row — but only while
+   Stripe still has the payment method on this Customer; removing detaches
+   it, and Stripe never lets a detached card pay or be attached again, so
+   otherwise it answers `409 funding_method_removed` (decision rule
+   `funding_method_readd_refused`) and the card is added afresh through a
+   new SetupIntent.
 
 `PUT /wallet/funding-methods/:id/default` switches the default.
 `DELETE /wallet/funding-methods/:id` detaches it — refused `409

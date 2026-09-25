@@ -756,9 +756,11 @@ export interface AppDb {
         isDefault: boolean;
       };
     }): Promise<FundingMethodRow>;
+    /** removedAt: null reactivates a removed card (POST
+     * /wallet/funding-methods, only while Stripe still has it attached). */
     update(args: {
       where: { id: string };
-      data: { isDefault?: boolean; removedAt?: Date };
+      data: { isDefault?: boolean; removedAt?: Date | null };
     }): Promise<FundingMethodRow>;
     /** Clear the default flag across a user's methods before setting one. */
     updateMany(args: {

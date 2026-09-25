@@ -208,7 +208,11 @@ enum APIError: Error, LocalizedError {
         case "executor_failed": "The payment didn't go through, so the meter isn't paid. Try again, or pay at the meter."
         case "policy_violation": "That's outside your parking limits, so nothing was paid."
         case "session_already_active": "A parking session is already running. Stop it before starting another."
-        case "session_not_active": "That session has already ended."
+        case "session_not_active", "session_not_found", "no_active_session": "That session has already ended."
+        case "plan_not_found": "That plan is no longer available. Ask again for a fresh one."
+        case "itinerary_not_found", "itinerary_not_editable": "That day's plan can't be changed any more."
+        case "over_daily_cap", "plan_over_daily_cap": "That would go over today's spending limit."
+        case "vehicle_not_found": "That car isn't on your account any more."
         case "parked_event_not_found", "zone_not_found": "That parking spot is no longer available to pay. Park again to get a fresh quote."
         case "street_pay_on_arrival": "Street parking is paid when you park, not ahead of time."
         default: fallbackRefusal(code)

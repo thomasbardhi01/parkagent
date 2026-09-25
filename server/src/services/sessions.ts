@@ -193,11 +193,19 @@ export async function applyExtension(
       dryRun,
     );
     if (!readiness.ready) return refuse("wallet_not_ready", readiness.reason);
+    const policy = deps.policy.get();
+    const spentTodayUsd = await spentToday(deps.db, session.userId, now);
     const hold = await placeHold(deps, {
       userId: session.userId,
       sessionId: session.id,
       leg: `extend-${session.extendCount + 1}`,
       quoteUsd: price.totalUsd,
+      // Session cap is per session (what it already spent counts); the
+      // daily cap counts today's real spend.
+      capRoomUsd: Math.min(
+        policy.session_cap_usd - sessionSpentUsd(session),
+        policy.daily_cap_usd - spentTodayUsd,
+      ),
     });
     if (!hold.ok) {
       return hold.reason === "declined"

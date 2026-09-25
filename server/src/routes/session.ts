@@ -337,6 +337,8 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
         sessionId: session.id,
         leg: "start",
         quoteUsd: price.totalUsd,
+        // The hold may not exceed what the caps still allow.
+        capRoomUsd: Math.min(policy.session_cap_usd, policy.daily_cap_usd - spentTodayUsd),
       });
       if (!hold.ok) {
         const code = hold.reason === "declined" ? "card_declined" : hold.reason;

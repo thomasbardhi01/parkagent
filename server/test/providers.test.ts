@@ -166,13 +166,13 @@ describe("POST /providers/:provider/link", () => {
     expect(t.state.providerAccounts).toHaveLength(0);
   });
 
-  it("requires explicit consent before a chained card setup (issuing_card users)", async () => {
-    // Only an issuing_card user gets the chained setup-card at all — the
+  it("requires explicit consent before a chained card setup (parkagent_card users)", async () => {
+    // Only a parkagent_card user gets the chained setup-card at all — the
     // provider_card default skips it (pinned in paymentSource.test.ts).
     const t = makeTestApp({
       seedLinkedProvider: false,
       providerOps: () => makeFakeProviderOps(),
-      paymentSource: "issuing_card",
+      paymentSource: "parkagent_card",
     });
     const res = await post(t, "/providers/parknyc/link", { cookies: [SESSION_COOKIE] });
     expect(res.statusCode).toBe(400);
@@ -203,9 +203,12 @@ describe("chained link → setup-card", () => {
       stripe: makeFakeGateway(),
       now: () => NOW,
       providerOps: () => makeFakeProviderOps(),
-      // The chained setup-card only runs for issuing_card users; the
-      // provider_card default leaves the account's own payment method.
-      paymentSource: "issuing_card",
+      // The chained setup-card only runs for parkagent_card users (the
+      // provider_card default leaves the account's own payment method),
+      // and only once the card is live — before that it's a sandbox card
+      // and never goes onto a real account.
+      paymentSource: "parkagent_card",
+      issuingLive: true,
       ...LIVE,
       ...options,
     });

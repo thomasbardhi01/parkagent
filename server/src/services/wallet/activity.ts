@@ -146,7 +146,7 @@ export function sessionExplanation(args: {
       if (args.failureCode === "wallet_not_ready" || args.failureCode === "hold_failed") {
         return "The ParkAgent card couldn't be funded — nothing was paid.";
       }
-      return `Couldn't pay at ${provider}${args.failureCode ? ` (${args.failureCode})` : ""} — the meter was unpaid.`;
+      return `Couldn't pay at ${provider}${failureReason(args.failureCode, provider)} — the meter was unpaid.`;
     case "pending":
       return `Paying at ${provider}…`;
   }
@@ -164,6 +164,29 @@ export function sessionExplanation(args: {
 }
 
 const money = (usd: number) => `$${usd.toFixed(2)}`;
+
+/** An executor failure in words (never the raw code): ": the card was
+ * declined", or nothing when the code says nothing a person can use. */
+function failureReason(code: string | null, provider: string): string {
+  switch (code) {
+    case "payment_declined":
+      return `: the card saved there was declined`;
+    case "payment_method_missing":
+      return `: no card is saved on your ${provider} account`;
+    case "auth_expired":
+      return `: your ${provider} sign-in expired`;
+    case "vehicle_missing":
+      return `: your plate isn't on your ${provider} account`;
+    case "zone_not_found":
+      return `: it didn't recognize the zone`;
+    case "parking_denied":
+      return `: it's blocking re-parking there right now`;
+    case "network":
+      return `: it couldn't be reached`;
+    default:
+      return "";
+  }
+}
 
 /** Same-instant entries in causal order: the hold comes before the leg it
  * funds, and settles after it. */

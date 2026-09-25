@@ -41,8 +41,15 @@ export const HOLD_SETTLE_GRACE_MS = 15 * 60_000;
 
 const round2 = (usd: number) => Math.round(usd * 100) / 100;
 
-export function holdAmountFor(quoteUsd: number): number {
-  return round2(quoteUsd + Math.max(HOLD_BUFFER_MIN_USD, quoteUsd * HOLD_BUFFER_SHARE));
+/**
+ * The hold for a leg: the quote plus the buffer, but never more than the
+ * caps leave room for — the hold is the most the ParkAgent card may pay for
+ * this leg, and the caps bind whatever pays. (Callers only ask once the
+ * policy check passed, so the room is at least the quote.)
+ */
+export function holdAmountFor(quoteUsd: number, capRoomUsd = Infinity): number {
+  const buffered = round2(quoteUsd + Math.max(HOLD_BUFFER_MIN_USD, quoteUsd * HOLD_BUFFER_SHARE));
+  return round2(Math.min(buffered, Math.max(quoteUsd, capRoomUsd)));
 }
 
 export interface HoldDeps {
@@ -112,11 +119,19 @@ export async function defaultFundingMethod(
  */
 export async function placeHold(
   deps: HoldDeps,
-  args: { userId: string; sessionId: string; leg: string; quoteUsd: number },
+  args: {
+    userId: string;
+    sessionId: string;
+    /** "start" | "extend-<n>"; a retry of the same leg gets its own row. */
+    leg: string;
+    quoteUsd: number;
+    /** What the caps still allow for this leg (session and daily room). */
+    capRoomUsd?: number;
+  },
 ): Promise<PlaceHoldResult> {
   const quoteUsd = round2(args.quoteUsd);
-  const heldUsd = holdAmountFor(quoteUsd);
-  const inputs = { leg: args.leg, quoteUsd, heldUsd };
+  const heldUsd = holdAmountFor(quoteUsd, args.capRoomUsd);
+  const inputs = { leg: args.leg, quoteUsd, heldUsd, capRoomUsd: args.capRoomUsd ?? null };
 
   // Non-negotiable: nothing is authorized on anyone's card in dry run.
   if (deps.policy.effectiveDryRun()) {
@@ -127,14 +142,22 @@ export async function placeHold(
     return { ok: true, simulated: true, hold: null, heldUsd };
   }
 
-  // A retried leg reuses its hold instead of stacking a second one.
-  const legHolds = await deps.db.sessionHold.findMany({
+  // A leg still holding (a retry after a crash between hold and executor)
+  // reuses its hold instead of stacking a second one. A leg whose earlier
+  // attempt was declined or released gets a NEW attempt — its own row and
+  // its own idempotency key, or Stripe would replay the old decline even
+  // after the user fixed their card.
+  const sessionHolds = await deps.db.sessionHold.findMany({
     where: { sessionId: { in: [args.sessionId] } },
   });
-  const existing = legHolds.find((h) => h.leg === args.leg);
-  if (existing?.status === "held") {
-    return { ok: true, simulated: false, hold: existing, heldUsd: Number(existing.amountUsd) };
+  const attempts = sessionHolds.filter(
+    (h) => h.leg === args.leg || h.leg.startsWith(`${args.leg}.`),
+  );
+  const live = attempts.find((h) => h.status === "held");
+  if (live) {
+    return { ok: true, simulated: false, hold: live, heldUsd: Number(live.amountUsd) };
   }
+  const leg = attempts.length === 0 ? args.leg : `${args.leg}.${attempts.length + 1}`;
 
   const funding = await defaultFundingMethod(deps.db, args.userId);
   if (!funding) {
@@ -160,9 +183,9 @@ export async function placeHold(
         parkagent: "session_hold",
         userId: args.userId,
         sessionId: args.sessionId,
-        leg: args.leg,
+        leg,
       },
-      idempotencyKey: `hold:${args.sessionId}:${args.leg}`,
+      idempotencyKey: `hold:${args.sessionId}:${leg}`,
     });
   } catch (err) {
     const message = err instanceof Error ? (err.message.split("\n")[0] ?? "") : String(err);
@@ -181,7 +204,7 @@ export async function placeHold(
       data: {
         sessionId: args.sessionId,
         userId: args.userId,
-        leg: args.leg,
+        leg,
         paymentIntentId: extra.paymentIntentId,
         fundingMethodId: funding.method.id,
         quoteUsd,
@@ -202,12 +225,19 @@ export async function placeHold(
       // A retried leg whose earlier attempt already recorded the decline.
       if ((err as { code?: string }).code !== "P2002") throw err;
     }
-    await decide(deps, args.userId, args.sessionId, "hold_declined", inputs, {
-      placed: false,
-      declineCode: attempt.declineCode,
-      paymentIntentId: attempt.paymentIntentId,
-      fundingMethod: `${funding.method.brand} ${funding.method.last4}`,
-    });
+    await decide(
+      deps,
+      args.userId,
+      args.sessionId,
+      "hold_declined",
+      { ...inputs, leg },
+      {
+        placed: false,
+        declineCode: attempt.declineCode,
+        paymentIntentId: attempt.paymentIntentId,
+        fundingMethod: `${funding.method.brand} ${funding.method.last4}`,
+      },
+    );
     return { ok: false, reason: "declined", declineCode: attempt.declineCode, hold };
   }
 
@@ -224,12 +254,19 @@ export async function placeHold(
     if (!again) throw err;
     hold = again;
   }
-  await decide(deps, args.userId, args.sessionId, "hold_placed", inputs, {
-    placed: true,
-    holdId: hold.id,
-    paymentIntentId: attempt.paymentIntentId,
-    fundingMethod: `${funding.method.brand} ${funding.method.last4}`,
-  });
+  await decide(
+    deps,
+    args.userId,
+    args.sessionId,
+    "hold_placed",
+    { ...inputs, leg },
+    {
+      placed: true,
+      holdId: hold.id,
+      paymentIntentId: attempt.paymentIntentId,
+      fundingMethod: `${funding.method.brand} ${funding.method.last4}`,
+    },
+  );
   return { ok: true, simulated: false, hold, heldUsd };
 }
 
@@ -332,11 +369,22 @@ export async function settleHold(
     });
     return { holdId, status: "released", capturedUsd: 0, heldUsd };
   } catch (err) {
-    // Put it back so the sweep retries; Stripe's idempotency keys make the
-    // retry of a capture that did land a no-op.
-    await deps.db.sessionHold.update({ where: { id: holdId }, data: { status: "held" } });
     const message = err instanceof Error ? (err.message.split("\n")[0] ?? "") : String(err);
-    await decide(deps, hold.userId, hold.sessionId, "settle_failed", inputs, { error: message });
+    // The intent is already settled on Stripe's side (e.g. it auto-canceled
+    // after 7 days and we missed the event): retrying can never succeed, so
+    // close it out instead of failing every minute forever. The
+    // payment_intent webhook reconciles what actually happened.
+    const terminal = (err as { code?: string }).code === "payment_intent_unexpected_state";
+    await deps.db.sessionHold.update({
+      where: { id: holdId },
+      data: { status: terminal ? "failed" : "held" },
+    });
+    // Otherwise put it back so the sweep retries; Stripe's idempotency keys
+    // make the retry of a capture that did land a no-op.
+    await decide(deps, hold.userId, hold.sessionId, "settle_failed", inputs, {
+      error: message,
+      terminal,
+    });
     return { holdId, status: "settle_failed", capturedUsd: 0, heldUsd };
   }
 }
@@ -372,6 +420,14 @@ export async function claimHoldForAuthorization(
     if (result.count === 1) return { claimed: true, hold };
   }
   return { claimed: false, reason: "over_hold" };
+}
+
+/** Is a leg of this user's awaiting its charge right now? A live hold
+ * inside the match window is exactly that — for extensions too, whose
+ * session started long before the pending-session window. */
+export async function hasLiveHold(db: AppDb, userId: string, at: Date): Promise<boolean> {
+  const live = await db.sessionHold.findMany({ where: { userId, status: "held" } });
+  return live.some((h) => at.getTime() - h.createdAt.getTime() <= HOLD_MATCH_WINDOW_MS);
 }
 
 /** Give back room claimed on a hold that no recorded approval stands

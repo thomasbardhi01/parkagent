@@ -25,7 +25,11 @@ import type { AppDeps } from "../app.js";
 import { nycStartOfDay } from "../services/hours.js";
 import { applyHoldClaim, centsToUsd, decideAuthorization } from "../services/issuing.js";
 import { noPendingSessions } from "../services/pendingSession.js";
-import { claimHoldForAuthorization, releaseHoldClaim } from "../services/wallet/holds.js";
+import {
+  claimHoldForAuthorization,
+  hasLiveHold,
+  releaseHoldClaim,
+} from "../services/wallet/holds.js";
 
 function cardId(auth: Stripe.Issuing.Authorization): string {
   return typeof auth.card === "string" ? auth.card : auth.card.id;
@@ -112,8 +116,11 @@ async function handleAuthorizationRequest(
         })
       ).reduce((sum, row) => sum + Number(row.amountUsd ?? 0), 0)
     : 0;
+  // A leg awaiting its charge: a session that just started, or — for an
+  // extension, whose session started long ago — a live hold placed for it.
   const hasPendingSession = userId
-    ? await (deps.hasPendingSession ?? noPendingSessions)(userId, at)
+    ? (await (deps.hasPendingSession ?? noPendingSessions)(userId, at)) ||
+      (await hasLiveHold(deps.db, userId, at))
     : false;
 
   // Stripe redelivers events, and a lifecycle .created can arrive before a

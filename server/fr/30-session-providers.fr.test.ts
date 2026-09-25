@@ -3,7 +3,7 @@
  * far as a dedicated test user can drive them live: session start must
  * refuse without a linked provider account (dry run included), the
  * provider registry must advertise both cities' link flows, and the
- * payment-source switch must hold its gate. The paid start/extend/stop
+ * payment-source switch (the Wallet's) must hold its gate. The paid start/extend/stop
  * flows themselves are pinned by the unit and executor-fixture suites
  * (see docs/functional-requirements.md).
  *
@@ -85,28 +85,26 @@ describe("FR-17 provider registry and link status", () => {
 });
 
 describe("FR-10 payment source", () => {
-  it("FR-10 the FR user defaults to provider_card and the issuing gate answers honestly", async () => {
-    const get = await frFetch("GET", "/me/payment-source");
-    expect(get.status).toBe(200);
-    expect(["provider_card", "issuing_card"]).toContain(get.body["paymentSource"]);
-    const issuingLive = get.body["issuingLive"];
-    expect(typeof issuingLive).toBe("boolean");
+  it("FR-10 the FR user defaults to the card on the provider account and the ParkAgent card's gate answers honestly", async () => {
+    const wallet = await frFetch("GET", "/wallet");
+    expect(wallet.status).toBe(200);
+    expect(["provider_card", "link_wallet", "parkagent_card"]).toContain(
+      wallet.body["activeSource"],
+    );
+    const card = wallet.body["parkagentCard"] as Record<string, unknown>;
+    expect(typeof card["live"]).toBe("boolean");
 
-    const wantIssuing = await frFetch("PUT", "/me/payment-source", {
-      paymentSource: "issuing_card",
-    });
-    if (issuingLive === true) {
-      expect(wantIssuing.status).toBe(200);
-    } else {
-      expect(wantIssuing.status).toBe(409);
-      expect(wantIssuing.body["error"]).toBe("issuing_not_live");
-    }
+    const wantCard = await frFetch("PUT", "/wallet/source", { source: "parkagent_card" });
+    // Never allowed for the FR user: not live, or live with no card to
+    // hold against — either way the caps' path stays untouched.
+    expect(wantCard.status).toBe(409);
+    expect(wantCard.body["error"]).toBe(
+      card["live"] === true ? "no_funding_method" : "parkagent_card_not_live",
+    );
 
     // Leave the FR user on the default either way.
-    const restore = await frFetch("PUT", "/me/payment-source", {
-      paymentSource: "provider_card",
-    });
+    const restore = await frFetch("PUT", "/wallet/source", { source: "provider_card" });
     expect(restore.status).toBe(200);
-    expect(restore.body["paymentSource"]).toBe("provider_card");
+    expect(restore.body["activeSource"]).toBe("provider_card");
   });
 });

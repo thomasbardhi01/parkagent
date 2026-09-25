@@ -134,19 +134,29 @@ compiled out of Release.
 Maps use MapKit for now; Mapbox is a possible later swap and nothing outside
 the map views should depend on MapKit types.
 
-The app depends on the Stripe iOS SDK (SPM, declared in `project.yml`) for
-Apple Pay / card top-ups of the card's funding balance;
-`Support/StripeTopup.swift` is the only file that imports it, and dry run
-and the mock never reach it. Live confirmation needs `STRIPE_PUBLISHABLE_KEY`
-in `Config.xcconfig` plus the one-time Apple Pay merchant setup
-(`merchant.com.thomasbardhi.parkagent`; see server/API.md "Apple Pay setup").
+The app depends on the Stripe iOS SDK (SPM, declared in `project.yml`) to
+save the card the ParkAgent card's per-session holds are placed on — a
+SetupIntent confirmed with Apple Pay or PaymentSheet (nothing is charged;
+there is no stored balance). `Support/StripeWallet.swift` is the only file
+that imports it, and the mock never reaches it. Live confirmation needs
+`STRIPE_PUBLISHABLE_KEY` in `Config.xcconfig` plus the one-time Apple Pay
+merchant setup (`merchant.com.thomasbardhi.parkagent`; see server/API.md
+"Apple Pay setup").
 
-The Card tab's "Add to Apple Pay" is behind `FeatureFlags.applePayProvisioning`
+The tabs are Park · Activity · Wallet. The Wallet answers "how am I
+paying, and what have I spent" for three ways to pay (`provider_card`
+default, `link_wallet`, `parkagent_card`); one `WalletModel` on AppModel
+feeds the Wallet, the Account sheet's "How you pay" row, and onboarding's
+pay step, and `Views/Wallet/WalletCopy.swift` holds every sentence about
+paying — so the three never disagree. Link never pays a street meter (the
+provider keeps one saved card); see server/API.md "Wallet".
+
+The Wallet's "Add to Apple Wallet" is behind `FeatureFlags.applePayProvisioning`
 (default off, showing "coming soon"). Turning it on for real requires the
 `com.apple.developer.payment-pass-provisioning` entitlement, which Apple
 grants only after an application through Stripe (support-issuing@stripe.com)
-— add it to `project.yml` when approved, plus the Stripe iOS SDK for
-`STPPushProvisioningContext` (see AddToWalletButton.swift).
+— add it to `project.yml` when approved, plus `STPPushProvisioningContext`
+(see AddToWalletButton.swift).
 
 ## Pinned versions
 Two server deps are deliberately held below `latest`. Don't bump them casually.

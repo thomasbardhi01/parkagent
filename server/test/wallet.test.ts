@@ -486,6 +486,23 @@ describe("GET /wallet/activity", () => {
     });
   });
 
+  test("a failed session explains itself in words, never a raw executor code", async () => {
+    const t = makeTestApp({});
+    seedSession(t.state, { id: "s1", status: "failed", city: "nyc", createdAt: NOW });
+    t.state.sessionEvents.push({
+      id: "se1",
+      sessionId: "s1",
+      kind: "failed",
+      at: NOW,
+      dryRun: false,
+      details: { op: "start", code: "payment_declined" },
+    });
+    const [item] = (await call(t, "GET", "/wallet/activity")).json().items;
+    expect(item.explanation).toBe(
+      "Couldn't pay at ParkNYC: the card saved there was declined — the meter was unpaid.",
+    );
+  });
+
   test("a ParkAgent-card session's row carries its holds and timeline", async () => {
     const t = makeTestApp({});
     seedSession(t.state, {

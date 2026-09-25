@@ -30,6 +30,7 @@ import {
   API_KEY,
   MONDAY_2PM,
   makeFakeGateway,
+  makeFakeProviderOps,
   makeTestApp,
   seedFundingMethod,
   seedHold,
@@ -422,6 +423,135 @@ describe("hold → pay → capture", () => {
     ]);
     expect([a.status, b.status].sort()).toEqual(["already_settled", "captured"]);
     expect(t.calls.captures).toEqual([{ paymentIntentId: "pi_race", amountUsd: 4 }]);
+  });
+});
+
+describe("review fixes", () => {
+  test("the hold never exceeds what the caps leave room for", async () => {
+    // $5.98 quote under a $7 session cap: quote + $2 would be $7.98.
+    const t = cardApp({ policy: { session_cap_usd: 7 } });
+    expect((await start(t)).statusCode).toBe(200);
+    expect(t.calls.holds[0]!.amountUsd).toBe(7);
+    // Daily room binds too: $56 of real spend today under a $60 cap.
+    const daily = cardApp({ policy: { daily_cap_usd: 62 } });
+    seedSession(daily.state, {
+      status: "stopped",
+      dryRun: false,
+      amountUsd: 55,
+      feeUsd: 0,
+      createdAt: NOW,
+    });
+    expect((await start(daily)).statusCode).toBe(200);
+    expect(daily.calls.holds[0]!.amountUsd).toBe(7);
+  });
+
+  test("a leg retried after a decline gets a new attempt, not Stripe's replayed decline", async () => {
+    let declines = 1;
+    const t = cardApp({
+      steps: [
+        { kind: "charge", usd: QUOTE_USD },
+        { kind: "charge", usd: 3.1 },
+      ],
+    });
+    const gateway = t.deps.stripe!;
+    const base = gateway.createHold;
+    gateway.createHold = async (args) => {
+      if (declines > 0 && args.idempotencyKey.includes("extend")) {
+        declines -= 1;
+        return {
+          ok: false,
+          paymentIntentId: "pi_d",
+          declineCode: "insufficient_funds",
+          message: "no",
+        };
+      }
+      return base(args);
+    };
+    expect((await start(t)).statusCode).toBe(200);
+    const extend = () =>
+      t.app.inject({
+        method: "POST",
+        url: "/session/extend",
+        headers: HEADERS,
+        payload: { sessionId: "s1", minutes: 45 },
+      });
+    expect((await extend()).json()).toMatchObject({ error: "card_declined" });
+    // The user fixes their card; the same extension goes through.
+    expect((await extend()).statusCode).toBe(200);
+    expect(t.calls.holds.map((h) => h.idempotencyKey)).toEqual([
+      "hold:s1:start",
+      "hold:s1:extend-1.2",
+    ]);
+    expect(t.state.sessionHolds.map((h) => [h.leg, h.status])).toEqual([
+      ["start", "captured"],
+      ["extend-1", "declined"],
+      ["extend-1.2", "captured"],
+    ]);
+  });
+
+  test("a hold Stripe already closed is marked failed once, not retried every minute", async () => {
+    const t = cardApp();
+    const hold = seedHold(t.state, {
+      sessionId: "s9",
+      authorizedUsd: 4,
+      paymentIntentId: "pi_gone",
+    });
+    t.deps.stripe!.captureHold = async () => {
+      throw Object.assign(new Error("This PaymentIntent's status is canceled"), {
+        code: "payment_intent_unexpected_state",
+      });
+    };
+    const deps = {
+      db: t.deps.db,
+      policy: t.deps.policy,
+      stripe: t.deps.stripe,
+      now: () => new Date(NOW.getTime() + 20 * 60_000),
+    };
+    expect(await sweepHolds(deps)).toMatchObject([{ status: "settle_failed" }]);
+    expect(hold.status).toBe("failed");
+    expect(await sweepHolds(deps)).toEqual([]);
+    // A transient failure, by contrast, goes back for the next sweep.
+    const retry = seedHold(t.state, {
+      sessionId: "s8",
+      authorizedUsd: 4,
+      paymentIntentId: "pi_blip",
+    });
+    t.deps.stripe!.captureHold = async () => {
+      throw new Error("connection reset");
+    };
+    await sweepHolds(deps);
+    expect(retry.status).toBe("held");
+  });
+
+  test("before ISSUING_LIVE the ParkAgent card never goes onto a real parking account", async () => {
+    let touched = false;
+    const t = makeTestApp({
+      issuingSandbox: true,
+      envDryRun: false,
+      policy: { dry_run: false },
+      stripe: makeFakeGateway(),
+      providerOps: () =>
+        makeFakeProviderOps({
+          setupCard: async () => {
+            touched = true;
+            return { ok: true };
+          },
+        }),
+    });
+    seedFundingMethod(t.state);
+    const res = await t.app.inject({
+      method: "PUT",
+      url: "/wallet/source",
+      headers: HEADERS,
+      payload: { source: "parkagent_card", sandbox: true, consentReplacePaymentMethod: true },
+    });
+    expect(res.statusCode).toBe(200);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(touched).toBe(false);
+    expect(t.state.decisions.find((d) => d.kind === "provider_setup_card")).toMatchObject({
+      rule: "sandbox",
+      outcome: { wouldAdd: true, sandbox: true },
+    });
   });
 });
 

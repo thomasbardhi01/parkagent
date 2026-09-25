@@ -316,6 +316,27 @@ function makeJwt(config: ApnsConfig, nowMs: number): string {
   return unsigned + "." + signature.toString("base64url");
 }
 
+/**
+ * Which APNs host a token belongs to. A token is minted by ONE environment
+ * and is rejected by the other (400 BadDeviceToken, which deletes the row),
+ * so this must follow what the app registered: an Xcode (development-
+ * signed) build's sandbox token → the sandbox host; TestFlight / App Store
+ * → production. The app reads its own provisioning profile to report it
+ * (ios Support/APNsEnvironment.swift); unknown values fall to production.
+ */
+export function apnsHost(environment: string): string {
+  return environment === "development" ? "api.sandbox.push.apple.com" : "api.push.apple.com";
+}
+
+/** One HTTP/2 POST to APNs; injectable so the fan-out is testable. */
+export type ApnsPost = (
+  host: string,
+  jwt: string,
+  bundleId: string,
+  deviceToken: string,
+  payload: unknown,
+) => Promise<{ status: number; body: string }>;
+
 function postNotification(
   host: string,
   jwt: string,
@@ -386,6 +407,7 @@ export function makeApnsDelivery(
   db: ApnsDb,
   log: { info: (msg: string) => void; warn: (msg: string) => void },
   now: () => Date = () => new Date(),
+  post: ApnsPost = postNotification,
 ): (userId: string, push: Push) => Promise<ApnsSendReport> {
   let cachedJwt: { value: string; at: number } | null = null;
 
@@ -410,8 +432,7 @@ export function makeApnsDelivery(
     };
     const results: ApnsDeliveryResult[] = [];
     for (const row of tokens) {
-      const host =
-        row.environment === "development" ? "api.sandbox.push.apple.com" : "api.push.apple.com";
+      const host = apnsHost(row.environment);
       const base: ApnsDeliveryResult = {
         tokenPrefix: row.token.slice(0, 8),
         environment: row.environment,
@@ -420,13 +441,7 @@ export function makeApnsDelivery(
         deleted: false,
       };
       try {
-        const res = await postNotification(
-          host,
-          cachedJwt.value,
-          config.bundleId,
-          row.token,
-          payload,
-        );
+        const res = await post(host, cachedJwt.value, config.bundleId, row.token, payload);
         base.status = res.status;
         // APNs returns `{"reason": "..."}` on non-200.
         if (res.status !== 200 && res.body) {

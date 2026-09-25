@@ -115,8 +115,9 @@ targets:
       path: ParkAgent/ParkAgent.entitlements
       properties:
         # Xcode rewrites this to "production" when it signs an App Store
-        # export (TestFlight); PushManager reports the matching environment
-        # per build so the server picks the right APNs host.
+        # export (TestFlight). The app reads the environment its token came
+        # from off its own signing (Support/APNsEnvironment.swift) and the
+        # server pushes each token to the matching APNs host.
         aps-environment: development
         com.apple.developer.usernotifications.time-sensitive: true
         # Sign in with Apple — the welcome screen's primary action. Also

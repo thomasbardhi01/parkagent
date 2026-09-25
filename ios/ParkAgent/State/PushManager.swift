@@ -72,16 +72,9 @@ final class PushManager: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
-    /// Matches the aps-environment entitlement: Debug builds from Xcode
-    /// register with APNs' sandbox; Release (TestFlight, App Store) is
-    /// signed for production. The server picks the host per token.
-    private var apsEnvironment: String {
-        #if DEBUG
-        "development"
-        #else
-        "production"
-        #endif
-    }
+    /// From the build's own signing, not its configuration (see
+    /// APNsEnvironment): the server picks the APNs host per token from it.
+    private var apsEnvironment: String { APNsEnvironment.current }
 
     /// A TAPPED push: take the driver where the push is about. Never on
     /// arrival — a banner that yanked the app into the link flow or the

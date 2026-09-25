@@ -4,9 +4,17 @@
  * network, no APNs.
  */
 
+import { generateKeyPairSync } from "node:crypto";
+
 import { expect, test } from "vitest";
 
-import { PUSH_TEST_TYPES, paymentFailedPush, samplePush } from "../src/services/apns.js";
+import {
+  apnsHost,
+  makeApnsDelivery,
+  PUSH_TEST_TYPES,
+  paymentFailedPush,
+  samplePush,
+} from "../src/services/apns.js";
 
 const NOW = new Date("2026-09-23T14:00:00-04:00");
 
@@ -64,4 +72,59 @@ test("payment_failed copy: unpaid only when certain, extend says extended", () =
   for (const code of ["ui_changed", "payment_declined", "browser_crashed"]) {
     expect(push(code, "pay").body).not.toContain(code);
   }
+});
+
+// A user can have an Xcode build (sandbox token) and a TestFlight build
+// (production token) at once: each token goes to its own environment's
+// host, and a push to the wrong host would be rejected and delete the row.
+test("each device token is pushed to its own APNs environment's host", async () => {
+  const { privateKey } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  const config = {
+    key: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+    keyId: "KEYID12345",
+    teamId: "TEAMID1234",
+    bundleId: "com.thomasbardhi.parkagent",
+  };
+  const rows = [
+    { id: "d1", userId: "u1", token: "sandboxtoken-aaaa", environment: "development" },
+    { id: "d2", userId: "u1", token: "productiontoken-bb", environment: "production" },
+  ];
+  const db = {
+    deviceToken: {
+      findMany: async () => rows,
+      delete: async () => undefined,
+    },
+  } as unknown as Parameters<typeof makeApnsDelivery>[1];
+  const sent: { host: string; token: string; topic: string }[] = [];
+  const deliver = makeApnsDelivery(
+    config,
+    db,
+    { info: () => {}, warn: () => {} },
+    () => new Date("2026-09-25T12:00:00Z"),
+    async (host, _jwt, topic, token) => {
+      sent.push({ host, token, topic });
+      return { status: 200, body: "" };
+    },
+  );
+
+  const report = await deliver("u1", samplePush("session_started", NOW));
+
+  expect(sent).toEqual([
+    {
+      host: "api.sandbox.push.apple.com",
+      token: "sandboxtoken-aaaa",
+      topic: "com.thomasbardhi.parkagent",
+    },
+    {
+      host: "api.push.apple.com",
+      token: "productiontoken-bb",
+      topic: "com.thomasbardhi.parkagent",
+    },
+  ]);
+  expect(report.results.map((r) => [r.tokenPrefix, r.environment, r.status])).toEqual([
+    ["sandboxt", "development", 200],
+    ["producti", "production", 200],
+  ]);
+  expect(apnsHost("development")).toBe("api.sandbox.push.apple.com");
+  expect(apnsHost("production")).toBe("api.push.apple.com");
 });

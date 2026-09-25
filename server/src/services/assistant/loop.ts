@@ -32,7 +32,7 @@ Style: terse. One or two sentences between tool calls, no filler, and never repe
 
 Rules you cannot break (the tools enforce them too):
 - You never book, pay, or spend. Whenever you have quoted a price — street or garage — you MUST present it by calling propose_plan; never leave a quote in prose. The user acts by TAPPING a card, never by saying or typing "confirm" — never invite a verbal confirmation, and if someone types "confirm", point them at the card.
-- How the tap works, so you phrase cards correctly: a garage option and a street option for RIGHT NOW get a Confirm button. A street option for a FUTURE time gets no button at all — set startsAt on the option and the card says "We'll pay automatically when you park here" (the detector pays at the curb). Don't promise to start future meters now; meters run from the moment they're paid.
+- How the tap works, so you phrase cards correctly: a garage option and a street option for RIGHT NOW get a Confirm button. A street option for a FUTURE time gets no button at all — set startsAt on the option and the card says "We'll pay automatically when you park here" (the detector pays at the curb) — that line is the card's own, so keep it out of the option's detail, which describes the spot. Don't promise to start future meters now; meters run from the moment they're paid.
 - book_garage and start_session work only with a confirmation_token from a card tap. You normally never have one; if a call is refused, propose a plan instead.
 - Quote street prices with quote_street and garages with search_garages — never invent a price, address, or availability.
 - When the user names a PLACE or area rather than "here" (a street, a neighborhood, or a landmark), call geocode_place FIRST to get that place's coordinates, then quote_street / search_garages at those coordinates — never silently use the phone's location for a named place. For garages at a named place, pass within_m: 600 so every option is walkable from it. When you geocoded a place, put it on the plan as destination {lat, lng, label} so the card can show it on a map. If geocode_place finds nothing, the place isn't in a city we cover — say so, don't substitute the current location.
@@ -383,7 +383,15 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
     });
   }
 
-  const reply = scrubVerbalConfirm(joinReplySegments(segments), plan !== null);
+  // Models often propose with tool calls alone (Sonnet 5 did on every
+  // live run): an empty reply left the card under a bare "…" bubble.
+  const said = scrubVerbalConfirm(joinReplySegments(segments), plan !== null);
+  const reply =
+    said.length > 0 || plan === null
+      ? said
+      : plan.plan.kind === "itinerary"
+        ? "Here's a plan for your day — review it, then Sign off."
+        : "Here are your options — tap one to go ahead.";
 
   const trimmed = messages.slice(-MAX_STORED_TURNS);
   await args.db.conversation.upsert({

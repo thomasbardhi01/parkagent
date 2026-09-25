@@ -115,6 +115,40 @@ describe("tool schemas", () => {
     }
   });
 
+  test("propose_plan shows the model the real plan shape — not a bare object", () => {
+    // Live Sonnet 5 (2026-09-24), given only {type: "object"}, guessed
+    // kind "street", title, costUsd, optionId and was bounced by zod three
+    // times per turn — each bounce a paid call.
+    const plan = (
+      TOOL_DEFINITIONS.find((t) => t.name === "propose_plan")!.input_schema.properties as Record<
+        string,
+        { anyOf?: Record<string, unknown>[] }
+      >
+    )["plan"]!;
+    const [single, itinerary] = plan.anyOf!;
+    const props = (s: Record<string, unknown>) => s["properties"] as Record<string, unknown>;
+    expect(props(single!)["kind"]).toMatchObject({ const: "single_spot" });
+    expect(props(itinerary!)["kind"]).toMatchObject({ const: "itinerary" });
+    const option = (props(single!)["options"] as { items: Record<string, unknown> }).items;
+    expect(Object.keys(props(option))).toEqual(
+      expect.arrayContaining(["id", "type", "label", "priceUsd", "zoneId", "garageOptionId"]),
+    );
+    expect(option["required"]).toEqual(["id", "type", "label", "priceUsd", "durationMinutes"]);
+    // Server-attached fields are the server's: not offered to the model.
+    for (const serverOnly of ["payOnArrival", "provider", "deepLink", "lat", "lng"]) {
+      expect(Object.keys(props(option))).not.toContain(serverOnly);
+    }
+    expect(Object.keys(props(single!))).not.toContain("provenance");
+    // The schema the model sees and the validator agree: its own example
+    // of a minimal plan parses.
+    expect(
+      planSchema.safeParse({
+        kind: "single_spot",
+        options: [{ id: "a", type: "street", label: "Meter", priceUsd: 4.1, durationMinutes: 60 }],
+      }).success,
+    ).toBe(true);
+  });
+
   test("the system prompt pins the two jobs and the no-spend rule", () => {
     expect(SYSTEM_PROMPT).toContain("two jobs");
     expect(SYSTEM_PROMPT).toContain("never book, pay, or spend");
@@ -186,6 +220,52 @@ describe("the loop", () => {
     expect(kinds).toContain("assistant_plan");
     // Conversation persisted with the tool turns.
     expect(t.state.conversations).toHaveLength(1);
+  });
+
+  test("a plan proposed with no words gets a short reply, never an empty bubble", async () => {
+    // Sonnet 5 proposes with tool calls alone; "" reached the app as "…".
+    const t = makeTestApp({
+      candidates: [STEINWAY_A],
+      assistantModel: scriptedModel([
+        {
+          content: [
+            { type: "tool_use", id: "t1", name: "propose_plan", input: { plan: SINGLE_SPOT_PLAN } },
+          ],
+          stopReason: "tool_use",
+        },
+      ]),
+      garage: fakeGarage(),
+    });
+    const silent = await t.app.inject({
+      method: "POST",
+      url: "/assistant/message",
+      headers: HEADERS,
+      payload: { text: "spot near the museum" },
+    });
+    expect(silent.json().plan).not.toBeNull();
+    expect(silent.json().reply).toBe("Here are your options — tap one to go ahead.");
+
+    // Words the model did say are kept as they are.
+    const t2 = makeTestApp({
+      candidates: [STEINWAY_A],
+      assistantModel: scriptedModel([
+        {
+          content: [
+            { type: "text", text: "Street is cheapest." },
+            { type: "tool_use", id: "t1", name: "propose_plan", input: { plan: SINGLE_SPOT_PLAN } },
+          ],
+          stopReason: "tool_use",
+        },
+      ]),
+      garage: fakeGarage(),
+    });
+    const spoken = await t2.app.inject({
+      method: "POST",
+      url: "/assistant/message",
+      headers: HEADERS,
+      payload: { text: "spot near the museum" },
+    });
+    expect(spoken.json().reply).toBe("Street is cheapest.");
   });
 
   test("a malformed plan bounces back to the model as a readable error", async () => {

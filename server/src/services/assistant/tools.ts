@@ -26,7 +26,7 @@ import type { CandidateFetcher } from "../zoneLookup.js";
 import { lookupRadiusM, resolveCandidates } from "../zoneLookup.js";
 import { applyObservedToCandidates } from "../zoneTermsObserved.js";
 import { currentTimeLine } from "./loop.js";
-import { itineraryTotalUsd, planSchema } from "./plans.js";
+import { MODEL_PLAN_JSON_SCHEMA, itineraryTotalUsd, planSchema } from "./plans.js";
 import type { AssistantPlanBody, SingleSpotOption, SingleSpotPlan } from "./plans.js";
 
 export interface AssistantDeps {
@@ -203,7 +203,10 @@ export const TOOL_DEFINITIONS = [
       additionalProperties: false,
       required: ["plan"],
       properties: {
-        plan: { type: "object", description: "The plan object (single_spot or itinerary shape)" },
+        plan: {
+          ...MODEL_PLAN_JSON_SCHEMA,
+          description: "The plan: a single_spot plan (1–3 options) or an itinerary (1–12 stops)",
+        },
       },
     },
   },

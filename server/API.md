@@ -1419,6 +1419,14 @@ city (an explicit `city` still wins), and the geocoder falls THROUGH to
 the other metro when the biased one has no match — the bias orders the
 search, it never blinds it.
 
+`propose_plan`'s input schema is generated from the same zod schemas it
+validates with (`MODEL_PLAN_JSON_SCHEMA`, minus the server-attached
+fields), so the model sees the real field names; with a bare `object`
+it guessed (`kind: "street"`, `title`, `costUsd`) and burned a bounced
+call per guess. A turn that proposes a plan without any text gets a
+one-line reply ("Here are your options — tap one to go ahead.") instead
+of an empty bubble.
+
 Plan shapes (zod-validated at the tool boundary — see
 `services/assistant/plans.ts`): `single_spot` is ≤3 options (street or
 garage; price, walk minutes, entry type, exactly one `recommended`,

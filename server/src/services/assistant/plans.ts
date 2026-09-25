@@ -87,6 +87,53 @@ export const itineraryPlanSchema = z.object({
 
 export const planSchema = z.discriminatedUnion("kind", [singleSpotPlanSchema, itineraryPlanSchema]);
 
+/**
+ * What propose_plan's input_schema shows the MODEL: the same zod schemas
+ * the tool validates with, minus the fields the server attaches itself
+ * (payOnArrival, provider, deepLink, pins, provenance). The tool used to
+ * describe `plan` as a bare object, so models guessed the shape — `kind:
+ * "street"`, `title`, `costUsd`, `optionId` — and every guess cost a
+ * bounced call (three per turn on a live Sonnet 5 run, 2026-09-24).
+ */
+const modelOptionSchema = singleSpotOptionSchema
+  .omit({ payOnArrival: true, provider: true, deepLink: true, lat: true, lng: true })
+  .extend({
+    zoneId: z.string().optional().describe("street options: the zoneId quote_street returned"),
+    garageOptionId: z
+      .string()
+      .optional()
+      .describe("garage options: the option id search_garages returned"),
+    startsAt: z
+      .string()
+      .optional()
+      .describe("ISO 8601 start with the UTC offset, e.g. 2026-09-26T14:00:00-04:00"),
+    recommended: z.boolean().default(false).describe("exactly one option is recommended"),
+  });
+
+const modelPlanSchema = z.discriminatedUnion("kind", [
+  singleSpotPlanSchema
+    .omit({ provenance: true })
+    .extend({ options: z.array(modelOptionSchema).min(1).max(3) }),
+  itineraryPlanSchema.extend({
+    stops: z
+      .array(itineraryStopSchema.omit({ deepLink: true }))
+      .min(1)
+      .max(12),
+  }),
+]);
+
+/** JSON Schema for propose_plan's `plan` argument (anyOf the two kinds). */
+export const MODEL_PLAN_JSON_SCHEMA: Record<string, unknown> = (() => {
+  const schema = {
+    ...(z.toJSONSchema(modelPlanSchema, { io: "input" }) as Record<string, unknown>),
+  };
+  // A tool's nested schema carries no dialect marker; the union is anyOf.
+  delete schema["$schema"];
+  schema["anyOf"] = schema["oneOf"];
+  delete schema["oneOf"];
+  return schema;
+})();
+
 export type SingleSpotOption = z.infer<typeof singleSpotOptionSchema>;
 export type SingleSpotPlan = z.infer<typeof singleSpotPlanSchema>;
 export type ItineraryStop = z.infer<typeof itineraryStopSchema>;

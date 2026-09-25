@@ -287,7 +287,7 @@ private struct LinkProgressView: View {
 private struct LinkDoneView: View {
     let providerName: String
     let cardSetUp: Bool
-    /// "Visa •••• 4242" when we could read the provider account's own card.
+    /// "Visa ••4242" when we could read the provider account's own card.
     let providerCard: String?
     let dryRun: Bool
     let onDone: () -> Void

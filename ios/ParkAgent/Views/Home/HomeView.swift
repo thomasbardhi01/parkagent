@@ -489,8 +489,11 @@ struct HomeView: View {
     }
 
     private var spendRow: some View {
-        let cap = model.policyResponse?.policy.dailyCapUsd ?? 60
-        let fraction = cap > 0 ? model.todaySpendUsd / cap : 0
+        // The Wallet's numbers — the same spend the caps count.
+        let spending = model.wallet.response?.spending
+        let cap = spending?.dailyCapUsd ?? model.policyResponse?.policy.dailyCapUsd ?? 60
+        let today = spending?.todayUsd ?? 0
+        let fraction = cap > 0 ? today / cap : 0
         return VStack(alignment: .leading, spacing: Spacing.half) {
             HStack {
                 Text("Today")
@@ -498,7 +501,7 @@ struct HomeView: View {
                     .foregroundStyle(Color.textSecondary)
                     .textCase(.uppercase)
                 Spacer()
-                Text("\(Format.money(model.todaySpendUsd)) of \(Format.money(cap))")
+                Text("\(Format.money(today)) of \(Format.money(cap))")
                     .font(.secondaryText)
                     .monospacedDigit()
                     .foregroundStyle(Color.textPrimary)

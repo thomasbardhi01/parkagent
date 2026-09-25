@@ -26,11 +26,7 @@ struct AccountSheetView: View {
     @State private var providersLoadFailed: Bool?
     @State private var relinkProviderId: String?
     @State private var confirmingUnlink: ProviderAccountStatus?
-    @State private var paymentInfo: PaymentSourceResponse?
-    @State private var isSwitchingPayment = false
-    @State private var showIssuingComingSoon = false
     @State private var confirmingSignOut = false
-    @State private var isConnectingLink = false
 
     var body: some View {
         NavigationStack {
@@ -39,7 +35,6 @@ struct AccountSheetView: View {
                 vehiclesSection
                 citiesSection
                 limitsSection
-                linkWalletSection
                 notificationsSection
                 appearanceSection
                 privacySection
@@ -85,7 +80,7 @@ struct AccountSheetView: View {
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Meters there can't be paid until you connect again. If no other account stays connected, your ParkAgent card is frozen — it unfreezes when you reconnect.")
+                Text(unlinkMessage)
             }
             .confirmationDialog(
                 "Sign out?",
@@ -248,7 +243,7 @@ struct AccountSheetView: View {
         }
     }
 
-    // MARK: - Limits & payment
+    // MARK: - Limits & how you pay
 
     @ViewBuilder
     private var limitsSection: some View {
@@ -256,59 +251,62 @@ struct AccountSheetView: View {
             NavigationLink("Spending limits") { SpendingLimitsView() }
                 .accessibilityIdentifier("account.limitsLink")
 
-            if let info = paymentInfo {
-                paymentRow(
-                    .providerCard,
-                    label: "My card on \(providerShortName)",
-                    current: info.paymentSource
-                )
-                if info.issuingLive {
-                    paymentRow(.issuingCard, label: "ParkAgent card", current: info.paymentSource)
-                } else {
-                    HStack {
-                        Text("ParkAgent card")
+            // The Wallet's own answer — the same GET /wallet the Wallet tab
+            // and onboarding read, so the three can never disagree. Changing
+            // it happens in the Wallet.
+            Button {
+                model.selectedTab = .wallet
+                dismiss()
+            } label: {
+                HStack {
+                    VStack(alignment: .leading, spacing: Spacing.quarter) {
+                        Text("How you pay")
                             .font(.bodyText)
+                            .foregroundStyle(Color.textPrimary)
+                        Text(paymentSummary)
+                            .font(.captionText)
                             .foregroundStyle(Color.textSecondary)
-                        Spacer()
-                        TagPill(label: "Coming soon", color: .textSecondary)
                     }
-                    .contentShape(Rectangle())
-                    .onTapGesture { showIssuingComingSoon = true }
-                    .accessibilityIdentifier("account.payment.comingSoon")
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("account.howYouPay")
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.captionText)
+                        .foregroundStyle(Color.textSecondary)
                 }
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("account.howYouPayRow")
         } header: {
             Text("Spending")
         } footer: {
-            Text("Which card pays the meter, and the caps that apply either way.")
-        }
-        .alert("Coming soon", isPresented: $showIssuingComingSoon) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text("The ParkAgent card isn't available yet. Your \(providerShortName) card keeps paying.")
+            Text("Your caps apply whatever pays. Change how you pay in Wallet.")
         }
     }
 
-    private func paymentRow(_ source: PaymentSource, label: String, current: PaymentSource) -> some View {
-        Button {
-            guard source != current, !isSwitchingPayment else { return }
-            Task { await switchPayment(to: source) }
-        } label: {
-            HStack {
-                Text(label)
-                    .font(.bodyText)
-                    .foregroundStyle(Color.textPrimary)
-                Spacer()
-                if current == source {
-                    Image(systemName: "checkmark")
-                        .foregroundStyle(Color.actionCoralLink)
-                }
-            }
-            .contentShape(Rectangle())
+    /// "Your card on ParkBoston ••1234", "Link · Visa ••1234", "ParkAgent card".
+    private var paymentSummary: String {
+        guard let response = model.wallet.response else { return "Loading…" }
+        switch response.activeSource {
+        case .providerCard:
+            let title = WalletCopy.title(.providerCard, provider: providerShortName)
+            let card = response.providerCard.cards.first { $0.displayName == providerShortName }
+                ?? response.providerCard.cards.first
+            return [title, card.flatMap { WalletCopy.masked(brand: $0.brand, last4: $0.last4) }]
+                .compactMap { $0 }
+                .joined(separator: " ")
+        case .linkWallet:
+            return WalletCopy.linkLine(response.link.paymentMethod)
+        case .parkagentCard:
+            return response.parkagentCard.card.map { "ParkAgent card ••\($0.last4)" } ?? "ParkAgent card"
         }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("account.payment.\(source.rawValue)")
-        .accessibilityValue(current == source ? "selected" : "not selected")
+    }
+
+    private var unlinkMessage: String {
+        model.wallet.activeSource == .parkagentCard
+            ? "Meters there can't be paid until you connect again. If no other account stays connected, your ParkAgent card is frozen — it unfreezes when you reconnect."
+            : "Meters there can't be paid until you connect again."
     }
 
     /// Whose card pays here. The user's effective city first — including a
@@ -330,44 +328,6 @@ struct AccountSheetView: View {
             if (a.city == city) != (b.city == city) { return a.city == city }
             return a.displayName < b.displayName
         }
-    }
-
-    // MARK: - Link wallet
-
-    @ViewBuilder
-    private var linkWalletSection: some View {
-        Section {
-            if model.linkWalletConnected {
-                LabeledContent("Link wallet", value: "Connected")
-                Button("Disconnect", role: .destructive) {
-                    Task {
-                        try? await model.api.linkWalletDisconnect()
-                        await model.refreshLinkWalletStatus()
-                    }
-                }
-                .accessibilityIdentifier("account.linkDisconnectButton")
-            } else {
-                Button(isConnectingLink ? "Connecting…" : "Connect Link wallet") {
-                    Task {
-                        isConnectingLink = true
-                        if let response = try? await model.api.linkWalletConnect(),
-                           let url = URL(string: response.url), !model.useMockAPI {
-                            await UIApplication.shared.open(url)
-                        }
-                        await model.refreshLinkWalletStatus()
-                        isConnectingLink = false
-                    }
-                }
-                .disabled(isConnectingLink)
-                .foregroundStyle(Color.actionCoralLink)
-                .accessibilityIdentifier("account.linkConnectButton")
-            }
-        } header: {
-            Text("Link wallet")
-        } footer: {
-            Text("Pay assistant plans from your Stripe Link wallet: you approve each paid stop in Link. Automatic street parking stays on the ParkAgent card.")
-        }
-        .task { await model.refreshLinkWalletStatus() }
     }
 
     // MARK: - Notifications, appearance, privacy, help
@@ -487,7 +447,7 @@ struct AccountSheetView: View {
     private func reload() async {
         await model.loadPolicy()
         await loadProviders()
-        paymentInfo = try? await model.api.paymentSource()
+        await model.wallet.load(api: model.api)
     }
 
     private func loadProviders() async {
@@ -502,20 +462,6 @@ struct AccountSheetView: View {
     private func unlink(_ account: ProviderAccountStatus) async {
         _ = try? await model.api.unlinkProvider(account.id)
         await loadProviders()
-    }
-
-    private func switchPayment(to source: PaymentSource) async {
-        isSwitchingPayment = true
-        do {
-            let saved = try await model.api.updatePaymentSource(source)
-            paymentInfo = saved
-            UserDefaults.standard.set(saved.paymentSource.rawValue, forKey: PaymentSource.defaultsKey)
-        } catch APIError.refused(let code) where code == "issuing_not_live" {
-            showIssuingComingSoon = true
-        } catch {
-            // Leave the current selection; pull-to-refresh retries.
-        }
-        isSwitchingPayment = false
     }
 
     private var locationStatusText: String {

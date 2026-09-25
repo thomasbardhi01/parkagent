@@ -13,9 +13,9 @@ enum AppConfig {
         return URL(string: raw)
     }
 
-    /// Stripe publishable key (pk_test_…), needed only for the live Apple
-    /// Pay / card top-up confirmation. The mock and dry-run paths never
-    /// reach the Stripe SDK.
+    /// Stripe publishable key (pk_test_…), needed only to save the
+    /// ParkAgent card's funding card live (Apple Pay / PaymentSheet). The
+    /// mock never reaches the Stripe SDK.
     static var stripePublishableKey: String? {
         infoString("STRIPE_PUBLISHABLE_KEY")
     }

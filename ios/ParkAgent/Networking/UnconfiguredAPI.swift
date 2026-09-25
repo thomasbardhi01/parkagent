@@ -40,8 +40,16 @@ struct UnconfiguredAPI: APIClient {
     func registerDevice(_ registration: DeviceRegistration) async throws { throw failure }
     func updatePolicy(_ policy: Policy) async throws -> PolicyResponse { throw failure }
 
-    func paymentSource() async throws -> PaymentSourceResponse { throw failure }
-    func updatePaymentSource(_ source: PaymentSource) async throws -> PaymentSourceResponse { throw failure }
+    func wallet() async throws -> WalletResponse { throw failure }
+    func walletActivity(cursor: String?) async throws -> ActivityPage { throw failure }
+    func setWalletSource(_ source: PaymentSource, sandbox: Bool, consent: Bool) async throws -> WalletSourceResponse {
+        throw failure
+    }
+    func walletSetupIntent(sandbox: Bool) async throws -> WalletSetupIntent { throw failure }
+    func addFundingMethod(setupIntentId: String) async throws -> FundingMethodResponse { throw failure }
+    func setDefaultFundingMethod(id: String) async throws -> FundingMethodResponse { throw failure }
+    func removeFundingMethod(id: String) async throws -> FundingMethodRemoveResponse { throw failure }
+    func revealLinkCard(spendRequestId: String) async throws -> LinkCardDetails { throw failure }
 
     func nearbyZones(lat: Double, lng: Double, radiusM: Double) async throws -> NearbyZonesResponse {
         throw failure
@@ -62,11 +70,6 @@ struct UnconfiguredAPI: APIClient {
     func unlinkProvider(_ providerId: String) async throws -> UnlinkResponse { throw failure }
 
     func prepareCard() async throws -> CardPrepareResponse { throw failure }
-    func topupIntent(amountUsd: Double) async throws -> TopupIntentResponse { throw failure }
-    func card() async throws -> CardResponse { throw failure }
-    func cardTransactions(cursor: String?) async throws -> CardTransactionsResponse { throw failure }
-    func cardTopup(amountUsd: Double) async throws -> CardFundingResponse { throw failure }
-    func cardWithdraw(amountUsd: Double) async throws -> CardFundingResponse { throw failure }
     func revealCardDetails() async throws -> RevealedCardDetails { throw failure }
     func freezeCard() async throws -> CardStatusResponse { throw failure }
     func unfreezeCard() async throws -> CardStatusResponse { throw failure }

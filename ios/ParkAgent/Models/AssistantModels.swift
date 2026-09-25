@@ -165,7 +165,8 @@ struct AssistantConfirmResponse: Decodable, Sendable {
     /// internal slug and is never shown.
     let providerZoneNumber: String?
     let durationMinutes: Int?
-    /// "issuing_card" | "link_wallet"
+    /// "provider_card" | "parkagent_card" (street) · "link_wallet" |
+    /// "garage_checkout" (garages) — what pays this confirm.
     let paymentSource: String?
     let linkApproval: LinkApproval?
     let itineraryId: String?

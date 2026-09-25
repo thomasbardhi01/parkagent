@@ -45,9 +45,24 @@ protocol APIClient: Sendable {
     /// the caps and default stay through this.
     func updatePolicy(_ policy: Policy) async throws -> PolicyResponse
 
-    // Payment source (server/API.md "/me/payment-source").
-    func paymentSource() async throws -> PaymentSourceResponse
-    func updatePaymentSource(_ source: PaymentSource) async throws -> PaymentSourceResponse
+    // Wallet (server/API.md "Wallet"): how the user pays and what they spent.
+    func wallet() async throws -> WalletResponse
+    /// The unified, paginated Activity ledger; pass the previous page's
+    /// `nextCursor` for the next one.
+    func walletActivity(cursor: String?) async throws -> ActivityPage
+    /// Switch the active way to pay. `sandbox` is only sent by Debug builds
+    /// (ParkAgent card before it's live); `consent` agrees to the ParkAgent
+    /// card replacing the card saved on each linked parking account.
+    func setWalletSource(_ source: PaymentSource, sandbox: Bool, consent: Bool) async throws -> WalletSourceResponse
+    /// Step one of saving a card for the ParkAgent card's holds.
+    func walletSetupIntent(sandbox: Bool) async throws -> WalletSetupIntent
+    /// Step two, after the Apple Pay / card sheet confirmed the intent.
+    func addFundingMethod(setupIntentId: String) async throws -> FundingMethodResponse
+    func setDefaultFundingMethod(id: String) async throws -> FundingMethodResponse
+    func removeFundingMethod(id: String) async throws -> FundingMethodRemoveResponse
+    /// An approved Link garage payment's one-time card, for the garage's
+    /// own checkout (Face ID first, 30-second display).
+    func revealLinkCard(spendRequestId: String) async throws -> LinkCardDetails
 
     /// The map's curb layer (server/API.md "GET /zones/near"). Radius is
     /// capped server-side at 400 m.
@@ -69,15 +84,10 @@ protocol APIClient: Sendable {
     func setupCard(providerId: String) async throws -> SetupCardResponse
     func unlinkProvider(_ providerId: String) async throws -> UnlinkResponse
 
-    // Card tab (server/API.md "Card endpoints").
-    /// Lazy card creation; onboarding calls it before the link web view opens.
+    // The ParkAgent card itself (server/API.md "Card endpoints").
+    /// Lazy card creation; the link flow calls it before the web view opens
+    /// for a ParkAgent-card user (idempotent — the source switch creates it).
     func prepareCard() async throws -> CardPrepareResponse
-    /// Apple Pay top-up, step 1 — the app confirms the intent client-side.
-    func topupIntent(amountUsd: Double) async throws -> TopupIntentResponse
-    func card() async throws -> CardResponse
-    func cardTransactions(cursor: String?) async throws -> CardTransactionsResponse
-    func cardTopup(amountUsd: Double) async throws -> CardFundingResponse
-    func cardWithdraw(amountUsd: Double) async throws -> CardFundingResponse
     /// Two hops in the live client: our /card/reveal for the ephemeral key,
     /// then Stripe directly for the details — the PAN never touches our server.
     func revealCardDetails() async throws -> RevealedCardDetails
@@ -136,9 +146,6 @@ enum APIError: Error, LocalizedError {
     private static func refusalMessage(_ code: String) -> String {
         switch code {
         case "dry_run": "Dry run is on — no real money moves."
-        case "amount_over_daily_cap": "That amount is over the daily cap."
-        case "insufficient_funds": "Not enough balance for that withdrawal."
-        case "funding_unavailable": "The card's funding account is not ready yet."
         case "no_card": "No card is set up yet."
         case "provider_not_linked": "This city's parking account is not linked yet."
         case "needs_zone_number": "This block's zone number is not known yet — read it off the meter."
@@ -147,7 +154,18 @@ enum APIError: Error, LocalizedError {
         case "no_session_cookies": "No sign-in was captured. Try signing in again."
         case "consent_required": "Card setup needs your consent first."
         case "provider_linking_not_configured": "The server is not set up for account linking yet."
-        case "issuing_not_live": "The ParkAgent card isn't available yet — coming soon."
+        case "issuing_not_live", "parkagent_card_not_live": "The ParkAgent card is coming soon — pending approval."
+        case "link_not_configured": "Link is coming soon."
+        case "link_not_connected": "Connect your Link wallet first."
+        case "no_funding_method": "Add a card for the ParkAgent card first."
+        case "funding_method_in_use": "That's the only card the ParkAgent card can use. Switch how you pay first."
+        case "hold_in_progress": "That card is covering a parking session right now. Try again after it ends."
+        case "card_declined": "Your card was declined — update it in Wallet."
+        case "wallet_not_ready": "How you pay needs attention — fix it in Wallet."
+        case "setup_not_complete": "The card wasn't saved. Try again."
+        case "not_approved": "That Link payment hasn't been approved yet."
+        case "card_expired": "That Link card has expired."
+        case "card_used": "That Link card was already used."
         case "invalid_code": "That code doesn't match. Check it and try again."
         case "code_expired": "That code expired. Send a new one."
         case "too_many_attempts": "Too many tries. Send a new code."

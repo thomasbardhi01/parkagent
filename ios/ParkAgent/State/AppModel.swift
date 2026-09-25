@@ -37,8 +37,15 @@ final class AppModel {
     private(set) var isExtending = false
 
     var activeSession: ActiveSession?
-    var history: [SessionRecord] = []
-    var todaySpendUsd: Double = 0
+
+    /// How the user pays and what they've spent — one instance, read by the
+    /// Wallet tab, the Account sheet, onboarding, and Home's "today" bar,
+    /// so none of them can disagree.
+    let wallet = WalletModel()
+
+    /// The tab bar's selection: the Wallet's "See all", the Account sheet's
+    /// "How you pay", and the card_declined push move between tabs.
+    var selectedTab: AppTab = .park
 
     /// Presents the provider link flow outside onboarding (parked-sheet
     /// routing, Settings re-link, the provider_relink push).
@@ -165,7 +172,6 @@ final class AppModel {
             api = UnconfiguredAPI()
             liveAPIUnavailable = true
         }
-        if mock { seedMockHistory() }
 
         let defaults = UserDefaults.standard
         detectedCity = defaults.string(forKey: "detectedCity")
@@ -217,8 +223,8 @@ final class AppModel {
         reporter.stop()
         activeSession = nil
         pendingParked = nil
-        history = []
-        todaySpendUsd = 0
+        wallet.reset()
+        selectedTab = .park
         carCoordinate = nil
         distanceFromCarMeters = nil
         itineraries = []
@@ -248,6 +254,10 @@ final class AppModel {
         // A provider_relink push routes straight into the link flow.
         PushManager.shared.onProviderRelink = { [weak self] providerId in
             self?.providerLinkPrompt = ProviderLinkPrompt(providerId: providerId)
+        }
+        // A card_declined push lands on the Wallet, where the card is fixed.
+        PushManager.shared.onOpenWallet = { [weak self] in
+            self?.selectedTab = .wallet
         }
         if activeSession != nil {
             reporter.start(api: api, carCoordinate: carCoordinate)
@@ -347,9 +357,11 @@ final class AppModel {
                 extendCount: 0,
                 maxExtendCount: autoExtendPolicy?.maxCount ?? 2,
                 maxStayReached: false,
-                autoExtend: autoExtendPolicy?.enabled ?? true
+                autoExtend: autoExtendPolicy?.enabled ?? true,
+                paymentSource: wallet.activeSource == .parkagentCard ? .parkagentCard : .providerCard
             )
-            todaySpendUsd += response.amountUsd
+            // Today's spend and Activity come from the server.
+            Task { await wallet.load(api: api) }
             distanceFromCarMeters = useMockAPI ? 120 : nil
             pendingParked = nil
             reporter.start(api: api, carCoordinate: carCoordinate)
@@ -390,8 +402,8 @@ final class AppModel {
             session.expiresAt = response.expiresAt
             session.amountUsd += response.amountUsd
             session.extendCount += 1
-            todaySpendUsd += response.amountUsd
             activeSession = session
+            Task { await wallet.load(api: api) }
         } catch {
             sessionActionError = error as? APIError ?? .transport(error)
         }
@@ -400,58 +412,16 @@ final class AppModel {
     func stopSession() async {
         guard let session = activeSession else { return }
         do {
-            let response = try await api.stopSession(sessionId: session.sessionId)
-            history.insert(SessionRecord(
-                id: session.sessionId,
-                zoneNumber: session.zoneNumber,
-                zoneLabel: session.zoneLabel,
-                startedAt: session.startedAt,
-                endedAt: response.stoppedAt,
-                amountUsd: session.amountUsd,
-                status: .paid,
-                lat: carCoordinate?.latitude,
-                lng: carCoordinate?.longitude
-            ), at: 0)
+            _ = try await api.stopSession(sessionId: session.sessionId)
             activeSession = nil
             carCoordinate = nil
             distanceFromCarMeters = nil
             reporter.stop()
+            // The stopped session is in Activity now.
+            Task { await wallet.load(api: api) }
         } catch {
             sessionActionError = error as? APIError ?? .transport(error)
         }
-    }
-
-    // MARK: - Fixtures
-
-    private func seedMockHistory() {
-        let calendar = Calendar.current
-        let now = AppClock.now
-        let yesterday = calendar.date(byAdding: .day, value: -1, to: now) ?? now
-        let lastWeek = calendar.date(byAdding: .day, value: -3, to: now) ?? now
-        history = [
-            SessionRecord(
-                id: "mock-history-1",
-                zoneNumber: "110212",
-                zoneLabel: "Zone 110212",
-                startedAt: yesterday,
-                endedAt: yesterday.addingTimeInterval(90 * 60),
-                amountUsd: 9.28,
-                status: .paid,
-                lat: 40.7813,
-                lng: -73.9787
-            ),
-            SessionRecord(
-                id: "mock-history-2",
-                zoneNumber: "110888",
-                zoneLabel: "Zone 110888",
-                startedAt: lastWeek,
-                endedAt: lastWeek.addingTimeInterval(45 * 60),
-                amountUsd: 0,
-                status: .failed,
-                lat: 40.7942,
-                lng: -73.9722
-            ),
-        ]
     }
 
     // MARK: - Debug helpers (Settings > Developer)

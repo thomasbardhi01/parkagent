@@ -138,8 +138,16 @@ private struct HangingAPI: APIClient {
     func reportLocation(_ report: LocationReport) async throws { try await hang() as Void }
     func registerDevice(_ registration: DeviceRegistration) async throws { try await hang() as Void }
     func updatePolicy(_ policy: Policy) async throws -> PolicyResponse { try await hang() }
-    func paymentSource() async throws -> PaymentSourceResponse { try await hang() }
-    func updatePaymentSource(_ source: PaymentSource) async throws -> PaymentSourceResponse { try await hang() }
+    func wallet() async throws -> WalletResponse { try await hang() }
+    func walletActivity(cursor: String?) async throws -> ActivityPage { try await hang() }
+    func setWalletSource(_ source: PaymentSource, sandbox: Bool, consent: Bool) async throws -> WalletSourceResponse {
+        try await hang()
+    }
+    func walletSetupIntent(sandbox: Bool) async throws -> WalletSetupIntent { try await hang() }
+    func addFundingMethod(setupIntentId: String) async throws -> FundingMethodResponse { try await hang() }
+    func setDefaultFundingMethod(id: String) async throws -> FundingMethodResponse { try await hang() }
+    func removeFundingMethod(id: String) async throws -> FundingMethodRemoveResponse { try await hang() }
+    func revealLinkCard(spendRequestId: String) async throws -> LinkCardDetails { try await hang() }
     func nearbyZones(lat: Double, lng: Double, radiusM: Double) async throws -> NearbyZonesResponse {
         try await hang()
     }
@@ -155,11 +163,6 @@ private struct HangingAPI: APIClient {
     func setupCard(providerId: String) async throws -> SetupCardResponse { try await hang() }
     func unlinkProvider(_ providerId: String) async throws -> UnlinkResponse { try await hang() }
     func prepareCard() async throws -> CardPrepareResponse { try await hang() }
-    func topupIntent(amountUsd: Double) async throws -> TopupIntentResponse { try await hang() }
-    func card() async throws -> CardResponse { try await hang() }
-    func cardTransactions(cursor: String?) async throws -> CardTransactionsResponse { try await hang() }
-    func cardTopup(amountUsd: Double) async throws -> CardFundingResponse { try await hang() }
-    func cardWithdraw(amountUsd: Double) async throws -> CardFundingResponse { try await hang() }
     func revealCardDetails() async throws -> RevealedCardDetails { try await hang() }
     func freezeCard() async throws -> CardStatusResponse { try await hang() }
     func unfreezeCard() async throws -> CardStatusResponse { try await hang() }

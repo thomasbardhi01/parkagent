@@ -74,7 +74,7 @@ struct ItineraryPlanCard: View {
             if linkConnected {
                 HStack(spacing: Spacing.quarter) {
                     Image(systemName: "link.circle.fill")
-                    Text("Paying with your Link wallet — you'll approve each paid stop")
+                    Text("Garages pay through Link — you'll approve each one in Link")
                 }
                 .font(.captionTextSemibold)
                 .foregroundStyle(Color.actionCoralLink)

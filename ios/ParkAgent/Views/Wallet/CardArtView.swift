@@ -1,10 +1,10 @@
 import SwiftUI
 
-/// The hero: the virtual card in ink with a single coral detail. Frozen
+/// The ParkAgent virtual card in ink with a single coral detail. Frozen
 /// desaturates the art and pins a "Frozen" pill; revealed swaps the masked
 /// number for the real one from Stripe.
 struct CardArtView: View {
-    let card: CardSummary
+    let card: ParkAgentCard
     let revealed: RevealedCardDetails?
 
     // Text opacities stay ≥0.85: the slate end of the gradient is light
@@ -20,15 +20,17 @@ struct CardArtView: View {
                     .fill(Color.actionCoral)
                     .frame(width: 8, height: 8)
                 Spacer()
+                // A frozen card can't pay; the Frozen pill takes this corner.
                 Image(systemName: "wave.3.right")
                     .foregroundStyle(Color.white.opacity(0.75))
+                    .opacity(card.isFrozen ? 0 : 1)
             }
             Spacer()
             numberLine
             Spacer()
             HStack(alignment: .bottom) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(card.cardholderName.uppercased())
+                    Text((card.cardholderName ?? "").uppercased())
                         .font(.captionTextSemibold)
                         .foregroundStyle(Color.white.opacity(0.85))
                     Text(expiryText)
@@ -44,9 +46,9 @@ struct CardArtView: View {
                         .foregroundStyle(Color.white.opacity(0.9))
                         .monospacedDigit()
                         .accessibilityIdentifier("card.cvc")
-                } else {
+                } else if let brand = card.brand {
                     // Whatever network the API says — never assumed.
-                    CardBrandMark(brand: card.brand)
+                    CardBrandMark(brand: brand)
                 }
             }
         }
@@ -87,9 +89,10 @@ struct CardArtView: View {
     }
 
     private var expiryText: String {
-        let month = revealed?.expMonth ?? card.expMonth
-        let year = (revealed?.expYear ?? card.expYear) % 100
-        return String(format: "%02d/%02d", month, year)
+        guard let month = revealed?.expMonth ?? card.expMonth,
+              let year = revealed?.expYear ?? card.expYear
+        else { return "" }
+        return String(format: "%02d/%02d", month, year % 100)
     }
 
     static func grouped(_ number: String) -> String {
@@ -102,22 +105,36 @@ struct CardArtView: View {
 }
 
 #Preview("Active") {
-    CardArtView(card: MockFixtures.cardSummary(frozen: false), revealed: nil)
+    CardArtView(card: CardArtView.previewCard(frozen: false), revealed: nil)
         .padding(Spacing.unit)
         .background(Color.appBackground)
 }
 
 #Preview("Frozen") {
-    CardArtView(card: MockFixtures.cardSummary(frozen: true), revealed: nil)
+    CardArtView(card: CardArtView.previewCard(frozen: true), revealed: nil)
         .padding(Spacing.unit)
         .background(Color.appBackground)
 }
 
 #Preview("Revealed") {
     CardArtView(
-        card: MockFixtures.cardSummary(frozen: false),
+        card: CardArtView.previewCard(frozen: false),
         revealed: RevealedCardDetails(number: "5555555555554444", cvc: "123", expMonth: 8, expYear: 2030)
     )
     .padding(Spacing.unit)
     .background(Color.appBackground)
+}
+
+extension CardArtView {
+    static func previewCard(frozen: Bool) -> ParkAgentCard {
+        ParkAgentCard(
+            stripeCardId: "ic_preview",
+            last4: "4444",
+            brand: "Mastercard",
+            status: frozen ? "inactive" : "active",
+            expMonth: 8,
+            expYear: 2030,
+            cardholderName: "Preview Cardholder"
+        )
+    }
 }

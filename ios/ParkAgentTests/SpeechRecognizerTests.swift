@@ -236,20 +236,29 @@ private final class PermissionGate: @unchecked Sendable {
 final class StreetNoteTests: XCTestCase {
     func testUsesProviderZoneNumberWhenPresent() {
         let note = AssistantModel.streetNote(
-            providerZoneNumber: "81234", durationMinutes: 90, paymentSource: "issuing_card"
+            providerZoneNumber: "81234", durationMinutes: 90, paymentSource: "parkagent_card"
         )
         XCTAssertTrue(note.hasPrefix("Zone 81234 is set for 90 min"))
-        XCTAssertTrue(note.contains("ParkAgent card"))
+        XCTAssertTrue(note.hasSuffix("Paying with the ParkAgent card."), "got: \(note)")
     }
 
     func testFallsBackWithoutANumber() {
         for missing in [nil, ""] {
             let note = AssistantModel.streetNote(
-                providerZoneNumber: missing, durationMinutes: 60, paymentSource: "link_wallet"
+                providerZoneNumber: missing, durationMinutes: 60, paymentSource: "provider_card"
             )
             XCTAssertTrue(note.hasPrefix("Your spot is set for 60 min"), "got: \(note)")
             XCTAssertFalse(note.contains("bos-"), "No internal slugs in chat copy")
-            XCTAssertTrue(note.contains("Link wallet"))
+            XCTAssertTrue(note.hasSuffix("Paying with the card on your parking account."), "got: \(note)")
         }
+    }
+
+    /// A street meter is never paid by Link (the provider keeps one saved
+    /// card) — whatever the server said, the note can't claim it.
+    func testNeverClaimsLinkForAStreetMeter() {
+        let note = AssistantModel.streetNote(
+            providerZoneNumber: "456", durationMinutes: 30, paymentSource: "link_wallet"
+        )
+        XCTAssertFalse(note.contains("Link"), "got: \(note)")
     }
 }

@@ -4,14 +4,16 @@ import XCTest
 /// Settings tab, plus the account itself. Every action the sheet offers
 /// has a test here.
 final class AccountUITests: ParkAgentUITestCase {
-    /// The tab bar is Home / Sessions / Card now; Settings moved into the
-    /// sheet.
+    /// The tab bar is Park · Activity · Wallet; Settings lives in the
+    /// sheet, and the old Card and Sessions tabs are gone.
     func testSettingsTabIsGoneAndAccountSheetOpens() {
         let app = launchApp()
 
-        XCTAssertTrue(app.tabBars.buttons["Home"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.tabBars.buttons["Sessions"].exists)
-        XCTAssertTrue(app.tabBars.buttons["Card"].exists)
+        XCTAssertTrue(app.tabBars.buttons["Park"].waitForExistence(timeout: 5))
+        XCTAssertEqual(
+            app.tabBars.buttons.allElementsBoundByIndex.map { $0.label },
+            ["Park", "Activity", "Wallet"]
+        )
         XCTAssertFalse(app.tabBars.buttons["Settings"].exists, "Settings tab should be gone")
 
         openAccountSheet(app)
@@ -120,11 +122,12 @@ final class AccountUITests: ParkAgentUITestCase {
 
         let row = scrollTo(app, "account.provider.parknyc")
         XCTAssertTrue(row.waitForExistence(timeout: 5), "ParkNYC row missing")
-        // The masked FORM, not just the digits: only ProviderAccountStatus
-        // .maskedCard emits "•••• 4242", whereas a bare "4242" could come
-        // from anything the row ever grows (a zone number, a balance).
+        // The masked FORM, not just the digits: only the card display
+        // emits "Visa ••4242" (WalletCopy.masked), whereas a bare "4242"
+        // could come from anything the row ever grows (a zone number, a
+        // balance).
         XCTAssertTrue(
-            row.label.contains("•••• 4242"),
+            row.label.contains("Visa ••4242"),
             "Connected account should show the masked card, got: \(row.label)"
         )
     }
@@ -215,41 +218,24 @@ final class AccountUITests: ParkAgentUITestCase {
         XCTAssertFalse(element(app, "account.privacyFixButton").exists, "Fix offered with nothing denied")
     }
 
-    /// Payment section: provider card selected by default, ParkAgent card
-    /// reads coming soon and taps only raise the alert (issuing off).
-    func testPaymentSourceComingSoonWhileIssuingOff() {
+    /// "How you pay" is the Wallet's own answer — same words, same card —
+    /// and tapping it goes to the Wallet. Account and Wallet can't disagree.
+    func testHowYouPayMatchesTheWalletAndOpensIt() {
         let app = launchApp()
+        // The phone is in NYC (the mock's default detection).
+        waitForLabelContaining(element(app, "home.statusChip"), "New York City")
         openAccountSheet(app)
 
-        let providerRow = scrollTo(app, "account.payment.provider_card")
-        XCTAssertTrue(providerRow.waitForExistence(timeout: 5), "Provider-card row missing")
-        XCTAssertEqual(providerRow.value as? String, "selected")
+        let row = scrollTo(app, "account.howYouPay")
+        XCTAssertTrue(row.waitForExistence(timeout: 5), "How-you-pay row missing")
+        waitForLabelContaining(row, "Your card on ParkNYC Visa ••4242")
+        scrollTo(app, "account.howYouPayRow").tap()
 
-        let comingSoon = element(app, "account.payment.comingSoon")
-        XCTAssertTrue(comingSoon.exists, "Coming-soon row missing while issuing is off")
-        comingSoon.tap()
-        XCTAssertTrue(app.alerts["Coming soon"].waitForExistence(timeout: 5))
-        app.alerts["Coming soon"].buttons["OK"].tap()
-
-        // Still on the provider card.
-        XCTAssertEqual(providerRow.value as? String, "selected")
-    }
-
-    /// With issuing live, the ParkAgent card is a real row and switching
-    /// sticks (mock persists like the server row).
-    func testPaymentSourceSwitchWhenIssuingLive() {
-        let app = launchApp(issuingLive: true)
-        openAccountSheet(app)
-
-        let issuingRow = scrollTo(app, "account.payment.issuing_card")
-        XCTAssertTrue(issuingRow.waitForExistence(timeout: 5), "ParkAgent-card row missing when live")
-        XCTAssertEqual(issuingRow.value as? String, "not selected")
-        issuingRow.tap()
-
-        let predicate = NSPredicate(format: "value == %@", "selected")
-        let switched = XCTNSPredicateExpectation(predicate: predicate, object: issuingRow)
-        XCTAssertEqual(XCTWaiter().wait(for: [switched], timeout: 5), .completed, "Switch did not stick")
-        XCTAssertEqual(element(app, "account.payment.provider_card").value as? String, "not selected")
+        // The sheet closes onto the Wallet, whose hero says the same.
+        let hero = element(app, "wallet.hero.providerCard")
+        XCTAssertTrue(hero.waitForExistence(timeout: 5), "Should land on the Wallet")
+        waitForLabelContaining(hero, "Your card on ParkNYC")
+        waitForLabelContaining(hero, "Visa ••4242")
     }
 
     /// The city override pins the Home chip's city, no detection needed.
@@ -345,7 +331,7 @@ final class AccountUITests: ParkAgentUITestCase {
             element(app, "onboarding.permissions").waitForExistence(timeout: 10),
             "Reset did not return to onboarding"
         )
-        XCTAssertFalse(app.tabBars.buttons["Home"].exists, "Still on the tabs after reset")
+        XCTAssertFalse(app.tabBars.buttons["Park"].exists, "Still on the tabs after reset")
     }
 
     /// A Boston user must never be told their card is on ParkNYC. The
@@ -359,12 +345,11 @@ final class AccountUITests: ParkAgentUITestCase {
         waitForLabelContaining(chip, "Boston")
 
         openAccountSheet(app)
-        let providerRow = scrollTo(app, "account.payment.provider_card")
-        XCTAssertTrue(providerRow.waitForExistence(timeout: 5), "Provider-card row missing")
-        XCTAssertEqual(
-            providerRow.label, "My card on ParkBoston",
-            "The payment row should name the detected city's provider"
-        )
+        let row = scrollTo(app, "account.howYouPay")
+        XCTAssertTrue(row.waitForExistence(timeout: 5), "How-you-pay row missing")
+        // ParkNYC is the registry's (and the mock's) FIRST account: only
+        // the detected city can make this ParkBoston's card.
+        waitForLabelContaining(row, "Your card on ParkBoston Visa ••1234")
     }
 
     /// Help is reachable and says what the app never does.

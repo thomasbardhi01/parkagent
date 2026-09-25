@@ -17,6 +17,8 @@ final class PushManager: NSObject, UNUserNotificationCenterDelegate {
 
     /// Set by AppModel: a provider_relink push routes into the link flow.
     var onProviderRelink: ((String) -> Void)?
+    /// A card_declined push opens the Wallet.
+    var onOpenWallet: (() -> Void)?
 
     private var api: (any APIClient)?
     private var pendingToken: String?
@@ -90,6 +92,10 @@ final class PushManager: NSObject, UNUserNotificationCenterDelegate {
             if let provider {
                 onProviderRelink?(provider)
             }
+        case "card_declined":
+            // The fix is in the Wallet (update the card), not a retry.
+            lastNotice = "Your card was declined — update it in Wallet"
+            onOpenWallet?()
         default: break
         }
     }

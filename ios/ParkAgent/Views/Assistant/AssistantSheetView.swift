@@ -11,6 +11,8 @@ struct AssistantSheetView: View {
     @State private var speech = SpeechRecognizer()
     /// Drives the scroll-to-bottom when the keyboard rises.
     @FocusState private var inputFocused: Bool
+    /// An approved Link garage payment's card, on screen for checkout.
+    @State private var linkCard: LinkCardDetails?
     /// Prefilled question (Siri hands one in).
     var initialQuery: String?
 
@@ -115,8 +117,16 @@ struct AssistantSheetView: View {
                     }
                 }
             }
+            if let approved = model.approvedLinkCheckout {
+                linkCheckoutBar(model, approved: approved)
+            }
             speechArea
             inputBar(model)
+        }
+        .sheet(item: $linkCard) { card in
+            LinkCardSheet(card: card, checkoutURL: model.approvedLinkCheckout?.checkoutURL)
+                .presentationDetents([.medium])
+                .onDisappear { model.approvedLinkCheckout = nil }
         }
         // The living wash sits behind the whole conversation; the input bar
         // goes transparent so the depth reads through it.
@@ -153,6 +163,25 @@ struct AssistantSheetView: View {
                 .accessibilityIdentifier("assistant.externalLinkProbe")
             }
         }
+    }
+
+    /// After Link approves a garage: the one-time card (Face ID) and the
+    /// garage's own checkout, one tap away.
+    private func linkCheckoutBar(_ model: AssistantModel, approved: AssistantModel.ApprovedLinkCheckout) -> some View {
+        Button {
+            Task {
+                linkCard = await appModel.wallet.revealLinkCard(
+                    spendRequestId: approved.spendRequestId,
+                    api: appModel.api
+                )
+            }
+        } label: {
+            Label("Show Link card for checkout", systemImage: "creditcard")
+        }
+        .buttonStyle(.secondary)
+        .padding(.horizontal, Spacing.unit)
+        .padding(.bottom, Spacing.half)
+        .accessibilityIdentifier("assistant.showLinkCard")
     }
 
     private func scrollToBottom(_ proxy: ScrollViewProxy) {
@@ -222,7 +251,8 @@ struct AssistantSheetView: View {
             SingleSpotPlanCards(
                 plan: single,
                 confirming: model.phase == .confirming,
-                linkConnected: appModel.linkWalletConnected
+                // Link pays only when it's the Wallet's active way to pay.
+                linkConnected: appModel.linkWalletConnected && appModel.wallet.activeSource == .linkWallet
             ) { option in
                 Task { await model.confirm(planId: plan.planId, optionId: option.id) }
             }
@@ -230,7 +260,8 @@ struct AssistantSheetView: View {
             ItineraryPlanCard(
                 plan: day,
                 confirming: model.phase == .confirming,
-                linkConnected: appModel.linkWalletConnected
+                // Link pays only when it's the Wallet's active way to pay.
+                linkConnected: appModel.linkWalletConnected && appModel.wallet.activeSource == .linkWallet
             ) { stops in
                 // Sign-off stores the day as proposed; a reorder made on
                 // the card is saved right after as its first edit.

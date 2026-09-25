@@ -115,8 +115,9 @@ struct ActiveSession: Identifiable {
     var maxExtendCount: Int
     var maxStayReached: Bool
     var autoExtend: Bool
-    /// "issuing_card" | "link_wallet" — which source pays this session.
-    var paymentSource: String = "issuing_card"
+    /// Which card pays this street session: the card on the provider
+    /// account or the ParkAgent card (Link never pays a street meter).
+    var paymentSource: PaymentSource = .providerCard
 
     var id: String { sessionId }
 
@@ -135,16 +136,9 @@ struct ActiveSession: Identifiable {
     }
 }
 
-/// One row of history.
-struct SessionRecord: Identifiable, Hashable {
-    var id: String
-    var zoneNumber: String
-    var zoneLabel: String
-    var startedAt: Date
-    var endedAt: Date?
-    var amountUsd: Double
-    var status: StatusPill.Status
-    /// Where the car sat, for the little map on the detail screen.
-    var lat: Double?
-    var lng: Double?
+/// The three tabs.
+enum AppTab: Hashable {
+    case park
+    case activity
+    case wallet
 }

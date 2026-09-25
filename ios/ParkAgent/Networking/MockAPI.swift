@@ -19,6 +19,9 @@ enum MockScenario: String, CaseIterable, Identifiable, Sendable {
     /// a DIFFERENT number: the report is outranked (import precedence)
     /// and the session pays the import's number.
     case bostonImportConflict
+    /// session/start answers card_declined: the ParkAgent card's hold was
+    /// refused, nothing was paid, and the fix is in the Wallet.
+    case cardDeclined
 
     static let defaultsKey = "mockScenario"
 
@@ -34,35 +37,7 @@ enum MockScenario: String, CaseIterable, Identifiable, Sendable {
         case .bostonNeedsZone: "Boston — zone number needed"
         case .freePeriodAtStart: "Free period at start"
         case .bostonImportConflict: "Boston — import conflicts with report"
-        }
-    }
-}
-
-/// Which canned Card-tab state the mock serves; orthogonal to MockScenario
-/// so park-flow tests keep their default card. Persisted like MockScenario.
-enum CardMockScenario: String, CaseIterable, Identifiable, Sendable {
-    /// Active card, funded account, a few transactions.
-    case ready
-    /// issuing:setup never ran: GET /card returns card: null.
-    case noCard
-    /// Card exists but nothing has been charged yet.
-    case noTransactions
-    /// Financial account not ready: no balance, funding moves refuse.
-    case fundingNotReady
-    /// Card starts frozen (status inactive).
-    case frozen
-
-    static let defaultsKey = "cardScenario"
-
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .ready: "Ready"
-        case .noCard: "No card yet"
-        case .noTransactions: "No transactions"
-        case .fundingNotReady: "Funding not ready"
-        case .frozen: "Frozen"
+        case .cardDeclined: "Card declined (ParkAgent card hold)"
         }
     }
 }
@@ -149,7 +124,6 @@ enum AuthMockScenario: String, CaseIterable, Identifiable, Sendable {
 /// only: a launch opts in with `-useMockAPI YES` and nothing persists it.
 struct MockAPI: APIClient {
     private let store = MockSessionStore()
-    private let cardStore = MockCardStore()
     private let providerStore = MockProviderStore()
     private let policyStore = MockPolicyStore()
     private let zoneStore = MockZoneNumberStore()
@@ -250,7 +224,8 @@ struct MockAPI: APIClient {
         try await pause()
         return MeResponse(
             user: await profileStore.user(),
-            paymentSource: PaymentSource.stored,
+            // The same fact GET /wallet reports — Account and Wallet agree.
+            paymentSource: await MockWalletStore.shared.activeSource(),
             issuingLive: UserDefaults.standard.bool(forKey: "issuingLive")
         )
     }
@@ -295,7 +270,7 @@ struct MockAPI: APIClient {
         try await pause()
         let provider = await parknycProvider()
         switch scenario {
-        case .singleQuote, .paymentFailed, .freePeriodAtStart:
+        case .singleQuote, .paymentFailed, .freePeriodAtStart, .cardDeclined:
             return MockFixtures.singleQuote(provider: provider)
         case .twoCandidates:
             return MockFixtures.twoCandidates(provider: provider)
@@ -347,30 +322,10 @@ struct MockAPI: APIClient {
         return await policyStore.replace(policy)
     }
 
-    /// Mirrors the server: the stored choice persists (UserDefaults, like
-    /// the scenario pickers), and switching to the ParkAgent card refuses
-    /// issuing_not_live unless `-issuingLive YES` is set.
-    private var issuingLive: Bool {
-        UserDefaults.standard.bool(forKey: "issuingLive")
-    }
-
-    func paymentSource() async throws -> PaymentSourceResponse {
-        try await pause()
-        return PaymentSourceResponse(paymentSource: PaymentSource.stored, issuingLive: issuingLive)
-    }
-
-    func updatePaymentSource(_ source: PaymentSource) async throws -> PaymentSourceResponse {
-        try await pause()
-        if source == .issuingCard && !issuingLive {
-            throw APIError.refused(code: "issuing_not_live")
-        }
-        UserDefaults.standard.set(source.rawValue, forKey: PaymentSource.defaultsKey)
-        return PaymentSourceResponse(paymentSource: source, issuingLive: issuingLive)
-    }
-
     func startSession(_ request: SessionStartRequest) async throws -> SessionStartOutcome {
         try await pause()
         if scenario == .paymentFailed { throw APIError.paymentFailed }
+        if scenario == .cardDeclined { throw APIError.refused(code: "card_declined") }
         if scenario == .freePeriodAtStart {
             // Mirrors the server's 200 {status: "free_period"}: quoted as
             // payable, but the provider said no charge at start time.
@@ -382,16 +337,28 @@ struct MockAPI: APIClient {
             throw APIError.refused(code: "provider_not_linked")
         }
         let expiresAt = await store.start(minutes: request.minutes)
+        let sessionId = "mock-\(UUID().uuidString.prefix(8))"
+        let amount = MockFixtures.price(minutes: request.minutes)
+        await MockWalletStore.shared.recordStart(
+            sessionId: sessionId,
+            zoneNumber: request.zoneId.split(separator: "-").last.map(String.init) ?? request.zoneId,
+            minutes: request.minutes,
+            totalUsd: amount,
+            at: AppClock.now,
+            lat: await MockFixtures.currentCoordinate().latitude,
+            lng: await MockFixtures.currentCoordinate().longitude
+        )
         return .started(SessionStartResponse(
-            sessionId: "mock-\(UUID().uuidString.prefix(8))",
+            sessionId: sessionId,
             expiresAt: expiresAt,
-            amountUsd: MockFixtures.price(minutes: request.minutes)
+            amountUsd: amount
         ))
     }
 
     func stopSession(sessionId: String) async throws -> SessionStopResponse {
         try await pause()
         await store.clear()
+        await MockWalletStore.shared.recordStop(sessionId: sessionId, at: AppClock.now)
         return SessionStopResponse(sessionId: sessionId, stoppedAt: AppClock.now)
     }
 
@@ -476,7 +443,7 @@ struct MockAPI: APIClient {
             status: "linked",
             walletBalanceCents: 1250,
             cardBrand: "Visa",
-            cardLast4: "4242",
+            cardLast4: providerId == "passport" ? "1234" : "4242",
             jobId: jobId
         )
     }
@@ -508,7 +475,7 @@ struct MockAPI: APIClient {
     func prepareCard() async throws -> CardPrepareResponse {
         try await pause()
         return CardPrepareResponse(
-            created: cardScenario == .noCard,
+            created: false,
             card: CardPrepareResponse.PreparedCard(
                 stripeCardId: "ic_mock_1",
                 last4: "4444",
@@ -517,129 +484,28 @@ struct MockAPI: APIClient {
         )
     }
 
-    func topupIntent(amountUsd: Double) async throws -> TopupIntentResponse {
-        try await pause()
-        let policy = await policyStore.current().policy
-        if amountUsd > policy.dailyCapUsd {
-            throw APIError.refused(code: "amount_over_daily_cap")
-        }
-        // The mock is always dry run: no PaymentIntent exists and the Apple
-        // Pay sheet is never presented, mirroring the server's fake secret.
-        return TopupIntentResponse(clientSecret: "pi_dryrun_mock", paymentIntentId: nil, dryRun: true)
-    }
-
-    private var cardScenario: CardMockScenario {
-        CardMockScenario(rawValue: UserDefaults.standard.string(forKey: CardMockScenario.defaultsKey) ?? "")
-            ?? .ready
-    }
-
-    func card() async throws -> CardResponse {
-        try await pause()
-        let scenario = cardScenario
-        if scenario == .noCard {
-            return CardResponse(card: nil, funding: CardFunding(available: false), dryRun: true)
-        }
-        let state = await cardStore.state(startFrozen: scenario == .frozen)
-        let fundingReady = scenario != .fundingNotReady
-        return CardResponse(
-            card: MockFixtures.cardSummary(frozen: state.frozen),
-            funding: fundingReady
-                ? CardFunding(available: true, balanceUsd: state.balanceUsd, pendingUsd: state.pendingUsd)
-                : CardFunding(available: false),
-            dryRun: true
-        )
-    }
-
-    func cardTransactions(cursor: String?) async throws -> CardTransactionsResponse {
-        try await pause()
-        if cardScenario == .noCard || cardScenario == .noTransactions {
-            return CardTransactionsResponse(items: [], nextCursor: nil)
-        }
-        return CardTransactionsResponse(items: MockFixtures.cardTransactions(), nextCursor: nil)
-    }
-
-    func cardTopup(amountUsd: Double) async throws -> CardFundingResponse {
-        try await pause()
-        if cardScenario == .fundingNotReady { throw APIError.refused(code: "funding_unavailable") }
-        // The mock mirrors the server's dry-run refusal so the sheet's
-        // banner and error path are walkable without a server.
-        let state = await cardStore.topup(amountUsd)
-        return CardFundingResponse(ok: true, balanceUsd: state.balanceUsd, pendingUsd: state.pendingUsd, decisionId: "mock-decision")
-    }
-
-    func cardWithdraw(amountUsd: Double) async throws -> CardFundingResponse {
-        try await pause()
-        if cardScenario == .fundingNotReady { throw APIError.refused(code: "funding_unavailable") }
-        guard await cardStore.canWithdraw(amountUsd) else { throw APIError.refused(code: "insufficient_funds") }
-        let state = await cardStore.withdraw(amountUsd)
-        return CardFundingResponse(ok: true, balanceUsd: state.balanceUsd, pendingUsd: state.pendingUsd, decisionId: "mock-decision")
-    }
-
     func revealCardDetails() async throws -> RevealedCardDetails {
         try await pause()
-        if cardScenario == .noCard { throw APIError.refused(code: "no_card") }
-        // Stripe's Mastercard test PAN, so the last4 match the summary's.
+        guard await MockWalletStore.shared.hasParkAgentCard() else { throw APIError.refused(code: "no_card") }
+        // Stripe's Mastercard test PAN, so the last4 match the card's.
         return RevealedCardDetails(number: "5555555555554444", cvc: "123", expMonth: 8, expYear: 2030)
     }
 
     func freezeCard() async throws -> CardStatusResponse {
         try await pause()
-        await cardStore.setFrozen(true)
+        await MockWalletStore.shared.setFrozen(true)
         return CardStatusResponse(status: "inactive")
     }
 
     func unfreezeCard() async throws -> CardStatusResponse {
         try await pause()
-        await cardStore.setFrozen(false)
+        await MockWalletStore.shared.setFrozen(false)
         return CardStatusResponse(status: "active")
     }
 
     /// A touch of latency so loading states are visible.
-    private func pause() async throws {
+    func pause() async throws {
         try await Task.sleep(for: .milliseconds(400))
-    }
-}
-
-/// Frozen state and balance for the mock card, so freeze and funding moves
-/// stick for the life of the app run (the real server owns this state).
-private actor MockCardStore {
-    struct State {
-        var frozen: Bool
-        var balanceUsd: Double
-        var pendingUsd: Double
-    }
-
-    private var current: State?
-
-    func state(startFrozen: Bool) -> State {
-        if let current { return current }
-        let fresh = State(frozen: startFrozen, balanceUsd: 42.50, pendingUsd: 0)
-        current = fresh
-        return fresh
-    }
-
-    func setFrozen(_ frozen: Bool) {
-        var state = current ?? State(frozen: frozen, balanceUsd: 42.50, pendingUsd: 0)
-        state.frozen = frozen
-        current = state
-    }
-
-    func canWithdraw(_ amountUsd: Double) -> Bool {
-        amountUsd <= (current?.balanceUsd ?? 42.50)
-    }
-
-    func topup(_ amountUsd: Double) -> State {
-        var state = state(startFrozen: false)
-        state.balanceUsd += amountUsd
-        current = state
-        return state
-    }
-
-    func withdraw(_ amountUsd: Double) -> State {
-        var state = state(startFrozen: false)
-        state.balanceUsd -= amountUsd
-        current = state
-        return state
     }
 }
 
@@ -1016,8 +882,10 @@ enum MockFixtures {
             lastVerifiedAt: usable ? AppClock.now : nil,
             cardAdded: cardAdded,
             // What the provider account's own Your Cards screen showed.
+            // The Wallet mock's cards: ParkBoston ••1234, ParkNYC ••4242
+            // (live, both read the same provider-account row).
             cardBrand: usable ? "Visa" : nil,
-            cardLast4: usable ? "4242" : nil,
+            cardLast4: usable ? (base.city == "bos" ? "1234" : "4242") : nil,
             walletBalanceCents: usable ? 1250 : nil
         )
     }
@@ -1148,77 +1016,6 @@ enum MockFixtures {
             zones: zones
         )
     }
-
-    // MARK: - Card fixtures
-
-    static func cardSummary(frozen: Bool) -> CardSummary {
-        CardSummary(
-            stripeCardId: "ic_mock_1",
-            // Mirrors the live server: our Issuing cards are Mastercard
-            // (issuing_cards.brand), and the view must render whatever GET
-            // /card says — a Visa here once hid a hardcoded-brand bug.
-            last4: "4444",
-            brand: "Mastercard",
-            status: frozen ? "inactive" : "active",
-            expMonth: 8,
-            expYear: 2030,
-            cardholderName: "Thomas Bardhi",
-            spendingControls: CardSpendingControls(perAuthorizationUsd: 45, dailyUsd: 60),
-            spentTodayUsd: 7.28,
-            spentThisMonthUsd: 23.81
-        )
-    }
-
-    /// A day of history: today's approved charge (linked to no session, it
-    /// IS the active flow), a declined attempt, a pending hold, and
-    /// yesterday's settled charge linked to the seeded history session.
-    static func cardTransactions() -> [CardTransaction] {
-        let now = AppClock.now
-        let yesterday = now.addingTimeInterval(-24 * 3600)
-        return [
-            CardTransaction(
-                id: "mock-txn-1",
-                stripeAuthorizationId: "iauth_mock_1",
-                merchantName: "ParkNYC Meter 110436",
-                merchantCategory: "parking_lots_garages",
-                amountUsd: 7.28,
-                capturedUsd: nil,
-                approved: true,
-                decision: "approved",
-                status: "pending",
-                createdAt: now.addingTimeInterval(-45 * 60),
-                sessionId: nil
-            ),
-            CardTransaction(
-                id: "mock-txn-2",
-                stripeAuthorizationId: "iauth_mock_2",
-                merchantName: "MTA Vending",
-                merchantCategory: "transportation",
-                amountUsd: 2.90,
-                capturedUsd: nil,
-                approved: false,
-                decision: "declined_wrong_mcc",
-                status: "closed",
-                createdAt: now.addingTimeInterval(-3 * 3600),
-                sessionId: nil
-            ),
-            CardTransaction(
-                id: "mock-txn-3",
-                stripeAuthorizationId: "iauth_mock_3",
-                merchantName: "ParkNYC Meter 110212",
-                merchantCategory: "parking_lots_garages",
-                amountUsd: 9.28,
-                capturedUsd: 9.28,
-                approved: true,
-                decision: "approved",
-                status: "closed",
-                createdAt: yesterday,
-                sessionId: "mock-history-1"
-            ),
-        ]
-    }
-
-    // MARK: - Builders
 
     private static func candidate(
         zoneNumber: String,

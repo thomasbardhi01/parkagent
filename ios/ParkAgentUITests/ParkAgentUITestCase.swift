@@ -13,7 +13,8 @@ class ParkAgentUITestCase: XCTestCase {
 
     func launchApp(
         scenario: String = "singleQuote",
-        cardScenario: String? = nil,
+        walletScenario: String? = nil,
+        linkScenario: String? = nil,
         providerScenario: String? = nil,
         cityScenario: String? = nil,
         authScenario: String? = nil,
@@ -46,7 +47,8 @@ class ParkAgentUITestCase: XCTestCase {
         if let authMethods { args += ["-authMethods", authMethods] }
         if skipOnboarding { args += ["-skipOnboarding", "YES"] }
         if let appearance { args += ["-appearance", appearance] }
-        if let cardScenario { args += ["-cardScenario", cardScenario] }
+        if let walletScenario { args += ["-walletScenario", walletScenario] }
+        if let linkScenario { args += ["-linkScenario", linkScenario] }
         if let providerScenario { args += ["-providerScenario", providerScenario] }
         if let cityScenario { args += ["-cityScenario", cityScenario] }
         if let onboardingStep { args += ["-onboardingStep", String(onboardingStep)] }
@@ -71,12 +73,11 @@ class ParkAgentUITestCase: XCTestCase {
         add(attachment)
     }
 
-    /// Open the Account sheet from Home's avatar button (the Settings tab
-    /// is gone; everything it held lives here now). Owned by feat/accounts;
-    /// AssistantUITests reaches the Link-wallet row through it.
+    /// Open the Account sheet from the Park tab's avatar button (the
+    /// Settings tab is gone; everything it held lives here now).
     @discardableResult
     func openAccountSheet(_ app: XCUIApplication) -> XCUIElement {
-        app.tabBars.buttons["Home"].tap()
+        app.tabBars.buttons["Park"].tap()
         let avatar = element(app, "home.accountButton")
         XCTAssertTrue(avatar.waitForExistence(timeout: 5), "Account button missing on Home")
         avatar.tap()
@@ -96,6 +97,15 @@ class ParkAgentUITestCase: XCTestCase {
         XCTAssertTrue(
             element(app, "parkedSheet.view").waitForExistence(timeout: 5),
             "Parking Detected sheet did not appear"
+        )
+    }
+
+    /// The Wallet tab, loaded (its hero is on screen).
+    func openWallet(_ app: XCUIApplication) {
+        app.tabBars.buttons["Wallet"].tap()
+        XCTAssertTrue(
+            app.navigationBars["Wallet"].waitForExistence(timeout: 5),
+            "Wallet tab missing"
         )
     }
 
@@ -155,9 +165,9 @@ class ParkAgentUITestCase: XCTestCase {
         )
     }
 
-    /// Home sheet's Simulate park (mock + no active session only).
+    /// The Park tab's Simulate park (mock + no active session only).
     func simulateParkFromHome(_ app: XCUIApplication) {
-        app.tabBars.buttons["Home"].tap()
+        app.tabBars.buttons["Park"].tap()
         let simulate = element(app, "home.simulateParkButton")
         XCTAssertTrue(simulate.waitForExistence(timeout: 5), "Simulate park button missing")
         simulate.tap()

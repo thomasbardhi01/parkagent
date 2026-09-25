@@ -27,13 +27,17 @@ final class CardBrandTests: XCTestCase {
         XCTAssertEqual(CardBrand("visa").displayName, "Visa")
     }
 
-    /// The fixture the whole mock serves must mirror the live server: our
-    /// Issuing cards are Mastercard, and the reveal PAN's last4 must agree
-    /// with the summary's.
-    @MainActor
-    func testMockCardFixtureIsMastercardAndConsistent() {
-        let summary = MockFixtures.cardSummary(frozen: false)
-        XCTAssertEqual(summary.brand, "Mastercard")
-        XCTAssertEqual(summary.last4, "4444")
+    /// The mock's ParkAgent card must mirror the live server: our Issuing
+    /// cards are Mastercard, and the reveal PAN's last4 must agree with the
+    /// card the Wallet shows.
+    func testMockParkAgentCardIsMastercardAndConsistent() async throws {
+        UserDefaults.standard.set(WalletMockScenario.parkagentSandbox.rawValue, forKey: WalletMockScenario.defaultsKey)
+        defer { UserDefaults.standard.removeObject(forKey: WalletMockScenario.defaultsKey) }
+        let api = MockAPI()
+        let wallet = try await api.wallet()
+        let card = try XCTUnwrap(wallet.parkagentCard.card)
+        XCTAssertEqual(card.brand, "Mastercard")
+        let revealed = try await api.revealCardDetails()
+        XCTAssertEqual(String(revealed.number.suffix(4)), card.last4)
     }
 }

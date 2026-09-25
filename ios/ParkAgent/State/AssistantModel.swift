@@ -43,6 +43,17 @@ final class AssistantModel {
     var externalLink: ExternalLink?
     /// After a Link-approval sheet closes, the spend request to poll.
     var pendingLinkSync: String?
+    /// The garage checkout waiting behind a Link approval: opened once the
+    /// approval resolves (with the Link card to pay it, when approved).
+    private var pendingGarageCheckout: URL?
+    /// An approved Link garage payment: the sheet offers "Show Link card"
+    /// (Face ID) and then the garage's own checkout.
+    var approvedLinkCheckout: ApprovedLinkCheckout?
+
+    struct ApprovedLinkCheckout: Equatable {
+        let spendRequestId: String
+        let checkoutURL: URL?
+    }
     /// "Paying with your Link wallet" banner on the confirm result.
     var lastPaymentSource: String?
     var signedOffItineraryId: String?
@@ -134,20 +145,22 @@ final class AssistantModel {
             lastPaymentSource = response.paymentSource
             switch response.kind {
             case "garage_handoff":
-                // Link approval first when present, then the garage's link
-                // (the user approves the spend, then checks out).
+                // Link approval first when present, then the garage's own
+                // checkout (the user approves the spend, then pays there
+                // with the Link card).
+                let checkout = response.deepLink.flatMap(URL.init(string:))
                 if let approval = response.linkApproval?.approvalUrl, let url = URL(string: approval) {
                     pendingLinkSync = response.linkApproval?.spendRequestId
+                    pendingGarageCheckout = checkout
                     externalLink = ExternalLink(url: url, kind: .linkApproval)
-                } else if let link = response.deepLink, let url = URL(string: link) {
-                    externalLink = ExternalLink(url: url, kind: .garageCheckout)
+                    appendNote("Approve \(approvalAmountText(optionId: optionId)) in Link, then pay the garage's checkout with your Link card.")
+                } else {
+                    if let checkout {
+                        externalLink = ExternalLink(url: checkout, kind: .garageCheckout)
+                    }
+                    appendNote(response.note ?? "Opening the garage's checkout to finish.")
                 }
-                appendNote(response.note ?? "Opening the garage's checkout to finish.")
             case "street_confirmed":
-                if let approval = response.linkApproval?.approvalUrl, let url = URL(string: approval) {
-                    pendingLinkSync = response.linkApproval?.spendRequestId
-                    externalLink = ExternalLink(url: url, kind: .linkApproval)
-                }
                 appendNote(streetNote(response))
             case "itinerary_signed_off":
                 signedOffItineraryId = response.itineraryId
@@ -205,9 +218,11 @@ final class AssistantModel {
         } else {
             zone = "Your spot"
         }
-        let pay = paymentSource == "link_wallet"
-            ? "Paying with your Link wallet."
-            : "Paying with your ParkAgent card."
+        // A street meter is paid by the street source: the ParkAgent card,
+        // or the card saved on the parking account (Link never pays one).
+        let pay = paymentSource == "parkagent_card"
+            ? "Paying with the ParkAgent card."
+            : "Paying with the card on your parking account."
         return "\(zone) is set for \(durationMinutes) min — the session starts when you park there. \(pay)"
     }
 
@@ -215,16 +230,33 @@ final class AssistantModel {
         messages.append(AssistantMessage(role: .assistant, text: text))
     }
 
-    /// Called when a Link approval sheet closes: poll once and report.
+    /// Called when a Link approval sheet closes: poll once, then take the
+    /// user on to the garage's checkout — with the Link card to pay it when
+    /// approved, or to pay there themselves when not.
     func syncPendingLinkApproval() async {
         guard let id = pendingLinkSync else { return }
         pendingLinkSync = nil
-        if let result = try? await api.syncLinkSpendRequest(id: id) {
+        let checkout = pendingGarageCheckout
+        pendingGarageCheckout = nil
+        let status = (try? await api.syncLinkSpendRequest(id: id))?.status
+        if status == "approved" {
+            approvedLinkCheckout = ApprovedLinkCheckout(spendRequestId: id, checkoutURL: checkout)
+            appendNote("Link approved — show your Link card, then pay at the garage's checkout.")
+        } else {
             appendNote(
-                result.status == "approved"
-                    ? "Link approved — the wallet card is ready."
-                    : "Link \(result.status) — this will fall back to your ParkAgent card."
+                "Link \((status ?? "didn't answer").replacingOccurrences(of: "_", with: " ")) — nothing was charged. You can still pay at the garage's own checkout."
             )
+            if let checkout {
+                externalLink = ExternalLink(url: checkout, kind: .garageCheckout)
+            }
         }
+    }
+
+    /// The amount the pending Link approval covers, for the note.
+    private func approvalAmountText(optionId: String?) -> String {
+        guard case .singleSpot(let plan)? = proposedPlan?.plan,
+              let option = plan.options.first(where: { $0.id == optionId })
+        else { return "the payment" }
+        return Format.money(option.priceUsd)
     }
 }

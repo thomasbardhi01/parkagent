@@ -273,16 +273,57 @@ struct LiveAPI: APIClient {
 
     // MARK: - Payment source
 
-    func paymentSource() async throws -> PaymentSourceResponse {
-        try await send("me/payment-source")
+    // MARK: - Wallet
+
+    func wallet() async throws -> WalletResponse {
+        try await send("wallet")
     }
 
-    func updatePaymentSource(_ source: PaymentSource) async throws -> PaymentSourceResponse {
+    func walletActivity(cursor: String?) async throws -> ActivityPage {
         try await send(
-            "me/payment-source",
-            method: "PUT",
-            body: ["paymentSource": source.rawValue]
+            "wallet/activity",
+            query: cursor.map { [URLQueryItem(name: "cursor", value: $0)] } ?? []
         )
+    }
+
+    func setWalletSource(_ source: PaymentSource, sandbox: Bool, consent: Bool) async throws -> WalletSourceResponse {
+        struct Body: Encodable {
+            let source: PaymentSource
+            let sandbox: Bool?
+            let consentReplacePaymentMethod: Bool?
+        }
+        return try await send(
+            "wallet/source",
+            method: "PUT",
+            body: Body(
+                source: source,
+                sandbox: sandbox ? true : nil,
+                consentReplacePaymentMethod: consent ? true : nil
+            )
+        )
+    }
+
+    func walletSetupIntent(sandbox: Bool) async throws -> WalletSetupIntent {
+        struct Body: Encodable { let sandbox: Bool? }
+        return try await send("wallet/setup-intent", method: "POST", body: Body(sandbox: sandbox ? true : nil))
+    }
+
+    func addFundingMethod(setupIntentId: String) async throws -> FundingMethodResponse {
+        try await send("wallet/funding-methods", method: "POST", body: ["setupIntentId": setupIntentId])
+    }
+
+    func setDefaultFundingMethod(id: String) async throws -> FundingMethodResponse {
+        struct Empty: Encodable {}
+        return try await send("wallet/funding-methods/\(id)/default", method: "PUT", body: Empty())
+    }
+
+    func removeFundingMethod(id: String) async throws -> FundingMethodRemoveResponse {
+        try await send("wallet/funding-methods/\(id)", method: "DELETE")
+    }
+
+    func revealLinkCard(spendRequestId: String) async throws -> LinkCardDetails {
+        struct Empty: Encodable {}
+        return try await send("link/spend-requests/\(spendRequestId)/card", method: "POST", body: Empty())
     }
 
     func nearbyZones(lat: Double, lng: Double, radiusM: Double) async throws -> NearbyZonesResponse {
@@ -349,29 +390,6 @@ struct LiveAPI: APIClient {
     func prepareCard() async throws -> CardPrepareResponse {
         struct Empty: Encodable {}
         return try await send("card/prepare", method: "POST", body: Empty())
-    }
-
-    func topupIntent(amountUsd: Double) async throws -> TopupIntentResponse {
-        try await send("card/funding/topup-intent", method: "POST", body: ["amountUsd": amountUsd])
-    }
-
-    func card() async throws -> CardResponse {
-        try await send("card")
-    }
-
-    func cardTransactions(cursor: String?) async throws -> CardTransactionsResponse {
-        try await send(
-            "card/transactions",
-            query: cursor.map { [URLQueryItem(name: "cursor", value: $0)] } ?? []
-        )
-    }
-
-    func cardTopup(amountUsd: Double) async throws -> CardFundingResponse {
-        try await send("card/funding/topup", method: "POST", body: ["amountUsd": amountUsd])
-    }
-
-    func cardWithdraw(amountUsd: Double) async throws -> CardFundingResponse {
-        try await send("card/funding/withdraw", method: "POST", body: ["amountUsd": amountUsd])
     }
 
     func freezeCard() async throws -> CardStatusResponse {

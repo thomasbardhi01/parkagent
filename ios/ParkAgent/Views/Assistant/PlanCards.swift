@@ -41,6 +41,7 @@ struct SingleSpotPlanCards: View {
                             option: option,
                             isExpanded: expandedOptionID == option.id,
                             confirming: confirming,
+                            linkConnected: linkConnected,
                             onToggle: { toggle(option) },
                             onChoose: { onConfirm(option) }
                         )
@@ -135,7 +136,9 @@ private struct HeroOptionCard: View {
                     .accessibilityIdentifier("assistant.confirm.\(option.id)")
             }
 
-            if linkConnected && option.priceUsd > 0 && option.payOnArrival != true {
+            // Link pays garages only; a street meter stays on the card on
+            // the parking account.
+            if linkConnected && option.type == "garage" && option.priceUsd > 0 {
                 LinkPayBadge()
             }
         }
@@ -165,6 +168,7 @@ private struct CompactOptionRow: View {
     let option: SingleSpotOption
     let isExpanded: Bool
     let confirming: Bool
+    let linkConnected: Bool
     let onToggle: () -> Void
     let onChoose: () -> Void
 
@@ -210,6 +214,11 @@ private struct CompactOptionRow: View {
                             .foregroundStyle(Color.textSecondary)
                     }
                     OptionFacts(option: option)
+                    // Choosing a garage with Link active goes through a
+                    // Link approval — say so before the tap, as the hero does.
+                    if linkConnected && option.type == "garage" && option.priceUsd > 0 {
+                        LinkPayBadge()
+                    }
                     if option.payOnArrival == true {
                         AutoPayNote(optionID: option.id)
                     } else {
@@ -267,7 +276,7 @@ private struct LinkPayBadge: View {
     var body: some View {
         HStack(spacing: Spacing.quarter) {
             Image(systemName: "link.circle.fill")
-            Text("Paying with your Link wallet")
+            Text("Paying with Link — you'll approve it in Link")
         }
         .font(.captionTextSemibold)
         .foregroundStyle(Color.actionCoralLink)

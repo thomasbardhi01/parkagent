@@ -13,6 +13,7 @@ import {
   HOURS_MON_SAT,
   MONDAY_2PM,
   makeTestApp,
+  seedLinkSpendRequest,
   seedProviderAccount,
   seedSession,
 } from "./helpers.js";
@@ -144,6 +145,20 @@ test("a real (non-dry-run) start over the daily cap is refused", async () => {
   const res = await post(app, "/session/start", START);
   expect(res.statusCode).toBe(409);
   expect(res.json().rule).toBe("daily_cap_exceeded");
+});
+
+test("the daily cap is whatever paid: garages approved in Link today leave no room", async () => {
+  const { app, state } = makeApp({ policy: { dry_run: false }, envDryRun: false });
+  // $60 a day, $57.65 of it on a garage approved in Link this morning.
+  seedLinkSpendRequest(state, {
+    amountUsd: 57.65,
+    status: "approved",
+    createdAt: new Date("2026-01-05T09:00:00-05:00"),
+  });
+  const res = await post(app, "/session/start", START);
+  expect(res.statusCode).toBe(409);
+  expect(res.json().rule).toBe("daily_cap_exceeded");
+  expect(state.sessions).toHaveLength(0);
 });
 
 test("extend past the max stay is refused", async () => {

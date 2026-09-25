@@ -38,16 +38,16 @@ final class ProviderLinkModel {
     /// ProviderSignupPrefill.swift for the hard limits.
     private(set) var prefill = ProviderPrefillValues()
     /// The card the PROVIDER account already has on file, learned at link
-    /// time (provider_card users) — "Visa •••• 4242" on the done screen.
+    /// time (provider_card users) — "Visa ••4242" on the done screen.
     private(set) var providerCard: String?
     /// Whether the user pays with the ParkAgent card at all. provider_card
     /// users (the default) link without touching the account's payment
     /// method, so no consent question arises and no card is prepared.
-    let usesParkAgentCard = PaymentSource.stored == .issuingCard
+    let usesParkAgentCard = PaymentSource.stored == .parkagentCard
     /// "Use my ParkAgent card for parking" — default checked for
-    /// issuing_card users; unchecking links the account without touching
+    /// parkagent_card users; unchecking links the account without touching
     /// its payment method. Always false for provider_card users.
-    var consentCardSetup = PaymentSource.stored == .issuingCard
+    var consentCardSetup = PaymentSource.stored == .parkagentCard
 
     /// The web view resubmits whenever the cookie set changes; this stops
     /// the same cookies from hammering the server after a failed verify.
@@ -134,8 +134,8 @@ final class ProviderLinkModel {
                 setUpCard: consentCardSetup,
                 consent: consentCardSetup
             )
-            if let last4 = response.cardLast4 {
-                providerCard = "\(response.cardBrand ?? "Card") •••• \(last4)"
+            if let card = WalletCopy.masked(brand: response.cardBrand, last4: response.cardLast4) {
+                providerCard = card
             }
             if let jobId = response.jobId {
                 stage = .addingCard

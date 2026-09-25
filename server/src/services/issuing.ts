@@ -22,7 +22,11 @@ export type IssuingDecisionReason =
   | "declined_wrong_mcc"
   | "declined_no_pending_session"
   | "declined_over_daily_cap"
-  | "declined_dry_run";
+  | "declined_dry_run"
+  // The ParkAgent card pays only against a hold on the user's own card
+  // (services/wallet/holds.ts): none live, or not enough room left on it.
+  | "declined_no_hold"
+  | "declined_over_hold";
 
 export interface IssuingDecision {
   approve: boolean;
@@ -64,8 +68,28 @@ export function decideAuthorization(facts: AuthorizationFacts, policy: Policy): 
     return decline("declined_over_daily_cap");
   }
   // Approving moves money; both dry-run switches must be off (non-negotiable).
+  // (No holds exist in dry run, so wouldApprove means "would approve if a
+  // hold covers it".)
   if (facts.effectiveDryRun) return decline("declined_dry_run", true);
   return { approve: true, reason: "approved", wouldApprove: true };
+}
+
+/**
+ * The last gate, applied by the webhook only once every rule above says
+ * approve: the hold claim (claimHoldForAuthorization) is a write, so it
+ * runs after the pure checks and its answer can only turn an approval
+ * into a decline, never the reverse.
+ */
+export function applyHoldClaim(
+  decision: IssuingDecision,
+  claim: { claimed: true } | { claimed: false; reason: "no_hold" | "over_hold" },
+): IssuingDecision {
+  if (!decision.approve || claim.claimed) return decision;
+  return {
+    approve: false,
+    reason: claim.reason === "no_hold" ? "declined_no_hold" : "declined_over_hold",
+    wouldApprove: false,
+  };
 }
 
 /** Stripe rejects Issuing cardholder names longer than this. */

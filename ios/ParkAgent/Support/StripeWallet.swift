@@ -4,15 +4,15 @@ import StripeCore
 import StripePaymentSheet
 import UIKit
 
-/// The only file that touches the Stripe SDK. Confirms a top-up
-/// PaymentIntent (from POST /card/funding/topup-intent) client-side —
-/// Apple Pay through STPApplePayContext, or the card form through
-/// PaymentSheet. Dry-run secrets (pi_dryrun_…) never get here.
-enum StripeTopup {
-    static let merchantId = "merchant.com.thomasbardhi.parkagent"
-
-    /// Call once at launch; a missing key just means the live confirm paths
-    /// report "not configured" when reached.
+/// The only file that touches the Stripe SDK. Saves the user's own card for
+/// the ParkAgent card's per-session holds by confirming a SetupIntent (from
+/// POST /wallet/setup-intent) client-side — Apple Pay first through
+/// STPApplePayContext, or card entry through PaymentSheet. Nothing is
+/// charged here: a SetupIntent only saves the card. Mock secrets
+/// (seti_mock_…) never reach the SDK.
+enum StripeWallet {
+    /// Call once at launch; a missing key just means the live paths report
+    /// "not configured" when reached.
     @MainActor
     static func configure() {
         if let key = AppConfig.stripePublishableKey {
@@ -25,19 +25,27 @@ enum StripeTopup {
         StripeAPI.deviceSupportsApplePay()
     }
 
-    enum Outcome: Sendable {
-        case paid
+    enum Outcome: Sendable, Equatable {
+        case saved
         case canceled
         case failed(String)
+    }
+
+    /// The UI tests and previews run on the mock server, whose intents are
+    /// fixtures: finish without presenting anything.
+    private static func isMockSecret(_ clientSecret: String) -> Bool {
+        clientSecret.hasPrefix("seti_mock_")
     }
 
     /// STPApplePayContext holds its delegate weakly; this keeps it alive
     /// for the duration of one presentation.
     @MainActor private static var activeDelegate: ApplePayDelegate?
 
-    /// Present the Apple Pay sheet for the intent.
+    /// Apple Pay sheet for saving a card: no charge today — the summary
+    /// says what the card will be used for.
     @MainActor
-    static func presentApplePay(clientSecret: String, amountUsd: Double) async -> Outcome {
+    static func saveWithApplePay(clientSecret: String, merchantId: String) async -> Outcome {
+        if isMockSecret(clientSecret) { return .saved }
         guard AppConfig.stripePublishableKey != nil else {
             return .failed("Stripe is not configured. Add STRIPE_PUBLISHABLE_KEY to Config.xcconfig.")
         }
@@ -46,8 +54,14 @@ enum StripeTopup {
             country: "US",
             currency: "USD"
         )
+        // Saving a card charges nothing now; each parking session holds only
+        // what the meter costs (plus a small buffer) and takes the actual.
         request.paymentSummaryItems = [
-            PKPaymentSummaryItem(label: "ParkAgent card", amount: NSDecimalNumber(value: amountUsd))
+            PKPaymentSummaryItem(
+                label: "ParkAgent — parking as you go",
+                amount: NSDecimalNumber.zero,
+                type: .pending
+            )
         ]
         let outcome = await withCheckedContinuation { (continuation: CheckedContinuation<Outcome, Never>) in
             let delegate = ApplePayDelegate(clientSecret: clientSecret) { outcome in
@@ -64,9 +78,10 @@ enum StripeTopup {
         return outcome
     }
 
-    /// PaymentSheet fallback: the plain card form.
+    /// PaymentSheet card entry (Apple Pay also offered at its top).
     @MainActor
-    static func presentCardForm(clientSecret: String) async -> Outcome {
+    static func saveWithCardForm(clientSecret: String, merchantId: String) async -> Outcome {
+        if isMockSecret(clientSecret) { return .saved }
         guard AppConfig.stripePublishableKey != nil else {
             return .failed("Stripe is not configured. Add STRIPE_PUBLISHABLE_KEY to Config.xcconfig.")
         }
@@ -75,11 +90,12 @@ enum StripeTopup {
         }
         var configuration = PaymentSheet.Configuration()
         configuration.merchantDisplayName = "ParkAgent"
-        let sheet = PaymentSheet(paymentIntentClientSecret: clientSecret, configuration: configuration)
+        configuration.applePay = .init(merchantId: merchantId, merchantCountryCode: "US")
+        let sheet = PaymentSheet(setupIntentClientSecret: clientSecret, configuration: configuration)
         return await withCheckedContinuation { continuation in
             sheet.present(from: presenter) { result in
                 switch result {
-                case .completed: continuation.resume(returning: .paid)
+                case .completed: continuation.resume(returning: .saved)
                 case .canceled: continuation.resume(returning: .canceled)
                 case .failed(let error): continuation.resume(returning: .failed(error.localizedDescription))
                 }
@@ -100,15 +116,15 @@ enum StripeTopup {
     }
 }
 
-/// STPApplePayContext delegate: hand over the client secret when the user
-/// authorizes, report the final status. Deliberately nonisolated with
-/// immutable state — Stripe calls back on the main queue, and the
-/// continuation-resuming closure is Sendable.
+/// STPApplePayContext delegate: hand over the SetupIntent's client secret
+/// when the user authorizes, report the final status. Deliberately
+/// nonisolated with immutable state — Stripe calls back on the main queue,
+/// and the continuation-resuming closure is Sendable.
 private final class ApplePayDelegate: NSObject, ApplePayContextDelegate {
     private let clientSecret: String
-    private let finish: @Sendable (StripeTopup.Outcome) -> Void
+    private let finish: @Sendable (StripeWallet.Outcome) -> Void
 
-    init(clientSecret: String, finish: @escaping @Sendable (StripeTopup.Outcome) -> Void) {
+    init(clientSecret: String, finish: @escaping @Sendable (StripeWallet.Outcome) -> Void) {
         self.clientSecret = clientSecret
         self.finish = finish
     }
@@ -119,6 +135,7 @@ private final class ApplePayDelegate: NSObject, ApplePayContextDelegate {
         paymentInformation: PKPayment,
         completion: @escaping STPIntentClientSecretCompletionBlock
     ) {
+        // A SetupIntent secret: STPApplePayContext confirms it as a setup.
         completion(clientSecret, nil)
     }
 
@@ -128,9 +145,9 @@ private final class ApplePayDelegate: NSObject, ApplePayContextDelegate {
         error: (any Error)?
     ) {
         switch status {
-        case .success: finish(.paid)
+        case .success: finish(.saved)
         case .userCancellation: finish(.canceled)
-        case .error: finish(.failed(error?.localizedDescription ?? "The payment did not go through."))
+        case .error: finish(.failed(error?.localizedDescription ?? "The card wasn't saved."))
         }
     }
 }

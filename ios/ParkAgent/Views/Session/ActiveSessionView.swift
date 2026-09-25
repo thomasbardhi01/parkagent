@@ -165,8 +165,8 @@ struct ActiveSessionView: View {
             )
             StatusPill(status: expired ? .failed : expiring ? .expiring : .active)
             TagPill(
-                label: session.paymentSource == "link_wallet" ? "Link wallet" : "ParkAgent card",
-                color: session.paymentSource == "link_wallet" ? .actionCoralLink : .textSecondary
+                label: session.paymentSource == .parkagentCard ? "ParkAgent card" : "Card on your account",
+                color: .textSecondary
             )
         }
         .padding(Spacing.unitAndHalf)

@@ -42,6 +42,19 @@ struct ParkingDetectedSheet: View {
                     } dismiss: {
                         model.dismissParkedSheet()
                     }
+                } else if case .refused(let code) = error,
+                          code == "card_declined" || code == "wallet_not_ready" {
+                    // The ParkAgent card couldn't be funded (a declined hold,
+                    // or no card to hold against). Retrying can't fix that —
+                    // updating the card in the Wallet can. Nothing was paid.
+                    WalletFixView(
+                        message: error.errorDescription ?? "Update how you pay in Wallet.",
+                        openWallet: {
+                            model.dismissParkedSheet()
+                            model.selectedTab = .wallet
+                        },
+                        dismiss: { model.dismissParkedSheet() }
+                    )
                 } else {
                     PaymentFailedView(
                         retry: { Task { await paySelected() } },
@@ -500,6 +513,38 @@ struct FreePeriodResultView: View {
         // No container identifier: nested .contain containers flatten
         // inside parkedSheet.view — tests pin the leaves (the Done button
         // and the "No payment needed" text) instead.
+    }
+}
+
+/// The ParkAgent card couldn't be funded: nothing was paid, and the fix is
+/// in the Wallet, not a retry.
+struct WalletFixView: View {
+    let message: String
+    let openWallet: () -> Void
+    let dismiss: () -> Void
+
+    var body: some View {
+        VStack(spacing: Spacing.unit) {
+            Spacer(minLength: Spacing.unit)
+            Image(systemName: "creditcard.trianglebadge.exclamationmark")
+                .font(.system(size: 44))
+                .foregroundStyle(Color.warningGold)
+            Text("Nothing was paid")
+                .font(.bodyTextSemibold)
+                .foregroundStyle(Color.textPrimary)
+            Text(message)
+                .font(.secondaryText)
+                .foregroundStyle(Color.textSecondary)
+                .multilineTextAlignment(.center)
+                .accessibilityIdentifier("parkedSheet.walletFixMessage")
+            Spacer(minLength: 0)
+            Button("Open Wallet", action: openWallet)
+                .buttonStyle(.primary)
+                .accessibilityIdentifier("parkedSheet.openWalletButton")
+            Button("Dismiss", action: dismiss)
+                .buttonStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
     }
 }
 

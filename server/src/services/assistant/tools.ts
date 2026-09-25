@@ -1015,7 +1015,7 @@ export class AssistantTools {
         status: s.status,
         totalUsd: Math.round((Number(s.amountUsd ?? 0) + Number(s.feeUsd ?? 0)) * 100) / 100,
         minutes: s.purchasedMinutes,
-        paymentSource: s.paymentSource ?? "issuing_card",
+        paymentSource: s.paymentSource ?? "provider_card",
       }));
     await this.audit(ctx, "get_history", { days }, "ok", { count: rows.length });
     return { result: { sessions: rows } };

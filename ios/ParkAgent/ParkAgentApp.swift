@@ -8,7 +8,7 @@ struct ParkAgentApp: App {
 
     init() {
         LaunchOverrides.applyToDefaults()
-        StripeTopup.configure()
+        StripeWallet.configure()
     }
 
     var body: some Scene {

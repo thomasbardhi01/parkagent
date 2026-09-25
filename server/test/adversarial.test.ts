@@ -28,6 +28,7 @@ import {
   seedProviderAccount,
   seedSession,
   TEST_PEPPER,
+  seedHold,
 } from "./helpers.js";
 
 const HEADERS = { "x-api-key": API_KEY, "content-type": "application/json" };
@@ -373,6 +374,8 @@ const CARD_ID = "ic_test_1";
 function makeWebhookApp() {
   const { db, state } = makeFakeDb();
   state.issuingCards.push({ stripeCardId: CARD_ID, userId: "u1" });
+  // The ParkAgent card approves only against a live hold.
+  seedHold(state, { amountUsd: 10, createdAt: NOW });
   const gateway = makeFakeGateway({
     verifyEvent: (payload, signature) => {
       if (signature !== VALID_SIG) throw new Error("signature mismatch");
@@ -440,6 +443,9 @@ describe("webhook replay and ordering", () => {
     expect(state.issuingAuthorizations).toHaveLength(1);
     const replayDecision = state.decisions.at(-1)!;
     expect(replayDecision.outcome).toMatchObject({ replayed: true });
+    // The hold's room was claimed ONCE: a double claim would later capture
+    // the charge twice from the user's card.
+    expect(state.sessionHolds[0]!.authorizedUsd).toBe(7.28);
   });
 
   test("a .created arriving before the .request retry does not crash it", async () => {

@@ -8,10 +8,9 @@ import { describe, expect, test } from "vitest";
 
 import { makeItineraryWorker } from "../src/jobs/itineraryTick.js";
 import { itineraryTotalUsd } from "../src/services/assistant/plans.js";
-import { API_KEY, MONDAY_2PM, makeTestApp, seedSession } from "./helpers.js";
+import { API_KEY, makeTestApp, seedSession } from "./helpers.js";
 
 const HEADERS = { "x-api-key": API_KEY, "content-type": "application/json" };
-const NOW = new Date(MONDAY_2PM);
 
 function stop(id: string, overrides: Record<string, unknown> = {}) {
   return {
@@ -49,7 +48,12 @@ describe("sign-off", () => {
   test("a six-stop day signs off, stores stops with linkage fields, and audits", async () => {
     const t = makeTestApp({});
     const stops = [1, 2, 3, 4, 5, 6].map((i) =>
-      stop(`s${i}`, i % 2 === 0 ? { choice: "garage", deepLink: "https://spothero.com/search?x=1", costUsd: 8 } : {}),
+      stop(
+        `s${i}`,
+        i % 2 === 0
+          ? { choice: "garage", deepLink: "https://spothero.com/search?x=1", costUsd: 8 }
+          : {},
+      ),
     );
     seedPlan(t, stops);
     const res = await t.app.inject({
@@ -65,10 +69,18 @@ describe("sign-off", () => {
     expect(t.state.itineraries).toHaveLength(1);
     const saved = t.state.itineraries[0]!;
     expect(saved.status).toBe("signed_off");
-    expect((saved.stops as Record<string, unknown>[])[0]).toMatchObject({
+    // Street stops pay at the curb with the street source (the card on the
+    // provider account by default); garage stops at the garage's own
+    // checkout, each recorded as a planned booking for Activity.
+    const savedStops = saved.stops as Record<string, unknown>[];
+    expect(savedStops.find((s) => s["choice"] === "street")).toMatchObject({
       sessionId: null,
-      paymentSource: "issuing_card",
+      paymentSource: "provider_card",
     });
+    expect(savedStops.find((s) => s["choice"] === "garage")).toMatchObject({
+      paymentSource: "garage_checkout",
+    });
+    expect(t.state.garageBookings.map((b) => b.status)).toEqual(["planned", "planned", "planned"]);
     expect(t.state.decisions.some((d) => d.rule === "itinerary_signed_off")).toBe(true);
   });
 
@@ -91,7 +103,10 @@ describe("sign-off", () => {
 
 describe("PATCH /assistant/itineraries/:id", () => {
   async function signedOffDay(t: ReturnType<typeof makeTestApp>) {
-    seedPlan(t, [stop("s1"), stop("s2", { choice: "garage", deepLink: "https://spothero.com/search?x=1", costUsd: 8 })]);
+    seedPlan(t, [
+      stop("s1"),
+      stop("s2", { choice: "garage", deepLink: "https://spothero.com/search?x=1", costUsd: 8 }),
+    ]);
     const res = await t.app.inject({
       method: "POST",
       url: "/assistant/confirm",
@@ -108,7 +123,10 @@ describe("PATCH /assistant/itineraries/:id", () => {
     const saved = t.state.itineraries[0]!;
     (saved.stops as Record<string, unknown>[])[0]!["sessionId"] = "sess-99";
 
-    const reordered = [stop("s2", { choice: "garage", deepLink: "https://spothero.com/search?x=1", costUsd: 8 }), stop("s1")];
+    const reordered = [
+      stop("s2", { choice: "garage", deepLink: "https://spothero.com/search?x=1", costUsd: 8 }),
+      stop("s1"),
+    ];
     const res = await t.app.inject({
       method: "PATCH",
       url: `/assistant/itineraries/${id}`,
@@ -132,7 +150,7 @@ describe("PATCH /assistant/itineraries/:id", () => {
       payload: { stops: [stop("s1", { costUsd: 100 })] },
     });
     expect(res.statusCode).toBe(409);
-    expect(itineraryTotalUsd((t.state.itineraries[0]!.stops as { costUsd: number }[]))).toBe(13);
+    expect(itineraryTotalUsd(t.state.itineraries[0]!.stops as { costUsd: number }[])).toBe(13);
   });
 
   test("editing someone else's or a done itinerary is refused", async () => {

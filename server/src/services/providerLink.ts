@@ -99,6 +99,9 @@ export interface ProviderLinkDeps {
   stripe?: StripeGateway | undefined;
   stateCrypto?: StateCrypto | undefined;
   providerOps?: ProviderOpsFactory | undefined;
+  /** ISSUING_LIVE. Before it, the ParkAgent card is sandbox-only and never
+   * goes onto a real parking account. */
+  issuingLive?: boolean | undefined;
   now?: (() => Date) | undefined;
 }
 
@@ -196,6 +199,13 @@ export async function runSetupCard(
     // Non-negotiable shape: dry run means the provider account is never
     // touched. The decision records that the setup would have run.
     await decide("dry_run", { ok: true, wouldAdd: true });
+    return { ok: true, dryRun: true };
+  }
+  if (deps.issuingLive !== true) {
+    // Before ISSUING_LIVE the ParkAgent card is a sandbox (test-mode)
+    // card: putting it on a REAL parking account would replace the user's
+    // own card with one no real meter can charge. Never.
+    await decide("sandbox", { ok: true, wouldAdd: true, sandbox: true });
     return { ok: true, dryRun: true };
   }
 

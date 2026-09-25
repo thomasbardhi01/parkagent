@@ -17,8 +17,9 @@ configFiles:
   Release: Config.xcconfig
 
 packages:
-  # Apple Pay + card-form confirmation of top-up PaymentIntents
-  # (see StripeTopup.swift — the only file that imports it).
+  # Apple Pay + PaymentSheet confirmation of the SetupIntent that saves the
+  # ParkAgent card's funding card (see StripeWallet.swift — the only file
+  # that imports it).
   StripeiOS:
     url: https://github.com/stripe/stripe-ios
     from: "24.0.0"
@@ -106,8 +107,9 @@ targets:
         # portal (see the PR checklist).
         com.apple.developer.applesignin:
           - Default
-        # Apple Pay top-ups (see API.md "Apple Pay setup" for the one-time
-        # merchant-ID + Stripe certificate dance).
+        # Apple Pay saves the ParkAgent card's funding card (see API.md
+        # "Apple Pay setup" for the one-time merchant-ID + Stripe
+        # certificate dance).
         com.apple.developer.in-app-payments:
           - merchant.com.thomasbardhi.parkagent
 

@@ -2,9 +2,9 @@ import SwiftUI
 
 /// Onboarding runs AFTER sign-in (the welcome screen owns the sign-in
 /// itself), so the steps are only setup: permissions → vehicle → your city
-/// → how you pay → connect the provider → (add money, ParkAgent card only)
-/// → budget → done. One coral action per screen; abandoning mid-way
-/// resumes at the last incomplete step on next launch.
+/// → how you pay → connect the provider → budget → done. One coral action
+/// per screen; abandoning mid-way resumes at the last incomplete step on
+/// next launch.
 ///
 /// `welcome` is kept as the raw value 0 so a resume key written by an
 /// older build still decodes; the flow treats it as permissions.
@@ -15,10 +15,13 @@ enum OnboardingStep: Int, CaseIterable {
     case city
     /// "Somewhere else" — we're not there yet; finishes without a provider.
     case elsewhere
-    /// "How do you want to pay": the card on the provider account
-    /// (default), or the ParkAgent card when the server says it's live.
+    /// "How do you want to pay": the Wallet's three choices, the card on
+    /// the provider account preselected.
     case payment
     case linkProvider
+    /// Retired (there is no stored balance to fund any more); kept so a
+    /// resume key written by an older build still decodes — it goes on to
+    /// the budget step.
     case addMoney
     case budget
     case done
@@ -81,10 +84,8 @@ struct OnboardingView: View {
             if let providerId = CityCatalog.providerId(for: selectedCity) {
                 OnboardingLinkStep(
                     providerId: providerId,
-                    // provider_card users have nothing to fund — the card
-                    // on their provider account already pays; skip Add money.
-                    onDone: { advance(to: afterLinkStep) },
-                    onSkip: { advance(to: afterLinkStep) }
+                    onDone: { advance(to: .budget) },
+                    onSkip: { advance(to: .budget) }
                 )
                 .id(providerId)
             } else {
@@ -94,9 +95,7 @@ struct OnboardingView: View {
                     advance(to: city == "other" ? .elsewhere : .payment)
                 }
             }
-        case .addMoney:
-            OnboardingAddMoneyStep { advance(to: .budget) }
-        case .budget:
+        case .addMoney, .budget:
             OnboardingBudgetStep { advance(to: .done) }
         case .done:
             OnboardingDoneStep { complete() }
@@ -105,11 +104,6 @@ struct OnboardingView: View {
 
     private func advance(to next: OnboardingStep) {
         withAnimation { step = next }
-    }
-
-    /// Where linking leads: funding only matters for the ParkAgent card.
-    private var afterLinkStep: OnboardingStep {
-        PaymentSource.stored == .issuingCard ? .addMoney : .budget
     }
 
     private func complete() {
@@ -474,131 +468,214 @@ private struct OnboardingElsewhereStep: View {
 
 // MARK: - Step 5: How do you want to pay
 
+/// The Wallet's three ways to pay, with the Wallet's own copy (WalletCopy)
+/// and the Wallet's own state (GET /wallet through the shared WalletModel)
+/// — so what onboarding promises is exactly what the Wallet shows after.
+/// "Your card on <provider>" is preselected.
 private struct OnboardingPaymentStep: View {
     @Environment(AppModel.self) private var model
-    @AppStorage(PaymentSource.defaultsKey) private var storedSource = PaymentSource.providerCard.rawValue
+    @Environment(\.openURL) private var openURL
     let selectedCity: String
     let onContinue: () -> Void
 
     @State private var choice: PaymentSource = .providerCard
-    @State private var issuingLive = false
-    @State private var isSaving = false
+    @State private var consented = false
     @State private var saveFailed = false
+
+    private var wallet: WalletModel { model.wallet }
 
     private var providerName: String {
         CityCatalog.providerDisplayName(for: selectedCity) ?? "your parking account"
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.unit) {
-            Spacer()
-            Text("How do you want to pay")
-                .font(.numeral)
-                .foregroundStyle(Color.textPrimary)
-            Text("Meters are charged to one of these. Your limits apply either way.")
-                .font(.bodyText)
-                .foregroundStyle(Color.textSecondary)
+        ScrollView {
+            VStack(alignment: .leading, spacing: Spacing.unit) {
+                Text("How do you want to pay")
+                    .font(.numeral)
+                    .foregroundStyle(Color.textPrimary)
+                    .padding(.top, Spacing.double)
+                Text("Pick one — you can change it any time in Wallet. Your limits apply whichever pays.")
+                    .font(.bodyText)
+                    .foregroundStyle(Color.textSecondary)
 
-            option(
-                .providerCard,
-                label: "My card on \(providerName)",
-                detail: "The card already saved in your \(providerName) account pays. Nothing to set up."
-            )
-            if issuingLive {
-                option(
-                    .issuingCard,
-                    label: "ParkAgent card",
-                    detail: "A virtual card we manage, added to \(providerName) for you."
-                )
-            } else {
-                comingSoonRow
+                if let response = wallet.response {
+                    ForEach(response.options, id: \.source) { option in
+                        row(option)
+                    }
+                    requirement(response)
+                } else if wallet.loadFailed {
+                    // Can't ask the server: the default still works.
+                    row(WalletSourceOption(source: .providerCard, availability: "available", needs: nil, sandbox: false))
+                } else {
+                    ProgressView()
+                        .frame(maxWidth: .infinity)
+                }
+
+                if saveFailed, let error = wallet.actionError {
+                    Text(error.errorDescription ?? "Couldn't save your choice. Try again.")
+                        .font(.captionTextSemibold)
+                        .foregroundStyle(Color.warningGold)
+                        .accessibilityIdentifier("onboarding.paymentSaveFailed")
+                }
             }
-
-            if saveFailed {
-                Text("Couldn't save your choice to the server. Try again.")
-                    .font(.captionTextSemibold)
-                    .foregroundStyle(Color.warningGold)
-                    .accessibilityIdentifier("onboarding.paymentSaveFailed")
-            }
-
-            Spacer()
-            Button(isSaving ? "Saving…" : "Continue") {
+            .padding(Spacing.unitAndHalf)
+        }
+        .safeAreaInset(edge: .bottom) {
+            Button(wallet.isWorking ? "Saving…" : "Continue") {
                 Task { await save() }
             }
             .buttonStyle(.primary)
-            .disabled(isSaving)
+            .disabled(wallet.isWorking || !ready)
+            .padding(Spacing.unitAndHalf)
+            .background(Color.appBackground)
             .accessibilityIdentifier("onboarding.continueButton")
         }
-        .padding(Spacing.unitAndHalf)
         .task {
-            if let current = try? await model.api.paymentSource() {
-                issuingLive = current.issuingLive
-                choice = current.paymentSource
-            }
+            await wallet.load(api: model.api)
+            // Resuming: start from what the server already has.
+            if let active = wallet.response?.activeSource { choice = active }
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("onboarding.payment")
     }
 
-    private func save() async {
-        isSaving = true
-        saveFailed = false
-        do {
-            let saved = try await model.api.updatePaymentSource(choice)
-            storedSource = saved.paymentSource.rawValue
-            isSaving = false
-            onContinue()
-        } catch {
-            isSaving = false
-            saveFailed = true
-        }
-    }
-
-    private func option(_ source: PaymentSource, label: String, detail: String) -> some View {
-        Button {
-            choice = source
+    private func row(_ option: WalletSourceOption) -> some View {
+        let comingSoon = WalletCopy.isComingSoon(option, sandboxAllowed: FeatureFlags.parkAgentSandbox)
+        let selected = choice == option.source
+        return Button {
+            guard !comingSoon else { return }
+            choice = option.source
         } label: {
-            HStack {
+            HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: Spacing.quarter) {
-                    Text(label)
+                    Text(comingSoon
+                        ? (option.source == .linkWallet ? WalletCopy.linkComingSoon : "ParkAgent card")
+                        : WalletCopy.title(option.source, provider: providerName))
                         .font(.bodyText)
-                        .foregroundStyle(Color.textPrimary)
-                    Text(detail)
+                        .foregroundStyle(comingSoon ? Color.textSecondary : Color.textPrimary)
+                    Text(comingSoon && option.source == .parkagentCard
+                        ? WalletCopy.parkAgentComingSoon
+                        : WalletCopy.explanation(option.source, provider: providerName))
                         .font(.captionText)
                         .foregroundStyle(Color.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if option.source == .linkWallet && !comingSoon {
+                        Text(WalletCopy.linkApprovalNote)
+                            .font(.captionText)
+                            .foregroundStyle(Color.textSecondary)
+                    }
                 }
                 Spacer()
-                Image(systemName: choice == source ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(choice == source ? Color.actionCoralLink : Color.separator)
+                if comingSoon {
+                    TagPill(label: "Coming soon", color: .textSecondary)
+                } else {
+                    Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(selected ? Color.actionCoralLink : Color.separator)
+                }
             }
             .padding(Spacing.unit)
-            .background(Color.surface)
+            .background(comingSoon ? Color.surface.opacity(0.6) : Color.surface)
             .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
             // Chrome and shape live inside the label: with them outside, a
             // tap over the Spacer falls through the plain button style.
             .contentShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
         }
         .buttonStyle(.plain)
-        .accessibilityIdentifier("onboarding.payment.\(source.rawValue)")
+        .disabled(comingSoon)
+        .accessibilityIdentifier("onboarding.payment.\(option.source.rawValue)")
+        .accessibilityValue(selected ? "selected" : "not selected")
     }
 
-    private var comingSoonRow: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: Spacing.quarter) {
-                Text("ParkAgent card")
-                    .font(.bodyText)
-                    .foregroundStyle(Color.textSecondary)
-                Text("Coming soon — a virtual card we manage, with your caps built in.")
-                    .font(.captionText)
-                    .foregroundStyle(Color.textSecondary)
+    /// What the chosen way needs before it can be saved.
+    @ViewBuilder
+    private func requirement(_ response: WalletResponse) -> some View {
+        switch choice {
+        case .providerCard:
+            EmptyView()
+        case .linkWallet:
+            if !response.link.connected {
+                Button {
+                    Task { await wallet.connectLink(api: model.api) { openURL($0) } }
+                } label: {
+                    Label("Connect Link", systemImage: "link")
+                }
+                .buttonStyle(.secondary)
+                .accessibilityIdentifier("onboarding.payment.connectLink")
             }
-            Spacer()
-            TagPill(label: "Coming soon", color: .textSecondary)
+        case .parkagentCard:
+            if response.parkagentCard.defaultFundingMethod == nil {
+                VStack(spacing: Spacing.half) {
+                    if StripeWallet.applePayAvailable || LaunchOverrides.useMockAPI {
+                        Button {
+                            Task { _ = await wallet.addCard(applePay: true, api: model.api) }
+                        } label: {
+                            Label("Add with Apple Pay", systemImage: "apple.logo")
+                        }
+                        .buttonStyle(.secondary)
+                        .accessibilityIdentifier("onboarding.payment.applePay")
+                    }
+                    Button("Enter a card") {
+                        Task { _ = await wallet.addCard(applePay: false, api: model.api) }
+                    }
+                    .buttonStyle(.secondary)
+                    .accessibilityIdentifier("onboarding.payment.enterCard")
+                }
+            } else if let method = response.parkagentCard.defaultFundingMethod {
+                Label(WalletCopy.fundingLine(method), systemImage: "checkmark.circle.fill")
+                    .font(.secondaryText)
+                    .foregroundStyle(Color.textPrimary)
+                    .accessibilityIdentifier("onboarding.payment.cardSaved")
+            }
+            if !linkedWithoutCard(response).isEmpty {
+                Button {
+                    consented.toggle()
+                } label: {
+                    HStack(alignment: .top) {
+                        Image(systemName: consented ? "checkmark.square.fill" : "square")
+                            .foregroundStyle(consented ? Color.actionCoralLink : Color.textSecondary)
+                        Text(WalletCopy.parkAgentConsent(providers: linkedWithoutCard(response)))
+                            .font(.captionText)
+                            .foregroundStyle(Color.textPrimary)
+                            .multilineTextAlignment(.leading)
+                    }
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("onboarding.payment.consent")
+            }
         }
-        .padding(Spacing.unit)
-        .background(Color.surface.opacity(0.6))
-        .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
-        .accessibilityIdentifier("onboarding.payment.comingSoon")
+    }
+
+    private func linkedWithoutCard(_ response: WalletResponse) -> [String] {
+        response.providers
+            .filter { $0.isLinked && $0.paysWith?.source != .parkagentCard }
+            .map(\.displayName)
+    }
+
+    private var ready: Bool {
+        guard let response = wallet.response else { return choice == .providerCard }
+        switch choice {
+        case .providerCard: return true
+        case .linkWallet: return response.link.connected
+        case .parkagentCard:
+            return response.parkagentCard.defaultFundingMethod != nil
+                && (linkedWithoutCard(response).isEmpty || consented)
+        }
+    }
+
+    private func save() async {
+        saveFailed = false
+        // Already the active way (the default for a new account): nothing
+        // to write.
+        if wallet.response?.activeSource == choice {
+            onContinue()
+            return
+        }
+        if await wallet.choose(choice, consent: consented, api: model.api) {
+            onContinue()
+        } else {
+            saveFailed = true
+        }
     }
 }
 
@@ -637,25 +714,6 @@ private struct OnboardingLinkStep: View {
         switch link.stage {
         case .intro, .unavailable, .failed: true
         default: false
-        }
-    }
-}
-
-// MARK: - Step 6: Add money
-
-private struct OnboardingAddMoneyStep: View {
-    let onContinue: () -> Void
-
-    var body: some View {
-        // AddMoneyView carries the "addMoney.view" container; wrapping it
-        // in another would flatten it away.
-        VStack(alignment: .leading, spacing: 0) {
-            Text("Add money")
-                .font(.numeral)
-                .foregroundStyle(Color.textPrimary)
-                .padding(.horizontal, Spacing.unitAndHalf)
-                .padding(.top, Spacing.double)
-            AddMoneyView(allowSkip: true) { onContinue() }
         }
     }
 }

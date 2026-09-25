@@ -7,15 +7,15 @@ import SwiftUI
 /// PKAddPaymentPassViewController with the Stripe call path stubbed in
 /// PushProvisioningCoordinator.
 struct AddToWalletButton: View {
-    let card: CardSummary
+    let card: ParkAgentCard
     @State private var showComingSoon = false
     @State private var isProvisioning = false
 
     var body: some View {
         CardActionButton(
             icon: "wallet.bifold",
-            label: "Apple Pay",
-            identifier: "card.applePayButton"
+            label: "Add to Wallet",
+            identifier: "wallet.addToAppleWalletButton"
         ) {
             if FeatureFlags.applePayProvisioning {
                 isProvisioning = true
@@ -26,8 +26,8 @@ struct AddToWalletButton: View {
         .alert("Coming soon", isPresented: $showComingSoon) {
             Button("OK", role: .cancel) {}
         } message: {
-            Text("Adding this card to Apple Pay is pending Apple approval.")
-                .accessibilityIdentifier("card.applePayComingSoon")
+            Text("Adding the ParkAgent card to Apple Wallet is pending Apple's approval.")
+                .accessibilityIdentifier("wallet.addToAppleWalletComingSoon")
         }
         .sheet(isPresented: $isProvisioning) {
             AddPaymentPassSheet(card: card)
@@ -41,7 +41,7 @@ struct AddToWalletButton: View {
 /// iOS SDK land, generateRequest completes empty and Apple's UI reports the
 /// failure — the flag keeps real users out of this path.
 private struct AddPaymentPassSheet: UIViewControllerRepresentable {
-    let card: CardSummary
+    let card: ParkAgentCard
     @Environment(\.dismiss) private var dismiss
 
     func makeCoordinator() -> PushProvisioningCoordinator {
@@ -50,7 +50,7 @@ private struct AddPaymentPassSheet: UIViewControllerRepresentable {
 
     func makeUIViewController(context: Context) -> UIViewController {
         let configuration = PKAddPaymentPassRequestConfiguration(encryptionScheme: .ECC_V2)
-        configuration?.cardholderName = card.cardholderName
+        configuration?.cardholderName = card.cardholderName ?? ""
         configuration?.primaryAccountSuffix = card.last4
         configuration?.localizedDescription = "ParkAgent card"
         guard let configuration,

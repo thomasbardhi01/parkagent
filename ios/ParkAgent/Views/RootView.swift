@@ -186,15 +186,18 @@ struct MainTabView: View {
 
     var body: some View {
         @Bindable var model = model
-        // Settings is gone from the tab bar: its contents live in the
-        // Account sheet behind Home's avatar button.
-        TabView {
+        // Park · Activity · Wallet. Settings lives in the Account sheet
+        // behind the Park tab's avatar button.
+        TabView(selection: $model.selectedTab) {
             HomeView()
-                .tabItem { Label("Home", systemImage: "map") }
-            SessionsView()
-                .tabItem { Label("Sessions", systemImage: "clock.arrow.circlepath") }
-            CardView()
-                .tabItem { Label("Card", systemImage: "creditcard") }
+                .tabItem { Label("Park", systemImage: "map") }
+                .tag(AppTab.park)
+            ActivityView()
+                .tabItem { Label("Activity", systemImage: "clock.arrow.circlepath") }
+                .tag(AppTab.activity)
+            WalletView()
+                .tabItem { Label("Wallet", systemImage: "wallet.bifold") }
+                .tag(AppTab.wallet)
         }
         .tint(.actionCoral)
         // At the tab level, not inside HomeView: a park detected while the
@@ -219,6 +222,12 @@ struct MainTabView: View {
             await model.refreshItineraries()
             await model.refreshLinkWalletStatus()
         }
+        .task {
+            // The Wallet summary feeds Home's "today" bar too — load it at
+            // launch, not only when the Wallet tab opens, or Home would
+            // show nothing spent while the Wallet shows the real day.
+            await model.wallet.load(api: model.api)
+        }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active, let query = AssistantIntentRouter.shared.pendingQuery {
                 AssistantIntentRouter.shared.pendingQuery = nil
@@ -241,7 +250,13 @@ struct MainTabView: View {
                 }
             case "link":
                 // The OAuth callback page bounced back after connecting.
-                Task { await model.refreshLinkWalletStatus() }
+                Task {
+                    await model.refreshLinkWalletStatus()
+                    await model.wallet.load(api: model.api)
+                }
+            case "wallet":
+                // The card_declined push: fix the card in the Wallet.
+                model.selectedTab = .wallet
             default:
                 break
             }

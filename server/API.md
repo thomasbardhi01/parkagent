@@ -182,7 +182,10 @@ onboarding on true and goes straight Home on false.
 
 ### GET /me · PATCH /me
 
-`GET` → `{user, paymentSource, issuingLive}`. `PATCH {name?, phone?}`
+`GET` → `{user, paymentSource, issuingLive}` — `paymentSource` is the
+Wallet's active way to pay (`provider_card` | `link_wallet` |
+`parkagent_card`; see "Wallet"), so the Account sheet and the Wallet read
+the same fact. `PATCH {name?, phone?}`
 edits the profile and returns `{user}`. Changing the phone clears
 `phoneVerified` (there is no SMS verification flow yet). The email is
 **not** editable here: it is the sign-in identity, and moving it needs
@@ -192,18 +195,23 @@ its own verification flow.
 
 Irreversible; the app confirms in two steps. In order:
 
-1. any Issuing card **frozen, never canceled** — a card that has
-   transacted must keep resolving its authorizations. First, because it
-   is the one step that calls out: a Stripe failure answers `500` with
-   the account untouched and the delete safely retryable;
-2. refresh tokens deleted (every device signs out) and device tokens
+1. any ParkAgent card **frozen, never canceled** — a card that has
+   transacted must keep resolving its authorizations — and the Stripe
+   **Customer deleted**, which takes the user's saved funding cards with
+   it. First, because these are the steps that call out: a Stripe failure
+   answers `500` with the account untouched and the delete safely
+   retryable;
+2. funding-method rows marked removed; the Link wallet disconnected (its
+   refresh token revoked, best effort, and the sealed tokens erased);
+3. refresh tokens deleted (every device signs out) and device tokens
    deleted (push channels released);
-3. provider accounts unlinked and their **sealed cookie state erased**;
-4. vehicles and assistant conversations deleted (sessions detach from
+4. provider accounts unlinked and their **sealed cookie state erased**;
+5. vehicles and assistant conversations deleted (sessions detach from
    the vehicle but remain — they are the money audit);
-5. the `users` row is **tombstoned**: name becomes "Deleted account",
-   `email`/`phone`/`apple_sub`/`google_sub`/api-key columns are nulled,
-   and `deleted_at` is stamped.
+6. the `users` row is **tombstoned**: name becomes "Deleted account",
+   `email`/`phone`/`apple_sub`/`google_sub`/api-key/`stripe_customer_id`
+   columns are nulled, the payment source reset, and `deleted_at` is
+   stamped.
 
 The row survives on purpose: `decisions` is a non-negotiable ledger with
 a `user_id` on every row, so the id must stay valid — what goes is the
@@ -374,7 +382,7 @@ agree.
 | `free_period` | all agree, `totalUsd` is 0 | `ignore` | nearest only |
 | `rate_above_ceiling` | ladder max > `auto_pay_max_rate_per_hour` | `confirm` | nearest only |
 | `session_cap_exceeded` | `totalUsd` > `session_cap_usd` | `confirm` | nearest only |
-| `daily_cap_exceeded` | today's session spend + `totalUsd` > `daily_cap_usd` | `confirm` | nearest only |
+| `daily_cap_exceeded` | today's spend (sessions + garages approved in Link) + `totalUsd` > `daily_cap_usd` | `confirm` | nearest only |
 | `needs_zone_number` | would auto-pay, but the zone's pay-by-app number is unknown (Boston, unreported block) | `confirm` | nearest only |
 | `auto_pay_ok` | none of the above | `pay` | nearest only |
 
@@ -532,6 +540,52 @@ the card to the cent even when it differs from the pre-charge estimate
 (ParkBoston sells in per-zone duration increments — see the acceptance
 report, Job 2).
 
+**Which card pays.** The session snapshots the user's Wallet source
+(`sessions.payment_source`): `provider_card` — the card saved on the
+provider account — or `parkagent_card`. A `link_wallet` user's street
+meters pay with the card on their provider account too (recorded as
+`provider_card`, with `requestedSource: "link_wallet"` on the decision):
+Link's one-time card can't go on a provider account whose single saved
+card is the user's own. For `parkagent_card`:
+
+- **Readiness first**, before any session row, hold, or executor call —
+  `409 {"error": "wallet_not_ready", "reason": …}` with `reason`
+  `no_funding_method` (no saved card to hold against),
+  `no_parkagent_card`, `parkagent_card_frozen`, or
+  `parkagent_card_not_on_provider` (the provider account still carries
+  the user's own card — charging it while we held on ours would double
+  charge; dry run skips this one, since dry run never puts our card on an
+  account).
+- **Then a hold**, after the caps pass: a manual-capture PaymentIntent,
+  confirmed off-session on the user's default saved card, for the quote
+  plus a buffer of 20% (never less than $2) — but never more than the
+  caps still leave room for (session cap minus what the session already
+  spent; daily cap minus today's real spend): the hold is the most our
+  card may pay for the leg. Idempotency key `hold:<session>:<leg>`; a leg
+  still held is reused, and a leg whose earlier attempt was declined or
+  released gets a new attempt (`extend-1.2`, its own row and key — else
+  Stripe would replay the old decline after the user fixed their card). A decline answers `409 {"error":
+  "card_declined"}`, marks the session `failed`, pays nothing (the
+  executor never runs), and pushes `card_declined` ("Your card was
+  declined — update it in Wallet"); a Stripe error answers
+  `502 hold_failed`. Under dry run no PaymentIntent is created — the
+  `wallet_hold` decision records `wouldHold`.
+- **The executor pays with our card**; the Issuing webhook approves that
+  charge only against this hold (see "issuing_authorization.request").
+- **Then the hold settles**: it captures exactly what the ParkAgent card
+  was charged (the approved authorizations the webhook attached to it)
+  and Stripe releases the rest. A free period or an executor failure
+  releases it (capturing only what was actually authorized, usually
+  nothing). A paid leg whose authorization hasn't arrived yet is left
+  held (`capture_deferred`); the wallet job settles holds older than 15
+  minutes — capture what was authorized, release the rest.
+
+Every hold step writes a `decisions` row (kind `wallet_hold`: rules
+`dry_run`, `hold_placed`, `hold_declined`, `no_funding_method`,
+`stripe_failed`, `hold_captured`, `hold_released`, `capture_deferred`,
+`settle_failed`), and the start decision's outcome carries
+`hold: {holdId, heldUsd, status, capturedUsd}`.
+
 **Zone numbers.** Every start types a zone number at the provider, so a
 provider-covered zone whose `provider_zone_number` is still `""` (a Boston
 block nobody has reported yet) refuses `409 {"error":
@@ -571,7 +625,7 @@ guarantees and cannot be confirmed through — raise them via `PUT /policy`):
 | `max_stay_exceeded` | `minutes` > zone max stay |
 | `free_period` | the whole stay prices to $0 (outside enforcement) — nothing to buy, and typing minutes into the provider anyway could charge money the quote never priced |
 | `session_cap_exceeded` | purchase total > `session_cap_usd` |
-| `daily_cap_exceeded` | real (non-dry-run) spend today + total > `daily_cap_usd` |
+| `daily_cap_exceeded` | real (non-dry-run) spend today — sessions plus garages approved in Link — + total > `daily_cap_usd` |
 
 Other errors: `404` unknown/foreign `parkedEventId` or `zoneId`, `409
 {"error": "session_already_active"}` (one open session per user — enforced
@@ -587,11 +641,13 @@ number is still unreported (see `POST /zones/:zoneId/provider-number`),
 `502 {"error": "executor_failed", "code": …}` — the session row is marked
 `failed` and a `payment_failed` push is sent. An `auth_expired` executor
 failure also flips the provider account to `expired` and sends a
-`provider_relink` push.
+`provider_relink` push. ParkAgent card only: `409 wallet_not_ready`,
+`409 card_declined`, `502 hold_failed` (above).
 
 Every call writes a `decisions` row (kind `session_start`; rule
-`start_ok`, a cap rule, or `executor_failed`) and every executor call
-writes a `session_events` row (`started` / `failed`).
+`start_ok`, a cap rule, `wallet_not_ready`, `hold_declined`,
+`hold_failed`, or `executor_failed`) and every executor call writes a
+`session_events` row (`started` / `failed`).
 
 ## POST /session/extend
 
@@ -608,6 +664,13 @@ session keeps its time, the event/decision are `free_period`, and the push
 says parking is free (never a tap-to-pay). The auto-extend worker records
 the same as `rule: "free_period"`, `action: "hold"`.
 
+A `parkagent_card` session's extension is its own leg with its own hold
+(`hold:<session>:extend-<n>`), placed before the executor and settled
+after it exactly like the start's — manual extends and the auto-extend
+worker alike. A declined hold answers `409 card_declined` (decision rule
+`hold_declined`; the worker records `extend_failed` with
+`code: "card_declined"`) and pushes `card_declined`; nothing is charged.
+
 ## POST /session/stop
 
 `{sessionId}` → `{sessionId, stoppedAt}`. Marks the session `stopped` and
@@ -622,27 +685,14 @@ every 60 s. Stored in `location_fixes` keyed to the user's active session
 → `{ok: true, sessionId}`. `409 {"error": "no_active_session"}` when there
 is nothing to attach the fix to (the app treats that as "stop reporting").
 
-## GET /me/payment-source · PUT /me/payment-source
+## Payment source
 
-Which source pays the caller's sessions. `GET` →
-`{"paymentSource": "provider_card" | "issuing_card", "issuingLive": false}`;
-`PUT {"paymentSource": …}` switches it (Settings; onboarding's "How do you
-want to pay" step). Values:
-
-- `provider_card` (default for every user) — the card already saved on the
-  user's own ParkNYC/ParkBoston account. Onboarding skips card setup and
-  funding entirely, and provider linking skips the chained setup-card and
-  its consent gate (the account's payment method is never touched).
-- `issuing_card` — the ParkAgent Issuing card. Selectable only while the
-  `ISSUING_LIVE` env flag is `true`; otherwise `PUT` refuses
-  `409 {"error": "issuing_not_live"}` and the app shows "coming soon".
-
-Sessions snapshot the user's source at start (`sessions.payment_source`),
-and it rides on `session_start` decision inputs. The session and daily caps
-apply to **every** source — the choice moves where the charge lands, never
-what is allowed. `shadow_mode` is independent of the source: it only adds a
-Stripe test authorization alongside real spends. Every `PUT` writes a
-`decisions` row (kind `payment_source`).
+Moved to the Wallet: `GET /wallet` reports the active source and
+`PUT /wallet/source` switches it (see "Wallet"). `GET/PUT
+/me/payment-source` are gone (`404`); `GET /me` still carries
+`paymentSource`. The session and daily caps apply to **every** source —
+the choice moves where the charge lands, never what is allowed.
+`shadow_mode` is independent of the source.
 
 ## POST /device
 
@@ -672,6 +722,10 @@ Pushes carry a standard `aps` payload plus `{"type": ...}`, one of:
   or `"no_auto_extend"` (disabled or max_count used up)
 - `payment_failed` — a pay or extend attempt failed; the meter is unpaid;
   carries `code` (executor error code)
+- `card_declined` — the ParkAgent card's hold was refused by the user's
+  saved card; nothing was paid (the hold comes before the provider).
+  Carries `zoneNumber` and `deepLink: "parkagent://wallet"` — the fix is
+  updating the card in the Wallet, not a retry
 - `provider_relink` — the linked provider session died (`auth_expired`);
   carries `provider` and a deep link into the app's link flow, `zoneNumber`, and `deepLink`
   (`parkagent://pay?zone=<zone>` — tap-to-pay fallback with the zone
@@ -738,10 +792,23 @@ order — the first failure is the `reason`:
 |---|---|
 | `declined_unknown_card` | card isn't in `issuing_cards` |
 | `declined_wrong_mcc` | merchant category isn't `parking_lots_garages` / MCC 7523 |
-| `declined_no_pending_session` | no pending/active session for the card's user started within the last 10 minutes (`services/pendingSession.ts`) |
+| `declined_no_pending_session` | nothing awaits payment: no pending/active session started within the last 10 minutes (`services/pendingSession.ts`) AND no live session hold (an extension's hold counts — its session started long before the window) |
 | `declined_over_daily_cap` | approved card spend today (NYC day) + amount > `daily_cap_usd` |
-| `declined_dry_run` | everything passed but a dry-run switch is on; the decision records `wouldApprove: true` |
-| `approved` | none of the above, both dry-run switches off |
+| `declined_dry_run` | everything passed but a dry-run switch is on; the decision records `wouldApprove: true` (no holds exist in dry run, so this means "would approve if a hold covers it") |
+| `declined_no_hold` | no live session hold for the user (status `held`, placed within the last 15 minutes) — **the ParkAgent card only pays against a hold on the user's own card** |
+| `declined_over_hold` | a live hold exists but the amount doesn't fit in what's left of it |
+| `approved` | none of the above, both dry-run switches off, and the hold's room claimed |
+
+The hold claim is the last check and the only write: a compare-and-set
+that grows the hold's `authorized_usd` only while it stays within the
+hold, so two charges racing for one hold can't both fit. The claimed
+hold and its session are stored on the ledger row (`hold_id`,
+`session_id`), which is what the leg later captures against. A duplicate
+delivery that loses the ledger insert gives its claimed room back. An
+`issuing_authorization.updated` with status `reversed` gives an
+approval's room back to a still-open hold (guarded on the stored status,
+so a replay never gives twice); against an already-captured hold the
+decision records `needsRefund: true` for the operator.
 
 The card's own Stripe spending controls (MCC allowlist, per-authorization
 and daily limits) are the first line of defense; authorizations they block
@@ -764,7 +831,12 @@ authorization first seen this way is stored with `decision: "external"`.
 (`stripe_transaction_id`, `captured_usd`) to its authorization row.
 `payment_intent.succeeded` for an intent tagged `parkagent=card_topup`
 moves the settled amount onto the financial account (see
-`POST /card/funding/topup-intent`). Other event types are acknowledged and
+`POST /card/funding/topup-intent`, admin only now).
+`payment_intent.succeeded` / `.canceled` for a session hold
+(`parkagent=session_hold`) reconcile a hold Stripe settled on its own —
+an uncaptured intent auto-cancels after 7 days — with a compare-and-set
+on `held`, so our own settles (already moved on) and redeliveries change
+nothing (decision rule `replayed`). Other event types are acknowledged and
 ignored.
 
 ### Local dev
@@ -783,16 +855,26 @@ decline.
 
 ## Card endpoints
 
-The Card tab's server surface over the Phase 6 Issuing tables. All of these
-require `x-api-key`; everything that talks to Stripe answers
+The ParkAgent card's own surface over the Phase 6 Issuing tables — what
+the Wallet's card hero uses (its summary comes from `GET /wallet`).
+Everything that talks to Stripe answers
 `503 {"error": "stripe_not_configured"}` when `STRIPE_SECRET_KEY` isn't set.
 The full card number **never** transits this server: the app reveals it
 client-side with an ephemeral key (see `GET /card/reveal`).
 
+**No stored balance.** The card spends against a hold on the user's own
+card per session (see "Wallet"), so nothing here funds a user balance any
+more. `GET /card` (it carries the platform financial account's balance),
+`GET /card/transactions`, and the three funding moves below are
+**admin only** (`403 forbidden` for everyone else): keeping the Issuing
+balance funded is the operator's job. `POST /card/prepare`,
+`GET /card/reveal`, and freeze/unfreeze stay the user's.
+
 ### Card lifecycle
 
-The card is created **lazily** — not at signup, but when the user reaches
-the app's "Link provider" step (`POST /card/prepare`). Our DB status then
+The card is created **lazily** — not at signup, but when the user chooses
+the ParkAgent card in the Wallet (`PUT /wallet/source`) or reaches the
+link flow as a ParkAgent-card user (`POST /card/prepare`). Our DB status then
 reads `pending_onboarding` (the Stripe card itself is active; the overlay
 is ours and `GET /card` never re-mirrors it away) until
 `POST /providers/:provider/setup-card` puts the card on the provider
@@ -1032,10 +1114,10 @@ Cookies are filtered against the provider's registered domains — anything
 else is dropped at the door; none left → `400 no_session_cookies` (with
 `expectedDomains`). With `set_up_card` and no explicit consent →
 `400 consent_required`, before anything runs. The chained setup-card only
-runs for **issuing_card** users (see `/me/payment-source`): with the
-`provider_card` default, sessions pay with whatever payment method the
-account already has, so the consent requirement doesn't apply and `jobId`
-is always `null`; the link decision records
+runs for **parkagent_card** users (see "Wallet"): with `provider_card` (the
+default) or `link_wallet`, street meters pay with whatever payment method
+the account already has, so the consent requirement doesn't apply and
+`jobId` is always `null`; the link decision records
 `setUpCard: false, paymentSource: "provider_card"`. (Shadow mode no longer
 affects linking — it only adds a test authorization alongside real
 spends.) The surviving cookies are
@@ -1049,8 +1131,8 @@ On success the sealed state is upserted (`status: "linked"`) and:
 
 `cardBrand`/`cardLast4` are the card the **provider account already has
 on file**, read from its Your Cards screen at link time so the app can
-show which card will actually be charged ("Visa •••• 4242"). Read only
-for `provider_card` users (issuing_card users are having ours installed
+show which card will actually be charged ("Visa •••• 4242"). Read for
+everyone but `parkagent_card` users (who are having ours installed
 instead), best effort — a failed read stores nulls and never blocks the
 link — and display-only: the PAN is never requested, returned, or
 stored. The decision records presence only (`savedCardSeen`), never
@@ -1230,8 +1312,10 @@ city, **independent of the payment source**: every session start and
 extension **also** fires a Stripe test-mode Issuing authorization for the
 same amount at the user's virtual card, so the webhook, budget checks, and
 ledger run in parallel with the real spend. (Which card the provider
-charges is the payment-source setting's job — see `/me/payment-source`;
-shadow mode no longer changes how linking behaves.) The shadow result lands on the decision outcome (`shadow:
+charges is the Wallet's job — see "Wallet"; shadow mode no longer changes
+how linking behaves. Since the ParkAgent card approves only against a
+session hold, a shadow authorization for a `provider_card` session — which
+places no hold — rehearses as `declined_no_hold`.) The shadow result lands on the decision outcome (`shadow:
 {fired, authorizationId, approved, amountUsd}` — or `{fired: false,
 reason}`) and `pnpm -C server decisions:recent` prints it. Shadow mode
 never bypasses the dry-run switches: the executor leg still moves money
@@ -1452,25 +1536,47 @@ busts the remaining daily budget.
 token-gated tools the model faces:
 
 - garage option → `{kind: "garage_handoff", deepLink, paymentSource,
-  linkApproval?, note}` — the app opens the option's own checkout link
-  (SpotHero or ParkWhiz — `note` names which) in SFSafariViewController;
-  the pass lives in that site's account. We NEVER automate either site's
-  login or checkout.
+  linkApproval, linkSkipped?, bookingId, note}` — the app opens the
+  option's own checkout link (SpotHero or ParkWhiz — `note` names which)
+  in SFSafariViewController; the pass lives in that site's account. We
+  NEVER automate either site's login or checkout. `paymentSource` is
+  `link_wallet` when a Link spend request was made (the app walks the user
+  through the approval, then the one-time card for that checkout — see
+  "Link wallet"), else `garage_checkout` (the user pays there). The
+  booking is recorded (`garage_bookings`) for Activity.
 - street option → `{kind: "street_confirmed", zoneId, providerZoneNumber,
-  durationMinutes, paymentSource, linkApproval?}` — the session itself
-  starts through the existing detector → /parked → /session/start flow at
-  the curb. `providerZoneNumber` is the pay-by-app number (null when the
-  zone has none yet); `zoneId` is the internal slug and is not for display.
+  durationMinutes, paymentSource, linkApproval: null}` — the session
+  itself starts through the existing detector → /parked → /session/start
+  flow at the curb, paid by the street source (`provider_card` or
+  `parkagent_card`; never Link). `providerZoneNumber` is the pay-by-app
+  number (null when the zone has none yet); `zoneId` is the internal slug
+  and is not for display.
 - itinerary (no optionId) → `{kind: "itinerary_signed_off", itineraryId,
-  totalUsd, capUsd, paymentSource, linkApprovals[]}` — the day total is
-  re-checked against `daily_cap_usd` at the moment of sign-off.
+  totalUsd, capUsd, paymentSource, linkApprovals[], linkSkipped?}` — the
+  day total is re-checked against `daily_cap_usd` at the moment of
+  sign-off. Each stop is stored with what pays it: street stops the street
+  source; garage stops `link_wallet` (one approval per paid garage stop)
+  or `garage_checkout`. Garage stops are recorded as planned bookings.
+
+Link is used only when it is the Wallet's active source, connected, and
+`link_wallet_for_plans` isn't `false`. A spend request becomes a
+spendable card once approved, so it is a money path and is **checked
+before it is made**: `linkSkipped` says why none was — `dry_run` (either
+dry-run switch on, unless `LINK_TEST_MODE`, whose requests carry
+`test: true` and can't charge), `session_cap_exceeded` (a garage over
+`session_cap_usd`), `daily_cap_exceeded` (today's real spend — sessions
+and garages already approved in Link — plus requests still awaiting
+approval today, plus this confirm's request(s), over `daily_cap_usd`; a
+pending request holds its room because approving it makes it spendable),
+or `link_failed`. None of these block the handoff — the user can still
+pay at the garage's own checkout. The confirm's decision row records
+`spentTodayUsd` and `linkPendingTodayUsd`.
 
 The token authorizes the TAPPED option only: `book_garage` /
 `start_session` refuse it for any other option id, zone, or duration,
 and claim it with one conditional update (unused and unexpired), so two
 concurrent uses of one token can't both pass. A Link spend request names
-the real payee — the garage's own site, or the city's meter app for a
-street spot.
+the real payee — the garage's own site.
 
 ### GET /assistant/itineraries · PATCH /assistant/itineraries/:id
 
@@ -1527,11 +1633,17 @@ provider accepts them today (2026-09), so it stays a comment, not code.
 ## Link wallet for agents
 
 Stripe's Link CLI/agentic-commerce surface
-(docs.stripe.com/agentic-commerce/link-cli) as a second payment source
-for assistant plans. `PaymentSource` on sessions and bookings:
-`provider_card` (the user-level default — see `/me/payment-source`) |
-`issuing_card` (autonomous street parking on the ParkAgent card, when
-`ISSUING_LIVE`) | `link_wallet`.
+(docs.stripe.com/agentic-commerce/link-cli) as the Wallet's `link_wallet`
+way to pay. **Scope: assistant plans and garages** — each paid garage
+(single spot or itinerary stop) is one spend request the user approves in
+Link, and the approved one-time card pays the garage's own checkout.
+**Street meters never use Link**: a street meter is paid by the executor
+with the provider account's saved card, and both providers keep a single
+saved card (ParkNYC's card setup replaces the default; Passport's pay flow
+takes the first saved card), so a per-session Link card would overwrite
+the user's own card — which we can never put back, since we never hold its
+number. A `link_wallet` user's street meters stay on the card on their
+provider account, and the Wallet says so.
 
 **Verified against the docs (2026-09-21):**
 
@@ -1544,37 +1656,214 @@ for assistant plans. `PaymentSource` on sessions and bookings:
   new one each refresh).
 - **No batch approval exists.** A spend request carries ONE amount and
   ONE merchant; a multi-stop plan therefore creates one request (and one
-  customer approval at its `approval_url`) per paid stop. Limits per
-  agent integration: $500/request, $500/day, 30 concurrent active, 10
-  concurrent approved, 50 creations/hour, 10-minute approval window.
+  customer approval at its `approval_url`) per paid garage stop. Limits
+  per agent integration: $500/request, $500/day, 30 concurrent active, 10
+  concurrent approved, 50 creations/hour, **10-minute approval window**.
 - The approved credential is a **one-time-use virtual card**, valid
   until `valid_until` = **12 hours from spend-request creation**, and it
   is **not merchant-locked** ("works at any seller that accepts cards
-  online") — so nothing blocks it at ParkNYC, Passport, or SpotHero card
-  forms. `context` must be ≥100 characters and is shown on the approval
-  screen.
+  online"). `context` must be ≥100 characters and is shown on the
+  approval screen.
 - Test mode: spend requests carry `test: true` (`LINK_TEST_MODE`), Link
   returns test credentials (e.g. `4000009990001984`) and nothing
   charges.
 
 **Unverified — needs the registered OAuth client + sandbox:** the raw
-REST paths under `api.link.com` that `link-cli spend-request …` wraps are
-not publicly documented; `services/link/linkClient.ts` mirrors the CLI
-contract behind `LINK_API_BASE` and is marked VERIFY-IN-SANDBOX.
+REST paths under `api.link.com` that `link-cli spend-request …` and
+`payment-methods list` wrap are not publicly documented;
+`services/link/linkClient.ts` mirrors the CLI contract behind
+`LINK_API_BASE` and is marked VERIFY-IN-SANDBOX.
 
 Endpoints: `GET /link/status`, `POST /link/connect` (returns the
 authorization URL), `GET /link/callback` (public — the OAuth redirect;
 `state` binds it to the user), `POST /link/disconnect`,
 `POST /link/spend-requests/:id/sync` (the app polls after an approval;
 on approval the one-time card is SEALED server-side with
-PROVIDER_STATE_KEY crypto and never returned).
+PROVIDER_STATE_KEY crypto), and `POST /link/spend-requests/:id/card`.
 
-Flow: policy `link_wallet_for_plans` (default true) + a connected wallet
-→ plan confirmation creates the spend request(s) and the Confirm tap
-deep-links into the Link approval; at pay time the executor seam asks
-`usableCardForStop` — an approved, unexpired, unused card pays as
-`link_wallet`; an expired (12 h) or missing card **falls back to the
-Issuing card and the user is told**. The daily cap applies across BOTH
-sources (plans count into the same `daily_cap_usd` check). Env:
-`LINK_CLIENT_ID`, `LINK_CLIENT_SECRET`, `LINK_PUBLISHABLE_KEY`,
-`LINK_REDIRECT_URI` (all four or none), optional `LINK_TEST_MODE`.
+**`POST /link/spend-requests/:id/card`** — the approved one-time card, for
+the user to pay the garage's own checkout with (we never automate that
+checkout, so the card has to reach the person at it). Only the caller's
+own request, only while `approved`, unexpired, and unused;
+`Cache-Control: no-store`; the app asks for Face ID first and hides it
+after 30 seconds. Every reveal — and every refusal (`404
+unknown_spend_request`, `409 not_approved` / `card_expired` /
+`card_used`) — writes a `decisions` row (kind `link_card_reveal`) that
+never carries the number. `revealed_at` is stamped.
+
+**Approval timeout.** Each request stores its `approval_expires_at`
+(creation + 10 minutes). The wallet job expires every request still
+waiting past it (compare-and-set on the waiting statuses, so an approval
+landing mid-sweep isn't overwritten; decision `approval_expired`,
+`charged: false`), and a sync of an expired request answers `expired`
+without asking Link — a late approval can't revive it.
+
+**Payment method.** On connect, and at most every 10 minutes when
+`GET /wallet` asks, the wallet's default payment method is read from Link
+(display only — type, brand or bank, last4) for "Link · Visa ••1234";
+a failed read keeps the cached one. "Manage in Link" opens
+`https://app.link.com`.
+
+The daily cap applies across every source: a garage approved in Link
+(`approved` / `succeeded`) counts into today's spend everywhere the cap is
+checked — quotes, session starts and extensions, auto-extend, the
+assistant — and a request still awaiting approval also holds its room
+against further Link requests. Env: `LINK_CLIENT_ID`,
+`LINK_CLIENT_SECRET`, `LINK_PUBLISHABLE_KEY`, `LINK_REDIRECT_URI` (all
+four or none — without them the Wallet shows "Link — coming soon"),
+optional `LINK_TEST_MODE`.
+
+## Wallet
+
+One place that answers "how am I paying, and what have I spent", for
+three ways to pay — one active at a time (`users.payment_source`):
+
+| Source | What pays | Available |
+|---|---|---|
+| `provider_card` (default) | the card saved on the user's ParkNYC/ParkBoston account | always |
+| `link_wallet` | the user's Stripe Link wallet — assistant plans' garages, each approved in Link; street meters stay on the provider account's card | when `LINK_*` is configured and the user has connected Link |
+| `parkagent_card` | our virtual Issuing card on every linked parking account, funded per session by a hold on the user's own saved card | `ISSUING_LIVE`, or `sandbox: true` from a Debug build while `STRIPE_SECRET_KEY` is a test-mode key (nothing real can move) |
+
+There is **no stored balance** anywhere: the ParkAgent card spends only
+against per-leg holds (see `POST /session/start`), Link holds nothing,
+and the provider card is the provider's business.
+
+### GET /wallet
+
+```json
+{
+  "activeSource": "provider_card",
+  "dryRun": true,
+  "options": [
+    { "source": "provider_card", "availability": "available", "needs": null, "sandbox": false },
+    { "source": "link_wallet", "availability": "connect", "needs": "connect_link", "sandbox": false },
+    { "source": "parkagent_card", "availability": "coming_soon", "needs": null, "sandbox": false }
+  ],
+  "providerCard": { "cards": [{ "provider": "passport", "displayName": "ParkBoston", "city": "bos", "brand": "Visa", "last4": "1234" }] },
+  "link": {
+    "configured": true, "connected": false,
+    "paymentMethod": { "type": "card", "brand": "Visa", "last4": "1234" } | null,
+    "pendingApprovals": [{ "spendRequestId": "lsrq_…", "amountUsd": 4.1, "merchantName": "SpotHero", "approvalUrl": "https://…", "expiresAt": "…" }],
+    "manageUrl": "https://app.link.com",
+    "covers": "plans_and_garages"
+  },
+  "parkagentCard": {
+    "live": false, "sandboxSelectable": false,
+    "fundingMethods": [{ "id": "…", "brand": "Visa", "last4": "4242", "wallet": "apple_pay", "expMonth": 12, "expYear": 2031, "isDefault": true }],
+    "card": { "stripeCardId": "ic_…", "last4": "4444", "brand": "Mastercard", "status": "active", "expMonth": 8, "expYear": 2030, "cardholderName": "…" } | null
+  },
+  "providers": [{
+    "id": "passport", "city": "bos", "cityDisplayName": "Boston", "displayName": "ParkBoston",
+    "status": "linked",
+    "paysWith": { "source": "provider_card", "brand": "Visa", "last4": "1234" } | null,
+    "attention": null
+  }],
+  "spending": { "todayUsd": 4.1, "dailyCapUsd": 60, "sessionCapUsd": 45, "monthUsd": 41.81,
+                "byCity": [{ "city": "bos", "cityDisplayName": "Boston", "monthUsd": 16.53 }, …],
+                "linkMonthUsd": 18 },
+  "activity": { "items": [ …first five of GET /wallet/activity… ], "nextCursor": null }
+}
+```
+
+- `availability`: `available` | `connect` (a one-time setup first:
+  `needs` is `connect_link` or `add_card`) | `coming_soon`. `sandbox` marks
+  a ParkAgent card that's selectable only as sandbox (a Release build
+  shows it as coming soon).
+- `providers[].paysWith`: what pays street meters on that account under
+  the active source — `null` while it can't pay (not connected, expired).
+  `attention`: `connect`, `reconnect` (expired or expiring),
+  `add_parkagent_card` (ParkAgent card active but not on this account yet),
+  or `own_card_replaced` (the account carries the ParkAgent card while
+  another source is active — the user must add their own card back in the
+  provider's app).
+- `spending` counts real money only (dry-run sessions moved none),
+  whatever paid: today (ET day, the caps' clock — the same figure the
+  daily cap is checked against, so it includes garages approved in Link)
+  against `daily_cap_usd`, and the month. The month splits into street
+  meters per city (`byCity`) plus `linkMonthUsd` (garages approved in
+  Link, which have no meter city); together they add up to `monthUsd`.
+- Brand/expiry/name on `parkagentCard.card` are read live from Stripe
+  (best effort — the card still renders from our mirror).
+
+### GET /wallet/activity
+
+`?limit=20&cursor=…` (limit 1–50) → `{items, nextCursor}` — every way
+money moved, newest first, merged across three kinds; `cursor` is opaque
+(echo `nextCursor`). Items share `{id: "<kind>:<row id>", kind, at,
+createdAt}`:
+
+- `session` — `sessionId, city, cityDisplayName, providerDisplayName,
+  zoneNumber, street, durationMinutes, meterUsd, feeUsd, totalUsd, status,
+  dryRun, paymentSource, explanation, startedAt, expiresAt, stoppedAt, lat,
+  lng, receipt: {providerConfirmation, decisionId, holds: [{leg, heldUsd,
+  capturedUsd, status, paymentIntentId}]}, timeline: [{kind, at, minutes,
+  amountUsd, code}]`. `explanation` is one plain sentence ("Paid with your
+  card on ParkBoston ••1234.", "Your card was declined — nothing was
+  paid.") — never a raw code. The timeline interleaves session events with
+  hold placed/captured/released.
+- `garage` — `bookingId, label, provider, providerDisplayName, priceUsd,
+  startsAt, endsAt, status (handed_off | planned), paymentSource,
+  deepLink, link: {spendRequestId, status, approvalUrl} | null, receipt:
+  {optionId, planId}`.
+- `link_payment` — a Link request not already shown on a garage row:
+  `spendRequestId, amountUsd, merchantName, status`.
+
+### PUT /wallet/source
+
+`{source, sandbox?, consentReplacePaymentMethod?}` → `{activeSource,
+setupJobs: [{provider, jobId}], decisionId}`. Readiness is validated:
+
+| Refusal | When |
+|---|---|
+| `409 link_not_configured` | `link_wallet` without `LINK_*` |
+| `409 link_not_connected` | `link_wallet` before the user connected Link |
+| `409 parkagent_card_not_live` | `parkagent_card` without `ISSUING_LIVE`, unless `sandbox: true` against a test-mode key |
+| `503 stripe_not_configured` | `parkagent_card` with no Stripe |
+| `409 no_funding_method` | `parkagent_card` with no saved card to hold against |
+| `400 consent_required` (+ `providers`) | `parkagent_card` while a linked account still carries another card — putting ours on it replaces that card |
+
+Choosing the ParkAgent card creates it if needed (the old
+`POST /card/prepare`) and chains setup-card onto every linked account that
+lacks it (`setupJobs`; poll `/providers/:provider/link-status`; dry run
+records `wouldAdd` and touches no provider). `provider_card` is always
+accepted. Every call writes a `decisions` row (kind `payment_source`).
+
+### Saving a card for the ParkAgent card
+
+1. `POST /wallet/setup-intent` `{sandbox?}` → `{setupIntentId,
+   clientSecret, customerId, merchantId}`. Creates the user's Stripe
+   Customer once (idempotency key per user, first writer stored) and a
+   SetupIntent (`usage: off_session`, cards — Apple Pay included). Refused
+   `409 parkagent_card_not_live` exactly like the switch. Nothing is
+   charged; it moves no money, so it works in dry run.
+2. The app confirms it — Apple Pay first (`merchant.com.thomasbardhi.parkagent`),
+   or card entry in PaymentSheet.
+3. `POST /wallet/funding-methods` `{setupIntentId, makeDefault?}` →
+   `{fundingMethod}`. The intent must be the caller's (else `404
+   unknown_setup_intent`) and `succeeded` (else `409 setup_not_complete`);
+   brand, last4, expiry, and the Apple Pay wallet flag are stored — Stripe
+   ids only, never a number. Idempotent per payment method. The first card
+   (or `makeDefault`, the default) becomes the default here and on Stripe.
+
+`PUT /wallet/funding-methods/:id/default` switches the default.
+`DELETE /wallet/funding-methods/:id` detaches it — refused `409
+funding_method_in_use` when it's the ParkAgent card's only card, and `409
+hold_in_progress` while a leg's hold on it is open; the newest remaining
+card is promoted. Each writes a `decisions` row (kind `wallet_funding`).
+
+### The wallet job
+
+Every minute (`jobs/walletTick.ts`): settle ParkAgent-card holds still
+`held` 15 minutes after placing (capture what was authorized, release the
+rest), and expire Link approvals past their window. A settle Stripe
+refuses because the intent already settled on its side
+(`payment_intent_unexpected_state`) closes the hold as `failed` once,
+instead of retrying every minute; any other failure puts it back for the
+next sweep.
+
+**Sandbox.** Before `ISSUING_LIVE` the ParkAgent card is a test-mode
+card, so setup-card never runs for real: choosing it in sandbox (or
+re-linking as a sandbox ParkAgent-card user) records `sandbox` on the
+`provider_setup_card` decision and leaves every real parking account's
+own card alone. Saving a card and holds run against Stripe test mode;
+a real ParkAgent-card session needs `ISSUING_LIVE`.

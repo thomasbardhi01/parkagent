@@ -48,14 +48,19 @@ actor MockAssistantStore {
         linkConnected = connected
     }
 
-    func signOff(plan: ItineraryPlan, linked: Bool) -> ItinerarySummary {
+    /// Mirrors the server: street stops pay at the curb with the street
+    /// source; garage stops through Link when it's active, else at the
+    /// garage's own checkout.
+    func signOff(plan: ItineraryPlan, linkActive: Bool, streetSource: String) -> ItinerarySummary {
         let summary = ItinerarySummary(
             id: "mock-day-\(itineraries.count + 1)",
             status: "signed_off",
             date: plan.date,
             stops: plan.stops.map { stop in
                 var s = stop
-                s.paymentSource = linked && stop.costUsd > 0 ? "link_wallet" : "issuing_card"
+                s.paymentSource = stop.choice == "street"
+                    ? streetSource
+                    : (linkActive && stop.costUsd > 0 ? "link_wallet" : "garage_checkout")
                 return s
             },
             totalUsd: plan.totalUsd
@@ -275,24 +280,29 @@ extension MockAPI {
 
     func confirmPlan(planId: String, optionId: String?) async throws -> AssistantConfirmResponse {
         try await Task.sleep(for: .milliseconds(300))
+        // The Wallet decides, like the server: Link only when it's the
+        // active way to pay (and connected), and only for garages.
         let linked = await MockAssistantStore.shared.isLinkConnected(scenario: linkScenario)
-        let approval: AssistantConfirmResponse.LinkApproval? = linked
-            ? .init(spendRequestId: "lsrq_mock_1", approvalUrl: "https://app.link.com/activity/approve/lsrq_mock_1")
-            : nil
-        if linked { await MockAssistantStore.shared.createSpend(id: "lsrq_mock_1", scenario: linkScenario) }
+        let active = await MockWalletStore.shared.activeSource()
+        let linkActive = linked && active == .linkWallet
+        let streetSource = active == .parkagentCard ? "parkagent_card" : "provider_card"
 
         if planId == "mock-plan-day" || optionId == nil {
             guard case .itinerary(let plan) = MockAssistantFixtures.itineraryPlan.plan else {
                 throw APIError.server(status: 500)
             }
-            let summary = await MockAssistantStore.shared.signOff(plan: plan, linked: linked)
+            let summary = await MockAssistantStore.shared.signOff(
+                plan: plan,
+                linkActive: linkActive,
+                streetSource: streetSource
+            )
             return AssistantConfirmResponse(
                 kind: "itinerary_signed_off", deepLink: nil, zoneId: nil,
                 providerZoneNumber: nil, durationMinutes: nil,
-                paymentSource: linked ? "link_wallet" : "issuing_card",
+                paymentSource: active.rawValue,
                 linkApproval: nil, itineraryId: summary.id, totalUsd: summary.totalUsd,
-                linkApprovals: linked
-                    ? summary.stops.filter { $0.costUsd > 0 }.map {
+                linkApprovals: linkActive
+                    ? summary.stops.filter { $0.choice == "garage" && $0.costUsd > 0 }.map {
                         .init(stopId: $0.id, spendRequestId: "lsrq_mock_\($0.id)", approvalUrl: "https://app.link.com/activity/approve/x")
                     }
                     : nil,
@@ -316,10 +326,14 @@ extension MockAPI {
             throw APIError.refused(code: "street_pay_on_arrival")
         }
         if option.type == "garage" {
+            let approval: AssistantConfirmResponse.LinkApproval? = linkActive
+                ? .init(spendRequestId: "lsrq_mock_1", approvalUrl: "https://app.link.com/activity/approve/lsrq_mock_1")
+                : nil
+            if linkActive { await MockAssistantStore.shared.createSpend(id: "lsrq_mock_1", scenario: linkScenario) }
             return AssistantConfirmResponse(
                 kind: "garage_handoff", deepLink: option.deepLink, zoneId: nil,
                 providerZoneNumber: nil, durationMinutes: nil,
-                paymentSource: linked ? "link_wallet" : "issuing_card",
+                paymentSource: linkActive ? "link_wallet" : "garage_checkout",
                 linkApproval: approval, itineraryId: nil, totalUsd: nil, linkApprovals: nil,
                 // The server's wording (garageHandoffNote): the site the
                 // option came from, not always SpotHero.
@@ -334,8 +348,10 @@ extension MockAPI {
             // the real server sends ("Street — Zone 81234" option).
             providerZoneNumber: "81234",
             durationMinutes: option.durationMinutes,
-            paymentSource: linked ? "link_wallet" : "issuing_card",
-            linkApproval: approval, itineraryId: nil, totalUsd: nil, linkApprovals: nil, note: nil
+            // A street meter never goes to Link (the provider keeps one
+            // saved card): it pays with the street source.
+            paymentSource: streetSource,
+            linkApproval: nil, itineraryId: nil, totalUsd: nil, linkApprovals: nil, note: nil
         )
     }
 

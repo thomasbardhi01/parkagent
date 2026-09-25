@@ -8,13 +8,15 @@ import Foundation
 ///   -appearance dark       preset the appearance setting (system|light|dark)
 ///   -resetState YES        wipe UserDefaults before anything reads it
 ///   -mockScenario <name>   preset the mock /parked scenario
-///   -cardScenario <name>   preset the mock Card tab state (see CardMockScenario)
+///   -walletScenario <name> preset the mock Wallet (see WalletMockScenario:
+///                          providerCard|linkActive|linkNotConfigured|
+///                          parkagentSandbox|empty)
 ///   -providerScenario <name>  preset the mock provider-account state
 ///   -cityScenario <name>   preset the mock GET /city answer (nyc|bos|none)
 ///   -assistantScenario <name>  preset the mock assistant (auto|singleSpot|itinerary|refuse|error)
 ///   -linkScenario <name>   preset the mock Link wallet (disconnected|connected|denies)
 ///   -speechScenario <name> script the assistant's dictation (scripted|denied|unavailable)
-///   -paymentSource <raw>   preset the payment source (provider_card|issuing_card)
+///   -paymentSource <raw>   preset the payment source (provider_card|link_wallet|parkagent_card)
 ///   -issuingLive YES       the mock reports the ParkAgent card as live
 ///   -authScenario <name>   preset the mock sign-in (returning|newUser|badCode|appleFails)
 ///   -signedIn YES          seed a mock session so the app starts past the
@@ -56,7 +58,7 @@ enum LaunchOverrides {
         "useMockAPI",
         "issuingLive",
         MockScenario.defaultsKey,
-        CardMockScenario.defaultsKey,
+        WalletMockScenario.defaultsKey,
         ProviderMockScenario.defaultsKey,
         CityMockScenario.defaultsKey,
         AssistantMockScenario.defaultsKey,
@@ -78,8 +80,8 @@ enum LaunchOverrides {
             ? defaults.string(forKey: AppearanceSetting.defaultsKey) : nil
         let scenario = argued[MockScenario.defaultsKey] != nil
             ? defaults.string(forKey: MockScenario.defaultsKey) : nil
-        let cardScenario = argued[CardMockScenario.defaultsKey] != nil
-            ? defaults.string(forKey: CardMockScenario.defaultsKey) : nil
+        let walletScenario = argued[WalletMockScenario.defaultsKey] != nil
+            ? defaults.string(forKey: WalletMockScenario.defaultsKey) : nil
         let providerScenario = argued[ProviderMockScenario.defaultsKey] != nil
             ? defaults.string(forKey: ProviderMockScenario.defaultsKey) : nil
         let cityScenario = argued[CityMockScenario.defaultsKey] != nil
@@ -140,7 +142,7 @@ enum LaunchOverrides {
         if skipOnboarding { defaults.set(true, forKey: "hasOnboarded") }
         if let appearance { defaults.set(appearance, forKey: AppearanceSetting.defaultsKey) }
         if let scenario { defaults.set(scenario, forKey: MockScenario.defaultsKey) }
-        if let cardScenario { defaults.set(cardScenario, forKey: CardMockScenario.defaultsKey) }
+        if let walletScenario { defaults.set(walletScenario, forKey: WalletMockScenario.defaultsKey) }
         if let providerScenario {
             defaults.set(providerScenario, forKey: ProviderMockScenario.defaultsKey)
         }

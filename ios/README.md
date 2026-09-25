@@ -1,7 +1,7 @@
 # ios
 
 SwiftUI app (iOS 17+): park detection, location reporting, session UI,
-onboarding, and the Card tab. The Xcode project is **generated** — see
+onboarding, Activity, and the Wallet. The Xcode project is **generated** — see
 "iOS project" in [CLAUDE.md](../CLAUDE.md): edit `project.yml`, then
 
     cd ios && xcodegen generate
@@ -30,17 +30,21 @@ phone.
 - `ParkAgent/Networking/` — `APIClient` protocol, `LiveAPI`, and a full
   `MockAPI` with launch-argument scenarios (see
   `Support/LaunchOverrides.swift`) that the UI tests drive.
-- `ParkAgent/Views/` — Auth (the welcome / sign-in screen), Home (map +
-  curb layer + status, and the avatar that opens the Account sheet),
-  Sessions, Card, Account (profile, cars, cities and connected accounts,
-  limits, privacy, sign out, delete), Onboarding, Providers (link flow web
-  view). `Settings/DiagnosticsView.swift` is the hidden developer screen:
+- `ParkAgent/Views/` — Auth (the welcome / sign-in screen), Home (the
+  Park tab: map + curb layer + status, and the avatar that opens the
+  Account sheet), Activity (every session, garage, and Link payment from
+  the server's ledger, with map, timeline, and receipt), Wallet (how you
+  pay — three ways, one active — parking accounts, spending, activity;
+  `WalletCopy.swift` is the one source of payment wording), Account
+  (profile, cars, cities and connected accounts, limits, how you pay,
+  privacy, sign out, delete), Onboarding, Providers (link flow web view). `Settings/DiagnosticsView.swift` is the hidden developer screen:
   five taps on the version number in the Account sheet's About section,
   DEBUG builds only.
 - `Tools/make_app_icon.py` regenerates the app icon from the design-system
   colors (`uv run --with pillow ios/Tools/make_app_icon.py`).
-- `Support/StripeTopup.swift` — the ONLY file importing the Stripe iOS
-  SDK; dry run and the mock never reach it.
+- `Support/StripeWallet.swift` — the ONLY file importing the Stripe iOS
+  SDK: saves the ParkAgent card's funding card (Apple Pay / PaymentSheet
+  SetupIntent); the mock never reaches it.
 
 ## Tests
 

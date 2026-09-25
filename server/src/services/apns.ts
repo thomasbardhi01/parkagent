@@ -23,7 +23,8 @@ export type PushType =
   | "payment_failed"
   | "provider_relink"
   | "itinerary_garage_link"
-  | "free_period";
+  | "free_period"
+  | "card_declined";
 
 export interface Push {
   type: PushType;
@@ -142,6 +143,21 @@ export function freePeriodPush(args: { zoneNumber: string; notice: string }): Pu
     title: "Parking is free here right now",
     body: `No need to pay in zone ${args.zoneNumber} — ${args.notice}`,
     extra: { zoneNumber: args.zoneNumber },
+  };
+}
+
+/** The ParkAgent card's funding card refused the hold for a leg: nothing
+ * was paid (the hold comes before the provider), and the fix is in the
+ * Wallet, not a retry. */
+export function cardDeclinedPush(args: { zoneNumber: string; what: "pay" | "extend" }): Push {
+  return {
+    type: "card_declined",
+    title: "Card declined",
+    body:
+      args.what === "pay"
+        ? `Your card was declined — update it in Wallet. The meter for zone ${args.zoneNumber} is unpaid.`
+        : `Your card was declined — update it in Wallet. Zone ${args.zoneNumber} was not extended.`,
+    extra: { zoneNumber: args.zoneNumber, deepLink: "parkagent://wallet" },
   };
 }
 

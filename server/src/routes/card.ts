@@ -1,25 +1,29 @@
 /**
- * The Card tab's server surface: the virtual card summary, its ledger,
- * test-mode funding moves, client-side PAN reveal, and freeze/unfreeze.
- * Shapes are pinned by API.md and the iOS client (CardResponse & co in
- * ios/.../APIModels.swift).
+ * The ParkAgent card's own surface: lazy creation, client-side PAN reveal,
+ * and freeze/unfreeze — what the Wallet's card hero uses (its summary comes
+ * from GET /wallet).
  *
  * The PAN never transits this server (non-negotiable): /card/reveal hands
  * the app a short-lived Stripe ephemeral key and the app reads the card
  * details from Stripe directly.
  *
- * Funding moves money, so both moves are policy-gated (a single transfer is
- * capped at daily_cap_usd), refuse under effective dry run, and write a
- * decisions row either way. A financial account that isn't ready surfaces
- * as 503 funding_unavailable, not a 500.
+ * There is no stored user balance any more: the card spends against a hold
+ * on the user's own card per session (services/wallet/holds.ts). The old
+ * funding surface — GET /card (with the platform financial-account
+ * balance), /card/transactions, and the top-up/withdraw moves — is ADMIN
+ * ONLY now: it is the operator keeping the Issuing balance funded, not
+ * something a user does. Those moves stay policy-gated, refuse under
+ * effective dry run, and write a decisions row either way.
  */
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 
 import type { AppDeps } from "../app.js";
+import { requireAdmin } from "../app.js";
 import { nycStartOfDay, nycStartOfMonth } from "../services/hours.js";
 import { FundingUnavailableError } from "../services/stripeGateway.js";
+import { ensureParkAgentCard } from "../services/wallet/parkagentCard.js";
 
 const transactionsSchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
@@ -78,6 +82,7 @@ export function registerCard(app: FastifyInstance, deps: AppDeps): void {
   }
 
   app.get("/card", async (req, reply) => {
+    if (!requireAdmin(req, reply)) return;
     const user = req.authedUser!;
     const at = now();
 
@@ -157,58 +162,7 @@ export function registerCard(app: FastifyInstance, deps: AppDeps): void {
     const user = req.authedUser!;
     const stripe = requireStripe(reply);
     if (!stripe) return;
-    const policy = deps.policy.get();
-
-    let holder = await deps.db.issuingCardholder.findUnique({
-      where: { userId: user.id },
-      include: { cards: true },
-    });
-    const existing = holder?.cards.find((c) => c.status !== "canceled");
-    if (holder && existing) {
-      return {
-        created: false,
-        card: {
-          stripeCardId: existing.stripeCardId,
-          last4: existing.last4,
-          status: existing.status,
-        },
-      };
-    }
-
-    if (!holder) {
-      const created = await stripe.createCardholder(user.name);
-      const row = await deps.db.issuingCardholder.create({
-        data: { userId: user.id, stripeCardholderId: created.stripeCardholderId, name: user.name },
-      });
-      holder = { ...row, cards: [] };
-    }
-    const card = await stripe.createCard(holder.stripeCardholderId, {
-      perAuthUsd: policy.session_cap_usd,
-      dailyUsd: policy.daily_cap_usd,
-    });
-    await deps.db.issuingCard.create({
-      data: {
-        cardholderId: holder.id,
-        stripeCardId: card.stripeCardId,
-        last4: card.last4,
-        status: "pending_onboarding",
-        perAuthCapUsd: policy.session_cap_usd,
-        dailyCapUsd: policy.daily_cap_usd,
-      },
-    });
-    await deps.db.decision.create({
-      data: {
-        kind: "card_prepare",
-        inputs: { policyHash: deps.policy.hash() },
-        rule: "prepared",
-        outcome: { ok: true, stripeCardId: card.stripeCardId, last4: card.last4 },
-        userId: user.id,
-      },
-    });
-    return {
-      created: true,
-      card: { stripeCardId: card.stripeCardId, last4: card.last4, status: "pending_onboarding" },
-    };
+    return ensureParkAgentCard({ db: deps.db, policy: deps.policy, stripe }, user);
   });
 
   /**
@@ -218,6 +172,7 @@ export function registerCard(app: FastifyInstance, deps: AppDeps): void {
    * run this returns a fake client secret and Stripe is never called.
    */
   app.post("/card/funding/topup-intent", async (req, reply) => {
+    if (!requireAdmin(req, reply)) return;
     const parsed = fundingSchema.safeParse(req.body);
     if (!parsed.success) {
       return reply.code(400).send({ error: z.treeifyError(parsed.error) });
@@ -285,6 +240,7 @@ export function registerCard(app: FastifyInstance, deps: AppDeps): void {
   });
 
   app.get("/card/transactions", async (req, reply) => {
+    if (!requireAdmin(req, reply)) return;
     const parsed = transactionsSchema.safeParse(req.query);
     if (!parsed.success) {
       return reply.code(400).send({ error: z.treeifyError(parsed.error) });
@@ -338,6 +294,7 @@ export function registerCard(app: FastifyInstance, deps: AppDeps): void {
   /** Shared body for the two funding moves; they differ only in direction. */
   function fundingRoute(direction: "topup" | "withdraw") {
     return async (req: FastifyRequest, reply: FastifyReply) => {
+      if (!requireAdmin(req, reply)) return;
       const parsed = fundingSchema.safeParse(req.body);
       if (!parsed.success) {
         return reply.code(400).send({ error: z.treeifyError(parsed.error) });

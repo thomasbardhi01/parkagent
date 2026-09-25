@@ -1,5 +1,5 @@
 /**
- * The payment-source setting (GET/PUT /me/payment-source) and how it
+ * The payment-source setting (GET /wallet, PUT /wallet/source) and how it
  * drives everything downstream: provider linking skips or chains the
  * setup-card, sessions snapshot the source, the caps bind every source,
  * and shadow mode fires alongside regardless of source.
@@ -14,6 +14,7 @@ import {
   makeFakeGateway,
   makeFakeProviderOps,
   makeTestApp,
+  seedFundingMethod,
   seedProviderAccount,
   seedSession,
 } from "./helpers.js";
@@ -72,48 +73,66 @@ function req(
 
 const START = { parkedEventId: "pe1", zoneId: BOYLSTON_ZONE.zoneId, minutes: 90 };
 
-test("GET /me/payment-source defaults to provider_card with issuing not live", async () => {
+test("GET /wallet defaults to provider_card; Link and the ParkAgent card say coming soon", async () => {
   const { app } = makeApp();
-  const res = await req(app, "GET", "/me/payment-source");
+  const res = await req(app, "GET", "/wallet");
   expect(res.statusCode).toBe(200);
-  expect(res.json()).toEqual({ paymentSource: "provider_card", issuingLive: false });
+  const body = res.json();
+  expect(body.activeSource).toBe("provider_card");
+  expect(body.options).toEqual([
+    { source: "provider_card", availability: "available", needs: null, sandbox: false },
+    { source: "link_wallet", availability: "coming_soon", needs: null, sandbox: false },
+    { source: "parkagent_card", availability: "coming_soon", needs: null, sandbox: false },
+  ]);
+  // GET /me reports the same fact — Account and Wallet can't disagree.
+  const me = await req(app, "GET", "/me");
+  expect(me.json().paymentSource).toBe("provider_card");
 });
 
-test("PUT issuing_card is refused while ISSUING_LIVE is off, and audited", async () => {
+test("PUT parkagent_card is refused while it isn't live (or sandboxed), and audited", async () => {
   const { app, state } = makeApp();
-  const res = await req(app, "PUT", "/me/payment-source", { paymentSource: "issuing_card" });
+  const res = await req(app, "PUT", "/wallet/source", { source: "parkagent_card" });
   expect(res.statusCode).toBe(409);
-  expect(res.json()).toMatchObject({ error: "issuing_not_live" });
+  expect(res.json()).toMatchObject({ error: "parkagent_card_not_live" });
+  // A sandbox request against a LIVE-mode key is refused the same way.
+  const sandbox = await req(app, "PUT", "/wallet/source", {
+    source: "parkagent_card",
+    sandbox: true,
+  });
+  expect(sandbox.json()).toMatchObject({ error: "parkagent_card_not_live" });
 
   const decision = state.decisions.find((d) => d.kind === "payment_source")!;
-  expect(decision.rule).toBe("issuing_not_live");
+  expect(decision.rule).toBe("parkagent_card_not_live");
   expect(decision.outcome).toMatchObject({ allowed: false });
   // Nothing changed.
-  const after = await req(app, "GET", "/me/payment-source");
-  expect(after.json().paymentSource).toBe("provider_card");
+  const after = await req(app, "GET", "/wallet");
+  expect(after.json().activeSource).toBe("provider_card");
 });
 
-test("PUT switches the source when allowed, both ways, and audits each change", async () => {
-  const { app, state } = makeApp({ issuingLive: true });
+test("PUT switches the source when ready, both ways, and audits each change", async () => {
+  const { app, state } = makeApp({ issuingLive: true, stripe: makeFakeGateway() });
+  seedFundingMethod(state);
+  state.providerAccounts[0]!.cardAdded = true; // our card is already on the account
 
-  const toIssuing = await req(app, "PUT", "/me/payment-source", {
-    paymentSource: "issuing_card",
-  });
-  expect(toIssuing.statusCode).toBe(200);
-  expect(toIssuing.json()).toEqual({ paymentSource: "issuing_card", issuingLive: true });
+  const toCard = await req(app, "PUT", "/wallet/source", { source: "parkagent_card" });
+  expect(toCard.statusCode).toBe(200);
+  expect(toCard.json()).toMatchObject({ activeSource: "parkagent_card", setupJobs: [] });
 
-  const back = await req(app, "PUT", "/me/payment-source", { paymentSource: "provider_card" });
+  const back = await req(app, "PUT", "/wallet/source", { source: "provider_card" });
   expect(back.statusCode).toBe(200);
-  expect(back.json().paymentSource).toBe("provider_card");
+  expect(back.json().activeSource).toBe("provider_card");
 
   const rules = state.decisions.filter((d) => d.kind === "payment_source").map((d) => d.rule);
   expect(rules).toEqual(["set", "set"]);
 
-  const bad = await req(app, "PUT", "/me/payment-source", { paymentSource: "cash" });
+  const bad = await req(app, "PUT", "/wallet/source", { source: "cash" });
   expect(bad.statusCode).toBe(400);
+  // The old value is not accepted on the wire any more.
+  const old = await req(app, "PUT", "/wallet/source", { source: "issuing_card" });
+  expect(old.statusCode).toBe(400);
 });
 
-test("provider_card linking skips setup-card without consent; issuing_card chains it", async () => {
+test("provider_card linking skips setup-card without consent; parkagent_card chains it", async () => {
   // Default (provider_card): no consent needed, no job, account untouched.
   const t = makeApp({ providerOps: () => makeFakeProviderOps() });
   const linked = await req(t.app, "POST", "/providers/parknyc/link", {
@@ -124,10 +143,10 @@ test("provider_card linking skips setup-card without consent; issuing_card chain
   const link = t.state.decisions.find((d) => d.kind === "provider_link" && d.rule === "link_ok")!;
   expect(link.inputs).toMatchObject({ setUpCard: false, paymentSource: "provider_card" });
 
-  // issuing_card: the same request without consent is refused up front.
+  // parkagent_card: the same request without consent is refused up front.
   const issuing = makeApp({
     providerOps: () => makeFakeProviderOps(),
-    paymentSource: "issuing_card",
+    paymentSource: "parkagent_card",
     issuingLive: true,
   });
   const noConsent = await req(issuing.app, "POST", "/providers/parknyc/link", {

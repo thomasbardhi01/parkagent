@@ -34,8 +34,8 @@ the evidence that proves it. Three kinds of evidence back an FR:
 | FR-7 | Quote correctness (ladder, observed terms, receipts) | automated | `server/fr/10-parked-nyc.fr.test.ts`, `server/test/quote.test.ts`, `server/test/bostonQuote.test.ts`, `server/test/bostonBilling.test.ts`, `server/test/observedTerms.test.ts` |
 | FR-8 | Free periods and the 8 pm boundary | automated | `server/fr/20-parked-boston.fr.test.ts`, `server/test/parked.test.ts`, `server/test/bostonSession.test.ts`, `executor/test/passportParse.test.ts` |
 | FR-9 | Timestamp clamping | automated | `server/fr/10-parked-nyc.fr.test.ts`, `server/test/adversarial.test.ts` |
-| FR-10 | Session cap on every payment source | automated | `server/fr/00-gate.fr.test.ts`, `server/fr/30-session-providers.fr.test.ts`, `server/test/session.test.ts`, `server/test/paymentSource.test.ts`, `server/test/issuing.test.ts` |
-| FR-11 | Daily cap on every payment source | automated | `server/fr/00-gate.fr.test.ts`, `server/test/session.test.ts`, `server/test/paymentSource.test.ts`, `server/test/issuing.test.ts`, `server/test/card.test.ts`, `server/test/assistantItinerary.test.ts` |
+| FR-10 | Session cap on every payment source | automated | `server/fr/00-gate.fr.test.ts`, `server/fr/30-session-providers.fr.test.ts`, `server/test/session.test.ts`, `server/test/paymentSource.test.ts`, `server/test/walletHolds.test.ts`, `server/test/linkWallet.test.ts`, `server/test/issuing.test.ts` |
+| FR-11 | Daily cap on every payment source | automated | `server/fr/00-gate.fr.test.ts`, `server/test/session.test.ts`, `server/test/paymentSource.test.ts`, `server/test/walletHolds.test.ts`, `server/test/issuing.test.ts`, `server/test/card.test.ts`, `server/test/assistantItinerary.test.ts` |
 | FR-12 | Auto-pay rate ceiling | automated | `server/fr/10-parked-nyc.fr.test.ts`, `server/test/parked.test.ts` |
 | FR-13 | Start through the executor | automated + acceptance | `server/fr/30-session-providers.fr.test.ts`, `server/test/session.test.ts`, `server/test/bostonSession.test.ts`, `executor/test/fixtures.test.ts`, `executor/test/parse.test.ts`, `executor/test/passportParse.test.ts`; paid: acceptance report Part B (txn 831908580) |
 | FR-14 | Extend continues the ladder | automated + acceptance | `server/test/session.test.ts`, `executor/test/passportParse.test.ts`; paid: acceptance report (txn 831997285) |
@@ -57,7 +57,7 @@ the evidence that proves it. Three kinds of evidence back an FR:
 | FR-30 | Decision audit | automated | `server/fr/10-parked-nyc.fr.test.ts` (decisionId on every response), `server/test/parked.test.ts`, `server/test/adversarial.test.ts`, `server/test/security.test.ts` |
 | FR-31 | Dry-run discipline | automated | `server/fr/00-gate.fr.test.ts`, `server/test/policy.test.ts`, `server/test/session.test.ts` |
 | FR-32 | Accounts | automated + device-manual | `server/fr/60-accounts.fr.test.ts`, `server/test/auth.test.ts`, `server/test/authTokens.test.ts`, `server/test/security.test.ts`, `server/test/vehicles.test.ts`; iOS `AuthStoreTests`, `LiveAPIRequestTests`, `OnboardingGateTests`, `AuthUITests`, `AccountUITests`; Apple sign-in and email-code delivery need a phone and a mailbox |
-| FR-33 | Wallet | **pending** | coming in a later PR |
+| FR-33 | Wallet | automated + device-manual | `server/fr/70-wallet.fr.test.ts`, `server/test/walletHolds.test.ts`, `server/test/wallet.test.ts`, `server/test/linkWallet.test.ts`, `server/test/paymentSource.test.ts`, `server/test/adversarial.test.ts`, `server/test/webhookStripe.test.ts`; iOS `LiveAPIRequestTests`, `CardBrandTests`, `WalletUITests`, `SessionUITests`, `OnboardingUITests`, `AccountUITests`, `AssistantUITests`; real Apple Pay / PaymentSheet, a real hold, and Link need a phone, the Stripe sandbox, and the Link OAuth client |
 
 ---
 
@@ -192,24 +192,29 @@ Evidence: live FR-9 test (runs in the nightly's off-hours window);
 No single purchase may exceed `session_cap_usd`, whatever pays:
 `/parked` downgrades to confirm, `/session/start` and `/session/extend`
 hard-refuse `409 session_cap_exceeded` (a cap can never be confirmed
-through), and the Issuing card carries the same cap as a Stripe
-per-authorization spending control. The payment-source choice
-(`provider_card` default, `issuing_card` behind `ISSUING_LIVE`) moves
-where the charge lands, never what is allowed. **Accepted when** the cap
-binds on every path and the source switch respects its gate.
+through — and for the ParkAgent card the refusal comes before any hold is
+placed), the ParkAgent card carries the same cap as a Stripe
+per-authorization spending control, and a Link spend request over the cap
+is never made. The Wallet's choice (`provider_card` default, `link_wallet`,
+`parkagent_card` behind `ISSUING_LIVE`) moves where the charge lands,
+never what is allowed. **Accepted when** the cap binds on every path and
+the source switch respects its gates.
 
-Evidence: `session.test.ts`, `paymentSource.test.ts` ("caps bind every
-source"), `issuing.test.ts`; live: the gate test pins the caps on the
-active policy and FR-10 exercises the payment-source gate
-(`issuing_not_live`).
+Evidence: `session.test.ts`, `walletHolds.test.ts` ("caps bind every
+source" — all three), `linkWallet.test.ts` (no request over the cap),
+`paymentSource.test.ts`, `issuing.test.ts`; live: the gate test pins the
+caps on the active policy and FR-10 exercises the ParkAgent card's gate
+(`parkagent_card_not_live` / `no_funding_method`).
 
 ### FR-11 — Daily cap on every payment source
 
 Real (non-dry-run) spend today plus the new total may not exceed
 `daily_cap_usd` — enforced at `/parked` (confirm), session start/extend
-(hard 409), the Issuing webhook (`declined_over_daily_cap`), card
-funding moves (`amount_over_daily_cap`), provider wallet top-ups, and
-itinerary sign-off (day total vs remaining budget). **Accepted when**
+(hard 409, before any hold), the Issuing webhook
+(`declined_over_daily_cap`), Link garage requests (`daily_cap_exceeded`,
+no request made), the operator's card funding moves
+(`amount_over_daily_cap`), provider wallet top-ups, and itinerary sign-off
+(day total vs remaining budget). **Accepted when**
 each surface refuses past the cap in its own vocabulary.
 
 Evidence: `session.test.ts`, `issuing.test.ts`, `card.test.ts`,
@@ -330,8 +335,8 @@ Evidence: `executorProvider.test.ts`, `providers.test.ts`,
 
 Re-linking upserts fresh sealed state and returns the account to
 `linked`; an expired account heals with nothing else to fix (for
-`issuing_card` users the chained setup-card re-runs; the `provider_card`
-default touches nothing on the account). **Accepted when** the
+`parkagent_card` users the chained setup-card re-runs; `provider_card`
+and `link_wallet` touch nothing on the account). **Accepted when** the
 expired→linked transition is pinned.
 
 Evidence: `providers.test.ts`; iOS re-link flow in `ProviderUITests`
@@ -485,8 +490,10 @@ Evidence: live FR-29 test; `admin.test.ts`, `authorization.test.ts`.
 ### FR-30 — Decision audit
 
 Every automated decision — quote, session start/extend/stop, extension
-tick, issuing authorization, card/funding move, provider link, zone
-number report, assistant tool call/plan/confirmation — writes a
+tick, issuing authorization, card hold placed/declined/captured/released,
+payment-source switch, saved card added/removed, Link approval
+expired/card revealed, card/funding move, provider link, zone number
+report, assistant tool call/plan/confirmation — writes a
 `decisions` row with its inputs, rule, and outcome, and money-adjacent
 responses return the `decisionId`. **Accepted when** each surface's
 decision write is pinned and live responses carry the id.
@@ -562,17 +569,82 @@ id across sign-out, a late refresh after sign-out),
 401 → refresh → retry path), `OnboardingGateTests`, `AuthUITests`,
 `AccountUITests`.
 
-## Pending (later PRs)
+## Wallet
 
-### FR-33 — Wallet (pending)
+### FR-33 — Wallet
 
-The funded-wallet surface: Issuing card funding balance E2E (top-up /
-withdraw / Apple Pay against a live financial account), `ISSUING_LIVE`
-turn-on, and the Link agentic wallet as a plan payment source
-(spend-request approval → sealed one-time card → pay-at-curb; today
-VERIFY-IN-SANDBOX per API.md). Requirements and tests land with the
-wallet PRs; today's closest coverage is `card.test.ts`,
-`cardLifecycle.test.ts`, `linkWallet.test.ts` over fakes.
+One place answers "how am I paying, and what have I spent", for three
+ways to pay, one active at a time:
+
+- **Your card on the provider** (`provider_card`, the default): the card
+  saved on the user's ParkNYC/ParkBoston account; nothing to set up.
+- **Link** (`link_wallet`): the user's Stripe Link wallet, for assistant
+  plans and garages — one spend request per paid garage, approved in
+  Link; the approved one-time card pays the garage's own checkout
+  (revealed behind Face ID for 30 seconds). Street meters stay on the
+  provider account's card: its single saved card can't take a per-session
+  Link card without losing the user's own. Link is refused until it is
+  configured (`LINK_*`; otherwise "Link — coming soon") and connected;
+  approvals expire after Link's 10-minute window, uncharged; no request is
+  made in dry run (unless Link test mode) or over a cap.
+- **ParkAgent card** (`parkagent_card`, "Coming soon — pending approval"
+  until `ISSUING_LIVE`; a Debug build may choose it in sandbox against a
+  test-mode Stripe key): the user saves their own card once (Apple Pay
+  first, card entry via PaymentSheet — a SetupIntent, nothing charged);
+  our virtual card goes on every linked parking account (consent first);
+  each paid leg — start and every extension — places a hold on the user's
+  card for the quote plus max($2, 20%) **before** the executor runs; the
+  Issuing webhook approves our card only against a live hold with room
+  (compare-and-set, so two charges can't both fit); after the provider
+  charge the hold captures exactly what our card paid and releases the
+  rest; free periods and failures release; late authorizations are
+  settled by a sweep; a declined hold pays nothing and pushes "Your card
+  was declined — update it in Wallet". Idempotent under webhook replay
+  (a replayed approval never claims twice; Stripe-side cancels reconcile
+  once). Under dry run no hold is ever placed.
+
+There is no stored balance: top-up, withdraw, and Add money are
+admin-only operator tools. `GET /wallet` reports the active source, the
+three options with availability, each option's details, every parking
+account and what pays there, today's and the month's spend against the
+caps — whatever paid: street meters per city plus garages approved in
+Link, the same figure every daily-cap check uses (a Link request still
+awaiting approval also holds its room) — and the first page of the
+unified Activity ledger
+(sessions with meter, fee, explanation, holds, and timeline; garage
+bookings; Link payments with their approval state; receipt ids).
+`PUT /wallet/source` validates readiness. The app's tabs are Park ·
+Activity · Wallet, and the Wallet, the Account sheet, and onboarding's
+pay step read the same summary with the same copy. Every step writes a
+decisions row. **Accepted when** the hold → capture → release path holds
+in all its branches (decline, extension, free period, failure, late
+authorization, replay, races), the caps bind all three sources, Link's
+approval and timeout flows and its street restriction are pinned, source
+switching refuses what isn't ready, and the live summary answers
+honestly for an unlinked user in dry run.
+
+Evidence: `walletHolds.test.ts` (holds end to end through the real
+webhook route, including barrier-forced races on settling and on a
+hold's room), `wallet.test.ts` (each Wallet state's shape, setup-intent
+and funding methods, activity paging and explanations, admin-only
+funding, `DELETE /me` taking the Customer and Link with it),
+`linkWallet.test.ts` (garage approval → reveal, the street restriction,
+dry-run and cap gating — including today's approved and pending Link
+requests — and approval timeout), `session.test.ts` (a street start
+refused once Link garages used the day's cap), `paymentSource.test.ts`,
+`adversarial.test.ts` (replay claims once); live FR-33 tests (summary
+shape and honesty, paging, switch refusals, setup-intent refusal before
+any Stripe call, the old route gone) — run against a local API on the
+wallet branch, and nightly against prod after deploy; iOS `WalletUITests`
+(each Wallet state: provider card active, Link connected and active, Link
+not configured, ParkAgent card sandbox with reveal and freeze, empty;
+switching to Link and to the ParkAgent card; Activity from the Wallet),
+`LiveAPIRequestTests` (every Wallet call on the wire, decoded from a real
+server body). **Device-manual:** Apple Pay and PaymentSheet saving a card
+against the Stripe sandbox, a real hold captured after a real provider
+charge (needs `ISSUING_LIVE` or sandbox + a linked account outside dry
+run), and Link's OAuth, approval, and one-time card (needs the registered
+Link OAuth client; the REST paths are VERIFY-IN-SANDBOX).
 
 ---
 

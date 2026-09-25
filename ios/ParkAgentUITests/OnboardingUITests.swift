@@ -1,15 +1,16 @@
 import XCTest
 
-/// Onboarding after sign-in: permissions → vehicle → city → payment →
-/// connect provider → (add money, ParkAgent card only) → budget → done.
-/// Signing in is the welcome screen's job now (see AuthUITests). Step raw
-/// values used by -onboardingStep: permissions 1, vehicle 2, city 3,
-/// elsewhere 4, payment 5, linkProvider 6, addMoney 7, budget 8, done 9.
+/// Onboarding after sign-in: permissions → vehicle → city → how you pay →
+/// connect provider → budget → done. Signing in is the welcome screen's
+/// job now (see AuthUITests). Step raw values used by -onboardingStep:
+/// permissions 1, vehicle 2, city 3, elsewhere 4, payment 5,
+/// linkProvider 6, (retired addMoney 7), budget 8, done 9.
 final class OnboardingUITests: ParkAgentUITestCase {
-    /// The whole flow on the ParkAgent-card path (issuing live): payment
-    /// step offers the card, link chains the mocked card setup
-    /// (adding_card → done), add money runs, ending on Home with the
-    /// detected city in the status chip.
+    /// The whole flow on the ParkAgent-card path (issuing live): the pay
+    /// step offers the card and saves the user's own card for its holds,
+    /// link chains the mocked card setup (adding_card → done), and — with
+    /// no stored balance to fund — goes straight on to the budget, ending on
+    /// the Park tab with the detected city in the status chip.
     func testFullOnboardingWithLinkSuccess() {
         let app = launchApp(providerScenario: "notLinked", skipOnboarding: false, issuingLive: true)
 
@@ -40,15 +41,24 @@ final class OnboardingUITests: ParkAgentUITestCase {
         XCTAssertTrue(element(app, "onboarding.continueButton").isEnabled, "Detection should pre-select")
         element(app, "onboarding.continueButton").tap()
 
-        // 4 — How to pay: issuing is live, so the ParkAgent card is a real
-        // option; pick it (provider card is the pre-selected default).
+        // 4 — How to pay: the Wallet's three choices, the card on the
+        // provider preselected. Issuing is live, so the ParkAgent card is a
+        // real option; pick it and save a card for its holds.
         XCTAssertTrue(element(app, "onboarding.payment").waitForExistence(timeout: 5))
         let providerOption = element(app, "onboarding.payment.provider_card")
-        XCTAssertTrue(providerOption.exists, "Provider-card option missing")
-        let issuingOption = element(app, "onboarding.payment.issuing_card")
-        XCTAssertTrue(issuingOption.waitForExistence(timeout: 5), "ParkAgent card should be offered when live")
-        issuingOption.tap()
-        element(app, "onboarding.continueButton").tap()
+        XCTAssertTrue(providerOption.waitForExistence(timeout: 5), "Provider-card option missing")
+        XCTAssertEqual(providerOption.value as? String, "selected")
+        let cardOption = element(app, "onboarding.payment.parkagent_card")
+        XCTAssertTrue(cardOption.exists, "ParkAgent card should be offered when live")
+        cardOption.tap()
+        let continueButton = element(app, "onboarding.continueButton")
+        XCTAssertFalse(continueButton.isEnabled, "No card saved yet: nothing to hold against")
+        element(app, "onboarding.payment.applePay").tap()
+        XCTAssertTrue(
+            element(app, "onboarding.payment.cardSaved").waitForExistence(timeout: 5),
+            "The saved card should show before continuing"
+        )
+        continueButton.tap()
 
         // 5 — Connect ParkNYC: consent defaults to checked on the
         // ParkAgent-card path; the mock sign-in stands in for the
@@ -59,30 +69,21 @@ final class OnboardingUITests: ParkAgentUITestCase {
         let signIn = element(app, "link.mockSignInButton")
         XCTAssertTrue(signIn.waitForExistence(timeout: 5), "Mock sign-in missing")
         signIn.tap()
-        // linking → adding_card → done, then through to add money.
+        // linking → adding_card → done, then straight to the budget.
         XCTAssertTrue(element(app, "link.done").waitForExistence(timeout: 10), "Link did not finish")
         element(app, "link.doneButton").tap()
 
-        // 6 — Add money: dry run shows the banner; Apple Pay completes
-        // without charging.
-        XCTAssertTrue(element(app, "addMoney.view").waitForExistence(timeout: 5))
-        XCTAssertTrue(element(app, "addMoney.dryRunBanner").exists, "Dry-run banner missing")
-        element(app, "addMoney.quick.50").tap()
-        element(app, "addMoney.applePayButton").tap()
-        XCTAssertTrue(element(app, "addMoney.doneNotice").waitForExistence(timeout: 5))
-        element(app, "addMoney.doneButton").tap()
-
-        // 7 — Budget: preview sentence tracks the caps; save through the mock.
+        // 6 — Budget: preview sentence tracks the caps; save through the mock.
         XCTAssertTrue(element(app, "onboarding.budget").waitForExistence(timeout: 5))
         let preview = element(app, "onboarding.budgetPreview")
         XCTAssertTrue(preview.exists)
         XCTAssertTrue(preview.label.contains("$45.00"), "Preview should show the session cap")
         element(app, "onboarding.continueButton").tap()
 
-        // 8 — Done → Home, with the city in the status chip.
+        // 7 — Done → the Park tab, with the city in the status chip.
         XCTAssertTrue(element(app, "onboarding.done").waitForExistence(timeout: 5))
         element(app, "onboarding.goHomeButton").tap()
-        XCTAssertTrue(app.tabBars.buttons["Home"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.tabBars.buttons["Park"].waitForExistence(timeout: 5))
         let chip = element(app, "home.statusChip")
         XCTAssertTrue(chip.waitForExistence(timeout: 5))
         XCTAssertTrue(chip.label.contains("New York City"), "Chip should show the city: \(chip.label)")
@@ -100,9 +101,16 @@ final class OnboardingUITests: ParkAgentUITestCase {
         )
 
         XCTAssertTrue(element(app, "onboarding.payment").waitForExistence(timeout: 5))
-        XCTAssertTrue(element(app, "onboarding.payment.provider_card").exists)
+        let provider = element(app, "onboarding.payment.provider_card")
+        XCTAssertTrue(provider.waitForExistence(timeout: 5))
+        XCTAssertEqual(provider.value as? String, "selected")
+        // The same words the Wallet uses — WalletCopy is the one source.
         XCTAssertTrue(
-            element(app, "onboarding.payment.comingSoon").exists,
+            provider.label.contains("The card saved in ParkNYC pays each meter"),
+            "Default option should explain itself: \(provider.label)"
+        )
+        XCTAssertTrue(
+            element(app, "onboarding.payment.parkagent_card").label.contains("Coming soon — pending approval"),
             "ParkAgent card should read coming soon while issuing is off"
         )
         element(app, "onboarding.continueButton").tap()
@@ -125,7 +133,7 @@ final class OnboardingUITests: ParkAgentUITestCase {
     }
 
     /// Chained card setup fails once (typed reason in plain words), retry
-    /// succeeds. ParkAgent-card path — only issuing_card users chain the
+    /// succeeds. ParkAgent-card path — only parkagent_card users chain the
     /// card setup at all.
     func testFailedLinkRetrySucceeds() {
         let app = launchApp(
@@ -133,7 +141,7 @@ final class OnboardingUITests: ParkAgentUITestCase {
             onboardingStep: 6,
             selectedCity: "nyc",
             skipOnboarding: false,
-            paymentSource: "issuing_card",
+            paymentSource: "parkagent_card",
             issuingLive: true
         )
 
@@ -151,12 +159,12 @@ final class OnboardingUITests: ParkAgentUITestCase {
         element(app, "link.retryButton").tap()
         XCTAssertTrue(element(app, "link.done").waitForExistence(timeout: 10), "Retry did not finish")
         element(app, "link.doneButton").tap()
-        XCTAssertTrue(element(app, "addMoney.view").waitForExistence(timeout: 5))
+        XCTAssertTrue(element(app, "onboarding.budget").waitForExistence(timeout: 5))
     }
 
     /// Boston fixtures: detection names Boston and Passport, and the link
-    /// step targets the Passport account. Skipping the link still lands on
-    /// add money.
+    /// step targets the Passport account. Skipping the link lands on the
+    /// budget.
     func testBostonCityDetection() {
         let app = launchApp(
             providerScenario: "notLinked",
@@ -211,7 +219,7 @@ final class OnboardingUITests: ParkAgentUITestCase {
     func testReturningUserSkipsOnboarding() {
         let app = launchApp(skipOnboarding: true)
 
-        XCTAssertTrue(app.tabBars.buttons["Home"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.tabBars.buttons["Park"].waitForExistence(timeout: 5))
         XCTAssertFalse(element(app, "onboarding.permissions").exists, "Should not re-onboard")
     }
 
@@ -268,7 +276,7 @@ final class OnboardingUITests: ParkAgentUITestCase {
 
         XCTAssertTrue(element(app, "onboarding.elsewhere").waitForExistence(timeout: 5))
         element(app, "onboarding.finishButton").tap()
-        XCTAssertTrue(app.tabBars.buttons["Home"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.tabBars.buttons["Park"].waitForExistence(timeout: 5))
     }
 
     /// A returning user the gate sends back into onboarding (a lapsed

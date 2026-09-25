@@ -65,6 +65,22 @@ export interface LinkSpendRequestState {
   card?: LinkOneTimeCard;
 }
 
+/** The Link payment method spend requests draw on — display only. */
+export interface LinkPaymentMethodSummary {
+  type: "card" | "bank_account";
+  /** Card brand ("Visa") or bank name. */
+  brand: string | null;
+  last4: string | null;
+}
+
+/** Where the user manages their Link wallet themselves (cards, banks,
+ * which one pays). Opened from the Wallet's "Manage in Link". */
+export const LINK_MANAGE_URL = "https://app.link.com";
+
+/** Link's approval window for a spend request (per the docs, 10 minutes);
+ * an unapproved request past it is expired. */
+export const LINK_APPROVAL_WINDOW_MS = 10 * 60_000;
+
 export interface CreateSpendRequestArgs {
   amountUsd: number;
   /** ≥100 chars; shown to the customer on the approval screen. */
@@ -87,6 +103,10 @@ export interface LinkClient {
     options?: { includeCard?: boolean },
   ): Promise<LinkSpendRequestState>;
   cancelSpendRequest(token: string, id: string): Promise<void>;
+  /** The wallet's default payment method, for "Link · Visa ••1234".
+   * VERIFY-IN-SANDBOX like the spend-request transport (the CLI's
+   * `payment-methods list`); null when Link reports none. */
+  defaultPaymentMethod(token: string): Promise<LinkPaymentMethodSummary | null>;
 }
 
 export interface LinkConfig {
@@ -104,7 +124,10 @@ export interface LinkConfig {
 export const LINK_SCOPES = "payment_methods.agentic userinfo:read";
 
 interface HttpJson {
-  (url: string, init: { method: string; headers: Record<string, string>; body?: string }): Promise<{
+  (
+    url: string,
+    init: { method: string; headers: Record<string, string>; body?: string },
+  ): Promise<{
     ok: boolean;
     status: number;
     json(): Promise<unknown>;
@@ -206,7 +229,8 @@ export function makeLinkHttpClient(config: LinkConfig, http: HttpJson = fetch): 
         code,
         code_verifier: codeVerifier,
       }),
-    refresh: (refreshToken) => tokenRequest({ grant_type: "refresh_token", refresh_token: refreshToken }),
+    refresh: (refreshToken) =>
+      tokenRequest({ grant_type: "refresh_token", refresh_token: refreshToken }),
     async revoke(refreshToken) {
       await http(`${authBase}/auth/revoke`, {
         method: "POST",
@@ -234,7 +258,7 @@ export function makeLinkHttpClient(config: LinkConfig, http: HttpJson = fetch): 
           merchant_name: args.merchantName,
           merchant_url: args.merchantUrl,
           credential_type: "card",
-          ...(args.test ?? config.testMode ? { test: true } : {}),
+          ...((args.test ?? config.testMode) ? { test: true } : {}),
         },
       });
       return parseSpendRequest(raw);
@@ -246,5 +270,40 @@ export function makeLinkHttpClient(config: LinkConfig, http: HttpJson = fetch): 
     async cancelSpendRequest(token, id) {
       await api(`/v1/spend_requests/${id}/cancel`, token, { method: "POST" });
     },
+    // UNVERIFIED transport: mirrors `link-cli payment-methods list`.
+    async defaultPaymentMethod(token) {
+      const raw = (await api("/v1/payment_methods", token)) as {
+        data?: Record<string, unknown>[];
+      };
+      const rows = raw.data ?? [];
+      const pick = rows.find((r) => r["is_default"] === true) ?? rows[0];
+      if (!pick) return null;
+      const type = pick["type"] === "bank_account" ? "bank_account" : "card";
+      const card = pick["card"] as Record<string, unknown> | undefined;
+      const bank = pick["bank_account"] as Record<string, unknown> | undefined;
+      const detail = type === "card" ? card : bank;
+      const brand =
+        typeof detail?.["brand"] === "string"
+          ? displayLinkBrand(detail["brand"])
+          : typeof detail?.["bank_name"] === "string"
+            ? detail["bank_name"]
+            : null;
+      return {
+        type,
+        brand,
+        last4: typeof detail?.["last4"] === "string" ? detail["last4"] : null,
+      };
+    },
   };
+}
+
+/** Link reports card brands lowercase ("visa"); the app shows "Visa". */
+function displayLinkBrand(brand: string): string {
+  const known: Record<string, string> = {
+    visa: "Visa",
+    mastercard: "Mastercard",
+    amex: "American Express",
+    discover: "Discover",
+  };
+  return known[brand.toLowerCase()] ?? brand.charAt(0).toUpperCase() + brand.slice(1);
 }

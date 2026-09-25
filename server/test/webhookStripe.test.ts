@@ -19,6 +19,7 @@ import {
   makeFakeGateway,
   makePolicyService,
   MONDAY_2PM,
+  seedHold,
   seedSession,
   TEST_PEPPER,
 } from "./helpers.js";
@@ -50,10 +51,16 @@ function makeWebhookApp(options: {
   /** Use the real sessions-table check instead of the boolean stub. */
   realPendingCheck?: boolean;
   knownCard?: boolean;
+  /** A live ParkAgent-card hold of this many dollars (the card pays only
+   * against one); false for none. Default $10. */
+  hold?: number | false;
 }) {
   const { db, state } = makeFakeDb();
   if (options.knownCard !== false) {
     state.issuingCards.push({ stripeCardId: CARD_ID, userId: USER_ID });
+  }
+  if (options.hold !== false) {
+    seedHold(state, { amountUsd: options.hold ?? 10 });
   }
   const stripe = makeFakeStripe();
   const deps: AppDeps = {
@@ -166,10 +173,32 @@ describe("POST /webhooks/stripe: issuing_authorization.request", () => {
     expect(reasonOf(res)).toEqual({ approved: false, reason: "declined_wrong_mcc" });
   });
 
-  it("declines when no session is pending", async () => {
-    const t = makeWebhookApp({ ...LIVE, hasPendingSession: false });
+  it("declines when no session is pending and no leg holds", async () => {
+    const t = makeWebhookApp({ ...LIVE, hasPendingSession: false, hold: false });
     const res = await post(t.app, authRequestEvent());
     expect(reasonOf(res)).toEqual({ approved: false, reason: "declined_no_pending_session" });
+  });
+
+  it("an extension's live hold counts as a leg awaiting payment, whenever the session started", async () => {
+    // The session started 80 minutes ago — far outside the 10-minute
+    // pending window — but its extension's hold was just placed. Without
+    // the hold standing in, every extension charge was declined.
+    const t = makeWebhookApp({ ...LIVE, realPendingCheck: true, hold: false });
+    seedSession(t.state, {
+      userId: USER_ID,
+      status: "active",
+      startedAt: new Date(new Date(MONDAY_2PM).getTime() - 80 * 60_000),
+      createdAt: new Date(new Date(MONDAY_2PM).getTime() - 80 * 60_000),
+    });
+    expect(reasonOf(await post(t.app, authRequestEvent()))).toEqual({
+      approved: false,
+      reason: "declined_no_pending_session",
+    });
+    seedHold(t.state, { leg: "extend-1", amountUsd: 10, createdAt: new Date(MONDAY_2PM) });
+    expect(reasonOf(await post(t.app, authRequestEvent({ id: "iauth_2" })))).toEqual({
+      approved: true,
+      reason: "approved",
+    });
   });
 
   it("approves via the real sessions-table check when a session is fresh, declines when stale", async () => {
@@ -184,7 +213,7 @@ describe("POST /webhooks/stripe: issuing_authorization.request", () => {
       reason: "approved",
     });
 
-    const stale = makeWebhookApp({ ...LIVE, realPendingCheck: true });
+    const stale = makeWebhookApp({ ...LIVE, realPendingCheck: true, hold: false });
     seedSession(stale.state, {
       userId: USER_ID,
       status: "active",

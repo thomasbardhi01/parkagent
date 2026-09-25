@@ -12,6 +12,12 @@
  * financial-account funding calls. Funding uses the v2 money-management
  * APIs, which are preview-versioned and not yet in the SDK's typed surface,
  * so those go through stripe.rawRequest with an explicit Stripe-Version.
+ *
+ * The Wallet (routes/wallet.ts, services/wallet/) adds the ParkAgent card's
+ * funding: a Stripe Customer per user, SetupIntents that save the user's own
+ * card (Apple Pay or card entry via PaymentSheet), and per-session holds —
+ * manual-capture PaymentIntents placed off-session before the executor pays,
+ * captured for what the ParkAgent card actually paid, the rest released.
  */
 
 import Stripe from "stripe";
@@ -63,6 +69,73 @@ export interface IssuingCardSecret {
   expYear: number;
   brand: string;
   last4: string;
+}
+
+/** One of the user's own saved cards, as the Wallet shows it. */
+export interface FundingCardDetails {
+  paymentMethodId: string;
+  /** The Customer it is attached to (null when detached). */
+  customerId: string | null;
+  /** Display brand ("Visa", "Mastercard", …) — normalized from Stripe's
+   * lowercase card.brand. */
+  brand: string;
+  last4: string;
+  expMonth: number | null;
+  expYear: number | null;
+  /** "apple_pay" when the card was tokenized by Apple Pay, else null. */
+  wallet: string | null;
+}
+
+/** What a SetupIntent became (POST /wallet/funding-methods reads it). */
+export interface SetupIntentState {
+  setupIntentId: string;
+  /** Stripe status: "succeeded" once the card is saved. */
+  status: string;
+  customerId: string | null;
+  paymentMethodId: string | null;
+}
+
+/** A hold attempt's outcome. A decline is an answer, not an exception:
+ * the caller records it, pays nothing, and asks the user to update the
+ * card. Other Stripe failures throw. */
+export type HoldAttempt =
+  | { ok: true; paymentIntentId: string }
+  | {
+      ok: false;
+      /** Present when Stripe created the intent before refusing it. */
+      paymentIntentId: string | null;
+      /** Stripe decline_code / error code, e.g. "insufficient_funds",
+       * "authentication_required" (off-session SCA), "card_declined". */
+      declineCode: string;
+      message: string;
+    };
+
+/** Stripe's card.brand values → the names the app shows. */
+export function displayBrand(brand: string | null | undefined): string {
+  switch ((brand ?? "").toLowerCase()) {
+    case "visa":
+      return "Visa";
+    case "mastercard":
+      return "Mastercard";
+    case "amex":
+      return "American Express";
+    case "discover":
+      return "Discover";
+    case "diners":
+      return "Diners Club";
+    case "jcb":
+      return "JCB";
+    case "unionpay":
+      return "UnionPay";
+    default:
+      return brand ? brand.charAt(0).toUpperCase() + brand.slice(1) : "Card";
+  }
+}
+
+/** Test-mode keys can't move real money; the Wallet lets a Debug build
+ * choose the ParkAgent card against them before ISSUING_LIVE. */
+export function isTestModeKey(secretKey: string | undefined): boolean {
+  return secretKey !== undefined && /^(sk|rk)_test_/.test(secretKey);
 }
 
 export interface StripeGateway {
@@ -120,6 +193,45 @@ export interface StripeGateway {
   fundingTopup(amountUsd: number): Promise<void>;
   /** Outbound payment off the financial account to the configured recipient. */
   fundingWithdraw(amountUsd: number): Promise<void>;
+
+  // ---- Wallet: the ParkAgent card's funding (see services/wallet/) ----
+
+  /** The user's Stripe Customer. The idempotency key (per user) makes two
+   * racing setup-intents get the SAME customer back from Stripe. */
+  createCustomer(
+    args: { userId: string; name: string; email?: string | null },
+    idempotencyKey: string,
+  ): Promise<{ customerId: string }>;
+  /** DELETE /me: the person goes, and their saved cards with them. */
+  deleteCustomer(customerId: string): Promise<void>;
+  /** Saves a card for later off-session holds (usage off_session). The app
+   * confirms it with Apple Pay or PaymentSheet; nothing is charged. */
+  createSetupIntent(customerId: string): Promise<{ setupIntentId: string; clientSecret: string }>;
+  retrieveSetupIntent(setupIntentId: string): Promise<SetupIntentState>;
+  retrievePaymentMethod(paymentMethodId: string): Promise<FundingCardDetails>;
+  /** invoice_settings.default_payment_method — mirrors our is_default. */
+  setCustomerDefaultPaymentMethod(customerId: string, paymentMethodId: string): Promise<void>;
+  detachPaymentMethod(paymentMethodId: string): Promise<void>;
+  /**
+   * Place a hold: a manual-capture PaymentIntent confirmed off-session on
+   * the saved card. Idempotent per key (one hold per session leg). A decline
+   * comes back as `ok: false`; anything else throws.
+   */
+  createHold(args: {
+    customerId: string;
+    paymentMethodId: string;
+    amountUsd: number;
+    metadata: Record<string, string>;
+    idempotencyKey: string;
+  }): Promise<HoldAttempt>;
+  /** Capture part of a hold; Stripe releases the uncaptured remainder. */
+  captureHold(
+    paymentIntentId: string,
+    amountUsd: number,
+    idempotencyKey: string,
+  ): Promise<{ status: string }>;
+  /** Release a hold entirely (nothing captured). */
+  cancelHold(paymentIntentId: string, idempotencyKey: string): Promise<{ status: string }>;
 }
 
 export interface FundingConfig {
@@ -345,6 +457,133 @@ export function makeStripeGateway(
     },
 
     fundingTopup: (amountUsd) => creditFinancialAccount(amountUsd),
+
+    createCustomer: async ({ userId, name, email }, idempotencyKey) => {
+      const customer = await stripe.customers.create(
+        {
+          name,
+          ...(email ? { email } : {}),
+          metadata: { parkagent: "wallet", userId },
+        },
+        { idempotencyKey },
+      );
+      return { customerId: customer.id };
+    },
+
+    deleteCustomer: async (customerId) => {
+      await stripe.customers.del(customerId);
+    },
+
+    createSetupIntent: async (customerId) => {
+      const intent = await stripe.setupIntents.create({
+        customer: customerId,
+        // Saved for holds placed while the user is away from the app.
+        usage: "off_session",
+        // Apple Pay is a card wallet: "card" covers both entry paths.
+        payment_method_types: ["card"],
+        metadata: { parkagent: "wallet_setup" },
+      });
+      return { setupIntentId: intent.id, clientSecret: intent.client_secret ?? "" };
+    },
+
+    retrieveSetupIntent: async (setupIntentId) => {
+      const intent = await stripe.setupIntents.retrieve(setupIntentId);
+      const idOf = (v: unknown): string | null =>
+        typeof v === "string" ? v : ((v as { id?: string } | null)?.id ?? null);
+      return {
+        setupIntentId: intent.id,
+        status: intent.status,
+        customerId: idOf(intent.customer),
+        paymentMethodId: idOf(intent.payment_method),
+      };
+    },
+
+    retrievePaymentMethod: async (paymentMethodId) => {
+      const pm = await stripe.paymentMethods.retrieve(paymentMethodId);
+      const customer = pm.customer;
+      return {
+        paymentMethodId: pm.id,
+        customerId: typeof customer === "string" ? customer : (customer?.id ?? null),
+        brand: displayBrand(pm.card?.brand),
+        last4: pm.card?.last4 ?? "",
+        expMonth: pm.card?.exp_month ?? null,
+        expYear: pm.card?.exp_year ?? null,
+        wallet: pm.card?.wallet?.type ?? null,
+      };
+    },
+
+    setCustomerDefaultPaymentMethod: async (customerId, paymentMethodId) => {
+      await stripe.customers.update(customerId, {
+        invoice_settings: { default_payment_method: paymentMethodId },
+      });
+    },
+
+    detachPaymentMethod: async (paymentMethodId) => {
+      await stripe.paymentMethods.detach(paymentMethodId);
+    },
+
+    createHold: async ({ customerId, paymentMethodId, amountUsd, metadata, idempotencyKey }) => {
+      try {
+        const intent = await stripe.paymentIntents.create(
+          {
+            amount: usdToCents(amountUsd),
+            currency: "usd",
+            customer: customerId,
+            payment_method: paymentMethodId,
+            payment_method_types: ["card"],
+            capture_method: "manual",
+            confirm: true,
+            // The user is not in the app when a meter needs paying.
+            off_session: true,
+            description: "ParkAgent parking hold",
+            metadata,
+          },
+          { idempotencyKey },
+        );
+        if (intent.status === "requires_capture") {
+          return { ok: true, paymentIntentId: intent.id };
+        }
+        // Anything else can't complete without the user (e.g. an
+        // authentication step): release it and report a decline.
+        await stripe.paymentIntents.cancel(intent.id).catch(() => undefined);
+        return {
+          ok: false,
+          paymentIntentId: intent.id,
+          declineCode:
+            intent.status === "requires_action" ? "authentication_required" : intent.status,
+          message: `hold ended in status ${intent.status}`,
+        };
+      } catch (err) {
+        const e = err as {
+          type?: string;
+          code?: string;
+          decline_code?: string;
+          message?: string;
+          payment_intent?: { id?: string };
+        };
+        if (e.type !== "StripeCardError") throw err;
+        return {
+          ok: false,
+          paymentIntentId: e.payment_intent?.id ?? null,
+          declineCode: e.decline_code ?? e.code ?? "card_declined",
+          message: (e.message ?? "card declined").split("\n")[0] ?? "card declined",
+        };
+      }
+    },
+
+    captureHold: async (paymentIntentId, amountUsd, idempotencyKey) => {
+      const intent = await stripe.paymentIntents.capture(
+        paymentIntentId,
+        { amount_to_capture: usdToCents(amountUsd) },
+        { idempotencyKey },
+      );
+      return { status: intent.status };
+    },
+
+    cancelHold: async (paymentIntentId, idempotencyKey) => {
+      const intent = await stripe.paymentIntents.cancel(paymentIntentId, {}, { idempotencyKey });
+      return { status: intent.status };
+    },
 
     fundingWithdraw: async (amountUsd) => {
       if (!funding.payoutRecipient) throw new FundingUnavailableError("no_payout_recipient");

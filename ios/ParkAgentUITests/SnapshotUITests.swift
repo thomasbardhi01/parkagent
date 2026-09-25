@@ -16,13 +16,13 @@ final class SnapshotUITests: ParkAgentUITestCase {
         XCTAssertTrue(element(app, "home.statusChip").waitForExistence(timeout: 5))
         attachScreenshot(of: app, named: "home-\(appearance)")
 
-        app.tabBars.buttons["Sessions"].tap()
-        XCTAssertTrue(element(app, "sessions.view").waitForExistence(timeout: 5))
-        attachScreenshot(of: app, named: "sessions-\(appearance)")
+        app.tabBars.buttons["Activity"].tap()
+        XCTAssertTrue(element(app, "activity.view").waitForExistence(timeout: 5))
+        attachScreenshot(of: app, named: "activity-\(appearance)")
 
-        app.tabBars.buttons["Card"].tap()
-        XCTAssertTrue(element(app, "card.view").waitForExistence(timeout: 5))
-        attachScreenshot(of: app, named: "card-\(appearance)")
+        openWallet(app)
+        XCTAssertTrue(element(app, "wallet.hero.providerCard").waitForExistence(timeout: 5))
+        attachScreenshot(of: app, named: "wallet-\(appearance)")
 
         openAccountSheet(app)
         attachScreenshot(of: app, named: "account-\(appearance)")
@@ -50,8 +50,8 @@ final class SnapshotUITests: ParkAgentUITestCase {
         // never NYC.
         openAccountSheet(app)
         attachScreenshot(of: app, named: "pr-account-neutral-copy")
-        let providerRow = scrollTo(app, "account.payment.provider_card")
-        XCTAssertEqual(providerRow.label, "My card on ParkBoston")
+        let howYouPay = scrollTo(app, "account.howYouPay")
+        waitForLabelContaining(howYouPay, "Your card on ParkBoston")
         attachScreenshot(of: app, named: "pr-account-payment")
         element(app, "account.doneButton").tap()
 

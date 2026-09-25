@@ -25,7 +25,7 @@ final class AuthUITests: ParkAgentUITestCase {
             "Email is switched off server-side; its button must not show"
         )
         XCTAssertFalse(element(app, "welcome.googleButton").exists, "Google button should be hidden")
-        XCTAssertFalse(app.tabBars.buttons["Home"].exists, "Tab bar should not be reachable signed out")
+        XCTAssertFalse(app.tabBars.buttons["Park"].exists, "Tab bar should not be reachable signed out")
     }
 
     /// The email button is the server's call: switched on there, it shows.
@@ -60,12 +60,12 @@ final class AuthUITests: ParkAgentUITestCase {
     func testAppleSignInOnASetUpPhoneGoesHome() {
         let app = launchApp(authScenario: "returning", signedIn: false)
         XCTAssertTrue(element(app, "welcome.view").waitForExistence(timeout: 5))
-        XCTAssertFalse(app.tabBars.buttons["Home"].exists, "Signed out must not reach the tabs")
+        XCTAssertFalse(app.tabBars.buttons["Park"].exists, "Signed out must not reach the tabs")
 
         element(app, "welcome.appleButton").tap()
 
         XCTAssertTrue(
-            app.tabBars.buttons["Home"].waitForExistence(timeout: 10),
+            app.tabBars.buttons["Park"].waitForExistence(timeout: 10),
             "A set-up phone should land on Home after sign-in"
         )
         XCTAssertFalse(element(app, "welcome.view").exists, "Welcome screen should be gone")
@@ -127,7 +127,7 @@ final class AuthUITests: ParkAgentUITestCase {
         codeField.typeText("123456")
 
         XCTAssertTrue(
-            app.tabBars.buttons["Home"].waitForExistence(timeout: 10),
+            app.tabBars.buttons["Park"].waitForExistence(timeout: 10),
             "Six digits should sign in without another tap"
         )
     }
@@ -152,7 +152,7 @@ final class AuthUITests: ParkAgentUITestCase {
         let message = element(app, "emailSignIn.messageLabel")
         XCTAssertTrue(message.waitForExistence(timeout: 10), "No message for a wrong code")
         XCTAssertEqual(message.label, "That code doesn't match. Check it and try again.")
-        XCTAssertFalse(app.tabBars.buttons["Home"].exists, "A wrong code must not sign anyone in")
+        XCTAssertFalse(app.tabBars.buttons["Park"].exists, "A wrong code must not sign anyone in")
     }
 
     /// Sign-out from the Account sheet returns to the welcome screen.
@@ -170,6 +170,6 @@ final class AuthUITests: ParkAgentUITestCase {
             element(app, "welcome.view").waitForExistence(timeout: 10),
             "Sign-out should land on the welcome screen"
         )
-        XCTAssertFalse(app.tabBars.buttons["Home"].exists, "Tabs should be gone after sign-out")
+        XCTAssertFalse(app.tabBars.buttons["Park"].exists, "Tabs should be gone after sign-out")
     }
 }

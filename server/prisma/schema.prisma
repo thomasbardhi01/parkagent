@@ -154,12 +154,16 @@ model User {
   // Gates PUT /policy and /admin/* (403 otherwise). Set at create:user
   // --admin, or by hand in SQL for an existing user.
   isAdmin   Boolean  @default(false) @map("is_admin")
-  // "provider_card" (default) | "issuing_card" — which payment source the
-  // user chose in onboarding/Settings. provider_card = the card already on
-  // their ParkNYC/ParkBoston account (linking skips setup-card);
-  // issuing_card = the ParkAgent Issuing card (only selectable when
-  // ISSUING_LIVE=true). Sessions snapshot it at start.
+  // Which of the Wallet's three ways to pay is active (one at a time):
+  // "provider_card" (default) — the card saved on their ParkNYC/ParkBoston
+  // account; "link_wallet" — their Stripe Link wallet (plans and garages,
+  // each paid stop approved in Link); "parkagent_card" — our virtual card,
+  // funded per session by a hold on the user's own card (ISSUING_LIVE, or a
+  // test-mode Stripe key in a Debug build). Sessions snapshot it at start.
   paymentSource String @default("provider_card") @map("payment_source")
+  // The Stripe Customer that owns the ParkAgent card's funding methods,
+  // created lazily by POST /wallet/setup-intent. Stripe IDs only.
+  stripeCustomerId String? @unique @map("stripe_customer_id")
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   vehicles     Vehicle[]
@@ -275,13 +279,12 @@ model Session {
   amountUsd            Decimal?  @map("amount_usd") @db.Decimal(6, 2)
   feeUsd               Decimal?  @map("fee_usd") @db.Decimal(6, 2)
   parknycConfirmation  String?   @map("parknyc_confirmation")
-  // "issuing_card" (schema default) | "provider_card" | "link_wallet" —
-  // which source pays this session; start snapshots the user's setting.
-  // provider_card is the card already on the user's provider account.
-  // link_wallet requires a valid (unexpired, unused) one-time card from an
-  // approved Link spend request; expiry falls back to issuing_card and
-  // tells the user.
-  paymentSource        String    @default("issuing_card") @map("payment_source")
+  // "provider_card" | "parkagent_card" — which card pays this street
+  // session; start snapshots the user's source. A link_wallet user's street
+  // meters pay with the card on their provider account (Link can't be put
+  // on a provider's single saved card), so street sessions never carry
+  // link_wallet. parkagent_card sessions pay against session_holds.
+  paymentSource        String    @default("provider_card") @map("payment_source")
   // The parked_events row this session came from (plain string, no FK churn).
   parkedEventId        String?   @map("parked_event_id")
   // Where the car is: the parked event's fix, the anchor for distance-to-car.
@@ -489,6 +492,13 @@ model LinkAccount {
   // Sealed JSON {accessToken, refreshToken, expiresAt, scope}.
   tokensEncrypted String? @map("tokens_encrypted")
   connectedAt  DateTime? @map("connected_at") @db.Timestamptz(6)
+  // The Link payment method spend requests draw on, for display only
+  // ("Link · Visa ••1234"): "card" | "bank_account", brand/bank name, last4.
+  // Refreshed best-effort from Link; never a full number.
+  pmType       String?  @map("pm_type")
+  pmBrand      String?  @map("pm_brand")
+  pmLast4      String?  @map("pm_last4")
+  pmFetchedAt  DateTime? @map("pm_fetched_at") @db.Timestamptz(6)
   createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -510,6 +520,14 @@ model LinkSpendRequest {
   // expired | canceled | succeeded | failed  (Link's own vocabulary)
   status       String
   approvalUrl  String?  @map("approval_url")
+  // Who the approval screen says is being paid (the garage's site).
+  merchantName String?  @map("merchant_name")
+  // Link's approval window (10 minutes from creation); a request still
+  // unapproved past it is expired by the wallet job.
+  approvalExpiresAt DateTime? @map("approval_expires_at") @db.Timestamptz(6)
+  // When the user last revealed the one-time card to pay at the garage's
+  // own checkout (Face ID in the app; audited as a decisions row).
+  revealedAt   DateTime? @map("revealed_at") @db.Timestamptz(6)
   // Sealed one-time card {number, cvc, expMonth, expYear, brand}.
   cardEncrypted String? @map("card_encrypted")
   validUntil   DateTime? @map("valid_until") @db.Timestamptz(6)
@@ -618,6 +636,10 @@ model IssuingAuthorization {
   decision              String
   // Stripe lifecycle: pending | closed | reversed
   status                String
+  // The session and hold this authorization was approved against, stored
+  // at decision time (parkagent_card: every approval needs a live hold).
+  sessionId             String?  @map("session_id")
+  holdId                String?  @map("hold_id")
   // Filled by issuing_transaction.created; the ledger's settled leg.
   stripeTransactionId   String?  @unique @map("stripe_transaction_id")
   capturedUsd           Decimal? @map("captured_usd") @db.Decimal(8, 2)
@@ -626,6 +648,93 @@ model IssuingAuthorization {
 
   @@index([userId, createdAt])
   @@map("issuing_authorizations")
+}
+
+// ---- Wallet: the ParkAgent card's funding ----
+// The user's own cards (Apple Pay or card entry through a SetupIntent),
+// saved on their Stripe Customer. Brand/last4 for display; Stripe IDs only
+// — the card number never reaches this server.
+model FundingMethod {
+  id                    String    @id @default(cuid())
+  userId                String    @map("user_id")
+  stripePaymentMethodId String    @unique @map("stripe_payment_method_id")
+  brand                 String
+  last4                 String
+  expMonth              Int?      @map("exp_month")
+  expYear               Int?      @map("exp_year")
+  // "apple_pay" when the card came through Apple Pay; null for card entry.
+  wallet                String?
+  isDefault             Boolean   @default(false) @map("is_default")
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  // Detached from the Customer (DELETE /wallet/funding-methods/:id).
+  removedAt             DateTime? @map("removed_at") @db.Timestamptz(6)
+
+  @@index([userId])
+  @@map("funding_methods")
+}
+
+// One authorization hold on the user's funding card per paid leg of a
+// parkagent_card session (the start, and each extension). Placed BEFORE the
+// executor pays (quote + buffer, manual-capture PaymentIntent); the Issuing
+// webhook approves the ParkAgent card only against a live hold with room
+// (authorized_usd); after the provider charge the hold captures what the
+// card actually paid and releases the rest. A leg's hold is unique, so a
+// retry can never hold twice.
+model SessionHold {
+  id              String    @id @default(cuid())
+  sessionId       String    @map("session_id")
+  userId          String    @map("user_id")
+  // "start" | "extend-1" | "extend-2" …
+  leg             String
+  paymentIntentId String?   @unique @map("payment_intent_id")
+  fundingMethodId String?   @map("funding_method_id")
+  // The priced quote and the hold placed for it (quote + buffer, ≥ $2 over).
+  quoteUsd        Decimal   @map("quote_usd") @db.Decimal(8, 2)
+  amountUsd       Decimal   @map("amount_usd") @db.Decimal(8, 2)
+  // Issuing authorizations approved against this hold so far.
+  authorizedUsd   Decimal   @default(0) @map("authorized_usd") @db.Decimal(8, 2)
+  capturedUsd     Decimal?  @map("captured_usd") @db.Decimal(8, 2)
+  // held | captured | released | declined | failed
+  status          String
+  // Stripe's decline_code / error code when the hold was refused.
+  declineCode     String?   @map("decline_code")
+  settledAt       DateTime? @map("settled_at") @db.Timestamptz(6)
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([sessionId, leg])
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+  @@map("session_holds")
+}
+
+// A garage the user confirmed through the assistant — handed off to the
+// garage's own checkout (we never automate it). Activity lists these next
+// to meter sessions; a Link-paid one carries its spend request.
+model GarageBooking {
+  id                 String    @id @default(cuid())
+  userId             String    @map("user_id")
+  planId             String?   @map("plan_id")
+  itineraryId        String?   @map("itinerary_id")
+  // The plan option (single spot) or itinerary stop it came from.
+  optionId           String    @map("option_id")
+  // Garage source: "spothero" | "parkwhiz".
+  provider           String?
+  label              String
+  priceUsd           Decimal   @map("price_usd") @db.Decimal(8, 2)
+  startsAt           DateTime? @map("starts_at") @db.Timestamptz(6)
+  endsAt             DateTime? @map("ends_at") @db.Timestamptz(6)
+  deepLink           String?   @map("deep_link")
+  // provider_card | link_wallet | parkagent_card — the user's source at the
+  // tap; only link_wallet changes how it is paid (approve in Link).
+  paymentSource      String    @map("payment_source")
+  linkSpendRequestId String?   @map("link_spend_request_id")
+  // handed_off (single spot) | planned (an itinerary stop)
+  status             String
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([userId, createdAt])
+  @@map("garage_bookings")
 }
 
 // ---- Provider accounts ----

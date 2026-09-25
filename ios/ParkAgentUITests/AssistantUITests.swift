@@ -12,7 +12,8 @@ import XCTest
 final class AssistantUITests: ParkAgentUITestCase {
     private func openAssistant(
         _ assistantScenario: String,
-        linkScenario: String? = nil
+        linkScenario: String? = nil,
+        paymentSource: String? = nil
     ) -> XCUIApplication {
         let app = XCUIApplication()
         var args = [
@@ -26,6 +27,7 @@ final class AssistantUITests: ParkAgentUITestCase {
             "-assistantScenario", assistantScenario,
         ]
         if let linkScenario { args += ["-linkScenario", linkScenario] }
+        if let paymentSource { args += ["-paymentSource", paymentSource] }
         app.launchArguments = args
         app.launch()
         element(app, "home.askAssistantButton").tap()
@@ -225,38 +227,57 @@ final class AssistantUITests: ParkAgentUITestCase {
         attachScreenshot(of: app, named: "assistant-day-on-home")
     }
 
-    func testLinkConnectedConfirmShowsWalletPath() {
-        let app = openAssistant("singleSpot", linkScenario: "connected")
-        ask(app, "spot near the museum")
+    /// Link as the Wallet's way to pay: a garage confirm goes through the
+    /// Link approval, then the Link card (Face ID in real life) and on to
+    /// the garage's own checkout — the checkout used to never open after
+    /// an approval.
+    func testLinkActiveGarageApprovesThenShowsCardAndCheckout() {
+        let app = openAssistant("singleSpot", linkScenario: "connected", paymentSource: "link_wallet")
+        ask(app, "garage near fenway")
         XCTAssertTrue(element(app, "assistant.singleSpotPlan").waitForExistence(timeout: 10))
-        // The cards announce the wallet before the tap.
-        XCTAssertTrue(element(app, "assistant.linkPayBadge").exists)
 
-        scrollTo(app, "assistant.confirm.opt-street").tap()
-        // Confirm routes through the Link approval deep link…
+        scrollTo(app, "assistant.optionRow.opt-garage-2").tap()
+        // The garage announces Link before the tap.
+        XCTAssertTrue(scrollTo(app, "assistant.linkPayBadge").exists, "Link badge missing on the garage")
+        scrollTo(app, "assistant.choose.opt-garage-2").tap()
+
         let probe = element(app, "assistant.externalLinkProbe")
         XCTAssertTrue(probe.waitForExistence(timeout: 5))
         XCTAssertEqual(probe.label, "linkApproval")
         probe.tap() // "return" from the approval
-        // …and the post-approval sync lands in the transcript.
-        let approved = app.staticTexts.containing(
-            NSPredicate(format: "label CONTAINS 'Link approved'")
-        ).firstMatch
-        XCTAssertTrue(approved.waitForExistence(timeout: 5))
-        // The CONFIRMATION note names the source that pays — match the
-        // note itself, not any "Link wallet" on screen. The plan card's
-        // own badge says "Paying with your Link wallet" too, so a bare
-        // match would pass on that alone; it discriminates today only
-        // because confirming dismisses the card, which is not something
-        // this test should silently depend on.
-        let sourceNote = app.staticTexts.containing(
-            NSPredicate(
-                format: "label CONTAINS 'session starts when you park' AND label CONTAINS 'Link wallet'"
-            )
-        ).firstMatch
+
+        let showCard = element(app, "assistant.showLinkCard")
+        XCTAssertTrue(showCard.waitForExistence(timeout: 5), "Approved: the Link card should be offered")
+        showCard.tap()
+        XCTAssertTrue(element(app, "linkCard.view").waitForExistence(timeout: 5))
+        // The whole number, however it's grouped on screen.
         XCTAssertTrue(
-            sourceNote.waitForExistence(timeout: 5),
-            "The street confirmation should name the Link wallet as the payment source"
+            app.staticTexts.matching(NSPredicate(format: "label MATCHES '.*4000 +0099 +9000 +1984.*'"))
+                .firstMatch.waitForExistence(timeout: 3),
+            "The one-time card should be on screen"
+        )
+        attachScreenshot(of: app, named: "assistant-link-garage-checkout")
+        // The garage's own checkout opens in the browser, card in hand.
+        element(app, "linkCard.checkoutButton").tap()
+        let safari = XCUIApplication(bundleIdentifier: "com.apple.mobilesafari")
+        XCTAssertTrue(safari.wait(for: .runningForeground, timeout: 15), "The garage's checkout should open")
+    }
+
+    /// Link never pays a street meter: with Link active, a street confirm
+    /// asks for no Link approval and names the card on the parking account.
+    func testLinkActiveStreetStaysOnTheParkingAccountsCard() {
+        let app = openAssistant("singleSpot", linkScenario: "connected", paymentSource: "link_wallet")
+        ask(app, "spot near the museum")
+        XCTAssertTrue(element(app, "assistant.singleSpotPlan").waitForExistence(timeout: 10))
+        scrollTo(app, "assistant.confirm.opt-street").tap()
+
+        let note = app.staticTexts.containing(
+            NSPredicate(format: "label CONTAINS 'session starts when you park' AND label CONTAINS 'card on your parking account'")
+        ).firstMatch
+        XCTAssertTrue(note.waitForExistence(timeout: 5), "The street note should name the parking account's card")
+        XCTAssertFalse(
+            element(app, "assistant.externalLinkProbe").exists,
+            "A street meter must not open a Link approval"
         )
     }
 
@@ -340,22 +361,5 @@ final class AssistantUITests: ParkAgentUITestCase {
         let app = openAssistant("error")
         ask(app, "find me parking")
         XCTAssertTrue(element(app, "assistant.errorRow").waitForExistence(timeout: 10))
-    }
-
-    /// The Link-wallet row now lives in the Account sheet (the Settings
-    /// tab is gone); the flow it drives is unchanged.
-    func testAccountSheetConnectsLinkWallet() {
-        let app = openAssistant("singleSpot", linkScenario: "disconnected")
-        app.buttons["Done"].tap()
-        openAccountSheet(app)
-        let connect = scrollTo(app, "account.linkConnectButton")
-        XCTAssertTrue(connect.waitForExistence(timeout: 5), "Connect row never came into reach")
-        connect.tap()
-        // The mock connects instantly and the row becomes two rows —
-        // "Connected" plus Disconnect — so Disconnect lands lower than the
-        // Connect row it replaced, and on a tall screen that can be past
-        // the fold. Scroll for it rather than assuming it is on screen.
-        let disconnect = scrollTo(app, "account.linkDisconnectButton")
-        XCTAssertTrue(disconnect.waitForExistence(timeout: 5), "Row did not flip to Connected")
     }
 }

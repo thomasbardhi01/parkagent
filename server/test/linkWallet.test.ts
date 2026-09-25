@@ -1,8 +1,9 @@
 /**
- * Link wallet against a faked LinkClient: the OAuth handshake, per-stop
- * spend requests on plan confirmation (request → approval → sealed card
- * → use), refresh-token rotation, and the 12-hour-expiry fallback to the
- * Issuing card.
+ * Link wallet against a faked LinkClient: the OAuth handshake, refresh-token
+ * rotation, per-stop spend requests (request → approval → sealed card →
+ * reveal at the garage's own checkout), the approval timeout, and the
+ * Wallet's scope rule — Link pays garages (single spots and plan stops),
+ * never a street meter.
  */
 
 import { describe, expect, test } from "vitest";
@@ -14,8 +15,14 @@ import type {
   LinkTokens,
 } from "../src/services/link/linkClient.js";
 import { makeLinkHttpClient } from "../src/services/link/linkClient.js";
-import { LinkWallet } from "../src/services/link/linkWallet.js";
-import { API_KEY, MONDAY_2PM, makeTestApp, testStateCrypto } from "./helpers.js";
+import { makeWalletTick } from "../src/jobs/walletTick.js";
+import {
+  API_KEY,
+  MONDAY_2PM,
+  makeTestApp,
+  seedLinkSpendRequest,
+  testStateCrypto,
+} from "./helpers.js";
 
 const HEADERS = { "x-api-key": API_KEY, "content-type": "application/json" };
 const NOW = new Date(MONDAY_2PM);
@@ -29,6 +36,11 @@ function fakeLinkClient() {
     createdArgs: [] as CreateSpendRequestArgs[],
     refreshCalls: 0,
     revoked: [] as string[],
+    paymentMethod: { type: "card", brand: "Visa", last4: "1234" } as {
+      type: "card" | "bank_account";
+      brand: string | null;
+      last4: string | null;
+    } | null,
     approve(id: string, card?: Partial<LinkSpendRequestState["card"]>) {
       const row = requests.get(id)!;
       row.status = "approved";
@@ -72,7 +84,8 @@ function fakeLinkClient() {
     retrieveSpendRequest: async (_token, id, options) => {
       const row = requests.get(id)!;
       if (!options?.includeCard) {
-        const { card: _omit, ...rest } = row;
+        const rest = { ...row };
+        delete rest.card;
         return rest;
       }
       return row;
@@ -80,6 +93,7 @@ function fakeLinkClient() {
     cancelSpendRequest: async (_token, id) => {
       requests.get(id)!.status = "canceled";
     },
+    defaultPaymentMethod: async () => state.paymentMethod,
   };
   function nextTokens(): LinkTokens {
     tokenCounter += 1;
@@ -93,9 +107,12 @@ function fakeLinkClient() {
   return { client, state };
 }
 
-async function connectedWallet(now: () => Date = () => NOW) {
+async function connectedWallet(
+  now: () => Date = () => NOW,
+  options: Parameters<typeof makeTestApp>[0] = {},
+) {
   const { client, state } = fakeLinkClient();
-  const t = makeTestApp({ linkClient: client, now });
+  const t = makeTestApp({ linkClient: client, now, ...options });
   const wallet = t.deps.linkWallet!;
   const { state: oauthState } = wallet.startConnect("u1");
   await wallet.handleCallback(oauthState, "auth-code");
@@ -163,8 +180,20 @@ describe("spend requests: request → approval → card → spend", () => {
       planId: "plan1",
       itineraryId: "day1",
       stops: [
-        { stopId: "s1", label: "Museum", amountUsd: 5, merchantName: "City parking meters", merchantUrl: "https://spothero.com" },
-        { stopId: "s2", label: "Deck", amountUsd: 18, merchantName: "SpotHero", merchantUrl: "https://spothero.com" },
+        {
+          stopId: "s1",
+          label: "Museum",
+          amountUsd: 5,
+          merchantName: "City parking meters",
+          merchantUrl: "https://spothero.com",
+        },
+        {
+          stopId: "s2",
+          label: "Deck",
+          amountUsd: 18,
+          merchantName: "SpotHero",
+          merchantUrl: "https://spothero.com",
+        },
       ],
     });
     expect(created).toHaveLength(2); // verified: no batch approval exists
@@ -174,127 +203,327 @@ describe("spend requests: request → approval → card → spend", () => {
     }
   });
 
-  test("approval seals the one-time card; it is usable exactly once", async () => {
-    const { t, wallet, link } = await connectedWallet();
+  test("approval seals the one-time card; only its owner can reveal it, while valid", async () => {
+    let at = NOW;
+    const { t, wallet, link } = await connectedWallet(() => at);
     const [req] = await wallet.createSpendRequestsForStops("u1", {
       planId: "plan1",
-      stops: [{ stopId: "s1", label: "Museum", amountUsd: 5, merchantName: "City parking meters", merchantUrl: "https://spothero.com" }],
+      stops: [
+        {
+          stopId: "s1",
+          label: "Deck",
+          amountUsd: 18,
+          merchantName: "SpotHero",
+          merchantUrl: "https://spothero.com",
+        },
+      ],
     });
-    expect(await wallet.usableCardForStop("u1", "s1")).toBeNull(); // not approved yet
+    await expect(wallet.revealCard("u1", req!.spendRequestId)).rejects.toThrow("not_approved");
 
     link.approve(req!.spendRequestId);
     await wallet.syncSpendRequest("u1", req!.spendRequestId);
     const row = t.state.linkSpendRequests[0]!;
     expect(row.status).toBe("approved");
-    expect(row.cardEncrypted).not.toContain("4000009990001984"); // sealed
+    expect(row.cardEncrypted).not.toContain("4000009990001984"); // sealed at rest
 
-    const usable = await wallet.usableCardForStop("u1", "s1");
-    expect(usable?.card.number).toBe("4000009990001984");
+    await expect(wallet.revealCard("u2", req!.spendRequestId)).rejects.toThrow(
+      "unknown_spend_request",
+    );
+    expect((await wallet.revealCard("u1", req!.spendRequestId)).number).toBe("4000009990001984");
+    expect(row.revealedAt).toEqual(NOW);
 
-    await wallet.markCardUsed(usable!.spendRequestId);
-    expect(await wallet.usableCardForStop("u1", "s1")).toBeNull(); // single-use
+    // 13 hours later — past the 12-hour validity window — it's gone.
+    at = new Date(NOW.getTime() + 13 * 60 * 60_000);
+    await expect(wallet.revealCard("u1", req!.spendRequestId)).rejects.toThrow("card_expired");
   });
 
-  test("past valid_until (12 h) the card is unusable — the Issuing fallback fires", async () => {
+  test("an approval nobody gives inside Link's 10-minute window expires, uncharged", async () => {
     let at = NOW;
-    const { wallet, link } = await connectedWallet(() => at);
+    const { t, wallet, link } = await connectedWallet(() => at);
     const [req] = await wallet.createSpendRequestsForStops("u1", {
       planId: "plan1",
-      stops: [{ stopId: "s1", label: "Evening stop", amountUsd: 5, merchantName: "City parking meters", merchantUrl: "https://spothero.com" }],
+      stops: [
+        {
+          stopId: "s1",
+          label: "Deck",
+          amountUsd: 18,
+          merchantName: "SpotHero",
+          merchantUrl: "https://spothero.com",
+        },
+      ],
     });
-    link.approve(req!.spendRequestId);
-    await wallet.syncSpendRequest("u1", req!.spendRequestId);
-    expect(await wallet.usableCardForStop("u1", "s1")).not.toBeNull();
+    expect(t.state.linkSpendRequests[0]!.approvalExpiresAt).toEqual(
+      new Date(NOW.getTime() + 10 * 60_000),
+    );
+    expect(await wallet.pendingApprovals("u1")).toHaveLength(1);
 
-    // 13 hours later — past the 12-hour validity window.
-    at = new Date(NOW.getTime() + 13 * 60 * 60_000);
-    expect(await wallet.usableCardForStop("u1", "s1")).toBeNull();
+    const tick = makeWalletTick({
+      db: t.deps.db,
+      policy: t.deps.policy,
+      linkWallet: wallet,
+      now: () => at,
+      log: { info: () => {}, warn: () => {} },
+    });
+    at = new Date(NOW.getTime() + 9 * 60_000);
+    expect((await tick.tick()).approvalsExpired).toBe(0); // still inside the window
+    at = new Date(NOW.getTime() + 11 * 60_000);
+    expect((await tick.tick()).approvalsExpired).toBe(1);
+    expect(t.state.linkSpendRequests[0]!.status).toBe("expired");
+    expect(await wallet.pendingApprovals("u1")).toEqual([]);
+    expect(t.state.decisions.at(-1)).toMatchObject({
+      kind: "link_wallet",
+      rule: "approval_expired",
+      outcome: { charged: false },
+    });
+    // A late approval in Link can't revive it: sync answers expired and
+    // never seals a card.
+    link.approve(req!.spendRequestId);
+    expect(await wallet.syncSpendRequest("u1", req!.spendRequestId)).toEqual({
+      status: "expired",
+    });
+    expect(t.state.linkSpendRequests[0]!.cardEncrypted ?? null).toBeNull();
+    // And the sweep is idempotent.
+    expect((await tick.tick()).approvalsExpired).toBe(0);
   });
 });
 
-describe("routes and plan integration", () => {
-  test("confirm with Link connected creates the spend request and returns the approval deep link", async () => {
-    const { t, link } = await connectedWallet();
-    t.state.assistantPlans.push({
-      id: "plan1",
-      userId: "u1",
-      conversationId: "c1",
+/** A single-spot plan with one street and one garage option. */
+function seedSpotPlan(t: ReturnType<typeof makeTestApp>, garagePriceUsd = 18) {
+  t.state.assistantPlans.push({
+    id: "plan1",
+    userId: "u1",
+    conversationId: "c1",
+    kind: "single_spot",
+    plan: {
       kind: "single_spot",
-      plan: {
-        kind: "single_spot",
-        options: [
-          {
-            id: "opt-street",
-            type: "street",
-            label: "Street",
-            detail: "",
-            priceUsd: 3.65,
-            durationMinutes: 90,
-            zoneId: "nyc-417371",
-            recommended: true,
-          },
-        ],
-      },
-    });
-    const res = await t.app.inject({
-      method: "POST",
-      url: "/assistant/confirm",
-      headers: HEADERS,
-      payload: { planId: "plan1", optionId: "opt-street" },
-    });
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({
-      kind: "street_confirmed",
-      paymentSource: "link_wallet",
-    });
-    expect(res.json().linkApproval.approvalUrl).toContain("app.link.com");
-    expect(link.requests.size).toBe(1);
+      options: [
+        {
+          id: "opt-street",
+          type: "street",
+          label: "Street",
+          detail: "",
+          priceUsd: 3.65,
+          durationMinutes: 90,
+          zoneId: "nyc-417371",
+          recommended: true,
+        },
+        {
+          id: "opt-garage",
+          type: "garage",
+          label: "Deck on 5th",
+          detail: "",
+          priceUsd: garagePriceUsd,
+          durationMinutes: 120,
+          provider: "spothero",
+          deepLink: "https://spothero.com/checkout/135220",
+          recommended: false,
+        },
+      ],
+    },
+  });
+}
 
-    // The app polls sync after the user approves.
-    link.approve(res.json().linkApproval.spendRequestId);
+function confirm(t: ReturnType<typeof makeTestApp>, optionId: string) {
+  return t.app.inject({
+    method: "POST",
+    url: "/assistant/confirm",
+    headers: HEADERS,
+    payload: { planId: "plan1", optionId },
+  });
+}
+
+/** Link as the active Wallet source, outside dry run. */
+const LINK_LIVE = {
+  paymentSource: "link_wallet",
+  policy: { dry_run: false },
+  envDryRun: false,
+} as const;
+
+describe("routes and plan integration", () => {
+  test("a garage confirmed with Link active: one spend request, approval, reveal, activity", async () => {
+    const { t, link } = await connectedWallet(() => NOW, LINK_LIVE);
+    seedSpotPlan(t);
+    const res = await confirm(t, "opt-garage");
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body).toMatchObject({ kind: "garage_handoff", paymentSource: "link_wallet" });
+    expect(body.linkApproval.approvalUrl).toContain("app.link.com");
+    expect(link.requests.size).toBe(1);
+    expect(link.createdArgs[0]).toMatchObject({ amountUsd: 18, merchantName: "SpotHero" });
+    // The booking is recorded for Activity, carrying its Link request.
+    expect(t.state.garageBookings).toMatchObject([
+      { label: "Deck on 5th", paymentSource: "link_wallet", status: "handed_off" },
+    ]);
+
+    // The app polls sync after the user approves, then reveals the card
+    // for the garage's own checkout.
+    const id = body.linkApproval.spendRequestId as string;
+    link.approve(id);
     const sync = await t.app.inject({
       method: "POST",
-      url: `/link/spend-requests/${res.json().linkApproval.spendRequestId}/sync`,
+      url: `/link/spend-requests/${id}/sync`,
       headers: HEADERS,
       payload: {},
     });
     expect(sync.json()).toMatchObject({ status: "approved" });
+    const reveal = await t.app.inject({
+      method: "POST",
+      url: `/link/spend-requests/${id}/card`,
+      headers: HEADERS,
+      payload: {},
+    });
+    expect(reveal.statusCode).toBe(200);
+    expect(reveal.headers["cache-control"]).toBe("no-store");
+    expect(reveal.json()).toMatchObject({ number: "4000009990001984", expMonth: 6 });
+    expect(t.state.decisions.at(-1)).toMatchObject({ kind: "link_card_reveal", rule: "reveal_ok" });
+    // The reveal's audit row never carries the number.
+    expect(JSON.stringify(t.state.decisions)).not.toContain("4000009990001984");
+
+    const activity = await t.app.inject({
+      method: "GET",
+      url: "/wallet/activity",
+      headers: HEADERS,
+    });
+    expect(activity.json().items).toMatchObject([
+      { kind: "garage", label: "Deck on 5th", link: { spendRequestId: id, status: "approved" } },
+    ]);
   });
 
-  test("policy link_wallet_for_plans:false keeps plans on the Issuing card", async () => {
-    const { client } = fakeLinkClient();
-    const t = makeTestApp({ linkClient: client, policy: { link_wallet_for_plans: false } });
-    const wallet = t.deps.linkWallet!;
-    const { state: s } = wallet.startConnect("u1");
-    await wallet.handleCallback(s, "code");
+  test("a street spot never goes to Link — it pays with the card on the provider account", async () => {
+    const { t, link } = await connectedWallet(() => NOW, LINK_LIVE);
+    seedSpotPlan(t);
+    const res = await confirm(t, "opt-street");
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({
+      kind: "street_confirmed",
+      paymentSource: "provider_card",
+      linkApproval: null,
+    });
+    expect(link.requests.size).toBe(0);
+  });
+
+  test("dry run creates no Link request unless Link itself is in test mode", async () => {
+    const dry = await connectedWallet(() => NOW, { paymentSource: "link_wallet" });
+    seedSpotPlan(dry.t);
+    const res = await confirm(dry.t, "opt-garage");
+    expect(res.json()).toMatchObject({
+      kind: "garage_handoff",
+      paymentSource: "garage_checkout",
+      linkApproval: null,
+      linkSkipped: "dry_run",
+    });
+    expect(dry.link.requests.size).toBe(0);
+
+    const sandbox = await connectedWallet(() => NOW, {
+      paymentSource: "link_wallet",
+      linkTestMode: true,
+    });
+    seedSpotPlan(sandbox.t);
+    const ok = await confirm(sandbox.t, "opt-garage");
+    expect(ok.json()).toMatchObject({ paymentSource: "link_wallet" });
+    expect(sandbox.link.createdArgs[0]).toMatchObject({ test: true });
+  });
+
+  test("the caps bind Link: over the per-stop cap no request is made", async () => {
+    const { t, link } = await connectedWallet(() => NOW, LINK_LIVE);
+    seedSpotPlan(t, 50); // cap is $45
+    const res = await confirm(t, "opt-garage");
+    expect(res.json()).toMatchObject({ linkApproval: null, linkSkipped: "session_cap_exceeded" });
+    expect(link.requests.size).toBe(0);
+  });
+
+  test("the daily cap counts today's Link garages — approved, and still awaiting approval", async () => {
+    const hoursAgo = (h: number) => new Date(NOW.getTime() - h * 3_600_000);
+    const { t, link } = await connectedWallet(() => NOW, LINK_LIVE);
+    // $60 a day: $25 approved this morning and $20 still awaiting approval
+    // leave $15, so an $18 garage doesn't fit. Neither a declined request
+    // nor yesterday's approval takes any room.
+    seedLinkSpendRequest(t.state, { amountUsd: 25, status: "approved", createdAt: hoursAgo(3) });
+    seedLinkSpendRequest(t.state, {
+      amountUsd: 20,
+      status: "pending_approval",
+      createdAt: hoursAgo(0.1),
+    });
+    seedLinkSpendRequest(t.state, { amountUsd: 40, status: "denied", createdAt: hoursAgo(1) });
+    seedLinkSpendRequest(t.state, { amountUsd: 40, status: "approved", createdAt: hoursAgo(26) });
+    seedSpotPlan(t);
+    const res = await confirm(t, "opt-garage");
+    expect(res.json()).toMatchObject({ linkApproval: null, linkSkipped: "daily_cap_exceeded" });
+    expect(link.requests.size).toBe(0);
+    // The decision records what the cap saw.
+    expect(t.state.decisions.at(-1)).toMatchObject({
+      kind: "assistant_confirm",
+      inputs: { spentTodayUsd: 25, linkPendingTodayUsd: 20 },
+    });
+
+    // With the same approval but nothing pending, the $18 garage fits.
+    const roomy = await connectedWallet(() => NOW, LINK_LIVE);
+    seedLinkSpendRequest(roomy.t.state, {
+      amountUsd: 25,
+      status: "approved",
+      createdAt: hoursAgo(3),
+    });
+    seedSpotPlan(roomy.t);
+    const ok = await confirm(roomy.t, "opt-garage");
+    expect(ok.json()).toMatchObject({ paymentSource: "link_wallet" });
+    expect(roomy.link.requests.size).toBe(1);
+  });
+
+  test("an itinerary asks Link once per paid GARAGE stop; street stops stay on the curb", async () => {
+    const { t, link } = await connectedWallet(() => NOW, LINK_LIVE);
+    const stop = (id: string, choice: "street" | "garage", costUsd: number) => ({
+      id,
+      label: `Stop ${id}`,
+      address: "1 Main St",
+      lat: 42.35,
+      lng: -71.07,
+      arrival: "2026-01-05T15:00:00-05:00",
+      durationMinutes: 60,
+      choice,
+      costUsd,
+      ...(choice === "street"
+        ? { zoneId: "nyc-417371" }
+        : { deepLink: "https://spothero.com/checkout/1" }),
+    });
     t.state.assistantPlans.push({
       id: "plan1",
       userId: "u1",
       conversationId: "c1",
-      kind: "single_spot",
+      kind: "itinerary",
       plan: {
-        kind: "single_spot",
-        options: [
-          {
-            id: "o1",
-            type: "street",
-            label: "Street",
-            detail: "",
-            priceUsd: 3.65,
-            durationMinutes: 60,
-            zoneId: "nyc-417371",
-            recommended: true,
-          },
-        ],
+        kind: "itinerary",
+        date: "2026-01-05",
+        stops: [stop("a", "street", 4), stop("b", "garage", 12), stop("c", "garage", 9)],
+        totalUsd: 25,
+        capUsd: 60,
       },
     });
     const res = await t.app.inject({
       method: "POST",
       url: "/assistant/confirm",
       headers: HEADERS,
-      payload: { planId: "plan1", optionId: "o1" },
+      payload: { planId: "plan1" },
     });
-    expect(res.json()).toMatchObject({ paymentSource: "issuing_card", linkApproval: null });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().linkApprovals).toHaveLength(2);
+    expect(link.createdArgs.map((a) => a.amountUsd)).toEqual([12, 9]);
+    const stops = t.state.itineraries[0]!.stops as { id: string; paymentSource: string }[];
+    expect(stops.map((s) => s.paymentSource)).toEqual([
+      "provider_card",
+      "link_wallet",
+      "link_wallet",
+    ]);
+  });
+
+  test("policy link_wallet_for_plans:false keeps garages on their own checkout", async () => {
+    const { t, link } = await connectedWallet(() => NOW, {
+      ...LINK_LIVE,
+      policy: { dry_run: false, link_wallet_for_plans: false },
+    });
+    seedSpotPlan(t);
+    const res = await confirm(t, "opt-garage");
+    expect(res.json()).toMatchObject({ paymentSource: "garage_checkout", linkApproval: null });
+    expect(link.requests.size).toBe(0);
   });
 
   test("/link/status and 503s without configuration", async () => {
@@ -325,7 +554,9 @@ describe("makeLinkHttpClient wire shapes", () => {
     expect(url).toContain("key=pk_test_1");
     expect(url).toContain("code_challenge_method=S256");
     expect(url).toContain("state=st1");
-    expect(url).toContain(encodeURIComponent("payment_methods.agentic userinfo:read").replace(/%20/g, "+"));
+    expect(url).toContain(
+      encodeURIComponent("payment_methods.agentic userinfo:read").replace(/%20/g, "+"),
+    );
   });
 
   test("token exchange posts the documented form fields with the pk bearer", async () => {
@@ -355,7 +586,12 @@ describe("makeLinkHttpClient wire shapes", () => {
     expect(tokens.accessToken).toBe("liwltoken_a");
     expect(calls[0]!.url).toBe("https://login.link.com/auth/token");
     expect(calls[0]!.auth).toBe("Bearer pk_test_1");
-    for (const field of ["grant_type=authorization_code", "code=c1", "code_verifier=v1", "client_secret=sec_1"]) {
+    for (const field of [
+      "grant_type=authorization_code",
+      "code=c1",
+      "code_verifier=v1",
+      "client_secret=sec_1",
+    ]) {
       expect(calls[0]!.body).toContain(field);
     }
   });

@@ -25,9 +25,10 @@ const schema = z
     APNS_KEY_ID: z.string().min(1).optional(),
     APNS_TEAM_ID: z.string().min(1).optional(),
     APNS_BUNDLE_ID: z.string().min(1).optional(),
-    // Whether the ParkAgent Issuing card is live as a selectable payment
-    // source. Until then onboarding/Settings show it as "coming soon" and
-    // PUT /me/payment-source refuses "issuing_card".
+    // Whether the ParkAgent card is live as a selectable payment source.
+    // Until then the Wallet shows it as "Coming soon — pending approval" and
+    // PUT /wallet/source refuses "parkagent_card" (a Debug build may still
+    // choose it in sandbox while STRIPE_SECRET_KEY is a test-mode key).
     ISSUING_LIVE: z.enum(["true", "false"]).default("false"),
     // Seals linked provider session state (provider_accounts). 32 bytes of
     // base64: `openssl rand -base64 32`. Without it provider linking is

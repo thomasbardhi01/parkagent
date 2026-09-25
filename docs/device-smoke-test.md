@@ -42,13 +42,14 @@ unattended-park loop is off, and Diagnostics (step 11) will list
 
 ### 4. Real data, not fixtures
 
-Sessions tab. On a fresh install this must be **empty** ("No sessions
-yet"). If you see a session for zone 110212 at $9.28, the app is running on
-mock fixtures — that's the bug this build exists to fix, so stop and
-report it.
+Activity tab. On a fresh account this must be **empty** ("No activity
+yet"). If you see "Boylston St · Zone 456" at $4.10 or a "Deck on
+Clarendon" garage, the app is running on mock fixtures — stop and report
+it.
 
-Card tab: on a fresh install with no issued card, expect "Set up your
-parking card", not a $42.50 balance.
+Wallet tab: on a fresh account expect "Your card on <your provider>" as
+the way you pay, $0.00 spent, and no balance anywhere — there is no
+stored balance to show.
 
 ### 5. The server is the one you think it is
 

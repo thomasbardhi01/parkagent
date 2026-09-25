@@ -4,7 +4,8 @@ import XCTest
 /// What LiveAPI actually puts on the wire. The regression this pins: query
 /// strings were folded into the path, and `URL.appending(path:)` encodes
 /// "?" — so GET /city, /providers/:id/link-status, /card/transactions?cursor
-/// and /zones/near all reached the server as unmatched PATHS and 404'd on
+/// (now /wallet/activity?cursor) and /zones/near all reached the server as
+/// unmatched PATHS and 404'd on
 /// every device. The mock never builds a URL, so only a test at this layer
 /// can see it.
 ///
@@ -130,12 +131,12 @@ final class LiveAPIRequestTests: XCTestCase {
 
     /// The cursor is an ISO timestamp; a "+hh:mm" offset must survive, and
     /// the server reads a bare "+" as a space.
-    func testCardTransactionsCursorKeepsItsPlus() async throws {
-        StubURLProtocol.respond(json: "{}")
-        _ = try? await api.cardTransactions(cursor: "2026-09-24T11:44:09.605+04:00")
+    func testActivityCursorKeepsItsPlus() async throws {
+        StubURLProtocol.respond(json: #"{"items": [], "nextCursor": null}"#)
+        _ = try await api.walletActivity(cursor: "2026-09-24T11:44:09.605+04:00")
 
         let request = try sentRequest()
-        XCTAssertEqual(request.url?.path(), "/card/transactions")
+        XCTAssertEqual(request.url?.path(), "/wallet/activity")
         XCTAssertEqual(request.url?.query(percentEncoded: true), "cursor=2026-09-24T11:44:09.605%2B04:00")
     }
 
@@ -360,6 +361,83 @@ final class LiveAPIRequestTests: XCTestCase {
         XCTAssertEqual(request.httpMethod, "DELETE")
         XCTAssertEqual(request.url?.path(), "/me")
         XCTAssertEqual(bearer(request), "Bearer access-1")
+    }
+
+    // MARK: - Wallet
+
+    /// A real GET /wallet body, captured from the server's own route (a
+    /// ParkAgent-card user in sandbox with one captured hold): every field
+    /// the Wallet, Account row, and onboarding read must decode from it.
+    private static let walletBody = #"""
+    {"activeSource":"parkagent_card","dryRun":true,"options":[{"source":"provider_card","availability":"available","needs":null,"sandbox":false},{"source":"link_wallet","availability":"coming_soon","needs":null,"sandbox":false},{"source":"parkagent_card","availability":"available","needs":null,"sandbox":true}],"providerCard":{"cards":[{"provider":"passport","displayName":"ParkBoston","city":"bos","brand":"Visa","last4":"1234"}]},"link":{"configured":false,"connected":false,"paymentMethod":null,"pendingApprovals":[],"manageUrl":"https://app.link.com","covers":"plans_and_garages"},"parkagentCard":{"live":false,"sandboxSelectable":true,"fundingMethods":[{"id":"fm1","brand":"Visa","last4":"4242","wallet":"apple_pay","expMonth":12,"expYear":2031,"isDefault":true}],"card":{"stripeCardId":"ic_u1","last4":"4444","brand":"Visa","status":"active","expMonth":8,"expYear":2030,"cardholderName":"Thomas"}},"providers":[{"id":"parknyc","city":"nyc","cityDisplayName":"New York City","displayName":"ParkNYC","status":"unlinked","paysWith":null,"attention":"connect"},{"id":"passport","city":"bos","cityDisplayName":"Boston","displayName":"ParkBoston","status":"linked","paysWith":{"source":"parkagent_card","brand":"Visa","last4":"4444"},"attention":null}],"spending":{"todayUsd":4.1,"dailyCapUsd":60,"sessionCapUsd":45,"monthUsd":4.1,"byCity":[{"city":"bos","cityDisplayName":"Boston","monthUsd":4.1},{"city":"nyc","cityDisplayName":"New York City","monthUsd":0}],"linkMonthUsd":0},"activity":{"items":[{"id":"session:s1","kind":"session","at":"2026-01-05T19:00:00.000Z","createdAt":"2026-01-05T19:00:00.000Z","sessionId":"s1","city":"bos","cityDisplayName":"Boston","providerDisplayName":"ParkBoston","zoneNumber":"456","street":null,"durationMinutes":60,"meterUsd":3.75,"feeUsd":0.35,"totalUsd":4.1,"status":"stopped","dryRun":false,"paymentSource":"parkagent_card","explanation":"Paid with the ParkAgent card — $4.10 taken from your card, the rest of the hold released.","startedAt":"2026-01-05T19:00:00.000Z","expiresAt":null,"stoppedAt":null,"lat":42.3495,"lng":-71.0798,"receipt":{"providerConfirmation":"PB-1","decisionId":null,"holds":[{"leg":"start","heldUsd":6.1,"capturedUsd":4.1,"status":"captured","paymentIntentId":"pi_seed_1"}]},"timeline":[{"kind":"hold_placed","at":"2026-01-05T19:00:00.000Z","minutes":null,"amountUsd":6.1,"code":null},{"kind":"started","at":"2026-01-05T19:00:00.000Z","minutes":60,"amountUsd":4.1,"code":null},{"kind":"hold_captured","at":"2026-01-05T19:01:00.000Z","minutes":null,"amountUsd":4.1,"code":null}]}],"nextCursor":null}}
+    """#
+
+    func testWalletDecodesTheServerShape() async throws {
+        StubURLProtocol.respond(json: Self.walletBody)
+        let wallet = try await api.wallet()
+
+        let request = try sentRequest()
+        XCTAssertEqual(request.httpMethod, "GET")
+        XCTAssertEqual(request.url?.path(), "/wallet")
+        XCTAssertEqual(bearer(request), "Bearer access-1")
+
+        XCTAssertEqual(wallet.activeSource, .parkagentCard)
+        XCTAssertEqual(wallet.options.map(\.source), [.providerCard, .linkWallet, .parkagentCard])
+        XCTAssertEqual(wallet.option(.linkWallet)?.availability, "coming_soon")
+        XCTAssertEqual(wallet.option(.parkagentCard)?.sandbox, true)
+        XCTAssertEqual(wallet.parkagentCard.defaultFundingMethod?.wallet, "apple_pay")
+        XCTAssertEqual(wallet.parkagentCard.card?.last4, "4444")
+        XCTAssertEqual(wallet.providers.first { $0.id == "passport" }?.paysWith?.source, .parkagentCard)
+        XCTAssertEqual(wallet.spending.byCity.map(\.city), ["bos", "nyc"])
+        XCTAssertEqual(wallet.spending.linkMonthUsd, 0)
+        let item = try XCTUnwrap(wallet.activity.items.first)
+        XCTAssertEqual(item.kind, "session")
+        XCTAssertEqual(item.receipt?.holds?.first?.capturedUsd, 4.1)
+        XCTAssertEqual(item.timeline?.map(\.kind), ["hold_placed", "started", "hold_captured"])
+    }
+
+    func testSetWalletSourceSendsSandboxAndConsentOnlyWhenTrue() async throws {
+        StubURLProtocol.respond(json: #"{"activeSource": "parkagent_card", "setupJobs": [{"provider": "passport", "jobId": "j1"}], "decisionId": "d1"}"#)
+        let result = try await api.setWalletSource(.parkagentCard, sandbox: true, consent: true)
+        var request = try sentRequest()
+        XCTAssertEqual(request.httpMethod, "PUT")
+        XCTAssertEqual(request.url?.path(), "/wallet/source")
+        let sent = try body(request)
+        XCTAssertEqual(sent["source"] as? String, "parkagent_card")
+        XCTAssertEqual(sent["sandbox"] as? Bool, true)
+        XCTAssertEqual(sent["consentReplacePaymentMethod"] as? Bool, true)
+        XCTAssertEqual(result.setupJobs.first?.jobId, "j1")
+
+        StubURLProtocol.respond(json: #"{"activeSource": "provider_card", "setupJobs": [], "decisionId": "d2"}"#)
+        _ = try await api.setWalletSource(.providerCard, sandbox: false, consent: false)
+        request = try sentRequest()
+        // A Release build never claims sandbox; nothing agreed, nothing sent.
+        XCTAssertEqual(try body(request).keys.sorted(), ["source"])
+    }
+
+    func testSavingACardIsTwoCalls() async throws {
+        StubURLProtocol.respond(json: #"{"setupIntentId": "seti_1", "clientSecret": "seti_1_secret", "customerId": "cus_1", "merchantId": "merchant.com.thomasbardhi.parkagent"}"#)
+        let intent = try await api.walletSetupIntent(sandbox: false)
+        var request = try sentRequest()
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.url?.path(), "/wallet/setup-intent")
+        XCTAssertEqual(intent.merchantId, "merchant.com.thomasbardhi.parkagent")
+
+        StubURLProtocol.respond(json: #"{"fundingMethod": {"id": "fm1", "brand": "Visa", "last4": "4242", "wallet": null, "expMonth": 12, "expYear": 2031, "isDefault": true}}"#)
+        let saved = try await api.addFundingMethod(setupIntentId: "seti_1")
+        request = try sentRequest()
+        XCTAssertEqual(request.url?.path(), "/wallet/funding-methods")
+        XCTAssertEqual(try body(request) as? [String: String], ["setupIntentId": "seti_1"])
+        XCTAssertEqual(saved.fundingMethod.last4, "4242")
+    }
+
+    func testLinkCardRevealPostsToTheSpendRequest() async throws {
+        StubURLProtocol.respond(json: #"{"spendRequestId": "lsrq_1", "brand": "visa", "number": "4000009990001984", "cvc": "100", "expMonth": 6, "expYear": 2029, "validUntil": "2026-09-25T02:00:00.000Z"}"#)
+        let card = try await api.revealLinkCard(spendRequestId: "lsrq_1")
+        let request = try sentRequest()
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.url?.path(), "/link/spend-requests/lsrq_1/card")
+        XCTAssertEqual(card.expYear, 2029)
     }
 
     func testVehiclesCrud() async throws {

@@ -9,16 +9,25 @@
 import type { AppDb, SessionRow } from "../db.js";
 import { cityForZone, providerForCity } from "../providers/registry.js";
 import type { PushSender } from "./apns.js";
-import { freePeriodPush, paymentFailedPush, sessionExtendedPush } from "./apns.js";
+import {
+  cardDeclinedPush,
+  freePeriodPush,
+  paymentFailedPush,
+  sessionExtendedPush,
+} from "./apns.js";
 import type { ExecutorDiagnostics, ExecutorErrorCode, ExecutorProvider } from "./executor.js";
 import type { HoursInterval } from "./hours.js";
 import { nycStartOfDay } from "./hours.js";
+import { LINK_COMMITTED_STATUSES, linkSpentSince } from "./link/linkSpend.js";
 import type { Policy } from "./policy.js";
 import type { RatedTerms, StayPrice } from "./quote.js";
 import { priceStay } from "./quote.js";
 import type { ShadowResult } from "./shadow.js";
 import { fireShadowAuthorization } from "./shadow.js";
 import type { StripeGateway } from "./stripeGateway.js";
+import type { SettleReason } from "./wallet/holds.js";
+import { placeHold, settleHold } from "./wallet/holds.js";
+import { parkAgentCardReadiness } from "./wallet/parkagentCard.js";
 
 export interface SessionDeps {
   db: AppDb;
@@ -32,20 +41,27 @@ export interface SessionDeps {
 }
 
 /**
- * Real dollars this user has committed today (NYC calendar day). Dry-run
- * sessions are excluded — they moved no money — and failed ones never
- * charged.
+ * Real dollars this user has committed today (NYC calendar day), whatever
+ * paid: street sessions on any source, plus garages approved in Link. The
+ * daily cap is measured against this everywhere — quotes, starts,
+ * extensions, the assistant, the Wallet. Dry-run sessions are excluded —
+ * they moved no money — and failed ones never charged.
  */
 export async function spentToday(db: AppDb, userId: string, at: Date): Promise<number> {
+  const since = nycStartOfDay(at);
   const rows = await db.session.findMany({
     where: {
       userId,
       dryRun: false,
       status: { in: ["pending", "active", "stopped", "expired"] },
-      createdAt: { gte: nycStartOfDay(at) },
+      createdAt: { gte: since },
     },
   });
-  return rows.reduce((sum, s) => sum + Number(s.amountUsd ?? 0) + Number(s.feeUsd ?? 0), 0);
+  const streetUsd = rows.reduce(
+    (sum, s) => sum + Number(s.amountUsd ?? 0) + Number(s.feeUsd ?? 0),
+    0,
+  );
+  return streetUsd + (await linkSpentSince(db, userId, since, LINK_COMMITTED_STATUSES));
 }
 
 /** The rate terms the session was sold under (snapshotted at start). The
@@ -104,6 +120,9 @@ export function priceExtension(session: SessionRow, policy: Policy, minutes: num
   );
 }
 
+/** What happened to a parkagent_card leg's hold (absent for other sources). */
+export type HoldOutcome = Record<string, unknown>;
+
 export type ExtensionOutcome =
   | {
       ok: true;
@@ -113,14 +132,18 @@ export type ExtensionOutcome =
       durationMs: number;
       /** Present when shadow mode fired (or tried to fire) a test auth. */
       shadow?: ShadowResult;
+      hold?: HoldOutcome;
     }
   | {
       ok: false;
-      code: ExecutorErrorCode;
+      /** Executor codes, plus the parkagent_card hold's own refusals —
+       * those happen BEFORE the executor, so nothing was charged. */
+      code: ExecutorErrorCode | "card_declined" | "wallet_not_ready" | "hold_failed";
       message: string;
       price: StayPrice;
       durationMs: number;
       diagnostics?: ExecutorDiagnostics;
+      hold?: HoldOutcome;
     };
 
 /**
@@ -137,6 +160,81 @@ export async function applyExtension(
 ): Promise<ExtensionOutcome> {
   const now = deps.now?.() ?? new Date();
   const dryRun = deps.policy.effectiveDryRun();
+  const providerName = providerForCity(session.city)?.displayName ?? "your parking account";
+
+  // parkagent_card: every extension is its own leg with its own hold,
+  // placed before the provider is asked to charge our card.
+  let settle: (reason: SettleReason) => Promise<HoldOutcome | undefined> = async () => undefined;
+  if (session.paymentSource === "parkagent_card") {
+    const refuse = async (
+      code: "card_declined" | "wallet_not_ready" | "hold_failed",
+      message: string,
+    ): Promise<ExtensionOutcome> => {
+      await deps.db.sessionEvent.create({
+        data: {
+          sessionId: session.id,
+          kind: "failed",
+          at: now,
+          minutes,
+          dryRun,
+          details: { source, op: "extend", code, message },
+        },
+      });
+      await deps.sendPush(
+        session.userId,
+        code === "card_declined"
+          ? cardDeclinedPush({ zoneNumber: session.providerZoneNumber, what: "extend" })
+          : paymentFailedPush({
+              zoneNumber: session.providerZoneNumber,
+              what: "extend",
+              code,
+              providerName,
+            }),
+      );
+      return { ok: false, code, message, price, durationMs: 0 };
+    };
+    const provider = providerForCity(session.city);
+    const readiness = await parkAgentCardReadiness(
+      deps.db,
+      session.userId,
+      provider?.id ?? null,
+      dryRun,
+    );
+    if (!readiness.ready) return refuse("wallet_not_ready", readiness.reason);
+    const policy = deps.policy.get();
+    const spentTodayUsd = await spentToday(deps.db, session.userId, now);
+    const hold = await placeHold(deps, {
+      userId: session.userId,
+      sessionId: session.id,
+      leg: `extend-${session.extendCount + 1}`,
+      quoteUsd: price.totalUsd,
+      // Session cap is per session (what it already spent counts); the
+      // daily cap counts today's real spend.
+      capRoomUsd: Math.min(
+        policy.session_cap_usd - sessionSpentUsd(session),
+        policy.daily_cap_usd - spentTodayUsd,
+      ),
+    });
+    if (!hold.ok) {
+      return hold.reason === "declined"
+        ? refuse("card_declined", `hold declined (${hold.declineCode})`)
+        : refuse(
+            hold.reason === "no_funding_method" ? "wallet_not_ready" : "hold_failed",
+            hold.message,
+          );
+    }
+    settle = async (reason) => {
+      if (hold.simulated) return { simulated: true, wouldHold: hold.heldUsd };
+      const settled = await settleHold(deps, hold.hold.id, reason);
+      return {
+        holdId: settled.holdId,
+        heldUsd: settled.heldUsd,
+        status: settled.status,
+        capturedUsd: settled.capturedUsd,
+      };
+    };
+  }
+
   const executor = deps.executorFor({
     userId: session.userId,
     city: cityForZone(session.zoneId),
@@ -171,6 +269,7 @@ export async function applyExtension(
       session.userId,
       freePeriodPush({ zoneNumber: session.providerZoneNumber, notice: result.message }),
     );
+    const hold = await settle("free_period");
     return {
       ok: false,
       code: result.code,
@@ -178,6 +277,7 @@ export async function applyExtension(
       price,
       durationMs,
       ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}),
+      ...(hold ? { hold } : {}),
     };
   }
 
@@ -198,9 +298,10 @@ export async function applyExtension(
         zoneNumber: session.providerZoneNumber,
         what: "extend",
         code: result.code,
-        providerName: providerForCity(session.city)?.displayName ?? "your parking account",
+        providerName,
       }),
     );
+    const hold = await settle("leg_failed");
     return {
       ok: false,
       code: result.code,
@@ -208,8 +309,11 @@ export async function applyExtension(
       price,
       durationMs,
       ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}),
+      ...(hold ? { hold } : {}),
     };
   }
+
+  const hold = await settle("leg_paid");
 
   const updated = await deps.db.session.update({
     where: { id: session.id },
@@ -262,5 +366,6 @@ export async function applyExtension(
     expiresAt: result.expiresAt,
     durationMs,
     ...(shadow ? { shadow } : {}),
+    ...(hold ? { hold } : {}),
   };
 }

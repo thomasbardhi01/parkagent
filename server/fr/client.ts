@@ -15,7 +15,10 @@
  *    loop can never run up a bill.
  *  - The suite never calls PUT /policy, /session/extend|stop, any /card
  *    route, or a real provider link — nothing here can change the spending
- *    contract or touch a provider account.
+ *    contract or touch a provider account. PUT /wallet/source is called
+ *    only with values the FR user can't make ready (and always restored to
+ *    provider_card); nothing creates a Stripe Customer, SetupIntent, hold,
+ *    or Link spend request.
  *  - DELETE /me is never sent with the FR key (frFetch refuses it): only a
  *    throwaway session's bearer, through sessionFetch, may delete — and
  *    sessionFetch never carries the key, so a lost bearer can't fall back

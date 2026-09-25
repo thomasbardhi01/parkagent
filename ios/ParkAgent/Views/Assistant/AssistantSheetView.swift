@@ -265,8 +265,8 @@ struct AssistantSheetView: View {
                 // Link pays only when it's the Wallet's active way to pay.
                 linkConnected: appModel.linkWalletConnected && appModel.wallet.activeSource == .linkWallet
             ) { stops in
-                // Sign-off stores the day as proposed; a reorder made on
-                // the card is saved right after as its first edit.
+                // Sign-off stores the day as proposed; changes made on
+                // the card are saved right after as its first edit.
                 Task { await model.confirm(planId: plan.planId, optionId: nil, stops: stops) }
             }
         }

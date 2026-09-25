@@ -140,7 +140,9 @@ struct ItineraryStop: Codable, Identifiable, Equatable, Sendable {
     var address: String
     var lat: Double
     var lng: Double
-    var arrival: String
+    /// ISO arrival; nil when the user cleared it ("no set time"). Only an
+    /// untimed stop is placed by hand — see ItineraryOrder.
+    var arrival: String?
     var durationMinutes: Int
     /// "street" | "garage"
     var choice: String

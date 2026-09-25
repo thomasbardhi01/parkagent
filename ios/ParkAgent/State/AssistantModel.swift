@@ -134,7 +134,7 @@ final class AssistantModel {
 
     /// The Confirm / Sign off tap — the ONLY path that books or spends.
     /// `stops` is the itinerary as the user left it on the card: when they
-    /// reordered it before signing off, the new order is saved right after
+    /// changed it before signing off, the changes are saved right after
     /// (the server re-checks the cap on that edit like any other).
     func confirm(planId: String, optionId: String?, stops: [ItineraryStop]? = nil) async {
         guard phase != .confirming else { return }
@@ -170,7 +170,7 @@ final class AssistantModel {
                     externalLink = ExternalLink(url: url, kind: .linkApproval)
                 }
                 appendNote("Signed off — the day is on Home. Garage links arrive 15 minutes before each stop.")
-                await saveReorder(itineraryId: response.itineraryId, planId: planId, stops: stops)
+                await saveCardEdits(itineraryId: response.itineraryId, planId: planId, stops: stops)
                 await appModel.refreshItineraries()
             default:
                 appendNote("Confirmed.")
@@ -182,19 +182,29 @@ final class AssistantModel {
         phase = .idle
     }
 
-    /// Sign-off stores the plan as proposed; a reorder made on the card
-    /// before the tap is applied as the day's first edit. Without this the
-    /// drag-to-reorder was silently dropped at sign-off.
-    private func saveReorder(itineraryId: String?, planId: String, stops: [ItineraryStop]?) async {
+    /// Sign-off stores the plan as proposed; anything changed on the card
+    /// before the tap — a new time, a cleared time, a moved untimed stop, a
+    /// duration or street/garage switch — is applied as the day's first
+    /// edit. Comparing only the order used to drop every other edit.
+    private func saveCardEdits(itineraryId: String?, planId: String, stops: [ItineraryStop]?) async {
         guard let itineraryId, let stops,
               case .itinerary(let proposed)? = proposedPlan?.planId == planId ? proposedPlan?.plan : nil,
-              proposed.stops.map(\.id) != stops.map(\.id)
+              let edits = Self.cardEditsToSave(proposed: proposed.stops, card: stops)
         else { return }
         do {
-            _ = try await api.patchItinerary(id: itineraryId, stops: stops)
+            _ = try await api.patchItinerary(id: itineraryId, stops: edits)
         } catch {
-            appendNote("The day is signed off in its original order — the new order didn't save.")
+            appendNote("The day is signed off as proposed — your changes to it didn't save.")
         }
+    }
+
+    /// The card's stops when anything on them differs from the proposal —
+    /// order, a time set or cleared, duration, street/garage — else nil.
+    nonisolated static func cardEditsToSave(
+        proposed: [ItineraryStop],
+        card: [ItineraryStop]
+    ) -> [ItineraryStop]? {
+        proposed == card ? nil : card
     }
 
     private func streetNote(_ response: AssistantConfirmResponse) -> String {

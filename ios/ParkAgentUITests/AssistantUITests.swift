@@ -171,36 +171,65 @@ final class AssistantUITests: ParkAgentUITestCase {
         )
     }
 
-    func testSixStopItinerarySignOffAndReorder() {
+    /// Itinerary order. The mock lists the six stops 4,1,6,2,5,3 (stop-N
+    /// arrives at (9+N):00), so every order asserted below is one the app
+    /// produced, never the fixture's. A later stop must never render above
+    /// an earlier one: a timed stop can't be moved by hand, a new time
+    /// re-sorts it, and only a stop whose time is cleared can be moved.
+    func testItineraryStopsStayInArrivalOrderThroughEditsAndSignOff() {
         let app = openAssistant("itinerary")
         ask(app, "plan my boston day")
         XCTAssertTrue(element(app, "assistant.itineraryPlan").waitForExistence(timeout: 10))
-
-        // Six stops, day total against the cap.
-        for i in 1...6 {
-            XCTAssertTrue(element(app, "assistant.stopRow.stop-\(i)").exists, "stop \(i) missing")
-        }
         XCTAssertTrue(element(app, "assistant.dayTotal").label.contains("$40.40"))
 
-        // Reorder: stop 2 moves above stop 1. The rows drag in the list;
-        // the menu drives it deterministically here (a synthesized drag on
-        // a reorder handle is famously flaky in XCTest).
-        let firstBefore = element(app, "assistant.stopRow.stop-1")
-        let secondBefore = element(app, "assistant.stopRow.stop-2")
-        XCTAssertLessThan(
-            firstBefore.frame.minY, secondBefore.frame.minY,
-            "Stop 1 starts above stop 2"
-        )
+        // First render: arrival order, not list order.
+        assertStopsTopToBottom(app, ["stop-1", "stop-2", "stop-3", "stop-4", "stop-5", "stop-6"],
+                               "the card must sort the stops by arrival")
+
+        // A timed stop's menu: Edit stop, and no Move up/down — even
+        // though stop-2 is neither first nor last. The positive half of the
+        // pair is the Edit button in the same open menu.
         scrollTo(app, "assistant.stopMenu.stop-2").tap()
-        app.buttons["Move up"].tap()
-        let firstRow = element(app, "assistant.stopRow.stop-2")
-        XCTAssertTrue(firstRow.exists)
-        // The order actually changed on screen, not just in the model.
-        XCTAssertLessThan(
-            firstRow.frame.minY, element(app, "assistant.stopRow.stop-1").frame.minY,
-            "Stop 2 is now above stop 1"
+        XCTAssertTrue(app.buttons["Edit stop"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.buttons["Move up"].exists, "a timed stop must not move by hand")
+        XCTAssertFalse(app.buttons["Move down"].exists, "a timed stop must not move by hand")
+
+        // Re-time stop-2 to 11 PM — later than every other stop in any US
+        // time zone or UTC. It must MOVE: above stop-3 before, below
+        // stop-6 after.
+        XCTAssertLessThan(stopRow(app, "stop-2").frame.minY, stopRow(app, "stop-3").frame.minY)
+        app.buttons["Edit stop"].tap()
+        setStopTime(app, hour: "11", period: "PM")
+        attachScreenshot(of: app, named: "assistant-itinerary-stop-time")
+        element(app, "stopEdit.save").tap()
+        XCTAssertTrue(waitForDisappearance(element(app, "stopEdit.save"), timeout: 5))
+        XCTAssertGreaterThan(
+            stopRow(app, "stop-2").frame.minY, stopRow(app, "stop-6").frame.minY,
+            "a later time must re-sort the stop below the others"
         )
-        attachScreenshot(of: app, named: "assistant-itinerary-reordered")
+        assertStopsTopToBottom(app, ["stop-1", "stop-3", "stop-4", "stop-5", "stop-6", "stop-2"],
+                               "after re-timing stop-2")
+
+        // Clear stop-4's time: it stays in its slot and reads "Any time"…
+        scrollTo(app, "assistant.stopMenu.stop-4").tap()
+        XCTAssertTrue(app.buttons["Edit stop"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.buttons["Move up"].exists, "still timed until saved")
+        app.buttons["Edit stop"].tap()
+        setToggle(app, "stopEdit.hasTime", on: false)
+        element(app, "stopEdit.save").tap()
+        XCTAssertTrue(waitForDisappearance(element(app, "stopEdit.save"), timeout: 5))
+        waitForLabelContaining(stopRow(app, "stop-4"), "Any time")
+        assertStopsTopToBottom(app, ["stop-1", "stop-3", "stop-4", "stop-5", "stop-6", "stop-2"],
+                               "clearing a time leaves the stop where it was")
+
+        // …and is now the one stop that moves by hand. Move it up past a
+        // timed stop; the timed stops keep their time order around it.
+        scrollTo(app, "assistant.stopMenu.stop-4").tap()
+        XCTAssertTrue(app.buttons["Move up"].waitForExistence(timeout: 3), "an untimed stop moves")
+        app.buttons["Move up"].tap()
+        assertStopsTopToBottom(app, ["stop-1", "stop-4", "stop-3", "stop-5", "stop-6", "stop-2"],
+                               "the untimed stop moved; timed stops stay in time order")
+        attachScreenshot(of: app, named: "assistant-itinerary-arrival-order")
 
         scrollTo(app, "assistant.signOffButton").tap()
         let done = app.staticTexts.containing(
@@ -208,23 +237,70 @@ final class AssistantUITests: ParkAgentUITestCase {
         ).firstMatch
         XCTAssertTrue(done.waitForExistence(timeout: 5))
 
-        // The day landed on Home with live status rows (leaf identifiers:
-        // the section container flattens inside home.view).
+        // The day on Home keeps the card's edits and the same order (the
+        // edits save as the day's first PATCH; view-mode rows reuse the
+        // assistant stop-row identifiers).
         app.buttons["Done"].tap()
         XCTAssertTrue(element(app, "home.dayHeader").waitForExistence(timeout: 5))
-        // View-mode rows reuse the assistant stop-row identifiers; the
-        // home.dayStop.* ids belong to the edit list.
-        let homeFirst = element(app, "assistant.stopRow.stop-2")
-        let homeSecond = element(app, "assistant.stopRow.stop-1")
-        XCTAssertTrue(homeFirst.waitForExistence(timeout: 5))
-        XCTAssertTrue(homeSecond.exists)
-        // The reorder survived sign-off: Home shows the day in the order
-        // the user left it, not the order the model proposed.
-        XCTAssertLessThan(
-            homeFirst.frame.minY, homeSecond.frame.minY,
-            "The signed-off day keeps stop 2 above stop 1"
-        )
+        XCTAssertTrue(stopRow(app, "stop-2").waitForExistence(timeout: 5))
+        waitForLabelContaining(stopRow(app, "stop-4"), "Any time")
+        assertStopsTopToBottom(app, ["stop-1", "stop-4", "stop-3", "stop-5", "stop-6", "stop-2"],
+                               "Home shows the signed-off day in the same order")
         attachScreenshot(of: app, named: "assistant-day-on-home")
+
+        // Home's edit mode: the system drag handle is on the untimed stop
+        // alone — one handle among six rows, and it's that stop's.
+        element(app, "home.dayEditButton").tap()
+        XCTAssertTrue(element(app, "home.dayStop.stop-4").waitForExistence(timeout: 5))
+        let handles = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Reorder '"))
+        XCTAssertEqual(handles.count, 1, "only a stop with no set time gets a drag handle")
+        XCTAssertEqual(handles.firstMatch.label, "Reorder MFA meeting")
+    }
+
+    private func stopRow(_ app: XCUIApplication, _ id: String) -> XCUIElement {
+        element(app, "assistant.stopRow.\(id)")
+    }
+
+    /// The geometric claim: sorted by where they render, the rows come out
+    /// in exactly this order. Every row is in the tree (the card is a plain
+    /// VStack), so relative minY holds wherever the transcript is scrolled.
+    private func assertStopsTopToBottom(
+        _ app: XCUIApplication,
+        _ expected: [String],
+        _ message: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        for id in expected {
+            XCTAssertTrue(stopRow(app, id).waitForExistence(timeout: 5), "\(id) missing", file: file, line: line)
+        }
+        let rendered = expected
+            .map { ($0, stopRow(app, $0).frame.minY) }
+            .sorted { $0.1 < $1.1 }
+            .map(\.0)
+        XCTAssertEqual(rendered, expected, message, file: file, line: line)
+    }
+
+    /// Turn the edit sheet's time wheels (hour, minute, AM/PM).
+    private func setStopTime(_ app: XCUIApplication, hour: String, period: String) {
+        let wheels = app.pickerWheels
+        XCTAssertTrue(wheels.firstMatch.waitForExistence(timeout: 5), "no time wheels")
+        wheels.element(boundBy: 0).adjust(toPickerWheelValue: hour)
+        wheels.element(boundBy: wheels.count - 1).adjust(toPickerWheelValue: period)
+    }
+
+    /// A Form toggle's element spans the row; the tap has to land on the
+    /// switch itself.
+    private func setToggle(_ app: XCUIApplication, _ identifier: String, on: Bool) {
+        let toggle = app.switches[identifier]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 5))
+        let wanted = on ? "1" : "0"
+        if toggle.value as? String == wanted { return }
+        toggle.switches.firstMatch.tap()
+        if toggle.value as? String != wanted {
+            toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+        }
+        XCTAssertEqual(toggle.value as? String, wanted, "\(identifier) didn't switch")
     }
 
     /// Link as the Wallet's way to pay: a garage confirm goes through the

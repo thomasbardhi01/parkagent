@@ -1,9 +1,10 @@
 import MapKit
 import SwiftUI
 
-/// Itinerary plan: numbered stops on a map, an editable/reorderable
-/// list with per-stop cost, the day total against the cap, and ONE
-/// Sign off button.
+/// Itinerary plan: numbered stops on a map, an editable list with
+/// per-stop cost, the day total against the cap, and ONE Sign off button.
+/// Stops always show in arrival order (ItineraryOrder); only a stop whose
+/// time the user cleared can be dragged or moved.
 struct ItineraryPlanCard: View {
     let plan: ItineraryPlan
     let confirming: Bool
@@ -23,33 +24,26 @@ struct ItineraryPlanCard: View {
                 .frame(height: 180)
                 .clipShape(RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
 
-            // Rows drag onto each other to reorder. A List in edit mode
-            // would give system drag handles, but it can't self-size
-            // inside the transcript's ScrollView — a fixed height either
-            // clips the last stop or leaves a gap. The menu's Move
-            // up/down does the same job for VoiceOver and UI tests (a
-            // synthesized drag is famously flaky).
+            // An untimed row drags onto another row to take its place. A
+            // List in edit mode would give system drag handles, but it
+            // can't self-size inside the transcript's ScrollView — a fixed
+            // height either clips the last stop or leaves a gap. The
+            // menu's Move up/down does the same job for VoiceOver and UI
+            // tests (a synthesized drag is famously flaky). A timed stop
+            // gets neither: its place is its time — edit the time instead.
             VStack(spacing: 0) {
                 ForEach(Array(stops.enumerated()), id: \.element.id) { index, stop in
+                    let movable = ItineraryOrder.isMovable(stop)
                     ItineraryStopRow(
                         index: index + 1,
                         stop: stop,
                         isFirst: index == 0,
                         isLast: index == stops.count - 1,
                         onEdit: { editingStop = stop },
-                        onMoveUp: { move(stop, by: -1) },
-                        onMoveDown: { move(stop, by: 1) }
+                        onMoveUp: movable ? { move(stop, by: -1) } : nil,
+                        onMoveDown: movable ? { move(stop, by: 1) } : nil
                     )
-                    // The system lifts a preview of the row under the
-                    // finger; no extra dimming here, because a cancelled
-                    // drag has no callback to undo it with and the row
-                    // would stay dimmed for good.
-                    .draggable(stop.id) {
-                        Text(stop.label)
-                            .font(.captionTextSemibold)
-                            .padding(Spacing.half)
-                            .background(Color.surface)
-                    }
+                    .draggableIfUntimed(stop)
                     .dropDestination(for: String.self) { dragged, _ in
                         guard let movedID = dragged.first else { return false }
                         return move(id: movedID, toRowOf: stop.id)
@@ -86,14 +80,17 @@ struct ItineraryPlanCard: View {
                     .foregroundStyle(Color.textSecondary)
             }
         }
-        .onAppear { if stops.isEmpty { stops = plan.stops } }
+        .onAppear { if stops.isEmpty { stops = ItineraryOrder.normalized(plan.stops) } }
         .sheet(item: $editingStop) { stop in
-            StopEditSheet(stop: stop) { edited in
-                if let index = stops.firstIndex(where: { $0.id == edited.id }) {
+            StopEditSheet(stop: stop, day: plan.date) { edited in
+                guard let index = stops.firstIndex(where: { $0.id == edited.id }) else { return }
+                // A changed time re-sorts the stop into its place.
+                withAnimation {
                     stops[index] = edited
+                    stops = ItineraryOrder.normalized(stops)
                 }
             }
-            .presentationDetents([.medium])
+            .presentationDetents([.medium, .large])
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("assistant.itineraryPlan")
@@ -115,27 +112,56 @@ struct ItineraryPlanCard: View {
         }
     }
 
+    /// Move up/down, untimed stops only: swap with the neighbour, then
+    /// re-apply the rule so the timed stops stay in time order around it.
     private func move(_ stop: ItineraryStop, by offset: Int) {
-        guard let index = stops.firstIndex(where: { $0.id == stop.id }) else { return }
+        guard ItineraryOrder.isMovable(stop),
+              let index = stops.firstIndex(where: { $0.id == stop.id }) else { return }
         let target = index + offset
         guard stops.indices.contains(target) else { return }
-        withAnimation { stops.swapAt(index, target) }
+        withAnimation {
+            stops.swapAt(index, target)
+            stops = ItineraryOrder.normalized(stops)
+        }
     }
 
-    /// Drop: the dragged stop takes the target row's position, the rest
-    /// closing up behind it. Returns false for a no-op so the drop can
-    /// animate back instead of pretending it landed.
+    /// Drop: the dragged (untimed) stop takes the target row's position,
+    /// the rest closing up behind it. Returns false for a no-op — or a
+    /// timed stop, which never moves by hand — so the drop animates back
+    /// instead of pretending it landed.
     @discardableResult
     private func move(id movedID: String, toRowOf targetID: String) -> Bool {
         guard movedID != targetID,
               let from = stops.firstIndex(where: { $0.id == movedID }),
-              let to = stops.firstIndex(where: { $0.id == targetID })
+              let to = stops.firstIndex(where: { $0.id == targetID }),
+              ItineraryOrder.isMovable(stops[from])
         else { return false }
         withAnimation {
             let moved = stops.remove(at: from)
             stops.insert(moved, at: to)
+            stops = ItineraryOrder.normalized(stops)
         }
         return true
+    }
+}
+
+private extension View {
+    /// Only a stop with no set time can be dragged. The system lifts a
+    /// preview of the row under the finger; no extra dimming, because a
+    /// cancelled drag has no callback to undo it with and the row would
+    /// stay dimmed for good.
+    @ViewBuilder
+    func draggableIfUntimed(_ stop: ItineraryStop) -> some View {
+        if ItineraryOrder.isMovable(stop) {
+            draggable(stop.id) {
+                Text(stop.label)
+                    .font(.captionTextSemibold)
+                    .padding(Spacing.half)
+                    .background(Color.surface)
+            }
+        } else {
+            self
+        }
     }
 }
 
@@ -168,6 +194,8 @@ struct ItineraryStopRow: View {
     let isFirst: Bool
     let isLast: Bool
     var onEdit: (() -> Void)?
+    /// nil for a timed stop: its place is its time, so the menu offers no
+    /// Move up/down.
     var onMoveUp: (() -> Void)?
     var onMoveDown: (() -> Void)?
 
@@ -214,8 +242,8 @@ struct ItineraryStopRow: View {
             if onEdit != nil {
                 Menu {
                     Button("Edit stop") { onEdit?() }
-                    if !isFirst { Button("Move up") { onMoveUp?() } }
-                    if !isLast { Button("Move down") { onMoveDown?() } }
+                    if let onMoveUp, !isFirst { Button("Move up", action: onMoveUp) }
+                    if let onMoveDown, !isLast { Button("Move down", action: onMoveDown) }
                 } label: {
                     Image(systemName: "ellipsis.circle")
                         .foregroundStyle(Color.textSecondary)
@@ -229,35 +257,50 @@ struct ItineraryStopRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("assistant.stopRow.\(stop.id)")
-        // Rows drag to reorder in the plan card's List; the menu's Move
+        // Untimed rows drag to reorder in the plan card; the menu's Move
         // up/down does the same job for VoiceOver and UI tests.
         .contentShape(Rectangle())
     }
 }
 
-/// Edit one stop: arrival, duration, street/garage choice.
+/// Edit one stop: its time (or none), duration, street/garage choice.
+/// The time is time-of-day only — the itinerary is one day, so a stop
+/// keeps its date. Saving re-sorts the day (the caller normalizes).
 struct StopEditSheet: View {
-    @State var stop: ItineraryStop
+    @State private var stop: ItineraryStop
+    @State private var hasTime: Bool
+    @State private var time: Date
+    private let originalTime: Date?
     let onSave: (ItineraryStop) -> Void
     @Environment(\.dismiss) private var dismiss
+
+    /// `day` is the itinerary's date: where a time lands on a stop that had
+    /// none.
+    init(stop: ItineraryStop, day: String, onSave: @escaping (ItineraryStop) -> Void) {
+        let original = ItineraryOrder.arrival(of: stop)
+        _stop = State(initialValue: stop)
+        _hasTime = State(initialValue: original != nil)
+        _time = State(initialValue: original ?? Format.noon(onPlanDay: day) ?? AppClock.now)
+        originalTime = original
+        self.onSave = onSave
+    }
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("Stop") {
-                    TextField("Label", text: $stop.label)
-                        .accessibilityIdentifier("stopEdit.label")
-                    TextField("Address", text: $stop.address)
-                }
-                Section("Timing") {
-                    DatePicker(
-                        "Arrival",
-                        selection: Binding(
-                            get: { Format.parseArrival(stop.arrival) ?? .now },
-                            set: { stop.arrival = Format.arrivalISO($0) }
-                        ),
-                        displayedComponents: [.date, .hourAndMinute]
-                    )
+                Section {
+                    Toggle("Set a time", isOn: $hasTime)
+                        .accessibilityIdentifier("stopEdit.hasTime")
+                    if hasTime {
+                        // Wheels, not the compact button: they stay on
+                        // screen in a medium sheet and are what UI tests
+                        // can turn deterministically.
+                        DatePicker("Arrival", selection: $time, displayedComponents: .hourAndMinute)
+                            .datePickerStyle(.wheel)
+                            .labelsHidden()
+                            .frame(maxWidth: .infinity)
+                            .accessibilityIdentifier("stopEdit.arrival")
+                    }
                     Stepper(
                         "Duration: \(stop.durationMinutes) min",
                         value: $stop.durationMinutes,
@@ -265,6 +308,17 @@ struct StopEditSheet: View {
                         step: 15
                     )
                     .accessibilityIdentifier("stopEdit.duration")
+                } header: {
+                    Text("Timing")
+                } footer: {
+                    Text(hasTime
+                        ? "Stops run in time order, so a new time moves this stop to its place."
+                        : "With no set time, you place this stop yourself — drag it, or use Move up and Move down.")
+                }
+                Section("Stop") {
+                    TextField("Label", text: $stop.label)
+                        .accessibilityIdentifier("stopEdit.label")
+                    TextField("Address", text: $stop.address)
                 }
                 Section("Parking") {
                     Picker("Type", selection: $stop.choice) {
@@ -282,7 +336,15 @@ struct StopEditSheet: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Save") {
-                        onSave(stop)
+                        var saved = stop
+                        if !hasTime {
+                            saved.arrival = nil
+                        } else if time != originalTime {
+                            // Rewritten only when it changed, so an
+                            // untouched stop still equals the one proposed.
+                            saved.arrival = Format.arrivalISO(time)
+                        }
+                        onSave(saved)
                         dismiss()
                     }
                     .accessibilityIdentifier("stopEdit.save")

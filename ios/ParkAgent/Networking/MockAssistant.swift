@@ -78,7 +78,9 @@ actor MockAssistantStore {
             id: old.id,
             status: old.status,
             date: old.date,
-            stops: stops,
+            // Like the server: stored in arrival order, untimed stops
+            // where the user put them.
+            stops: ItineraryOrder.normalized(stops),
             totalUsd: (stops.reduce(0) { $0 + $1.costUsd } * 100).rounded() / 100
         )
         itineraries[index] = updated
@@ -166,9 +168,12 @@ enum MockAssistantFixtures {
         )
     }
 
-    /// Six stops across a Boston day — the sign-off fixture.
+    /// Six stops across a Boston day — the sign-off fixture. stop-N arrives
+    /// at (9+N):00, but they're listed OUT of arrival order on purpose, so
+    /// the UI tests prove the app sorts them rather than trusting the
+    /// order they came in.
     static var itineraryPlan: AssistantReply.ProposedPlan {
-        let stops = (1...6).map { i in
+        let stops = [4, 1, 6, 2, 5, 3].map { i in
             let garage = i % 3 == 0
             return """
             {"id": "stop-\(i)", "label": "\(stopLabels[i - 1])", "address": "\(i)00 Boylston St",

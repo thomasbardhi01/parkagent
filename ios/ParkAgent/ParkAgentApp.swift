@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import UserNotifications
 
 @main
 struct ParkAgentApp: App {
@@ -21,8 +22,19 @@ struct ParkAgentApp: App {
     }
 }
 
-/// Only exists because APNs token delivery has no SwiftUI surface.
+/// Only exists because APNs token delivery and the notification delegate
+/// have no SwiftUI surface.
 final class AppDelegate: NSObject, UIApplicationDelegate {
+    /// Apple's rule: set the notification delegate before launch finishes,
+    /// or a tap that launched the app is never delivered.
+    func application(
+        _ application: UIApplication,
+        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+    ) -> Bool {
+        UNUserNotificationCenter.current().delegate = PushManager.shared
+        return true
+    }
+
     func application(
         _ application: UIApplication,
         didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data

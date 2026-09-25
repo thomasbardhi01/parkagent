@@ -75,8 +75,10 @@ final class OnboardingUITests: ParkAgentUITestCase {
 
         // 6 — Budget: preview sentence tracks the caps; save through the mock.
         XCTAssertTrue(element(app, "onboarding.budget").waitForExistence(timeout: 5))
+        // The values appear once the policy has loaded; nothing made-up
+        // is ever shown before that, so the exact cap is the policy's.
         let preview = element(app, "onboarding.budgetPreview")
-        XCTAssertTrue(preview.exists)
+        XCTAssertTrue(preview.waitForExistence(timeout: 5))
         XCTAssertTrue(preview.label.contains("$45.00"), "Preview should show the session cap")
         element(app, "onboarding.continueButton").tap()
 
@@ -225,7 +227,8 @@ final class OnboardingUITests: ParkAgentUITestCase {
         XCTAssertTrue(element(app, "onboarding.budget").waitForExistence(timeout: 5))
         let sessionCap = element(app, "onboarding.budget.sessionCap")
         XCTAssertTrue(sessionCap.waitForExistence(timeout: 5), "Limits should still be shown")
-        XCTAssertTrue(sessionCap.label.contains("$"), "Per-stop cap missing its value: \(sessionCap.label)")
+        // The policy's own cap: the screen shows no value until it loads.
+        XCTAssertEqual(sessionCap.label, "Per stop, $45.00")
         XCTAssertFalse(element(app, "onboarding.budget.sessionCap.plus").exists, "No steppers on shared limits")
         XCTAssertTrue(element(app, "onboarding.budgetShared").exists, "Why they're read-only is missing")
 

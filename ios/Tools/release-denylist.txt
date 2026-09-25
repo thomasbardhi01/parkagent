@@ -58,7 +58,9 @@ link.mockSignInButton
 welcome.googleButton
 Continue with Google
 
-# Developer-facing copy and fixture data.
+# Developer-facing copy and fixture data. Some entries name code that was
+# deleted outright ("later phase", "not built yet", "Simulate park here",
+# FixturePoint): they can't fire today and guard against it coming back.
 Config.xcconfig
 not built yet
 later phase

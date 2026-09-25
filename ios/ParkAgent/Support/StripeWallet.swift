@@ -42,9 +42,13 @@ enum StripeWallet {
     }
 
     /// The UI tests and previews run on the mock server, whose intents are
-    /// fixtures: finish without presenting anything.
+    /// fixtures: finish without presenting anything. Never in Release.
     private static func isMockSecret(_ clientSecret: String) -> Bool {
+        #if DEBUG
         clientSecret.hasPrefix("seti_mock_")
+        #else
+        false
+        #endif
     }
 
     /// STPApplePayContext holds its delegate weakly; this keeps it alive

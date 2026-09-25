@@ -33,6 +33,11 @@ strings -a "$BIN" > "$STRINGS"
 
 failed=0
 while IFS= read -r line || [ -n "$line" ]; do
+  # Trim like the Swift parser (ReleaseDenylist.swift) so both read the
+  # same entries: CR, then leading and trailing whitespace.
+  line="${line%$'\r'}"
+  line="${line#"${line%%[![:space:]]*}"}"
+  line="${line%"${line##*[![:space:]]}"}"
   case "$line" in
     ''|'#'*) continue ;;
     # Type entries are checked by ParkAgentReleaseTests in the Swift

@@ -6,51 +6,25 @@ import SwiftUI
 struct SpendingLimitsView: View {
     @Environment(AppModel.self) private var model
 
-    private var editable: Bool { model.policyResponse?.canEdit ?? true }
+    /// Not editable until the policy says so.
+    private var editable: Bool { model.policyResponse?.canEdit ?? false }
 
-    @State private var sessionCap: Double = 45
-    @State private var dailyCap: Double = 60
-    @State private var defaultMinutes: Int = 90
-    @State private var seeded = false
+    @State private var sessionCap: Double = 0
+    @State private var dailyCap: Double = 0
+    @State private var defaultMinutes: Int = 0
+    /// The policy hash the values came from; nil until it loads — made-up
+    /// numbers are never shown, or saved over the real caps.
+    @State private var seededHash: String?
     @State private var isSaving = false
     @State private var saveFailed = false
     @State private var savedOK = false
 
     var body: some View {
         Form {
-            Section {
-                stepperRow(
-                    "Per stop",
-                    value: Format.money(sessionCap),
-                    identifier: "limits.sessionCap",
-                    decrement: { sessionCap = max(5, sessionCap - 5) },
-                    increment: { sessionCap = min(200, sessionCap + 5) }
-                )
-                stepperRow(
-                    "Per day",
-                    value: Format.money(dailyCap),
-                    identifier: "limits.dailyCap",
-                    decrement: { dailyCap = max(5, dailyCap - 5) },
-                    increment: { dailyCap = min(400, dailyCap + 5) }
-                )
-                stepperRow(
-                    "Default stay",
-                    value: Format.minutes(defaultMinutes),
-                    identifier: "limits.defaultStay",
-                    decrement: { defaultMinutes = max(15, defaultMinutes - 15) },
-                    increment: { defaultMinutes = min(240, defaultMinutes + 15) }
-                )
-            } header: {
-                Text("Limits")
-            } footer: {
-                VStack(alignment: .leading, spacing: Spacing.half) {
-                    Text("We'll pay up to \(Format.money(sessionCap)) per stop and \(Format.money(dailyCap)) per day without asking.")
-                        .accessibilityIdentifier("limits.preview")
-                    if !editable {
-                        Text(SharedLimitsCopy.note)
-                            .accessibilityIdentifier("limits.shared")
-                    }
-                }
+            if seededHash == nil {
+                pendingSection
+            } else {
+                limitsSection
             }
 
             Section {
@@ -70,21 +44,80 @@ struct SpendingLimitsView: View {
                 Text("Every automated decision is checked against these first.")
             }
 
-            if editable {
+            if editable && seededHash != nil {
                 saveSection
             }
         }
         .navigationTitle("Spending limits")
         .navigationBarTitleDisplayMode(.inline)
-        .task {
-            guard !seeded, let policy = model.policyResponse?.policy else { return }
-            seeded = true
-            sessionCap = policy.sessionCapUsd
-            dailyCap = policy.dailyCapUsd
-            defaultMinutes = policy.defaultStayMinutes
-        }
+        // Re-seed whenever the policy arrives or changes (a late load, or
+        // the saved values coming back).
+        .task(id: model.policyResponse?.hash) { seed() }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("limits.view")
+    }
+
+    private func seed() {
+        guard let response = model.policyResponse, response.hash != seededHash else { return }
+        seededHash = response.hash
+        sessionCap = response.policy.sessionCapUsd
+        dailyCap = response.policy.dailyCapUsd
+        defaultMinutes = response.policy.defaultStayMinutes
+    }
+
+    @ViewBuilder
+    private var pendingSection: some View {
+        Section {
+            if model.policyLoadFailed {
+                Text("Couldn't load your limits.")
+                    .foregroundStyle(Color.textSecondary)
+                    .accessibilityIdentifier("limits.unavailable")
+                Button("Try again") { Task { await model.loadPolicy() } }
+                    .foregroundStyle(Color.actionCoralLink)
+            } else {
+                ProgressView()
+                    .frame(maxWidth: .infinity)
+            }
+        } header: {
+            Text("Limits")
+        }
+    }
+
+    private var limitsSection: some View {
+        Section {
+            stepperRow(
+                "Per stop",
+                value: Format.money(sessionCap),
+                identifier: "limits.sessionCap",
+                decrement: { sessionCap = max(5, sessionCap - 5) },
+                increment: { sessionCap = min(200, sessionCap + 5) }
+            )
+            stepperRow(
+                "Per day",
+                value: Format.money(dailyCap),
+                identifier: "limits.dailyCap",
+                decrement: { dailyCap = max(5, dailyCap - 5) },
+                increment: { dailyCap = min(400, dailyCap + 5) }
+            )
+            stepperRow(
+                "Default stay",
+                value: Format.minutes(defaultMinutes),
+                identifier: "limits.defaultStay",
+                decrement: { defaultMinutes = max(15, defaultMinutes - 15) },
+                increment: { defaultMinutes = min(240, defaultMinutes + 15) }
+            )
+        } header: {
+            Text("Limits")
+        } footer: {
+            VStack(alignment: .leading, spacing: Spacing.half) {
+                Text("We'll pay up to \(Format.money(sessionCap)) per stop and \(Format.money(dailyCap)) per day without asking.")
+                    .accessibilityIdentifier("limits.preview")
+                if !editable {
+                    Text(SharedLimitsCopy.note)
+                        .accessibilityIdentifier("limits.shared")
+                }
+            }
+        }
     }
 
     private var saveSection: some View {

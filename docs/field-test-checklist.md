@@ -18,7 +18,8 @@ and decides, but no money moves and you pay the meter by hand as usual.
    - Motion & Fitness: on. Notifications: on.
    - If either is off, Home shows a banner with an Open Settings button —
      clear the banners before the drive.
-4. **Turn on the signal log**: Account (the avatar on Home) → About → tap the version five
+4. **Turn on the signal log** (a Debug build from Xcode — TestFlight builds
+   have no Diagnostics): Account (the avatar on Home) → About → tap the version five
    times → Diagnostics → **Log raw detector signals**. This writes every motion, car-audio, and location event
    with a timestamp to a file on the phone; it is the only way to debug
    a missed or false park after the fact.

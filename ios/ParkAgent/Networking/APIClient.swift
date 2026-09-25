@@ -127,6 +127,51 @@ enum APIError: Error, LocalizedError {
     /// Apple Pay / the card form couldn't save the card; Stripe's own
     /// sentence says why.
     case cardNotSaved(String)
+    /// 502 executor_failed: the step at the parking provider failed, with
+    /// the executor's code. Some codes are certainly before any charge;
+    /// others can come after the pay click, so whether it went through is
+    /// unknown — see `providerDeclined`.
+    case executorFailed(code: String?)
+
+    /// Executor codes that can only happen BEFORE the provider charges:
+    /// signed out, no such zone, card refused, no card or plate on file,
+    /// an operator lockout. Anything else (ui_changed, network,
+    /// browser_crashed, unknown) may have happened after the pay click.
+    static let preChargeExecutorCodes: Set<String> = [
+        "auth_expired", "zone_not_found", "payment_declined",
+        "payment_method_missing", "vehicle_missing", "parking_denied",
+    ]
+
+    /// True only when the provider certainly didn't take the money.
+    var providerDeclined: Bool {
+        if case .executorFailed(let code?) = self { return Self.preChargeExecutorCodes.contains(code) }
+        return false
+    }
+
+    /// Whether a failed payment may have gone through anyway: the provider
+    /// never confirmed (an ambiguous executor code), or the connection
+    /// dropped before the server's answer arrived (it keeps paying).
+    var paymentOutcomeUnknown: Bool {
+        switch self {
+        case .executorFailed: !providerDeclined
+        case .transport, .server: true
+        default: false
+        }
+    }
+
+    /// The parked sheet's sentence for a failed START — what is true about
+    /// the meter, and what to do before trying again.
+    var startFailureMessage: String {
+        if case .executorFailed = self {
+            return providerDeclined
+                ? "The parking provider turned the payment down, so the meter isn't paid. Try again, or pay at the meter."
+                : "The parking provider didn't confirm the payment, so it may or may not have gone through. Check your parking app before trying again, so you don't pay twice."
+        }
+        if paymentOutcomeUnknown {
+            return "The connection dropped before ParkAgent heard back, so the payment may or may not have gone through. Check Activity or your parking app before trying again."
+        }
+        return errorDescription ?? "The meter wasn't paid. Try again, or pay at the meter."
+    }
 
     var errorDescription: String? {
         switch self {
@@ -153,6 +198,11 @@ enum APIError: Error, LocalizedError {
             return Self.refusalMessage(code)
         case .cardNotSaved(let message):
             return message
+        case .executorFailed:
+            // Extend and stop read this; a start uses startFailureMessage.
+            return providerDeclined
+                ? "The parking provider turned it down, so nothing changed. Try again, or use your parking app."
+                : "The parking provider didn't confirm it. Check your parking app to see where it stands before trying again."
         }
     }
 
@@ -205,7 +255,6 @@ enum APIError: Error, LocalizedError {
         case "conversation_not_found": "That conversation isn't available. Start a new one."
         case "rate_limited": "That's a lot of requests at once. Wait a moment and try again."
         // Session start / extend / stop (server/API.md "Sessions").
-        case "executor_failed": "The payment didn't go through, so the meter isn't paid. Try again, or pay at the meter."
         case "policy_violation": "That's outside your parking limits, so nothing was paid."
         case "session_already_active": "A parking session is already running. Stop it before starting another."
         case "session_not_active", "session_not_found", "no_active_session": "That session has already ended."

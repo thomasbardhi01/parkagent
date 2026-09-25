@@ -22,6 +22,9 @@ final class PushManager: NSObject, UNUserNotificationCenterDelegate {
 
     private var api: (any APIClient)?
     private var pendingToken: String?
+    /// A tap that arrived before AppModel wired the handlers above (a cold
+    /// launch from the notification); replayed once they are.
+    private var pendingOpen: (type: String, provider: String?, deepLink: String?)?
 
     private override init() {
         super.init()
@@ -84,6 +87,10 @@ final class PushManager: NSObject, UNUserNotificationCenterDelegate {
     /// arrival — a banner that yanked the app into the link flow or the
     /// Wallet mid-payment was worse than the problem it announced.
     private func open(type: String, provider: String?, deepLink: String?) {
+        guard onOpenPark != nil else {
+            pendingOpen = (type, provider, deepLink)
+            return
+        }
         switch type {
         case "provider_relink":
             if let provider { onProviderRelink?(provider) }
@@ -101,6 +108,12 @@ final class PushManager: NSObject, UNUserNotificationCenterDelegate {
             // in the provider's app).
             onOpenPark?()
         }
+    }
+
+    func replayPendingOpen() {
+        guard let pending = pendingOpen else { return }
+        pendingOpen = nil
+        open(type: pending.type, provider: pending.provider, deepLink: pending.deepLink)
     }
 
     // MARK: - UNUserNotificationCenterDelegate

@@ -586,7 +586,11 @@ struct LiveAPI: APIClient {
 
     // MARK: - Transport
 
-    private struct Refusal: Decodable { let error: String }
+    /// `code` is the executor's own code on a 502 executor_failed.
+    private struct Refusal: Decodable {
+        let error: String
+        var code: String?
+    }
 
     /// One round trip. `authenticated` requests carry the access token and,
     /// on a 401, refresh once and retry exactly once — the AuthStore makes
@@ -671,6 +675,9 @@ struct LiveAPI: APIClient {
             // Named refusals carry {"error": "<code>"} (dry_run,
             // funding_unavailable, assistant_budget_exhausted, …).
             if let refusal = try? decoder.decode(Refusal.self, from: data) {
+                if refusal.error == "executor_failed" {
+                    return .executorFailed(code: refusal.code)
+                }
                 return .refused(code: refusal.error)
             }
             return .server(status: status)

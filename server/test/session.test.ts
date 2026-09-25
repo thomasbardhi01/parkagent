@@ -203,7 +203,13 @@ test("executor failure fails the session and pushes payment_failed", async () =>
   // executor code rides in `extra`, never in the words a driver reads.
   const push = pushes.at(-1)!.push;
   expect(push.type).toBe("payment_failed");
-  expect(push.body).toBe("The meter for zone 417371 is unpaid — pay in ParkNYC or at the meter.");
+  // ui_changed can come after the pay click: "not confirmed", never
+  // "unpaid" — a retry on a false "unpaid" would pay twice.
+  expect(push.title).toBe("Payment not confirmed");
+  expect(push.body).toBe(
+    "ParkNYC didn't confirm the payment for zone 417371. Check ParkNYC's app before paying again, so you don't pay twice.",
+  );
+  expect(push.body).not.toContain("unpaid");
   expect(push.body).not.toContain("ui_changed");
   expect(push.extra).toMatchObject({
     code: "ui_changed",

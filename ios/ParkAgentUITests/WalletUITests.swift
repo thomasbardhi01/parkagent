@@ -266,7 +266,12 @@ final class WalletUITests: ParkAgentUITestCase {
         element(app, "account.doneButton").tap()
 
         openWallet(app)
-        XCTAssertEqual(stateTag(app, "parkagent_card"), "Available", "Toggle on should make the sandbox card selectable")
+        let row = scrollTo(app, "wallet.sourceRow.parkagent_card")
+        let available = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == 'Available'"), object: row)
+        XCTAssertEqual(
+            XCTWaiter().wait(for: [available], timeout: 5), .completed,
+            "Toggle on should make the sandbox card selectable; the row reads \(String(describing: row.value))"
+        )
     }
 
     // MARK: - Helpers

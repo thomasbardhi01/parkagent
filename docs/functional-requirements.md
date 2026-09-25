@@ -46,7 +46,7 @@ the evidence that proves it. Three kinds of evidence back an FR:
 | FR-19 | Relink restores the account | automated | `server/test/providers.test.ts` |
 | FR-20 | Zone-number reporting & precedence | automated | `server/fr/20-parked-boston.fr.test.ts`, `server/test/zoneNumber.test.ts`, `server/test/zoneNumberReverts.test.ts`, `data/test_import_parkboston_zones.py` |
 | FR-21 | Assistant: single spot | automated | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantLoop.test.ts`, `server/test/assistantAccuracy.test.ts` |
-| FR-22 | Assistant: itinerary | automated | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantItinerary.test.ts` |
+| FR-22 | Assistant: itinerary | automated | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantItinerary.test.ts`, `server/test/itineraryOrder.test.ts`; iOS `ItineraryOrderTests`, `AssistantUITests` (arrival order on the card and Home) |
 | FR-23 | Named-place search within 600 m | automated | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantGeocode.test.ts`, `server/test/assistantAccuracy.test.ts` |
 | FR-24 | Past-date guard | automated | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantAccuracy.test.ts` |
 | FR-25 | Confirm-token gate | automated | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantPlanEnforcement.test.ts` |
@@ -395,7 +395,13 @@ server-side and sign-off re-checks the remaining daily budget at the
 moment of the tap. PATCH edits re-check the cap and preserve per-stop
 linkage; the worker pushes garage links 15 minutes before arrival,
 attaches street sessions to their windows, and closes the day.
-**Accepted when** the six-stop day, reorder, cap-refusal, and worker
+Stops always display in arrival-time order, one rule on both sides
+(`orderStopsByArrival` / `ItineraryOrder`): untimed stops keep their slots
+and the timed ones fill the rest by arrival, so a later stop can never
+render above an earlier one. Only a stop without a set time can be dragged
+or moved; changing a stop's time re-sorts it, and a time can be cleared.
+Edits made on the plan card before sign-off are saved with it. **Accepted
+when** the six-stop day, ordering, reorder, cap-refusal, and worker
 behaviors are pinned and the live surface answers.
 
 Evidence: `assistantItinerary.test.ts` (the real Boston six-stop day);

@@ -30,8 +30,16 @@ final class AppModel {
     var policyResponse: PolicyResponse?
     var policyLoadFailed = false
 
-    /// Drives the Parking Detected sheet.
-    var pendingParked: ParkedResponse?
+    /// Drives the Parking Detected sheet. Kept on disk while it's fresh
+    /// (ParkedNotice.store), so a notification tap after iOS ended the app
+    /// still finds its sheet; cleared → the notification is withdrawn too.
+    var pendingParked: ParkedResponse? {
+        didSet {
+            guard pendingParked?.parkedEventId != oldValue?.parkedEventId else { return }
+            ParkedNotice.store(pendingParked)
+            if pendingParked == nil { ParkedNotice.withdraw() }
+        }
+    }
     var isPaying = false
     var paymentError: APIError?
     /// Set when session/start answered free_period: the provider says the
@@ -189,6 +197,8 @@ final class AppModel {
            let lng = defaults.object(forKey: "carLng") as? Double {
             carCoordinate = CLLocationCoordinate2D(latitude: lat, longitude: lng)
         }
+        // A park detected before iOS ended the app; stale ones are dropped.
+        pendingParked = ParkedNotice.restore()
     }
 
     /// LiveAPI's view of the AuthStore: the current access token, and the
@@ -273,6 +283,8 @@ final class AppModel {
         PushManager.shared.onOpenPark = { [weak self] in
             self?.selectedTab = .park
         }
+        // A tap that launched the app before these were wired.
+        PushManager.shared.replayPendingOpen()
         if activeSession != nil {
             reporter.start(api: api, carCoordinate: carCoordinate)
         }

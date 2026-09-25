@@ -192,7 +192,8 @@ final class AccountUITests: ParkAgentUITestCase {
         XCTAssertTrue(element(app, "limits.view").waitForExistence(timeout: 5), "Limits screen missing")
         let sessionCap = element(app, "limits.sessionCap")
         XCTAssertTrue(sessionCap.waitForExistence(timeout: 5))
-        XCTAssertTrue(sessionCap.label.contains("$"), "Per-stop cap missing its value: \(sessionCap.label)")
+        // The policy's own cap: the screen shows no value until it loads.
+        XCTAssertEqual(sessionCap.label, "Per stop, $45.00")
         XCTAssertTrue(scrollTo(app, "limits.shared", swipes: 2).exists, "Why they're read-only is missing")
         XCTAssertFalse(element(app, "limits.sessionCap.plus").exists, "No steppers on shared limits")
         XCTAssertFalse(element(app, "limits.saveButton").exists, "No Save on shared limits")

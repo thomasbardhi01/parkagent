@@ -724,17 +724,19 @@ private struct OnboardingBudgetStep: View {
     @Environment(AppModel.self) private var model
     let onContinue: () -> Void
 
-    @State private var sessionCap: Double = 45
-    @State private var dailyCap: Double = 60
-    @State private var defaultMinutes: Int = 90
-    @State private var seeded = false
+    @State private var sessionCap: Double = 0
+    @State private var dailyCap: Double = 0
+    @State private var defaultMinutes: Int = 0
+    /// The policy hash the values came from; nil until the policy loads —
+    /// no made-up numbers are ever shown, or saved over the real caps.
+    @State private var seededHash: String?
     @State private var isSaving = false
     @State private var saveFailed = false
 
     /// Only the operator can change the shared limits (PUT /policy is
     /// admin-only); everyone else is shown them, not handed steppers that
-    /// can't save.
-    private var editable: Bool { model.policyResponse?.canEdit ?? true }
+    /// can't save. Not editable until the policy says so.
+    private var editable: Bool { model.policyResponse?.canEdit ?? false }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.unit) {
@@ -743,72 +745,107 @@ private struct OnboardingBudgetStep: View {
                 .font(.numeral)
                 .foregroundStyle(Color.textPrimary)
 
-            stepperRow(
-                "Per stop",
-                value: Format.money(sessionCap),
-                identifier: "onboarding.budget.sessionCap",
-                decrement: { sessionCap = max(5, sessionCap - 5) },
-                increment: { sessionCap = min(200, sessionCap + 5) }
-            )
-            stepperRow(
-                "Per day",
-                value: Format.money(dailyCap),
-                identifier: "onboarding.budget.dailyCap",
-                decrement: { dailyCap = max(5, dailyCap - 5) },
-                increment: { dailyCap = min(400, dailyCap + 5) }
-            )
-            stepperRow(
-                "Default stay",
-                value: Format.minutes(defaultMinutes),
-                identifier: "onboarding.budget.defaultStay",
-                decrement: { defaultMinutes = max(15, defaultMinutes - 15) },
-                increment: { defaultMinutes = min(240, defaultMinutes + 15) }
-            )
-
-            Text("We'll pay up to \(Format.money(sessionCap)) per stop and \(Format.money(dailyCap)) per day without asking.")
-                .font(.secondaryText)
-                .foregroundStyle(Color.textSecondary)
-                .accessibilityIdentifier("onboarding.budgetPreview")
-            if !editable {
-                Text(SharedLimitsCopy.note)
-                    .font(.captionText)
-                    .foregroundStyle(Color.textSecondary)
-                    .accessibilityIdentifier("onboarding.budgetShared")
-            }
-
-            if saveFailed {
-                Text("Couldn't save to the server. Try again, or continue with the server's current limits.")
-                    .font(.captionTextSemibold)
-                    .foregroundStyle(Color.warningGold)
-            }
-
-            Spacer()
-            Button(editable ? (isSaving ? "Saving…" : "Save and continue") : "Continue") {
-                if editable {
-                    Task { await save() }
-                } else {
-                    onContinue()
-                }
-            }
-            .buttonStyle(.primary)
-            .disabled(isSaving)
-            .accessibilityIdentifier("onboarding.continueButton")
-            if saveFailed {
-                Button("Continue without saving") { onContinue() }
-                    .buttonStyle(.secondary)
-                    .accessibilityIdentifier("onboarding.budgetSkipSave")
+            if seededHash == nil {
+                policyPending
+            } else {
+                limits
             }
         }
         .padding(Spacing.unitAndHalf)
-        .task {
-            guard !seeded, let policy = model.policyResponse?.policy else { return }
-            seeded = true
-            sessionCap = policy.sessionCapUsd
-            dailyCap = policy.dailyCapUsd
-            defaultMinutes = policy.defaultStayMinutes
-        }
+        // Re-seed whenever the policy arrives or changes: onboarding can
+        // resume straight onto this step while the policy is still loading.
+        .task(id: model.policyResponse?.hash) { seed() }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("onboarding.budget")
+    }
+
+    private func seed() {
+        guard let response = model.policyResponse, response.hash != seededHash else { return }
+        seededHash = response.hash
+        sessionCap = response.policy.sessionCapUsd
+        dailyCap = response.policy.dailyCapUsd
+        defaultMinutes = response.policy.defaultStayMinutes
+    }
+
+    /// Still loading, or the load failed: say so, and never block setup on
+    /// it — the limits can be read later in Account.
+    @ViewBuilder
+    private var policyPending: some View {
+        if model.policyLoadFailed {
+            Text("Couldn't load your limits. You can see them later in Account → Spending limits.")
+                .font(.secondaryText)
+                .foregroundStyle(Color.textSecondary)
+                .accessibilityIdentifier("onboarding.budgetUnavailable")
+            Button("Try again") { Task { await model.loadPolicy() } }
+                .buttonStyle(.secondary)
+        } else {
+            ProgressView()
+                .frame(maxWidth: .infinity)
+        }
+        Spacer()
+        Button("Continue") { onContinue() }
+            .buttonStyle(.primary)
+            .disabled(!model.policyLoadFailed)
+            .accessibilityIdentifier("onboarding.continueButton")
+    }
+
+    @ViewBuilder
+    private var limits: some View {
+        stepperRow(
+            "Per stop",
+            value: Format.money(sessionCap),
+            identifier: "onboarding.budget.sessionCap",
+            decrement: { sessionCap = max(5, sessionCap - 5) },
+            increment: { sessionCap = min(200, sessionCap + 5) }
+        )
+        stepperRow(
+            "Per day",
+            value: Format.money(dailyCap),
+            identifier: "onboarding.budget.dailyCap",
+            decrement: { dailyCap = max(5, dailyCap - 5) },
+            increment: { dailyCap = min(400, dailyCap + 5) }
+        )
+        stepperRow(
+            "Default stay",
+            value: Format.minutes(defaultMinutes),
+            identifier: "onboarding.budget.defaultStay",
+            decrement: { defaultMinutes = max(15, defaultMinutes - 15) },
+            increment: { defaultMinutes = min(240, defaultMinutes + 15) }
+        )
+
+        Text("We'll pay up to \(Format.money(sessionCap)) per stop and \(Format.money(dailyCap)) per day without asking.")
+            .font(.secondaryText)
+            .foregroundStyle(Color.textSecondary)
+            .accessibilityIdentifier("onboarding.budgetPreview")
+        if !editable {
+            Text(SharedLimitsCopy.note)
+                .font(.captionText)
+                .foregroundStyle(Color.textSecondary)
+                .accessibilityIdentifier("onboarding.budgetShared")
+        }
+
+        if saveFailed {
+            Text("Couldn't save to the server. Try again, or continue with the server's current limits.")
+                .font(.captionTextSemibold)
+                .foregroundStyle(Color.warningGold)
+        }
+
+        Spacer()
+        Button(editable ? (isSaving ? "Saving…" : "Save and continue") : "Continue") {
+            if editable {
+                Task { await save() }
+            } else {
+                onContinue()
+            }
+        }
+        .buttonStyle(.primary)
+        .disabled(isSaving)
+        .accessibilityIdentifier("onboarding.continueButton")
+        if saveFailed {
+            Button("Continue without saving") { onContinue() }
+                .buttonStyle(.secondary)
+                .accessibilityIdentifier("onboarding.budgetSkipSave")
+        }
     }
 
     private func save() async {

@@ -95,6 +95,17 @@ export function sessionExpiringPush(args: {
   };
 }
 
+/** Executor codes that can only happen before the provider charges — the
+ * only ones after which a push may say the meter is unpaid. */
+const PRE_CHARGE_CODES = new Set([
+  "auth_expired",
+  "zone_not_found",
+  "payment_declined",
+  "payment_method_missing",
+  "vehicle_missing",
+  "parking_denied",
+]);
+
 export function paymentFailedPush(args: {
   zoneNumber: string;
   what: "pay" | "extend";
@@ -103,32 +114,52 @@ export function paymentFailedPush(args: {
    * "ParkBoston"); callers pass a neutral fallback when the city has none. */
   providerName: string;
 }): Push {
-  // A card-less account, an unknown plate, or an operator lockout are
-  // distinct, actionable failures: the fix is doing something in the
-  // provider's own app (or waiting), not blindly retrying. Every body says
-  // what the driver can actually do from here — the app can't re-run a
-  // payment from a push — and never shows the raw executor code (it rides
-  // in `extra.code` for the app and the decision log).
+  // Every body says what the driver can actually do from here (the app
+  // can't re-run a payment from a push) and never shows the raw executor
+  // code (it rides in `extra.code`). And it never claims the meter is
+  // unpaid unless that's certain: a code that can only happen before the
+  // provider charges (no card, no plate, lockout, declined, signed out, no
+  // such zone) is "unpaid"; anything that can happen after the pay click
+  // (ui_changed, network, browser_crashed, unknown) is "not confirmed —
+  // check before paying again", or a retry could pay twice.
+  const z = args.zoneNumber;
+  const p = args.providerName;
+  const extend = args.what === "extend";
+  const preCharge = PRE_CHARGE_CODES.has(args.code);
   const body =
     args.code === "payment_method_missing"
-      ? `The meter for zone ${args.zoneNumber} is unpaid — ${args.providerName} has no card saved. Add one there and pay in ${args.providerName} for now.`
+      ? extend
+        ? `Zone ${z} wasn't extended — ${p} has no card saved. Add one there, then extend in ParkAgent or ${p}.`
+        : `The meter for zone ${z} is unpaid — ${p} has no card saved. Add one there and pay in ${p} for now.`
       : args.code === "vehicle_missing"
-        ? `${args.providerName} doesn't know your plate — add your vehicle there and pay zone ${args.zoneNumber} in ${args.providerName} for now.`
+        ? extend
+          ? `Zone ${z} wasn't extended — ${p} doesn't know your plate. Add your vehicle there, then extend in ParkAgent or ${p}.`
+          : `${p} doesn't know your plate — add your vehicle there and pay zone ${z} in ${p} for now.`
         : args.code === "parking_denied"
-          ? `${args.providerName} won't let you re-park zone ${args.zoneNumber} right now (an operator lockout). Nothing was charged — wait or move the car.`
-          : args.what === "extend"
-            ? `Zone ${args.zoneNumber} wasn't extended. Extend in ParkAgent or ${args.providerName} before the meter runs out.`
-            : `The meter for zone ${args.zoneNumber} is unpaid — pay in ${args.providerName} or at the meter.`;
+          ? `${p} won't let you re-park zone ${z} right now (an operator lockout). Nothing was charged — wait or move the car.`
+          : preCharge
+            ? extend
+              ? `Zone ${z} wasn't extended. Extend in ParkAgent or ${p} before the meter runs out.`
+              : `The meter for zone ${z} is unpaid — pay in ${p} or at the meter.`
+            : extend
+              ? `${p} didn't confirm the extension for zone ${z}. Check ${p}'s app — your time may still end as before.`
+              : `${p} didn't confirm the payment for zone ${z}. Check ${p}'s app before paying again, so you don't pay twice.`;
   return {
     type: "payment_failed",
     title:
       args.code === "payment_method_missing"
-        ? `Add a card to ${args.providerName}`
+        ? `Add a card to ${p}`
         : args.code === "vehicle_missing"
-          ? `Add your plate to ${args.providerName}`
+          ? `Add your plate to ${p}`
           : args.code === "parking_denied"
             ? "Parking blocked right now"
-            : "Payment failed",
+            : preCharge
+              ? extend
+                ? "Extension failed"
+                : "Payment failed"
+              : extend
+                ? "Extension not confirmed"
+                : "Payment not confirmed",
     body,
     extra: {
       code: args.code,

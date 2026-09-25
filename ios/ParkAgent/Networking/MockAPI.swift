@@ -281,8 +281,9 @@ struct MockAPI: APIClient {
 
     func startSession(_ request: SessionStartRequest) async throws -> SessionStartOutcome {
         try await pause()
-        // What the server answers when the executor fails at the provider.
-        if scenario == .paymentFailed { throw APIError.refused(code: "executor_failed") }
+        // What the server answers when the executor fails at the provider
+        // after the pay click (ui_changed): nobody knows if it paid.
+        if scenario == .paymentFailed { throw APIError.executorFailed(code: "ui_changed") }
         if scenario == .cardDeclined { throw APIError.refused(code: "card_declined") }
         if scenario == .freePeriodAtStart {
             // Mirrors the server's 200 {status: "free_period"}: quoted as

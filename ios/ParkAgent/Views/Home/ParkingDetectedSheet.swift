@@ -53,12 +53,13 @@ struct ParkingDetectedSheet: View {
                         dismiss: { model.dismissParkedSheet() }
                     )
                 } else {
-                    // The error's own sentence: "the meter isn't paid" is
-                    // only true for a refusal — a lost connection may have
-                    // paid, and says so.
+                    // "The meter isn't paid" only when that's certain: a
+                    // provider step that never confirmed, or a dropped
+                    // connection, may have paid — and a blind retry would
+                    // pay twice.
                     PaymentFailedView(
-                        message: error.errorDescription
-                            ?? "The meter was not paid. You can try again, or pay at the meter directly.",
+                        title: error.paymentOutcomeUnknown ? "Payment not confirmed" : "Payment failed",
+                        message: error.startFailureMessage,
                         retry: { Task { await paySelected() } },
                         dismiss: { model.dismissParkedSheet() }
                     )
@@ -497,6 +498,7 @@ struct WalletFixView: View {
 }
 
 struct PaymentFailedView: View {
+    let title: String
     let message: String
     let retry: () -> Void
     let dismiss: () -> Void
@@ -507,7 +509,7 @@ struct PaymentFailedView: View {
             Image(systemName: "xmark.circle.fill")
                 .font(.system(size: 44))
                 .foregroundStyle(Color.danger)
-            Text("Payment failed")
+            Text(title)
                 .font(.bodyTextSemibold)
                 .foregroundStyle(Color.textPrimary)
             Text(message)

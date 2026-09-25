@@ -219,7 +219,6 @@ struct ActiveSessionView: View {
             .environment(previewModel())
     }
 }
-#endif
 
 @MainActor
 private func previewModel() -> AppModel {
@@ -238,3 +237,4 @@ private func previewModel() -> AppModel {
     model.distanceFromCarMeters = 120
     return model
 }
+#endif

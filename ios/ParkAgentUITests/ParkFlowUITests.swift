@@ -191,22 +191,30 @@ final class ParkFlowUITests: ParkAgentUITestCase {
         XCTAssertFalse(element(app, "parkedSheet.payButton").exists, "A free period must not offer Pay")
     }
 
-    /// The provider rejected the payment (executor_failed): the sheet says
-    /// the meter isn't paid in plain words — never a raw error code.
-    func testExecutorFailureReadsPlainly() {
+    /// The provider step failed AFTER the pay click (executor_failed,
+    /// ui_changed): nobody knows whether it paid. The sheet must say so and
+    /// warn against paying twice — never "the meter isn't paid", and never
+    /// the raw code.
+    func testUnconfirmedPaymentWarnsBeforeRetrying() {
         let app = launchApp(scenario: "paymentFailed")
         simulateParkFromHome(app)
 
         let pay = element(app, "parkedSheet.payButton")
         XCTAssertTrue(pay.waitForExistence(timeout: 5), "Pay button missing")
         pay.tap()
-        let message = app.staticTexts.containing(
-            NSPredicate(format: "label CONTAINS %@", "the meter isn't paid")
-        ).firstMatch
-        XCTAssertTrue(message.waitForExistence(timeout: 5), "Payment failure copy missing")
-        XCTAssertFalse(
-            app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "executor_failed")).firstMatch.exists,
-            "The raw error code leaked into the sheet"
+        XCTAssertTrue(
+            app.staticTexts["Payment not confirmed"].waitForExistence(timeout: 5),
+            "An unconfirmed payment must not read as a plain failure"
         )
+        let warning = app.staticTexts.containing(
+            NSPredicate(format: "label CONTAINS %@", "so you don't pay twice")
+        ).firstMatch
+        XCTAssertTrue(warning.exists, "No warning against paying twice")
+        for raw in ["executor_failed", "ui_changed", "isn't paid"] {
+            XCTAssertFalse(
+                app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", raw)).firstMatch.exists,
+                "\(raw) leaked into the sheet"
+            )
+        }
     }
 }

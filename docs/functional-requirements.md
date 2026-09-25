@@ -25,7 +25,7 @@ the evidence that proves it. Three kinds of evidence back an FR:
 
 | FR | Requirement | Coverage | Test file(s) |
 |---|---|---|---|
-| FR-1 | Park detection → `/parked` | automated + device-manual | `server/fr/10-parked-nyc.fr.test.ts`, `server/test/parked.test.ts`; detector: iOS `ParkAgentTests` (fusion), field test |
+| FR-1 | Park detection → `/parked` | automated + device-manual | `server/fr/10-parked-nyc.fr.test.ts`, `server/test/parked.test.ts`; detector: iOS `ParkAgentTests` (fusion), `ParkedNoticeTests` (background notification); field test |
 | FR-2 | NYC zone resolution | automated | `server/fr/10-parked-nyc.fr.test.ts`, `server/test/zoneLookup.test.ts`, `server/test/city.test.ts` |
 | FR-3 | Boston resolution with a provider number | automated | `server/fr/20-parked-boston.fr.test.ts`, `server/test/zoneNumber.test.ts` |
 | FR-4 | Boston resolution without a number | automated | `server/fr/20-parked-boston.fr.test.ts`, `server/test/parked.test.ts`, `server/test/session.test.ts` |
@@ -34,7 +34,7 @@ the evidence that proves it. Three kinds of evidence back an FR:
 | FR-7 | Quote correctness (ladder, observed terms, receipts) | automated | `server/fr/10-parked-nyc.fr.test.ts`, `server/test/quote.test.ts`, `server/test/bostonQuote.test.ts`, `server/test/bostonBilling.test.ts`, `server/test/observedTerms.test.ts` |
 | FR-8 | Free periods and the 8 pm boundary | automated | `server/fr/20-parked-boston.fr.test.ts`, `server/test/parked.test.ts`, `server/test/bostonSession.test.ts`, `executor/test/passportParse.test.ts` |
 | FR-9 | Timestamp clamping | automated | `server/fr/10-parked-nyc.fr.test.ts`, `server/test/adversarial.test.ts` |
-| FR-10 | Session cap on every payment source | automated | `server/fr/00-gate.fr.test.ts`, `server/fr/30-session-providers.fr.test.ts`, `server/test/session.test.ts`, `server/test/paymentSource.test.ts`, `server/test/walletHolds.test.ts`, `server/test/linkWallet.test.ts`, `server/test/issuing.test.ts` |
+| FR-10 | Session cap on every payment source | automated | `server/fr/00-gate.fr.test.ts`, `server/fr/30-session-providers.fr.test.ts`, `server/test/session.test.ts`, `server/test/paymentSource.test.ts`, `server/test/walletHolds.test.ts`, `server/test/linkWallet.test.ts`, `server/test/issuing.test.ts`, `server/test/authorization.test.ts`; iOS `OnboardingUITests`, `AccountUITests` (shared limits read-only) |
 | FR-11 | Daily cap on every payment source | automated | `server/fr/00-gate.fr.test.ts`, `server/test/session.test.ts`, `server/test/paymentSource.test.ts`, `server/test/walletHolds.test.ts`, `server/test/issuing.test.ts`, `server/test/card.test.ts`, `server/test/assistantItinerary.test.ts` |
 | FR-12 | Auto-pay rate ceiling | automated | `server/fr/10-parked-nyc.fr.test.ts`, `server/test/parked.test.ts` |
 | FR-13 | Start through the executor | automated + acceptance | `server/fr/30-session-providers.fr.test.ts`, `server/test/session.test.ts`, `server/test/bostonSession.test.ts`, `executor/test/fixtures.test.ts`, `executor/test/parse.test.ts`, `executor/test/passportParse.test.ts`; paid: acceptance report Part B (txn 831908580) |
@@ -52,12 +52,13 @@ the evidence that proves it. Three kinds of evidence back an FR:
 | FR-25 | Confirm-token gate | automated | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantPlanEnforcement.test.ts` |
 | FR-26 | No plan without a quote | automated | `server/test/assistantPlanEnforcement.test.ts`, `server/test/assistantAccuracy.test.ts` |
 | FR-27 | Explanations | automated | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantLoop.test.ts` |
-| FR-28 | Pushes | automated + device-manual | `server/fr/50-ops.fr.test.ts`, `server/test/device.test.ts`, `server/test/apnsPush.test.ts`, `server/test/admin.test.ts`; live delivery needs a registered phone |
+| FR-28 | Pushes | automated + device-manual | `server/fr/50-ops.fr.test.ts`, `server/test/device.test.ts`, `server/test/apnsPush.test.ts`, `server/test/admin.test.ts`, `server/test/session.test.ts` (copy); live delivery needs a registered phone |
 | FR-29 | Admin summary | automated | `server/fr/50-ops.fr.test.ts`, `server/test/admin.test.ts`, `server/test/authorization.test.ts` |
 | FR-30 | Decision audit | automated | `server/fr/10-parked-nyc.fr.test.ts` (decisionId on every response), `server/test/parked.test.ts`, `server/test/adversarial.test.ts`, `server/test/security.test.ts` |
 | FR-31 | Dry-run discipline | automated | `server/fr/00-gate.fr.test.ts`, `server/test/policy.test.ts`, `server/test/session.test.ts` |
-| FR-32 | Accounts | automated + device-manual | `server/fr/60-accounts.fr.test.ts`, `server/test/auth.test.ts`, `server/test/authTokens.test.ts`, `server/test/security.test.ts`, `server/test/vehicles.test.ts`; iOS `AuthStoreTests`, `LiveAPIRequestTests`, `OnboardingGateTests`, `AuthUITests`, `AccountUITests`; Apple sign-in and email-code delivery need a phone and a mailbox |
+| FR-32 | Accounts | automated + device-manual | `server/fr/60-accounts.fr.test.ts`, `server/test/auth.test.ts`, `server/test/frThrowawayPurge.test.ts`, `server/test/authTokens.test.ts`, `server/test/security.test.ts`, `server/test/vehicles.test.ts`; iOS `AuthStoreTests`, `LiveAPIRequestTests`, `OnboardingGateTests`, `AuthUITests`, `AccountUITests`; Apple sign-in and email-code delivery need a phone and a mailbox |
 | FR-33 | Wallet | automated + device-manual | `server/fr/70-wallet.fr.test.ts`, `server/test/walletHolds.test.ts`, `server/test/wallet.test.ts`, `server/test/linkWallet.test.ts`, `server/test/paymentSource.test.ts`, `server/test/adversarial.test.ts`, `server/test/webhookStripe.test.ts`; iOS `LiveAPIRequestTests`, `CardBrandTests`, `WalletUITests`, `SessionUITests`, `OnboardingUITests`, `AccountUITests`, `AssistantUITests`; real Apple Pay / PaymentSheet, a real hold, and Link need a phone, the Stripe sandbox, and the Link OAuth client |
+| FR-34 | Release builds carry no debug code | automated | iOS `ParkAgentReleaseTests` (scheme `ParkAgentRelease`, runs inside the Release build), `ReleaseDenylistTests`, `ios/Tools/check-release-binary.sh`; UI `AccountUITests` (Diagnostics contents), `WalletUITests` (sandbox toggle) |
 
 ---
 
@@ -200,6 +201,12 @@ is never made. The Wallet's choice (`provider_card` default, `link_wallet`,
 never what is allowed. **Accepted when** the cap binds on every path and
 the source switch respects its gates.
 
+The caps live in one shared policy that only the operator edits (`PUT
+/policy` is admin-only). `GET /policy` tells the app whether the caller
+may (`editable`), so everyone else — every invited user — sees the limits
+read-only in onboarding and in Account → Spending limits, instead of
+steppers whose save would fail.
+
 Evidence: `session.test.ts`, `walletHolds.test.ts` ("caps bind every
 source" — all three), `linkWallet.test.ts` (no request over the cap),
 `paymentSource.test.ts`, `issuing.test.ts`; live: the gate test pins the
@@ -245,9 +252,11 @@ never both pay. On success the executor types the stored zone number at
 the provider, the session snapshots the zone's terms and city, receipt
 actuals are recorded when the provider shows them, and a `start_ok`
 decision plus `session_started` push follow. Executor failures come back
-typed, mark the session `failed`, and push `payment_failed` with a
-tap-to-pay deep link (`parking_denied` and `payment_method_missing` get
-their own no-retry wording — no charge happened). **Accepted when** the
+typed, mark the session `failed`, and push `payment_failed`: the text
+says what to do instead (pay in the provider's app or at the meter;
+`parking_denied` and `payment_method_missing` get their own wording — no
+charge happened), the executor code rides in the payload and never in the
+text, and the deep link opens the Park tab. **Accepted when** the
 refusal order and the paid path both hold.
 
 Evidence: live FR-13/FR-17 test (unlinked start refuses before
@@ -460,15 +469,22 @@ Evidence: live FR-27 test (explains the run's own `/parked` decision);
 ### FR-28 — Pushes
 
 The server pushes `session_started`, `session_extended`,
-`session_expiring` (with reason), `payment_failed` (with executor code
-and tap-to-pay deep link where retrying makes sense), and
+`session_expiring` (with reason), `payment_failed` (the executor code in the
+payload, plain next steps in the text, a deep link to the Park tab), and
 `provider_relink`. Device tokens register idempotently, are bound to
 their first user (`409 token_bound_elsewhere` for anyone else), release
 on delete, and dead tokens (APNs 410) are removed. With APNs credentials
 missing the server drops-and-logs instead of failing, and
 `POST /admin/push-test` reports per-device APNs status for the field
-test. **Accepted when** registration/binding/release and the push-test
-report hold live, and each push type's trigger is pinned.
+test. A push navigates only when the driver
+TAPS it (to the Park tab, the Wallet for `card_declined`, the link flow for
+`provider_relink`, the garage's own link for `itinerary_garage_link`); a
+banner in the foreground never moves the app by itself. The app also posts
+one LOCAL notification of its own: a park detected in the background that
+has something to pay ("Parked in zone …", time-sensitive) — never for an
+unknown zone or a free period. **Accepted when** registration/binding/
+release and the push-test report hold live, and each push type's trigger
+is pinned.
 
 Evidence: live FR-28 tests (token lifecycle, push-test);
 `device.test.ts`, `apnsPush.test.ts`, `admin.test.ts`; delivery to a
@@ -657,6 +673,34 @@ against the Stripe sandbox, a real hold captured after a real provider
 charge (needs `ISSUING_LIVE` or sandbox + a linked account outside dry
 run), and Link's OAuth, approval, and one-time card (needs the registered
 Link OAuth client; the REST paths are VERIFY-IN-SANDBOX).
+
+## Release
+
+### FR-34 — Release builds carry no debug code
+
+A Release build (TestFlight, App Store) contains no mock API, fixtures,
+scenario switches, launch-argument handling, UI-test hooks, previews, or
+Diagnostics — compiled out, not hidden. Debug builds keep exactly the
+field-test kit behind five taps on the version number: detector status,
+signal-log export, the effective dry run, Reset onboarding, and the
+ParkAgent-card sandbox toggle (off by default). **Accepted when** the
+Release binary has none of the markers in `ios/Tools/release-denylist.txt`
+and none of its debug-only types, and Diagnostics shows those five things
+and nothing else.
+
+Evidence: `ParkAgentReleaseTests` runs inside the Release build (scheme
+`ParkAgentRelease`): a byte scan of its own executable against the
+denylist (with required markers, so a clean scan can't come from the wrong
+file), a Swift-runtime lookup of each debug-only type by mangled name,
+and the App Store Info.plist (version 1.0.0, integer build,
+`ITSAppUsesNonExemptEncryption`, the `location` background mode only,
+plain-English usage strings, privacy manifest, icon). `ReleaseDenylistTests`
+proves every listed type resolves in a Debug build, so an absence can't
+be vacuous. `ios/Tools/check-release-binary.sh` runs `strings` over a
+built app with the same list (CI and the TestFlight workflow); the pre-RC
+Release build had 27 hits. Blind spot, by construction: literals of 15
+bytes or fewer live inline in the instruction stream, so the list uses
+type names and 16+-byte markers (accessibility identifiers).
 
 ---
 

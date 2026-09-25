@@ -133,8 +133,7 @@ fails with "Provisioning profile doesn't include the … entitlement":
   `server/API.md` under "Apple Pay setup".
 - **Time Sensitive Notifications**: enable it.
 
-Background modes (location, remote notifications) need nothing on the App
-ID. Save. Existing profiles become invalid; the next run regenerates them.
+The one background mode (location) needs nothing on the App ID. Save. Existing profiles become invalid; the next run regenerates them.
 
 ### 2. A registered device
 
@@ -252,21 +251,22 @@ under 4,000 characters. Preview it with
 
 <!-- what-to-test:begin -->
 ```text
-ParkAgent notices when you have parked at a street meter, shows the zone and what it will cost, and pays through your city's parking account, within limits you set.
+ParkAgent notices when you have parked at a street meter, shows the zone and what it will cost, and pays through your city's parking account when you confirm, within spending limits.
 
 Getting set up
 1. Sign in with Apple.
 2. When asked, allow Location "Always", Motion & Fitness, and notifications. With "While Using" only, ParkAgent cannot notice that you parked while it is in the background. You can check these later in iOS Settings > ParkAgent.
 3. Add your car's plate.
 4. Choose your city and connect your city's parking account (ParkNYC or ParkBoston). You sign in on the provider's own page inside the app; ParkAgent never sees or keeps your password. By default it pays with the card already saved in that account.
-5. Set your spending limits.
+5. Review the spending limits (during the beta they are the same for everyone).
 
 Try it
-- Drive to a metered block, park, and walk away from the car. Within a few minutes you should get a notification that the meter was paid, and the session shows on the Park tab and in Activity.
-- Check that the zone and price match the sign at the meter.
+- Drive to a metered block, park, and walk away from the car. Within a few minutes you should get a notification: "Parked in zone …" with the price. Tap it, check the zone and price against the sign at the meter, and tap Pay.
+- The session then shows on the Park tab and in Activity. Near the end of the time, if you're still far from the car, ParkAgent extends it within your limits and tells you.
+- In Boston, some blocks' zone numbers aren't known yet: the notification says so, and you type the number from the meter once. After that the block is known for everyone.
 
 Dry run
-While the server is in dry run, ParkAgent does everything except pay. You will see "Dry run" on the session and in Activity, and nothing is charged. The meter is not paid either, so pay it yourself as usual.
+While the server is in dry run, ParkAgent does everything except pay: the notification and the Pay screen say "Dry run", and the session and Activity show what it would have paid. Nothing is charged, and the meter is not paid either, so pay it yourself as usual.
 
 Reporting problems
 - Take a screenshot in the app and tap Share Beta Feedback, or open TestFlight, choose ParkAgent, and tap Send Beta Feedback.
@@ -282,7 +282,7 @@ Review Notes before the first external build of a version.
 
 ```text
 What the app does
-ParkAgent notices when the user has parked in a metered street-parking zone, shows the zone and what parking will cost, and pays the meter through the user's own account with the city's official parking app (ParkNYC in New York City, ParkBoston in Boston). It pays only within spending limits the user sets, and it can extend a session automatically before the meter runs out, within the same limits.
+ParkAgent notices when the user has parked in a metered street-parking zone, shows the zone and what parking will cost, and, when the user confirms, pays the meter through the user's own account with the city's official parking app (ParkNYC in New York City, ParkBoston in Boston). It pays only within spending limits, and it can extend a session automatically before the meter runs out, within the same limits.
 
 Sign-in
 Sign in with Apple is the only sign-in method. Please use your own Apple ID; no demo account is needed.
@@ -294,7 +294,7 @@ Motion & Fitness
 Used to tell driving from walking, so the app only treats a stop as parking once the driver has left the car.
 
 Microphone and Speech Recognition
-Requested only when the user holds the parking assistant's mic button, to transcribe the question.
+Requested only when the user taps the parking assistant's microphone button, to transcribe the question.
 
 Paying
 Paying requires linking a real ParkNYC or ParkBoston account. The user signs in on the provider's own web page inside the app, and the app never sees or stores that password. For this beta the server runs in dry run: no payment is made and no money moves. The app detects the stop, finds the zone, quotes the price, and records what it would have paid, marked "Dry run". Without a provider account you can still sign in, grant permissions, add a car, choose a city, and reach the connect step; outside those two cities choose "Somewhere else".

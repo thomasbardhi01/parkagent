@@ -10,9 +10,9 @@ and decides, but no money moves and you pay the meter by hand as usual.
 1. **Server**: `curl https://parkagent-api.fly.dev/health` → `ok: true`
    and `dryRun: true`. If `dryRun` is false, STOP and fix the env before
    driving anywhere.
-2. **Zones loaded**: in the app, Account (the avatar on Home) → About → tap the version five times → Diagnostics →
-   "Simulate park here" should return a quote for a zone near you, and
-   the Home chip should name your city when you're in one.
+2. **Zones loaded**: Home at street zoom draws curb lines around you (tap
+   one for its rate and zone number), and the Home chip names your city
+   when you're in one.
 3. **Phone setup** (per phone, both users):
    - Location: Settings → ParkAgent → **Always** (not While Using).
    - Motion & Fitness: on. Notifications: on.
@@ -22,8 +22,8 @@ and decides, but no money moves and you pay the meter by hand as usual.
    times → Diagnostics → **Log raw detector signals**. This writes every motion, car-audio, and location event
    with a timestamp to a file on the phone; it is the only way to debug
    a missed or false park after the fact.
-5. **Payment source** (onboarding "How do you want to pay", or Account →
-   Spending): the default is **My card on ParkNYC/ParkBoston** —
+5. **Payment source** (onboarding "How do you want to pay", or the Wallet
+   tab): the default is **My card on ParkNYC/ParkBoston** —
    `provider_card`, the card already saved on your provider account. On
    that path there is **no ParkAgent card setup and no Add money step**:
    linking just captures the session and the executor pays with the
@@ -48,8 +48,10 @@ and decides, but no money moves and you pay the meter by hand as usual.
 1. Park normally. Turn the car off, unplug/step away as you normally
    would. **Don't open the app first** — the point is unattended
    detection.
-2. Within ~a minute of walking away you should get the parked sheet (or a
-   push). Note, on paper or in a message to yourself:
+2. Within a few minutes of walking away you should get a **"Parked in
+   zone …"** notification (only where there's something to pay — an
+   unmetered spot or a free period stays silent). Tap it for the sheet.
+   Note, on paper or in a message to yourself:
    - Did it fire at all? How long after shutdown?
    - The quoted zone number vs the number **posted on the meter/sign**.
    - The quoted rate and max stay vs the sign.
@@ -120,7 +122,7 @@ actually land on the phone:
 
     curl -X POST -H "x-api-key: $KEY" https://parkagent-api.fly.dev/admin/push-test | jq
 
-sends a sample of each of the five push types
+sends a sample of each push type
 (`session_started`/`session_extended`/`session_expiring`/`payment_failed`/`provider_relink`)
 to every device registered to your key and reports the APNs status per
 device. Watch for `allAccepted: true`; a `reason` like `"BadDeviceToken"`

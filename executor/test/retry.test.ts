@@ -33,9 +33,7 @@ test("a THROWN mid-call browser death (open/newContext) retries too", async () =
   const result = await withBrowserCrashRetry(async () => {
     calls += 1;
     if (calls === 1) {
-      throw new Error(
-        "browserContext.newPage: Target page, context or browser has been closed",
-      );
+      throw new Error("browserContext.newPage: Target page, context or browser has been closed");
     }
     return OK;
   });
@@ -91,4 +89,18 @@ test("isBrowserCrash recognizes Playwright's death rattles, not provider errors"
   expect(isBrowserCrash(new Error("browser has been disconnected"))).toBe(true);
   expect(isBrowserCrash(new Error("Timeout 30000ms exceeded waiting for selector"))).toBe(false);
   expect(isBrowserCrash(new Error("net::ERR_INTERNET_DISCONNECTED"))).toBe(false);
+});
+
+/** A crash after the pay click must never replay the flow: the provider
+ * may already have charged. It surfaces for the server to report "not
+ * confirmed". (Before this, the retry ran regardless: an "accepted
+ * caveat" that could pay a meter twice.) */
+test("a crash after the pay click is never retried", async () => {
+  let calls = 0;
+  const result = await withBrowserCrashRetry(async () => {
+    calls += 1;
+    return { ok: false, code: "browser_crashed", message: "died", afterPayClick: true };
+  });
+  expect(calls).toBe(1);
+  expect(result).toMatchObject({ code: "browser_crashed", afterPayClick: true });
 });

@@ -132,7 +132,11 @@ final class WalletUITests: ParkAgentUITestCase {
 
         let hero = element(app, "wallet.hero.providerCard")
         XCTAssertTrue(hero.waitForExistence(timeout: 5))
-        waitForLabelContaining(hero, "connect it to start")
+        // Nothing connected: the hero says so — not "Active" — and offers
+        // Connect.
+        waitForLabelContaining(hero, "Not connected yet")
+        XCTAssertTrue(element(app, "wallet.hero.connect").exists, "Connect missing from the hero")
+        XCTAssertEqual(stateTag(app, "provider_card"), "Connect")
         attachScreenshot(of: app, named: "pr-wallet-empty-top")
         waitForLabelContaining(scrollTo(app, "wallet.provider.parknyc"), "Not connected")
         XCTAssertEqual(scrollTo(app, "wallet.providerAction.parknyc").label, "Connect")
@@ -140,6 +144,41 @@ final class WalletUITests: ParkAgentUITestCase {
         XCTAssertTrue(scrollTo(app, "wallet.activityEmpty").exists, "Empty activity line missing")
         XCTAssertFalse(element(app, "wallet.seeAllActivity").exists, "Nothing to see all of")
         attachScreenshot(of: app, named: "pr-wallet-empty")
+    }
+
+    /// The device report: "Your card on ParkBoston — Active" while
+    /// ParkBoston said "Not connected". In Boston with ParkBoston not
+    /// linked (and ParkNYC not either), the hero says it isn't connected
+    /// yet and Connect runs the link; once linked, the card read after
+    /// linking is the hero's and the row is Active again.
+    func testUnconnectedProviderSaysSoAndConnects() {
+        let app = launchApp(walletScenario: "empty", providerScenario: "notLinked", cityScenario: "bos")
+        waitForLabelContaining(element(app, "home.statusChip"), "Boston")
+        openWallet(app)
+
+        let hero = element(app, "wallet.hero.providerCard")
+        XCTAssertTrue(hero.waitForExistence(timeout: 5), "Provider-card hero missing")
+        waitForLabelContaining(hero, "Your card on ParkBoston")
+        waitForLabelContaining(hero, "Not connected yet")
+        XCTAssertFalse(hero.label.contains("••"), "No card pays until ParkBoston is connected: \(hero.label)")
+        XCTAssertEqual(stateTag(app, "provider_card"), "Connect")
+        attachScreenshot(of: app, named: "pr-wallet-not-connected")
+
+        let connect = element(app, "wallet.hero.connect")
+        XCTAssertEqual(connect.label, "Connect ParkBoston")
+        connect.tap()
+        XCTAssertTrue(element(app, "link.intro").waitForExistence(timeout: 5), "Connect did not open the link flow")
+        element(app, "link.continueButton").tap()
+        let signIn = element(app, "link.mockSignInButton")
+        XCTAssertTrue(signIn.waitForExistence(timeout: 5))
+        signIn.tap()
+        XCTAssertTrue(element(app, "link.done").waitForExistence(timeout: 15), "Link did not finish")
+        element(app, "link.doneButton").tap()
+
+        waitForLabelContaining(hero, "Visa ••1234")
+        XCTAssertFalse(element(app, "wallet.hero.connect").exists, "Connect should go once linked")
+        XCTAssertEqual(stateTag(app, "provider_card"), "Active")
+        attachScreenshot(of: app, named: "pr-wallet-connected")
     }
 
     // MARK: - Changing how you pay

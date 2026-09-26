@@ -24,6 +24,14 @@ export type ProviderOpResult = { ok: true } | ProviderOpError;
 
 export type VerifyAccountResult = { ok: true; walletBalanceCents: number | null } | ProviderOpError;
 
+/** A budget for account reads (linking), mirrored from the executor
+ * package: past it the browser work is stopped and the answer is a typed
+ * "timeout". */
+export interface AccountOpOptions {
+  budgetMs?: number;
+  signal?: AbortSignal;
+}
+
 export type TopupWalletResult = { ok: true; walletBalanceCents: number | null } | ProviderOpError;
 
 /** Brand + last4 of the card the PROVIDER account already has on file
@@ -65,11 +73,11 @@ export interface ProviderStorageState {
 }
 
 export interface ProviderAccountOps {
-  verifyAccount(): Promise<VerifyAccountResult>;
+  verifyAccount(options?: AccountOpOptions): Promise<VerifyAccountResult>;
   setupCard(card: CardFormDetails): Promise<ProviderOpResult>;
   removeCard(last4: string): Promise<ProviderOpResult>;
   topupWallet(amountUsd: number): Promise<TopupWalletResult>;
-  readSavedCard(): Promise<ReadSavedCardResult>;
+  readSavedCard(options?: AccountOpOptions): Promise<ReadSavedCardResult>;
 }
 
 /** Injectable seam: real factory in parknycExecutor.ts, fakes in tests.

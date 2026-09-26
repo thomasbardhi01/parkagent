@@ -81,7 +81,12 @@ struct WalletView: View {
                     dryRunNote
                 }
                 section("How you pay") {
-                    WalletHeroView(response: response, provider: providerName(response))
+                    WalletHeroView(
+                        response: response,
+                        provider: providerName(response),
+                        providerAccount: cityProvider(response),
+                        onConnect: { relinkProviderId = $0 }
+                    )
                 }
                 section("Change how you pay") {
                     VStack(spacing: 0) {
@@ -149,8 +154,18 @@ struct WalletView: View {
         let active = option.source == response.activeSource
         let comingSoon = WalletCopy.isComingSoon(option, sandboxAllowed: sandboxAllowed)
         let provider = providerName(response)
-        let state = WalletCopy.stateLabel(option, active: active, sandboxAllowed: sandboxAllowed)
+        // "Your card on ParkBoston — Active" with ParkBoston not connected
+        // was a contradiction: the card there can't pay until it is.
+        let unconnected = option.source == .providerCard && !(cityProvider(response)?.isLinked ?? false)
+        let state = active && unconnected
+            ? "Connect"
+            : WalletCopy.stateLabel(option, active: active, sandboxAllowed: sandboxAllowed)
         return Button {
+            // The "Connect" tag means what it says.
+            if active && unconnected, let account = cityProvider(response) {
+                relinkProviderId = account.id
+                return
+            }
             guard !active, !comingSoon else { return }
             changing = option.source
         } label: {
@@ -182,7 +197,7 @@ struct WalletView: View {
         .buttonStyle(.plain)
         // Only what can't be chosen is dimmed. The active row stays at full
         // contrast — the way you pay must not look switched off — and a tap
-        // on it does nothing (the guard above).
+        // on it does nothing (the guard above) unless it says Connect.
         .disabled(comingSoon)
         .accessibilityIdentifier("wallet.sourceRow.\(option.source.rawValue)")
         // The state tag, exactly: Active / Available / Connect / Add card /
@@ -369,6 +384,14 @@ struct WalletView: View {
     }
 
     // MARK: - Helpers
+
+    /// The parking account the hero's "Your card on …" means: the city's,
+    /// else the first linked one.
+    private func cityProvider(_ response: WalletResponse) -> WalletProvider? {
+        let city = model.effectiveCity
+        return response.providers.first(where: { $0.city == city })
+            ?? response.providers.first(where: \.isLinked)
+    }
 
     /// Whose card "Your card on …" means: the user's city's provider first
     /// (detected or chosen), else the first connected one.

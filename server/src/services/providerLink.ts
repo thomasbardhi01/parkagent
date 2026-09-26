@@ -10,7 +10,7 @@
  * and blanked as soon as the form is submitted.
  */
 
-import type { AppDb } from "../db.js";
+import type { AppDb, LinkJobPatch, LinkJobRow } from "../db.js";
 import { providerStatusUsable } from "../providers/registry.js";
 import type { ProviderInfo } from "../providers/registry.js";
 import { providerRelinkPush } from "./apns.js";
@@ -25,68 +25,53 @@ import type {
 import type { StripeGateway } from "./stripeGateway.js";
 
 // ---------------------------------------------------------------------------
-// Link jobs (the chained setup). Durable in link_jobs: a deploy or
-// machine stop mid-job must not lose the answer the app is polling for
-// (GET /providers/:provider/link-status). Rows stuck in progress past 15
-// minutes are failed with reason "timeout" by the link-job janitor.
+// Link jobs. Durable in link_jobs: the whole link (verify the captured
+// sign-in, read the saved card, and for the ParkAgent card the chained
+// setup) runs as a job the app polls (GET /providers/:provider/link-status)
+// and jobs/linkWorker.ts executes, so a deploy or machine stop mid-link
+// resumes instead of losing the answer.
 
-export type LinkJobPhase = "linking" | "adding_card" | "done" | "failed";
+export type LinkJobPhase =
+  | "queued"
+  | "verifying"
+  | "reading_card"
+  | "adding_card"
+  | "retrying"
+  | "done"
+  | "failed"
+  /** Rows written before the worker existed. */
+  | "linking";
 
-export interface LinkJob {
-  id: string;
-  userId: string;
-  provider: string;
-  phase: LinkJobPhase;
-  /** Typed failure reason (ProviderOpErrorCode, "no_card", or "timeout"). */
-  reason?: string;
-  /** On failure: is POST /providers/:provider/setup-card worth retrying
-   * as-is (transient), or does something need fixing first? */
-  retrySafe?: boolean;
-  /** True when dry run skipped the real card setup. */
-  dryRun?: boolean;
-}
+export const LINK_JOB_ACTIVE_PHASES: LinkJobPhase[] = [
+  "queued",
+  "verifying",
+  "reading_card",
+  "adding_card",
+  "retrying",
+  "linking",
+];
 
 export class LinkJobStore {
   constructor(private readonly db: AppDb) {}
 
-  async create(job: LinkJob): Promise<void> {
-    await this.db.linkJob.create({
-      data: {
-        id: job.id,
-        userId: job.userId,
-        provider: job.provider,
-        phase: job.phase,
-        ...(job.reason !== undefined ? { reason: job.reason } : {}),
-        ...(job.retrySafe !== undefined ? { retrySafe: job.retrySafe } : {}),
-        ...(job.dryRun !== undefined ? { dryRun: job.dryRun } : {}),
-      },
-    });
+  async create(job: {
+    id: string;
+    userId: string;
+    provider: string;
+    phase: LinkJobPhase;
+    stateSealed?: string;
+    setUpCard?: boolean;
+    nextAttemptAt?: Date;
+  }): Promise<void> {
+    await this.db.linkJob.create({ data: job });
   }
 
-  async update(id: string, patch: Partial<Omit<LinkJob, "id">>): Promise<void> {
-    await this.db.linkJob.update({
-      where: { id },
-      data: {
-        ...(patch.phase !== undefined ? { phase: patch.phase } : {}),
-        ...(patch.reason !== undefined ? { reason: patch.reason } : {}),
-        ...(patch.retrySafe !== undefined ? { retrySafe: patch.retrySafe } : {}),
-        ...(patch.dryRun !== undefined ? { dryRun: patch.dryRun } : {}),
-      },
-    });
+  async update(id: string, patch: LinkJobPatch): Promise<void> {
+    await this.db.linkJob.update({ where: { id }, data: patch });
   }
 
-  async get(id: string): Promise<LinkJob | undefined> {
-    const row = await this.db.linkJob.findUnique({ where: { id } });
-    if (!row) return undefined;
-    return {
-      id: row.id,
-      userId: row.userId,
-      provider: row.provider,
-      phase: row.phase as LinkJobPhase,
-      ...(row.reason !== null ? { reason: row.reason } : {}),
-      ...(row.retrySafe !== null ? { retrySafe: row.retrySafe } : {}),
-      ...(row.dryRun !== null ? { dryRun: row.dryRun } : {}),
-    };
+  async get(id: string): Promise<LinkJobRow | undefined> {
+    return (await this.db.linkJob.findUnique({ where: { id } })) ?? undefined;
   }
 }
 

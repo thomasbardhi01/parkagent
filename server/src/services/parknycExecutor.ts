@@ -17,17 +17,118 @@
  */
 
 import type { AppDb } from "../db.js";
-import { cityForZone, providerForCity, providerStatusUsable } from "../providers/registry.js";
+import {
+  cityForZone,
+  providerById,
+  providerForCity,
+  providerStatusUsable,
+} from "../providers/registry.js";
 import type { ProviderId } from "../providers/registry.js";
+import { verdictFor } from "./circuitBreaker.js";
+import type { CircuitBreaker } from "./circuitBreaker.js";
+import { GateWaitError } from "./executorGate.js";
+import type { AcquireOptions, ExecutorGate } from "./executorGate.js";
 import { providerRelinkPush } from "./apns.js";
 import type { PushSender } from "./apns.js";
 import type { StateCrypto } from "./crypto.js";
-import type { Executor, ExecutorContext, ExecutorProvider, ExecutorResult } from "./executor.js";
 import type {
+  Executor,
+  ExecutorCallMeta,
+  ExecutorContext,
+  ExecutorProvider,
+  ExecutorResult,
+} from "./executor.js";
+import type {
+  AccountOpOptions,
   ProviderAccountOps,
   ProviderOpsFactory,
   ProviderStorageState,
 } from "./providerOps.js";
+
+/**
+ * What every real provider call passes through, in order: the provider's
+ * circuit breaker (fail fast while it's down), then the browser gate (a
+ * slot on this machine, in arrival order). The call's queue wait, browser
+ * time, and navigation retries come back on the result as `meta`, for the
+ * decisions row and /admin/summary.
+ */
+export interface ExecutorRuntime {
+  gate: ExecutorGate;
+  breaker: CircuitBreaker;
+  /** How long a session call (pay, extend, stop) may wait for a slot
+   * before failing "busy" — nothing ran, so nothing was paid. */
+  sessionQueueWaitMs: number;
+}
+
+/** Account-op options plus the queue feedback the link job shows. */
+export type GuardedAccountOpOptions = AccountOpOptions & {
+  onQueued?: (ahead: number) => void;
+};
+
+type Guardable = { ok: boolean; code?: string; message?: string; retries?: number };
+
+/**
+ * Run one real call under the breaker and the gate. A refused admission
+ * or a wait that gave up returns typed, before anything touched the
+ * provider.
+ */
+export async function guarded<T extends Guardable>(
+  runtime: ExecutorRuntime,
+  provider: ProviderId,
+  call: (remainingMs: number | undefined) => Promise<T>,
+  wait: AcquireOptions = {},
+): Promise<T & { meta: ExecutorCallMeta }> {
+  const name = providerById(provider)?.displayName ?? provider;
+  const idle: ExecutorCallMeta = { queueMs: 0, runMs: 0, retries: 0, queuedBehind: 0 };
+  const admission = runtime.breaker.admit(provider);
+  if (!admission.ok) {
+    return {
+      ok: false,
+      code: "provider_unavailable",
+      message: `${name} isn't responding; ParkAgent will try again in about ${Math.ceil(admission.retryInMs / 1000)}s`,
+      meta: idle,
+    } as unknown as T & { meta: ExecutorCallMeta };
+  }
+  let ticket;
+  try {
+    ticket = await runtime.gate.acquire(wait);
+  } catch (err) {
+    runtime.breaker.record(provider, "neutral", null, admission.trial);
+    const busy = err instanceof GateWaitError && err.reason === "busy";
+    return {
+      ok: false,
+      code: busy ? "busy" : "timeout",
+      message: busy
+        ? "every browser slot stayed busy; nothing ran"
+        : "stopped while queued; nothing ran",
+      meta: idle,
+    } as unknown as T & { meta: ExecutorCallMeta };
+  }
+  const started = Date.now();
+  const remaining =
+    wait.maxWaitMs !== undefined ? Math.max(1, wait.maxWaitMs - ticket.queueMs) : undefined;
+  let result: T;
+  try {
+    result = await call(remaining);
+  } finally {
+    ticket.release();
+  }
+  runtime.breaker.record(
+    provider,
+    verdictFor(result.ok, result.code),
+    result.code ?? null,
+    admission.trial,
+  );
+  return {
+    ...result,
+    meta: {
+      queueMs: ticket.queueMs,
+      runMs: Date.now() - started,
+      retries: result.retries ?? 0,
+      queuedBehind: ticket.queuedBehind,
+    },
+  };
+}
 
 export interface ParkNycOptions {
   /** Vehicle used when a call doesn't name a plate (PARKNYC_PLATE). */
@@ -89,6 +190,16 @@ export async function closeExecutorBrowser(): Promise<void> {
   }
 }
 
+/**
+ * Start the shared Chromium at boot, so the first link or payment doesn't
+ * pay for launching it on a cold machine. Returns the milliseconds it
+ * took, or throws (no executor build, no browser installed).
+ */
+export async function warmExecutorBrowser(): Promise<number> {
+  const mod = await import("executor");
+  return mod.warmUpBrowser();
+}
+
 export function makeParkNycExecutor(
   state: ProviderStorageState,
   options: ParkNycOptions,
@@ -139,38 +250,67 @@ export const defaultRealExecutorFactory: RealExecutorFactory = (provider, state,
  * still turn a thrown factory into provider_not_supported for any future
  * placeholder.
  */
-export function makeProviderOpsFactory(options: ParkNycOptions): ProviderOpsFactory {
+export function makeProviderOpsFactory(
+  options: ParkNycOptions,
+  runtime?: ExecutorRuntime,
+  /** Tests only: stand in for the Playwright package. */
+  loadOps?: (provider: ProviderId, state: ProviderStorageState) => Promise<ProviderAccountOps>,
+): ProviderOpsFactory {
   return (provider: ProviderId, state: ProviderStorageState): ProviderAccountOps => {
     let real: Promise<ProviderAccountOps> | null = null;
     const load = (): Promise<ProviderAccountOps> => {
-      real ??= import("executor").then((mod) => {
-        const opts = {
-          storageState: state,
-          ...(options.captureDir ? { captureDir: options.captureDir } : {}),
-        };
-        return provider === "passport"
-          ? mod.createPassportAccountOps(opts)
-          : mod.createParkNycAccountOps(opts);
-      });
+      real ??= loadOps
+        ? loadOps(provider, state)
+        : import("executor").then((mod) => {
+            const opts = {
+              storageState: state,
+              ...(options.captureDir ? { captureDir: options.captureDir } : {}),
+            };
+            return provider === "passport"
+              ? mod.createPassportAccountOps(opts)
+              : mod.createParkNycAccountOps(opts);
+          });
       return real;
     };
-    const guard = async <T>(fn: (ops: ProviderAccountOps) => Promise<T>): Promise<T> => {
-      try {
-        return await fn(await load());
-      } catch (err) {
-        return {
-          ok: false,
-          code: "unknown",
-          message: `parknyc account ops failed to load or crashed: ${firstLine(err)}`,
-        } as T;
-      }
+    const crashed = (err: unknown) => ({
+      ok: false as const,
+      code: "unknown" as const,
+      message: `${provider} account ops failed to load or crashed: ${firstLine(err)}`,
+    });
+    const guard = async <T extends Guardable>(
+      fn: (ops: ProviderAccountOps, remainingMs: number | undefined) => Promise<T>,
+      budget: GuardedAccountOpOptions = {},
+    ): Promise<T> => {
+      const run = async (remainingMs: number | undefined): Promise<T> => {
+        try {
+          return await fn(await load(), remainingMs);
+        } catch (err) {
+          return crashed(err) as unknown as T;
+        }
+      };
+      if (!runtime) return run(budget.budgetMs);
+      return guarded(runtime, provider, run, {
+        ...(budget.budgetMs !== undefined ? { maxWaitMs: budget.budgetMs } : {}),
+        ...(budget.signal ? { signal: budget.signal } : {}),
+        ...(budget.onQueued ? { onPosition: budget.onQueued } : {}),
+      });
     };
+    // The budget left after the queue goes to the browser read.
+    const reading = (
+      budget: GuardedAccountOpOptions | undefined,
+      remainingMs: number | undefined,
+    ) => ({
+      ...(remainingMs !== undefined ? { budgetMs: remainingMs } : {}),
+      ...(budget?.signal ? { signal: budget.signal } : {}),
+    });
     return {
-      verifyAccount: () => guard((ops) => ops.verifyAccount()),
+      verifyAccount: (budget?: GuardedAccountOpOptions) =>
+        guard((ops, left) => ops.verifyAccount(reading(budget, left)), budget),
       setupCard: (card) => guard((ops) => ops.setupCard(card)),
       removeCard: (last4) => guard((ops) => ops.removeCard(last4)),
       topupWallet: (amountUsd) => guard((ops) => ops.topupWallet(amountUsd)),
-      readSavedCard: () => guard((ops) => ops.readSavedCard()),
+      readSavedCard: (budget?: GuardedAccountOpOptions) =>
+        guard((ops, left) => ops.readSavedCard(reading(budget, left)), budget),
     };
   };
 }
@@ -187,6 +327,8 @@ export interface UserExecutorProviderConfig {
   warn: (msg: string) => void;
   /** Injectable for tests; defaults to the real Playwright-backed factory. */
   makeRealExecutor?: RealExecutorFactory;
+  /** The breaker and the browser gate; absent in tests that don't need them. */
+  runtime?: ExecutorRuntime;
 }
 
 /** An executor whose every call fails the same typed way. */
@@ -250,7 +392,12 @@ export function makeUserExecutorProvider(config: UserExecutorProviderConfig): Ex
             ...(config.stepCaptureDir ? { stepCaptureDir: config.stepCaptureDir } : {}),
           },
         );
-        const result = await fn(executor);
+        const runtime = config.runtime;
+        const result: ExecutorResult = runtime
+          ? await guarded(runtime, provider.id, () => fn(executor), {
+              maxWaitMs: runtime.sessionQueueWaitMs,
+            })
+          : await fn(executor);
         if (!result.ok && result.code === "auth_expired") {
           // The cookies died. Mark the account and ask the user to re-link;
           // failures here must not mask the executor result.

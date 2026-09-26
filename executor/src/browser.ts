@@ -14,8 +14,12 @@ import { chromium } from "playwright";
 /** The bit of Playwright warmBrowser needs — injectable so the recovery
  * logic is unit-testable without ever launching a real Chromium. */
 export interface BrowserLauncher {
-  launch(options: { headless: boolean }): Promise<Browser>;
+  launch(options: { headless: boolean; args?: string[] }): Promise<Browser>;
 }
+
+/** Container-friendly: Fly's small /dev/shm otherwise crashes pages under
+ * load, which reads exactly like an out-of-memory kill. */
+const LAUNCH_ARGS = ["--disable-dev-shm-usage"];
 
 let launcher: BrowserLauncher = chromium;
 let current: Promise<Browser> | null = null;
@@ -29,11 +33,11 @@ export function setBrowserLauncherForTests(fake: BrowserLauncher): void {
 export function warmBrowser(headless = true): Promise<Browser> {
   const attempt = current;
   if (!attempt) {
-    current = launcher.launch({ headless });
+    current = launcher.launch({ headless, args: LAUNCH_ARGS });
     return current;
   }
   const relaunch = (): Promise<Browser> => {
-    if (current === attempt) current = launcher.launch({ headless });
+    if (current === attempt) current = launcher.launch({ headless, args: LAUNCH_ARGS });
     return current!;
   };
   return attempt.then((browser) => (browser.isConnected() ? browser : relaunch()), relaunch);

@@ -138,9 +138,12 @@ test("provider_card linking skips setup-card without consent; parkagent_card cha
   const linked = await req(t.app, "POST", "/providers/parknyc/link", {
     cookies: [{ name: "sid", value: "s3cret", domain: ".nyc.flowbirdapp.com" }],
   });
-  expect(linked.statusCode).toBe(200);
-  expect(linked.json()).toMatchObject({ status: "linked", jobId: null });
-  const link = t.state.decisions.find((d) => d.kind === "provider_link" && d.rule === "link_ok")!;
+  expect(linked.statusCode).toBe(202);
+  await t.linkWorker.tick();
+  expect(t.state.linkJobs[0]).toMatchObject({ phase: "done", setUpCard: false });
+  const link = t.state.decisions.find(
+    (d) => d.kind === "provider_link" && d.rule === "link_queued",
+  )!;
   expect(link.inputs).toMatchObject({ setUpCard: false, paymentSource: "provider_card" });
 
   // parkagent_card: the same request without consent is refused up front.

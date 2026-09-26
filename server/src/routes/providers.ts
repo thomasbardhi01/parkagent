@@ -178,110 +178,53 @@ export function registerProviders(app: FastifyInstance, deps: AppDeps): void {
       origins: [],
     };
 
-    let ops;
+    // Everything slow (verifying the sign-in in a browser, reading the
+    // saved card, the ParkAgent card setup) runs as a job: a phone on the
+    // other end of one HTTP request gave up at 60 s while the server kept
+    // going ("Could not reach the server" over a link that worked). The
+    // app polls link-status; jobs/linkWorker.ts does the work, under a
+    // 45-second budget for the part that decides the link.
     try {
-      ops = deps.providerOps(provider.id, state);
+      deps.providerOps(provider.id, state);
     } catch {
       await decide("provider_not_supported", { ok: false });
       return reply.code(409).send({ error: "provider_not_supported" });
     }
-
-    // Verify headlessly: are these cookies a signed-in session?
-    const verify = await ops.verifyAccount();
-    if (!verify.ok) {
-      await decide("verification_failed", { ok: false, code: verify.code });
-      return reply.code(409).send({ error: "verification_failed", code: verify.code });
-    }
-
-    // Everyone but the ParkAgent card pays street meters with the card
-    // already on the account: read its brand/last4 off the provider's Your
-    // Cards screen for display ("Your card on …  ••4242"). Best effort — a
-    // miss stores nulls and never blocks the link.
-    let cardBrand: string | null = null;
-    let cardLast4: string | null = null;
-    if (paymentSource !== "parkagent_card") {
-      try {
-        const saved = await ops.readSavedCard();
-        if (saved.ok) {
-          cardBrand = saved.brand;
-          cardLast4 = saved.last4;
-        }
-      } catch {
-        // Display data only; the link stands without it.
-      }
-    }
-
-    await deps.db.providerAccount.upsert({
-      where: { userId_provider: { userId: user.id, provider: provider.id } },
-      create: {
-        userId: user.id,
-        provider: provider.id,
-        status: "linked",
-        stateEncrypted: stateCrypto.seal(JSON.stringify(state)),
-        linkedAt: at,
-        lastVerifiedAt: at,
-        cardBrand,
-        cardLast4,
-        walletBalanceCents: verify.walletBalanceCents,
-      },
-      update: {
-        status: "linked",
-        stateEncrypted: stateCrypto.seal(JSON.stringify(state)),
-        linkedAt: at,
-        lastVerifiedAt: at,
-        cardBrand,
-        cardLast4,
-        walletBalanceCents: verify.walletBalanceCents,
-      },
+    const jobId = randomUUID();
+    await jobs.create({
+      id: jobId,
+      userId: user.id,
+      provider: provider.id,
+      phase: "queued",
+      stateSealed: stateCrypto.seal(JSON.stringify(state)),
+      setUpCard,
+      nextAttemptAt: at,
     });
-    await decide("link_ok", {
-      ok: true,
-      walletBalanceCents: verify.walletBalanceCents,
-      // Presence only — the decision never needs the digits.
-      savedCardSeen: cardLast4 !== null,
-    });
-
-    // Chained setup: verification passed, so the card goes on now — as a
-    // job the app polls, since the executor takes seconds.
-    let jobId: string | null = null;
-    if (setUpCard) {
-      jobId = randomUUID();
-      await jobs.create({
-        id: jobId,
-        userId: user.id,
-        provider: provider.id,
-        phase: "adding_card",
-      });
-      const id = jobId;
-      void runSetupCard(deps, user.id, provider)
-        .then((outcome) => {
-          if (outcome.ok) {
-            return jobs.update(id, { phase: "done", dryRun: outcome.dryRun });
-          }
-          return jobs.update(id, {
-            phase: "failed",
-            reason: outcome.code,
-            retrySafe: outcome.retrySafe,
-          });
-        })
-        .catch((err: unknown) => {
-          // Message only, never the error object: this path holds the card
-          // number/CVC, and a serialized Playwright call log can embed the
-          // resolved form element's HTML.
-          const message = err instanceof Error ? err.message.split("\n")[0] : String(err);
-          req.log.error({ setupCardError: message }, "chained setup-card crashed");
-          void jobs.update(id, { phase: "failed", reason: "unknown", retrySafe: true });
-        });
-    }
-
-    return {
-      status: "linked",
-      walletBalanceCents: verify.walletBalanceCents,
-      cardBrand,
-      cardLast4,
-      jobId,
-    };
+    await decide("link_queued", { ok: true, jobId });
+    deps.linkWorker?.kick();
+    return reply.code(202).send({ status: "verifying", phase: "queued", jobId });
   });
+
+  /** The app moved on (onboarding's "Continue — we'll let you know"):
+   * push the outcome when the job ends, or now if it already has. */
+  app.post(
+    "/providers/:provider/link-jobs/:jobId/notify",
+    { preHandler: limitReads },
+    async (req, reply) => {
+      const provider = requireProvider(req, reply);
+      if (!provider) return;
+      const { jobId } = req.params as { jobId: string };
+      const user = req.authedUser!;
+      const job = await jobs.get(jobId);
+      if (!job || job.userId !== user.id || job.provider !== provider.id) {
+        return reply.code(404).send({ error: "unknown_job" });
+      }
+      if (!job.finishedAt) {
+        await jobs.update(jobId, { notify: true });
+      }
+      return { ok: true, phase: job.phase, notify: !job.finishedAt };
+    },
+  );
 
   app.get("/providers/:provider/link-status", { preHandler: limitReads }, async (req, reply) => {
     const provider = requireProvider(req, reply);
@@ -295,11 +238,33 @@ export function registerProviders(app: FastifyInstance, deps: AppDeps): void {
     if (!job || job.userId !== user.id || job.provider !== provider.id) {
       return reply.code(404).send({ error: "unknown_job" });
     }
+    // Linked as soon as verification passed, even while the card is read.
+    const account = await deps.db.providerAccount.findUnique({
+      where: { userId_provider: { userId: user.id, provider: provider.id } },
+    });
+    const linkedByThisJob =
+      account !== null &&
+      providerStatusUsable(account.status) &&
+      account.linkedAt !== null &&
+      account.linkedAt >= job.createdAt;
+    const end = job.finishedAt ?? now();
     return {
       phase: job.phase,
-      ...(job.reason !== undefined ? { reason: job.reason } : {}),
-      ...(job.retrySafe !== undefined ? { retrySafe: job.retrySafe } : {}),
-      ...(job.dryRun !== undefined ? { dryRun: job.dryRun } : {}),
+      linked: linkedByThisJob,
+      elapsedMs: Math.max(0, end.getTime() - job.createdAt.getTime()),
+      attempt: job.attempts,
+      maxAttempts: job.maxAttempts,
+      ...(job.queuePosition !== null ? { queuePosition: job.queuePosition } : {}),
+      ...(job.nextAttemptAt && job.phase === "retrying"
+        ? { nextAttemptAt: job.nextAttemptAt.toISOString() }
+        : {}),
+      ...(job.reason !== null ? { reason: job.reason } : {}),
+      ...(job.retrySafe !== null ? { retrySafe: job.retrySafe } : {}),
+      ...(job.dryRun !== null ? { dryRun: job.dryRun } : {}),
+      ...(linkedByThisJob && account.cardLast4
+        ? { cardBrand: account.cardBrand, cardLast4: account.cardLast4 }
+        : {}),
+      ...(linkedByThisJob ? { walletBalanceCents: account.walletBalanceCents } : {}),
     };
   });
 

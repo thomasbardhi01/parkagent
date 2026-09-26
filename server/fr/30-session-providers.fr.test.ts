@@ -93,6 +93,19 @@ describe("FR-17 provider registry and link status", () => {
       expect(Array.isArray(res.body["expectedDomains"])).toBe(true);
     }
   });
+
+  // Linking is a background job now; its status and "let me know" answer
+  // only for the caller's own jobs. (Nothing here creates a job — that
+  // would drive a real browser at the provider.)
+  it("FR-17 a link job that isn't the caller's is unknown to link-status and to notify", async () => {
+    const status = await frFetch("GET", "/providers/passport/link-status?jobId=fr-not-a-job");
+    expect(status.status).toBe(404);
+    expect(status.body["error"]).toBe("unknown_job");
+
+    const notify = await frFetch("POST", "/providers/passport/link-jobs/fr-not-a-job/notify");
+    expect(notify.status).toBe(404);
+    expect(notify.body["error"]).toBe("unknown_job");
+  });
 });
 
 describe("FR-10 payment source", () => {

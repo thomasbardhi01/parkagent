@@ -15,6 +15,10 @@ struct WalletHeroView: View {
     let response: WalletResponse
     /// "ParkBoston" — whose card "Your card on …" means.
     let provider: String
+    /// That provider's account row; nil when unknown. Not linked → the hero
+    /// says so and offers Connect instead of implying a card is paying.
+    var providerAccount: WalletProvider? = nil
+    var onConnect: ((String) -> Void)? = nil
 
     @State private var confirmingFreeze = false
 
@@ -32,21 +36,32 @@ struct WalletHeroView: View {
 
     private var providerCardHero: some View {
         let card = providerCard
-        return HStack(spacing: Spacing.unit) {
-            ProviderMark(name: provider)
-            VStack(alignment: .leading, spacing: Spacing.quarter) {
-                Text(WalletCopy.title(.providerCard, provider: provider))
-                    .font(.bodyTextSemibold)
-                    .foregroundStyle(Color.textPrimary)
-                Text(card.map { WalletCopy.masked(brand: $0.brand, last4: $0.last4) ?? "" }
-                    ?? "The card saved there pays — connect it to start.")
-                    .font(card == nil ? .captionText : .secondaryText)
-                    .monospacedDigit()
-                    .foregroundStyle(Color.textSecondary)
+        let connected = providerAccount?.isLinked ?? (card != nil)
+        return VStack(alignment: .leading, spacing: Spacing.unit) {
+            HStack(spacing: Spacing.unit) {
+                ProviderMark(name: provider)
+                VStack(alignment: .leading, spacing: Spacing.quarter) {
+                    Text(WalletCopy.title(.providerCard, provider: provider))
+                        .font(.bodyTextSemibold)
+                        .foregroundStyle(Color.textPrimary)
+                    Text(connected
+                        ? (card.flatMap { WalletCopy.masked(brand: $0.brand, last4: $0.last4) }
+                            ?? "The card saved in \(provider) pays each meter.")
+                        : WalletCopy.notConnectedYet(provider: provider))
+                        .font(connected && card != nil ? .secondaryText : .captionText)
+                        .monospacedDigit()
+                        .foregroundStyle(Color.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("wallet.hero.providerCard")
+                Spacer(minLength: 0)
             }
-            .accessibilityElement(children: .combine)
-            .accessibilityIdentifier("wallet.hero.providerCard")
-            Spacer(minLength: 0)
+            if !connected, let account = providerAccount, let onConnect {
+                Button("Connect \(provider)") { onConnect(account.id) }
+                    .buttonStyle(.primary)
+                    .accessibilityIdentifier("wallet.hero.connect")
+            }
         }
         .padding(Spacing.unit)
         .frame(maxWidth: .infinity, alignment: .leading)

@@ -34,6 +34,8 @@ import type {
   ZoneNumberReportRow,
   ZoneTermsObservedRow,
   ZoneTermsRow,
+  LinkJobRow,
+  LinkJobWhere,
 } from "../src/db.js";
 import { makeStateCrypto } from "../src/services/crypto.js";
 import type { ModelClient } from "../src/services/assistant/loop.js";
@@ -44,6 +46,7 @@ import type { AppleTokenClient } from "../src/services/appleTokens.js";
 import type { LinkClient } from "../src/services/link/linkClient.js";
 import { LinkWallet } from "../src/services/link/linkWallet.js";
 import type { ProviderAccountOps, ProviderOpsFactory } from "../src/services/providerOps.js";
+import { makeLinkWorker } from "../src/jobs/linkWorker.js";
 import type { Push } from "../src/services/apns.js";
 import type { Executor } from "../src/services/executor.js";
 import { DryRunExecutor } from "../src/services/executor.js";
@@ -236,7 +239,14 @@ export interface FakeDbState {
   /** Full identity rows. Seeded with u1 (Thomas, admin) and u2 (Ana);
    * auth tests create more through the routes. u1/u2 hold the test api
    * keys implicitly; a test seeding another keyed user sets apiKeyHash. */
-  users: (UserIdentityRow & { apiKeyHash?: string | null; apiKey?: string | null })[];
+  users: (UserIdentityRow & {
+    apiKeyHash?: string | null;
+    apiKey?: string | null;
+    appleRevokeAttempts?: number;
+    appleRevokeNextAt?: Date | null;
+    appleRevokeDeadAt?: Date | null;
+    appleRevokeLastError?: string | null;
+  })[];
   refreshTokens: RefreshTokenRow[];
   emailLoginCodes: EmailLoginCodeRow[];
   parkedEvents: FakeParkedEvent[];
@@ -310,16 +320,42 @@ export interface FakeDbState {
   fundingMethods: FundingMethodRow[];
   sessionHolds: SessionHoldRow[];
   garageBookings: GarageBookingRow[];
-  linkJobs: {
-    id: string;
-    userId: string;
-    provider: string;
-    phase: string;
-    reason: string | null;
-    retrySafe: boolean | null;
-    dryRun: boolean | null;
-    createdAt: Date;
-  }[];
+  linkJobs: LinkJobRow[];
+}
+
+/** The link-job WHERE shapes in use (LinkJobWhere), over the fake rows. */
+function linkJobMatches(job: LinkJobRow, where: LinkJobWhere): boolean {
+  // Columns a legacy test row never set read as NULL, as Postgres would.
+  const nextAttemptAt = job.nextAttemptAt ?? null;
+  const lockedUntil = job.lockedUntil ?? null;
+  const finishedAt = job.finishedAt ?? null;
+  const deadAt = job.deadAt ?? null;
+  if (where.id !== undefined && job.id !== where.id) return false;
+  if (where.userId !== undefined && job.userId !== where.userId) return false;
+  if (where.attempts !== undefined && (job.attempts ?? 0) !== where.attempts) return false;
+  if (where.phase && !where.phase.in.includes(job.phase)) return false;
+  if (where.createdAt?.lt && !(job.createdAt < where.createdAt.lt)) return false;
+  if (where.createdAt?.gte && !(job.createdAt >= where.createdAt.gte)) return false;
+  if (where.nextAttemptAt === null && nextAttemptAt !== null) return false;
+  if (
+    where.nextAttemptAt &&
+    !(nextAttemptAt !== null && nextAttemptAt <= where.nextAttemptAt.lte)
+  ) {
+    return false;
+  }
+  if (where.finishedAt === null && finishedAt !== null) return false;
+  if (where.deadAt === null && deadAt !== null) return false;
+  if (where.deadAt && "not" in where.deadAt && deadAt === null) return false;
+  if (where.lockedUntil === null && lockedUntil !== null) return false;
+  if (where.OR) {
+    const any = where.OR.some((c) =>
+      c.lockedUntil === null
+        ? lockedUntil === null
+        : lockedUntil !== null && lockedUntil < c.lockedUntil.lt,
+    );
+    if (!any) return false;
+  }
+  return true;
 }
 
 function emptySession(id: string): SessionRow {
@@ -591,13 +627,35 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
         row.stripeCustomerId = data.stripeCustomerId;
         return { count: 1 };
       },
+      count: async ({ where }) =>
+        state.users.filter(
+          (u) =>
+            u.deletedAt !== null &&
+            (u.appleRefreshTokenSealed ?? null) !== null &&
+            (where.appleRevokeDeadAt === null
+              ? (u.appleRevokeDeadAt ?? null) === null
+              : (u.appleRevokeDeadAt ?? null) !== null),
+        ).length,
       findMany: (async ({ where, take }: { where: Record<string, unknown>; take?: number }) => {
         if (!("id" in where)) {
-          // Pending Apple revocations: tombstoned, token still sealed.
+          // Pending Apple revocations: tombstoned, token still sealed, not
+          // dead-lettered, and due (no next attempt, or it has come).
+          const due = (where as { OR: ({ appleRevokeNextAt: { lte: Date } } | object)[] }).OR.find(
+            (c) => "appleRevokeNextAt" in c && c.appleRevokeNextAt !== null,
+          ) as { appleRevokeNextAt: { lte: Date } } | undefined;
           return state.users
             .filter((u) => u.deletedAt !== null && (u.appleRefreshTokenSealed ?? null) !== null)
+            .filter((u) => (u.appleRevokeDeadAt ?? null) === null)
+            .filter((u) => {
+              const next = u.appleRevokeNextAt ?? null;
+              return next === null || (due !== undefined && next <= due.appleRevokeNextAt.lte);
+            })
             .slice(0, take ?? Infinity)
-            .map((u) => ({ id: u.id, appleRefreshTokenSealed: u.appleRefreshTokenSealed ?? null }));
+            .map((u) => ({
+              id: u.id,
+              appleRefreshTokenSealed: u.appleRefreshTokenSealed ?? null,
+              appleRevokeAttempts: u.appleRevokeAttempts ?? 0,
+            }));
         }
         const ids = (where as { id: { in: string[] } }).id.in;
         return state.users
@@ -1160,9 +1218,23 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
           reason: null,
           retrySafe: null,
           dryRun: null,
-          createdAt: new Date(MONDAY_2PM),
+          createdAt: fakeRowClock(),
+          stateSealed: null,
+          setUpCard: false,
+          attempts: 0,
+          maxAttempts: 3,
+          nextAttemptAt: null,
+          lockedUntil: null,
+          startedAt: null,
+          finishedAt: null,
+          deadAt: null,
+          lastError: null,
+          queuePosition: null,
+          stages: {},
+          notify: false,
+          notifiedAt: null,
           ...data,
-        } as FakeDbState["linkJobs"][number]);
+        });
         return { id: data.id };
       },
       update: async ({ where, data }) => {
@@ -1170,11 +1242,27 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
         if (row) Object.assign(row, data);
         return row ?? {};
       },
-      findUnique: async ({ where }) => state.linkJobs.find((j) => j.id === where.id) ?? null,
+      // Rows are copies, as Postgres would return them: a caller that
+      // holds one sees nothing a later update does.
+      findUnique: async ({ where }) => {
+        const row = state.linkJobs.find((j) => j.id === where.id);
+        return row ? { ...row, stages: { ...(row.stages as object) } } : null;
+      },
+      findMany: async ({ where, orderBy, take }) => {
+        const rows = state.linkJobs
+          .filter((j) => linkJobMatches(j, where))
+          .map((j) => ({ ...j, stages: { ...(j.stages as object) } }));
+        if (orderBy && "nextAttemptAt" in orderBy) {
+          rows.sort(
+            (a, b) => (a.nextAttemptAt?.getTime() ?? 0) - (b.nextAttemptAt?.getTime() ?? 0),
+          );
+        }
+        return rows.slice(0, take ?? Infinity);
+      },
       updateMany: async ({ where, data }) => {
         let count = 0;
         for (const job of state.linkJobs) {
-          if (where.phase.in.includes(job.phase) && job.createdAt < where.createdAt.lt) {
+          if (linkJobMatches(job, where)) {
             Object.assign(job, data);
             count += 1;
           }
@@ -1937,7 +2025,21 @@ export function makeTestApp(options: {
     ...(options.appleTokens ? { appleTokens: options.appleTokens } : {}),
     now,
   };
-  return { app: buildApp(deps), state, deps, pushes };
+  // The real link worker over the fake tables: POST …/link kicks it, and
+  // tests can also drive it with `await t.linkWorker.tick()`.
+  const linkWorker = makeLinkWorker({
+    db,
+    policy: policyService,
+    sendPush: deps.sendPush,
+    stateCrypto: deps.stateCrypto,
+    providerOps: deps.providerOps,
+    stripe: deps.stripe,
+    issuingLive: deps.issuingLive,
+    log: { info() {}, warn() {} },
+    now,
+  });
+  deps.linkWorker = linkWorker;
+  return { app: buildApp(deps), state, deps, pushes, linkWorker };
 }
 
 export function parkedBody(overrides: Record<string, unknown> = {}) {

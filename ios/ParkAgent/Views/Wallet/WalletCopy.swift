@@ -36,6 +36,13 @@ enum WalletCopy {
     }
 
     static let linkComingSoon = "Link — coming soon"
+
+    /// The hero while the account it names isn't connected: nothing pays
+    /// yet, and saying "Active" would claim otherwise.
+    static let notConnected = "Not connected yet"
+    static func notConnectedYet(provider: String) -> String {
+        "\(notConnected) — connect \(provider) so the card saved there can pay your meters."
+    }
     static let parkAgentComingSoon = "Coming soon — pending approval"
 
     /// The state tag on a "Change how you pay" row.

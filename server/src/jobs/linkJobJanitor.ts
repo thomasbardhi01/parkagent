@@ -1,10 +1,12 @@
 /**
- * Times out link_jobs stuck in progress: a deploy or machine stop can
- * kill the chained setup-card mid-run, and the app would poll a
- * "linking"/"adding_card" row forever. Anything older than 15 minutes is
- * failed with reason "timeout" (retrySafe — POST setup-card again is the
- * fix). The durable truth about the account itself stays in
- * provider_accounts/issuing_cards; this only settles the poll answer.
+ * Times out link_jobs left in progress from before the link worker
+ * (jobs/linkWorker.ts) existed: those ran as fire-and-forget promises, and
+ * a deploy mid-run left the app polling a "linking"/"adding_card" row
+ * forever. Anything older than 15 minutes with no lease and no scheduled
+ * attempt is failed with reason "timeout" (retrySafe — POST setup-card
+ * again is the fix). Worker-managed jobs always hold a lease or a next
+ * attempt while unfinished, so this never touches them; the worker times
+ * out, retries, and dead-letters its own.
  */
 
 import type { AppDb } from "../db.js";
@@ -31,8 +33,14 @@ export function makeLinkJobJanitor(deps: LinkJobJanitorDeps): LinkJobJanitor {
   async function tick(): Promise<number> {
     const cutoff = new Date(now().getTime() - TIMEOUT_MS);
     const { count } = await deps.db.linkJob.updateMany({
-      where: { phase: { in: ["linking", "adding_card"] }, createdAt: { lt: cutoff } },
-      data: { phase: "failed", reason: "timeout", retrySafe: true },
+      where: {
+        phase: { in: ["linking", "adding_card"] },
+        createdAt: { lt: cutoff },
+        finishedAt: null,
+        lockedUntil: null,
+        nextAttemptAt: null,
+      },
+      data: { phase: "failed", reason: "timeout", retrySafe: true, finishedAt: now() },
     });
     if (count > 0) {
       deps.log.warn(`link-job janitor timed out ${count} stuck job(s)`);

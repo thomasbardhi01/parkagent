@@ -22,7 +22,9 @@ import type { Browser, BrowserContext, Page } from "playwright";
 import { chromium } from "playwright";
 
 import { warmBrowser } from "../browser.js";
+import { gotoWithRetry } from "../navigate.js";
 import type {
+  AccountOpOptions,
   CardFormDetails,
   ExecutorError,
   ExecutorResult,
@@ -74,11 +76,43 @@ export class ParkNycClient {
   private browser: Browser | null = null;
   private context: BrowserContext | null = null;
   private page: Page | null = null;
+  /** Set right before the first click that could charge (the duration
+   * Continue, then Pay). From then on nothing retries: not a navigation,
+   * not the whole flow after a browser crash. */
+  private payClicked = false;
+  /** Navigations retried once on a transient failure (before paying). */
+  private navigationRetries = 0;
+  /** Budgeted account reads: DOM-ready navigations, no images/fonts/media. */
+  private light = false;
 
   constructor(private readonly options: ParkNycClientOptions) {}
 
   private get timeoutMs(): number {
     return this.options.timeoutMs ?? 15_000;
+  }
+
+  /** One navigation, retried once on a transient failure before paying. */
+  private async goto(page: Page, url: string): Promise<void> {
+    await gotoWithRetry(page, url, {
+      timeoutMs: this.timeoutMs,
+      ...(this.light ? { waitUntil: "domcontentloaded" as const } : {}),
+      canRetry: () => !this.payClicked,
+      onRetry: () => {
+        this.navigationRetries += 1;
+      },
+    });
+  }
+
+  private async useLightMode(options: AccountOpOptions | undefined, page: Page): Promise<void> {
+    this.light = true;
+    if (options?.budgetMs !== undefined) {
+      this.context?.setDefaultTimeout(Math.min(this.timeoutMs, options.budgetMs));
+    }
+    await page.route("**/*", (route) =>
+      ["image", "font", "media"].includes(route.request().resourceType())
+        ? route.abort()
+        : route.continue(),
+    );
   }
 
   /** Launch + restore auth. Fails typed, not thrown, when state is missing. */
@@ -152,8 +186,9 @@ export class ParkNycClient {
     page: Page,
     flow: () => Promise<ExecutorResult>,
   ): Promise<ExecutorResult> {
+    let result: ExecutorResult;
     try {
-      return await flow();
+      result = await flow();
     } catch (err) {
       const diagnostics = await captureUnexpectedScreen(page, this.options.captureDir);
       if (llmRecoveryEnabled()) {
@@ -169,8 +204,11 @@ export class ParkNycClient {
       }
       const code = classifyFailure(err, diagnostics.pageText ?? null);
       const message = err instanceof Error ? err.message.split("\n")[0]! : String(err);
-      return { ok: false, code, message: `${goal}: ${message}`, diagnostics };
+      result = { ok: false, code, message: `${goal}: ${message}`, diagnostics };
     }
+    if (this.navigationRetries > 0) result = { ...result, retries: this.navigationRetries };
+    if (!result.ok && this.payClicked) result = { ...result, afterPayClick: true };
+    return result;
   }
 
   /** True when the current page is asking us to sign in. */
@@ -195,7 +233,7 @@ export class ParkNycClient {
   ): Promise<{ zoneNumber: string; street: string } | null> {
     try {
       await this.context!.setGeolocation({ latitude: carLat, longitude: carLng });
-      await page.goto(URLS.home);
+      await this.goto(page, URLS.home);
       await this.step("map-cross-check", page);
       const markers = selectors.map.markers(page);
       await markers.first().waitFor({ timeout: 8_000 });
@@ -260,7 +298,7 @@ export class ParkNycClient {
     }
 
     const result = await this.run(goal, page, async () => {
-      await page.goto(URLS.home);
+      await this.goto(page, URLS.home);
       await this.step("home", page);
       if (await this.atSignInScreen(page)) {
         return this.fail(page, "auth_expired", "ParkNYC asked to sign in; storage state is stale");
@@ -293,6 +331,8 @@ export class ParkNycClient {
       for (let i = 0; i < clicks; i += 1) {
         await selectors.duration.addTimeButton(page).click();
       }
+      // The earliest click that could charge: nothing retries past here.
+      this.payClicked = true;
       await selectors.duration.continueButton(page).click();
       await this.step("duration-selected", page);
 
@@ -335,7 +375,7 @@ export class ParkNycClient {
     const goal = `extend session ${providerSessionId} by ${minutes} min`;
 
     return this.run(goal, page, async () => {
-      await page.goto(URLS.sessions);
+      await this.goto(page, URLS.sessions);
       await this.step("sessions", page);
       if (await this.atSignInScreen(page)) {
         return this.fail(page, "auth_expired", "ParkNYC asked to sign in; storage state is stale");
@@ -357,6 +397,7 @@ export class ParkNycClient {
       for (let i = 0; i < clicks - 1; i += 1) {
         await selectors.duration.addTimeButton(page).click();
       }
+      this.payClicked = true;
       await selectors.duration.continueButton(page).click();
       await selectors.confirm.total(page).waitFor();
       await selectors.confirm.payButton(page).click();
@@ -401,7 +442,7 @@ export class ParkNycClient {
     const goal = `stop session ${providerSessionId}`;
 
     return this.run(goal, page, async () => {
-      await page.goto(URLS.sessions);
+      await this.goto(page, URLS.sessions);
       await this.step("sessions", page);
       if (await this.atSignInScreen(page)) {
         return this.fail(page, "auth_expired", "ParkNYC asked to sign in; storage state is stale");
@@ -441,13 +482,14 @@ export class ParkNycClient {
   }
 
   /** Do the cookies constitute a signed-in session? Reads, never writes. */
-  async verifyAccount(): Promise<VerifyAccountResult> {
+  async verifyAccount(options?: AccountOpOptions): Promise<VerifyAccountResult> {
     const opened = await this.open();
     if ("ok" in opened) return opened;
     const { page } = opened;
+    await this.useLightMode(options, page);
 
     const flow = await this.run("verify account", page, async () => {
-      await page.goto(URLS.account);
+      await this.goto(page, URLS.account);
       await this.step("account", page);
       if (await this.atSignInScreen(page)) {
         return this.fail(
@@ -492,7 +534,7 @@ export class ParkNycClient {
 
     // Goal text carries no card data — it lands in logs and decisions rows.
     const flow = await this.run("set up issuing card as payment method", page, async () => {
-      await page.goto(URLS.paymentMethods);
+      await this.goto(page, URLS.paymentMethods);
       await this.step("payment-methods", page);
       if (await this.atSignInScreen(page)) {
         return this.fail(
@@ -541,7 +583,7 @@ export class ParkNycClient {
     const { page } = opened;
 
     const flow = await this.run(`remove card …${last4}`, page, async () => {
-      await page.goto(URLS.paymentMethods);
+      await this.goto(page, URLS.paymentMethods);
       await this.step("payment-methods", page);
       if (await this.atSignInScreen(page)) {
         return this.fail(
@@ -577,7 +619,7 @@ export class ParkNycClient {
     const { page } = opened;
 
     const flow = await this.run(`top up wallet $${amountUsd.toFixed(2)}`, page, async () => {
-      await page.goto(URLS.wallet);
+      await this.goto(page, URLS.wallet);
       await this.step("wallet", page);
       if (await this.atSignInScreen(page)) {
         return this.fail(
@@ -596,6 +638,7 @@ export class ParkNycClient {
       } else {
         await selectors.wallet.amountInput(page).fill(amountUsd.toFixed(2));
       }
+      this.payClicked = true;
       await selectors.wallet.payButton(page).click();
       await this.step("topup-submitted", page);
 
@@ -623,14 +666,15 @@ export class ParkNycClient {
    * (provider_card users). Drafted blind like the other account flows
    * (TODO-verify on a `record` run); no card visible is a success with
    * nulls, and nothing is clicked. */
-  async readSavedCard(): Promise<ReadSavedCardResult> {
+  async readSavedCard(options?: AccountOpOptions): Promise<ReadSavedCardResult> {
     const opened = await this.open();
     if ("ok" in opened) return opened;
     const { page } = opened;
+    await this.useLightMode(options, page);
 
     let label: string | null = null;
     const flow = await this.run("read saved card", page, async () => {
-      await page.goto(URLS.paymentMethods);
+      await this.goto(page, URLS.paymentMethods);
       await this.step("payment-methods", page);
       if (await this.atSignInScreen(page)) {
         return this.fail(

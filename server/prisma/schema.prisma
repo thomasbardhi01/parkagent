@@ -143,6 +143,12 @@ model User {
   // /me. Kept on the tombstone only while that revoke hasn't succeeded;
   // jobs/appleRevocationTick.ts retries and clears it.
   appleRefreshTokenSealed String? @map("apple_refresh_token_sealed")
+  // Retries of that revocation (jobs/appleRevocationTick.ts): backoff, then
+  // a dead letter after the last attempt, visible in /admin/summary.
+  appleRevokeAttempts  Int       @default(0) @map("apple_revoke_attempts")
+  appleRevokeNextAt    DateTime? @map("apple_revoke_next_at") @db.Timestamptz(6)
+  appleRevokeDeadAt    DateTime? @map("apple_revoke_dead_at") @db.Timestamptz(6)
+  appleRevokeLastError String?   @map("apple_revoke_last_error")
   // Google ID token subject; only written when GOOGLE_SIGNIN_ENABLED.
   googleSub String?  @unique @map("google_sub")
   // DELETE /me tombstone: identity fields are scrubbed, this is stamped,
@@ -391,7 +397,8 @@ model LinkJob {
   id        String   @id
   userId    String   @map("user_id")
   provider  String
-  // linking | adding_card | done | failed
+  // queued | verifying | reading_card | adding_card | retrying | done |
+  // failed (legacy rows: linking).
   phase     String
   // Typed failure reason (executor code, "no_card", or "timeout").
   reason    String?
@@ -400,7 +407,32 @@ model LinkJob {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
+  // The link worker (jobs/linkWorker.ts). The captured cookies ride on the
+  // job, sealed like provider_accounts, so a restart can finish the
+  // verification; they are cleared when the job ends.
+  stateSealed   String?   @map("state_sealed")
+  setUpCard     Boolean   @default(false) @map("set_up_card")
+  attempts      Int       @default(0)
+  maxAttempts   Int       @default(3) @map("max_attempts")
+  // Due for (another) attempt; null once the job is finished.
+  nextAttemptAt DateTime? @map("next_attempt_at") @db.Timestamptz(6)
+  // A running attempt's lease; one past it was cut off by a restart.
+  lockedUntil   DateTime? @map("locked_until") @db.Timestamptz(6)
+  startedAt     DateTime? @map("started_at") @db.Timestamptz(6)
+  finishedAt    DateTime? @map("finished_at") @db.Timestamptz(6)
+  // Dead-lettered: the last attempt failed. Shown in /admin/summary.
+  deadAt        DateTime? @map("dead_at") @db.Timestamptz(6)
+  lastError     String?   @map("last_error")
+  // Calls ahead of this one for a browser slot, while it waits.
+  queuePosition Int?      @map("queue_position")
+  // Per-stage timings (ms) for /admin/summary: queue, verify, card, setup.
+  stages        Json      @default("{}")
+  // The user moved on: push the outcome when the job ends.
+  notify        Boolean   @default(false)
+  notifiedAt    DateTime? @map("notified_at") @db.Timestamptz(6)
+
   @@index([phase, createdAt])
+  @@index([nextAttemptAt])
   @@map("link_jobs")
 }
 

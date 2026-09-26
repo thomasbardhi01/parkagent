@@ -6,6 +6,8 @@
 import { expect, test } from "vitest";
 
 import type { ApnsSendReport } from "../src/services/apns.js";
+import { CircuitBreaker } from "../src/services/circuitBreaker.js";
+import { ExecutorGate } from "../src/services/executorGate.js";
 import {
   API_KEY,
   MONDAY_2PM,
@@ -77,6 +79,76 @@ test("aggregates today's parks, sessions, declines, and detector signals per cit
   });
   expect(body.cities.unknown.declines).toMatchObject({ declined_wrong_mcc: 1 });
   expect(new Date(body.since).getTime()).toBeLessThanOrEqual(new Date(MONDAY_2PM).getTime());
+});
+
+test("reports provider stage timings, timeouts, retries, breaker trips, the gate, and dead letters", async () => {
+  const { app, state, deps } = makeTestApp({});
+  const at = new Date(MONDAY_2PM);
+  const job = (id: string, over: Partial<(typeof state.linkJobs)[number]>) => ({
+    id,
+    userId: "u1",
+    provider: "passport",
+    phase: "done",
+    reason: null,
+    retrySafe: null,
+    dryRun: null,
+    createdAt: at,
+    stateSealed: null,
+    setUpCard: false,
+    attempts: 1,
+    maxAttempts: 3,
+    nextAttemptAt: null,
+    lockedUntil: null,
+    startedAt: at,
+    finishedAt: at,
+    deadAt: null,
+    lastError: null,
+    queuePosition: null,
+    stages: {},
+    notify: false,
+    notifiedAt: null,
+    ...over,
+  });
+  state.linkJobs.push(
+    job("j1", { stages: { queueMs: 0, verifyMs: 6_000, cardMs: 3_000, totalMs: 9_500 } }),
+    job("j2", { stages: { queueMs: 2_000, verifyMs: 12_000, totalMs: 16_000 }, attempts: 2 }),
+    // Gave up after three timeouts: a dead letter (and one timeout).
+    job("j3", { phase: "failed", reason: "timeout", attempts: 3, deadAt: at }),
+  );
+  seedSession(state, { status: "active", city: "bos" });
+  state.decisions.push(
+    {
+      kind: "session_start",
+      inputs: {},
+      rule: "start_ok",
+      outcome: { ok: true, executor: { queueMs: 500, runMs: 21_000, retries: 1, queuedBehind: 1 } },
+      sessionId: "seed1",
+    },
+    { kind: "circuit_breaker", inputs: { provider: "passport" }, rule: "open", outcome: {} },
+  );
+  deps.executorRuntime = {
+    gate: new ExecutorGate(2),
+    breaker: new CircuitBreaker({ threshold: 3, cooldownMs: 60_000 }),
+    sessionQueueWaitMs: 45_000,
+  };
+
+  const res = await app.inject({ method: "GET", url: "/admin/summary", headers: HEADERS });
+  expect(res.statusCode).toBe(200);
+  const body = res.json();
+  const passport = body.providers.passport;
+  expect(passport.stages.verify).toEqual({ n: 2, p50Ms: 6_000, p95Ms: 12_000 });
+  expect(passport.stages.link).toEqual({ n: 2, p50Ms: 9_500, p95Ms: 16_000 });
+  expect(passport.stages.start).toEqual({ n: 1, p50Ms: 21_000, p95Ms: 21_000 });
+  // Link attempts past the first (1 + 2) and the start's in-place retry.
+  expect(passport.retries).toBe(4);
+  expect(passport.timeouts).toBe(1);
+  expect(passport.breakerTrips).toBe(1);
+  expect(passport.breakerState).toBe("closed");
+  expect(passport.links).toMatchObject({ started: 3, done: 2, failed: 1, deadLettered: 1 });
+  expect(body.executor).toEqual({ capacity: 2, inUse: 0, queued: 0 });
+  expect(body.deadLetters.linkJobs).toEqual([
+    expect.objectContaining({ id: "j3", provider: "passport", reason: "timeout", attempts: 3 }),
+  ]);
 });
 
 test("requires auth like everything else", async () => {

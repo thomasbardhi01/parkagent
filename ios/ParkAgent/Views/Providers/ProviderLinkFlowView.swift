@@ -7,8 +7,9 @@ struct ProviderLinkFlowView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var link: ProviderLinkModel
-    /// Called on Done so the presenter can refresh (re-offer Pay, reload
-    /// Settings rows).
+    /// Called on Done after a finished link, so the presenter can refresh
+    /// (re-offer Pay, reload Settings rows). Not when the user moved on
+    /// while it ran: nothing is linked yet, and the outcome comes by push.
     var onLinked: (() -> Void)?
 
     init(providerId: String, onLinked: (() -> Void)? = nil) {
@@ -19,7 +20,7 @@ struct ProviderLinkFlowView: View {
     var body: some View {
         NavigationStack {
             ProviderLinkStagesView(link: link) {
-                onLinked?()
+                if case .done = link.stage { onLinked?() }
                 dismiss()
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -35,6 +36,8 @@ struct ProviderLinkFlowView: View {
         }
         // No container identifier: it would swallow the stage containers
         // (link.intro, link.done, …) the tests key off.
+        // Mid-link, leaving is by Continue (after 20 s) or Cancel — both
+        // ask for the outcome by push; a stray swipe shouldn't.
         .interactiveDismissDisabled(link.stage == .verifying || link.stage == .addingCard)
     }
 }
@@ -50,6 +53,13 @@ struct ProviderLinkStagesView: View {
     var body: some View {
         content
             .task { await link.load(api: model.api) }
+            // Closed mid-link (Cancel, a swipe once allowed): the job runs
+            // on server-side, so ask for its outcome by push and stop
+            // polling for a screen nobody is looking at.
+            .onDisappear {
+                guard link.stage == .verifying || link.stage == .addingCard else { return }
+                Task { await link.continueInBackground(api: model.api) }
+            }
     }
 
     @ViewBuilder
@@ -66,7 +76,11 @@ struct ProviderLinkStagesView: View {
         case .signIn:
             signIn
         case .verifying, .addingCard:
-            LinkProgressView(stage: link.stage, providerName: providerName)
+            LinkProgressView(link: link, providerName: providerName) {
+                Task { await link.continueInBackground(api: model.api) }
+            }
+        case .continuingInBackground:
+            LinkContinuingView(providerName: providerName, onDone: onDone)
         case .done(let dryRun):
             LinkDoneView(
                 providerName: providerName,
@@ -271,27 +285,119 @@ private struct LinkIntroView: View {
 }
 
 /// Verifying the sign-in, then adding the card — one quiet progress screen.
+/// While the link job runs: its real step, how long it's been, its place
+/// in line or its attempt, and — past 20 seconds — a way to move on.
 private struct LinkProgressView: View {
-    let stage: ProviderLinkModel.Stage
+    @Bindable var link: ProviderLinkModel
     let providerName: String
+    let onContinue: () -> Void
 
     var body: some View {
-        VStack(spacing: Spacing.unit) {
-            ProgressView()
-                .controlSize(.large)
-            Text(stage == .verifying ? "Checking your sign-in" : "Adding your card")
-                .font(.bodyTextSemibold)
-                .foregroundStyle(Color.textPrimary)
-            Text(stage == .verifying
-                ? "Making sure \(providerName) recognizes the session."
-                : "Putting your ParkAgent card on the \(providerName) account. This takes a few seconds.")
-                .font(.secondaryText)
-                .foregroundStyle(Color.textSecondary)
-                .multilineTextAlignment(.center)
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            let elapsed = link.startedAt.map { max(0, context.date.timeIntervalSince($0)) } ?? 0
+            VStack(spacing: Spacing.unit) {
+                Spacer()
+                ProgressView()
+                    .controlSize(.large)
+                Text(link.stepText(providerName: providerName))
+                    .font(.bodyTextSemibold)
+                    .foregroundStyle(Color.textPrimary)
+                    .multilineTextAlignment(.center)
+                    .accessibilityIdentifier("link.progress.step")
+                if let detail = LinkProgressCopy.detail(link.progress, providerName: providerName) {
+                    Text(detail)
+                        .font(.secondaryText)
+                        .foregroundStyle(Color.textSecondary)
+                        .multilineTextAlignment(.center)
+                        .accessibilityIdentifier("link.progress.detail")
+                }
+                Text(LinkProgressCopy.elapsed(elapsed))
+                    .font(.captionText)
+                    .monospacedDigit()
+                    .foregroundStyle(Color.textSecondary)
+                    .accessibilityIdentifier("link.progress.elapsed")
+                Spacer()
+                if elapsed >= ProviderLinkModel.continueAfter {
+                    Text("This is taking longer than usual. You can keep going; ParkAgent will let you know when \(providerName) is connected.")
+                        .font(.captionText)
+                        .foregroundStyle(Color.textSecondary)
+                        .multilineTextAlignment(.center)
+                    Button("Continue — we'll let you know", action: onContinue)
+                        .buttonStyle(.secondary)
+                        .accessibilityIdentifier("link.continueInBackground")
+                }
+            }
         }
         .padding(Spacing.unitAndHalf)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("link.progress")
+    }
+}
+
+/// The user moved on: the job runs on, and a push will say how it went.
+private struct LinkContinuingView: View {
+    let providerName: String
+    let onDone: () -> Void
+
+    var body: some View {
+        VStack(spacing: Spacing.unit) {
+            Spacer()
+            Image(systemName: "bell.badge")
+                .font(.system(size: 48))
+                .foregroundStyle(Color.textSecondary)
+            Text("We'll let you know")
+                .font(.bodyTextSemibold)
+                .foregroundStyle(Color.textPrimary)
+            Text("ParkAgent keeps connecting \(providerName) and sends a notification when it's done — or says what went wrong.")
+                .font(.secondaryText)
+                .foregroundStyle(Color.textSecondary)
+                .multilineTextAlignment(.center)
+            Spacer()
+            Button("OK", action: onDone)
+                .buttonStyle(.primary)
+                .accessibilityIdentifier("link.continuingDone")
+        }
+        .padding(Spacing.unitAndHalf)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("link.continuing")
+    }
+}
+
+/// The link job's steps in plain words (one place, so the flow and its
+/// tests agree).
+enum LinkProgressCopy {
+    static func step(_ status: LinkStatusResponse?, providerName: String, addingCard: Bool) -> String {
+        if addingCard { return "Adding your ParkAgent card…" }
+        switch status?.phase {
+        case "queued" where (status?.queuePosition ?? 0) > 0:
+            return "Waiting for a free spot…"
+        case "reading_card":
+            return "Reading your card…"
+        case "adding_card":
+            return "Adding your ParkAgent card…"
+        case "retrying":
+            return "\(providerName) is slow — trying again…"
+        default:
+            return "Checking your \(providerName) sign-in…"
+        }
+    }
+
+    static func detail(_ status: LinkStatusResponse?, providerName: String) -> String? {
+        guard let status else { return nil }
+        if status.phase == "queued", let ahead = status.queuePosition, ahead > 0 {
+            return ahead == 1 ? "1 ahead of you." : "\(ahead) ahead of you."
+        }
+        if status.phase == "retrying", let attempt = status.attempt, let max = status.maxAttempts {
+            return "Attempt \(attempt + 1) of \(max) starts shortly."
+        }
+        if status.phase == "reading_card" {
+            return "\(providerName) is connected. Looking up the card saved there."
+        }
+        return nil
+    }
+
+    static func elapsed(_ seconds: TimeInterval) -> String {
+        "\(Int(seconds)) s"
     }
 }
 

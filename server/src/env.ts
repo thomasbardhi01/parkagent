@@ -34,6 +34,13 @@ const schema = z
     // base64: `openssl rand -base64 32`. Without it provider linking is
     // off (503) and real executor calls fail typed.
     PROVIDER_STATE_KEY: z.string().min(1).optional(),
+    // How many provider browser calls run at once (pay, extend, stop,
+    // link, card read, health check). Each is a Chromium context; 2 fits
+    // the 1 GB machine with room for the server. More wait in a queue.
+    EXECUTOR_CONCURRENCY: z.coerce.number().int().min(1).max(8).default(2),
+    // Start Chromium at boot (when PROVIDER_STATE_KEY is set), so the first
+    // link or payment after a deploy doesn't also pay for launching it.
+    EXECUTOR_WARM_AT_BOOT: z.enum(["true", "false"]).default("true"),
     // Signs the 15-minute access JWTs and peppers refresh-token hashes.
     // Any string ≥ 32 chars: `openssl rand -base64 32`. Rotating it signs
     // everyone out (access tokens fail verify; refresh hashes stop

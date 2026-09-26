@@ -63,6 +63,7 @@ the evidence that proves it. Three kinds of evidence back an FR:
 | FR-36 | Street options with their state | automated | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantStreet.test.ts`; iOS `AssistantUITests` (street detail) |
 | FR-37 | Choosing an option | automated | `server/test/assistantRecommendation.test.ts`; iOS `PlanSelectionTests`, `AssistantUITests` (selection sync) |
 | FR-38 | Saved conversations | automated | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantHistory.test.ts`; iOS `AssistantUITests` (history, Activity link) |
+| FR-39 | Continuous dictation | automated + device-manual | iOS `DictationTranscriptTests`, `SpeechRecognizerTests`, `SpeechUITests` (scripted recognizer); the real recognizers need a phone |
 
 ---
 
@@ -813,6 +814,38 @@ outcomes, ownership, trimming, retention, Activity links); live FR-38
 test (list/open/delete, no model); iOS
 `AssistantUITests.testHistoryListsOpensResumesAndDeletes`,
 `testActivityOpensTheConversationAPlanCameFrom`.
+
+### FR-39 — Dictation that doesn't cut people off
+
+The assistant's mic is one continuous dictation (iOS
+`Support/SpeechRecognizer.swift`, `DictationTranscript.swift`):
+
+- A new segment appends instead of replacing, however the recognizer
+  marks it (a final result, a silent restart of its guess, or a repeat of
+  the committed text).
+- When iOS ends a recognition task, it restarts on the same audio
+  without losing text.
+- A pause of up to 3 s keeps listening. The `dictationPauseSeconds` user
+  default configures the limit (1–30 s); only a longer silence after
+  speech ends the dictation. The panel says "Still listening — tap the
+  mic or Send to finish" instead of counting down.
+- Nothing is sent automatically. The mic tap puts the words in the field,
+  appended to anything already typed. Send finishes and sends them.
+- Fillers and stutters don't split the message.
+- It runs on SpeechAnalyzer (SpeechTranscriber) on iOS 26 where the
+  device supports it, with SFSpeechRecognizer as the fallback.
+- A live waveform and the elapsed time show while listening.
+
+**Accepted when** the scripted continuity session (a segment, an ended
+task, a 2-second pause, fillers, a stutter, and a silent restart) yields
+one message, still listening, and nothing is sent before the user sends
+it.
+
+Evidence: iOS `DictationTranscriptTests`, `SpeechRecognizerTests`
+(continuity, restart, configurable pause, finish),
+`SpeechUITests.testContinuousDictationKeepsEveryWordUntilFinished`,
+`testSendFinishesTheDictation`. The real engines (SpeechAnalyzer,
+SFSpeechRecognizer) need a phone: see the on-device script.
 
 ---
 

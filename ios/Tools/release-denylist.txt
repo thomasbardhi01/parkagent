@@ -95,6 +95,8 @@ type AuthMockScenario O
 type AssistantMockScenario O
 type LinkMockScenario O
 type SpeechMockScenario O
+type ScriptedDictationEngine C
+ScriptedDictationEngine
 type DiagnosticsView V
 type DetectorSelfTest C
 type CapabilityOverride V

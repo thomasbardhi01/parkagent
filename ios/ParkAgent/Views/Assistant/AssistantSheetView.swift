@@ -172,10 +172,11 @@ struct AssistantSheetView: View {
         // goes transparent so the depth reads through it.
         .background(LivingBackground().ignoresSafeArea())
         .onChange(of: speech.finishedTranscript) { _, transcript in
-            // Dictation ended (tap or silence): the words land in the input
-            // field for editing — sending stays a deliberate tap.
+            // Dictation ended (mic tap, or a pause past the limit): the words
+            // join whatever is already in the field, for editing — sending
+            // stays a deliberate tap.
             if let transcript, !transcript.isEmpty {
-                model.input = transcript
+                model.input = Self.merge(model.input, transcript)
             }
             speech.acknowledge()
         }
@@ -420,13 +421,10 @@ struct AssistantSheetView: View {
             } label: {
                 Image(systemName: "arrow.up.circle.fill")
                     .font(.system(size: 28))
-                    .foregroundStyle(
-                        model.input.isEmpty || model.phase == .streaming
-                            ? Color.steel : Color.actionCoral
-                    )
+                    .foregroundStyle(canSend(model) ? Color.actionCoral : Color.steel)
                     .frame(width: 44, height: 44)
             }
-            .disabled(model.input.isEmpty || model.phase == .streaming)
+            .disabled(!canSend(model))
             .accessibilityIdentifier("assistant.sendButton")
         }
         .padding(.vertical, Spacing.half)
@@ -438,10 +436,26 @@ struct AssistantSheetView: View {
     }
 
     /// Send and put the keyboard away: the reply and its card need the
-    /// screen more than the field does.
+    /// screen more than the field does. Send while dictating finishes the
+    /// dictation and sends everything said, with what was already typed.
     private func send(_ model: AssistantModel) {
         inputFocused = false
+        if speech.state == .listening {
+            model.input = Self.merge(model.input, speech.finish())
+        }
         Task { await model.send() }
+    }
+
+    /// Something to send: typed text, or words being dictated right now.
+    private func canSend(_ model: AssistantModel) -> Bool {
+        let dictating = speech.state == .listening && !speech.transcript.isEmpty
+        return (!model.input.isEmpty || dictating) && model.phase != .streaming
+    }
+
+    /// Dictation appends to the field's text as one message ("near Lola
+    /// 42" + "At 7 PM" → "near Lola 42 at 7 PM").
+    static func merge(_ existing: String, _ dictated: String) -> String {
+        TranscriptJoiner.join([existing, dictated])
     }
 }
 

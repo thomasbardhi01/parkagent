@@ -1,10 +1,10 @@
 import SwiftUI
 import UIKit
 
-/// The live dictation panel above the assistant's input bar: words fade in
-/// as they're recognized, the mic ring pulses with the voice, and the
-/// silence countdown warns before the auto-stop hands the transcript to
-/// the input field.
+/// The live dictation panel above the assistant's input bar: a live
+/// waveform and the elapsed time, the words as they're recognized (fading
+/// in), and — after a moment's quiet — "Still listening", because a pause
+/// no longer ends the dictation. Tap the mic or Send to finish.
 struct LiveTranscriptionPanel: View {
     let speech: SpeechRecognizer
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -13,19 +13,26 @@ struct LiveTranscriptionPanel: View {
         VStack(alignment: .leading, spacing: Spacing.half) {
             HStack(spacing: Spacing.half) {
                 MicPulseIndicator(level: speech.level)
-                Text("Listening")
-                    .font(.captionTextSemibold)
-                    .foregroundStyle(Color.textSecondary)
-                Spacer()
-                if let countdown = speech.silenceCountdown {
-                    Text("Auto-stops in \(countdown)")
-                        .font(.captionTextSemibold)
-                        .monospacedDigit()
-                        .foregroundStyle(Color.warningGold)
-                        .contentTransition(.numericText(countsDown: true))
-                        .animation(.easeOut(duration: 0.2), value: countdown)
-                        .accessibilityIdentifier("assistant.silenceCountdown")
+                WaveformView(levels: speech.levels)
+                    .frame(height: 24)
+                    .accessibilityIdentifier("assistant.dictation.waveform")
+                if let startedAt = speech.startedAt {
+                    TimelineView(.periodic(from: startedAt, by: 1)) { context in
+                        Text(Self.elapsed(from: startedAt, to: context.date))
+                            .font(.captionTextSemibold)
+                            .monospacedDigit()
+                            .foregroundStyle(Color.textSecondary)
+                            .accessibilityLabel("Listening for \(Self.elapsed(from: startedAt, to: context.date))")
+                            .accessibilityIdentifier("assistant.dictation.elapsed")
+                    }
                 }
+            }
+            if speech.isPausing {
+                Text("Still listening — tap the mic or Send to finish")
+                    .font(.captionText)
+                    .foregroundStyle(Color.textSecondary)
+                    .transition(.opacity)
+                    .accessibilityIdentifier("assistant.dictation.pausing")
             }
             if !speech.words.isEmpty {
                 FlowLayout(spacing: 5) {
@@ -38,13 +45,46 @@ struct LiveTranscriptionPanel: View {
                 }
                 // Fade, not movement — safe under Reduce Motion too.
                 .animation(.easeOut(duration: 0.25), value: speech.words)
+                // The whole text in one element, for tests and VoiceOver.
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(speech.transcript)
+                .accessibilityIdentifier("assistant.dictation.text")
             }
         }
+        .animation(.easeOut(duration: 0.2), value: speech.isPausing)
         .padding(Spacing.unit)
         .frame(maxWidth: .infinity, alignment: .leading)
         .cardStyle()
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("assistant.liveTranscript")
+    }
+
+    /// "0:07", "1:12".
+    static func elapsed(from start: Date, to now: Date) -> String {
+        let seconds = max(0, Int(now.timeIntervalSince(start)))
+        return String(format: "%d:%02d", seconds / 60, seconds % 60)
+    }
+}
+
+/// The last few seconds of input level as bars, newest on the right.
+struct WaveformView: View {
+    let levels: [Double]
+
+    var body: some View {
+        GeometryReader { geometry in
+            let count = max(levels.count, 1)
+            let barWidth = max(2, geometry.size.width / CGFloat(count) - 2)
+            HStack(alignment: .center, spacing: 2) {
+                ForEach(Array(levels.enumerated()), id: \.offset) { _, level in
+                    Capsule()
+                        .fill(Color.actionCoral.opacity(0.35 + 0.65 * level))
+                        .frame(width: barWidth, height: max(3, geometry.size.height * level))
+                }
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .trailing)
+        }
+        .animation(.linear(duration: 0.12), value: levels)
+        .accessibilityHidden(true)
     }
 }
 

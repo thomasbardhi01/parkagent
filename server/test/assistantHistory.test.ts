@@ -20,6 +20,7 @@ import {
   STEINWAY_A,
   makeFakeDb,
   makeTestApp,
+  seedSession,
   setFakeRowClock,
 } from "./helpers.js";
 
@@ -362,6 +363,28 @@ describe("DELETE", () => {
   });
 });
 
+describe("a deleted conversation stays deleted", () => {
+  test("continuing a deleted conversation starts a new one, without the old plans", async () => {
+    const t = makeTestApp({
+      assistantModel: scripted([...PROPOSE_GARAGE, text("Anything else?")]),
+      garage: garage(),
+    });
+    const one = await say(t.app, "garage near the museum");
+    await t.app.inject({
+      method: "DELETE",
+      url: `/assistant/conversations/${one.conversationId}`,
+      headers: MINE,
+    });
+    const again = await say(t.app, "and tomorrow?", one.conversationId);
+    expect(again.conversationId).not.toBe(one.conversationId);
+    const list = (
+      await t.app.inject({ method: "GET", url: "/assistant/conversations", headers: HEADERS })
+    ).json();
+    expect(list.conversations).toHaveLength(1);
+    expect(list.conversations[0]).toMatchObject({ title: "and tomorrow?", outcome: null });
+  });
+});
+
 describe("retention", () => {
   test("conversations idle past the period are deleted; recent ones and the money records stay", async () => {
     const { db, state } = makeFakeDb();
@@ -509,5 +532,74 @@ describe("review fixes: legacy conversations", () => {
       "a follow-up",
       "ok",
     ]);
+  });
+});
+
+describe("independent review fixes: trimming and Activity", () => {
+  test("the loop's own reminder is never where a stored context starts", () => {
+    const u = (c: string): ModelTurn => ({ role: "user", content: c });
+    const a = (c: string): ModelTurn => ({
+      role: "assistant",
+      content: [{ type: "text", text: c }],
+    });
+    const turns = [
+      u("q1"),
+      a("r1"),
+      u("[system reminder] Call propose_plan NOW"),
+      a("r2"),
+      u("q2"),
+      a("r3"),
+    ];
+    expect(trimTurns(turns, 4)[0]).toEqual(u("q2"));
+  });
+
+  test("a street plan gives way to its session once the car parks there; plan rows carry no charge", async () => {
+    const t = makeTestApp({
+      candidates: [STEINWAY_A],
+      assistantModel: scripted([
+        tool("t1", "quote_street", {
+          lat: 40.7784,
+          lng: -73.9819,
+          duration_minutes: 60,
+          when: "2026-01-05T14:00:00-05:00",
+        }),
+        tool("t2", "propose_plan", {
+          plan: {
+            kind: "single_spot",
+            options: [
+              {
+                id: "street-1",
+                type: "street",
+                label: "Steinway St",
+                priceUsd: 2.15,
+                durationMinutes: 60,
+                zoneId: STEINWAY_A.zoneId,
+                recommended: true,
+              },
+            ],
+          },
+        }),
+      ]),
+    });
+    const one = await say(t.app, "park me here for an hour");
+    await t.app.inject({
+      method: "POST",
+      url: "/assistant/confirm",
+      headers: HEADERS,
+      payload: { planId: one.plan!.planId, optionId: "street-1" },
+    });
+    const activity = async () =>
+      (await t.app.inject({ method: "GET", url: "/wallet/activity", headers: HEADERS })).json()
+        .items as Record<string, unknown>[];
+    const plan = (await activity()).find((i) => i["kind"] === "plan")!;
+    expect(plan["totalUsd"]).toBeUndefined();
+    expect(plan["plannedUsd"]).toBe(2.15);
+    // The car parks there: the session row is the record now.
+    seedSession(t.state, {
+      userId: "u1",
+      zoneId: STEINWAY_A.zoneId,
+      createdAt: new Date("2026-01-05T19:30:00Z"),
+    });
+    expect((await activity()).some((i) => i["kind"] === "plan")).toBe(false);
   });
 });

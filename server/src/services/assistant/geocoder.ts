@@ -313,7 +313,15 @@ function dedupeByProximity(results: GeocodeResult[]): GeocodeResult[] {
  * than failing the lookup; only every source failing is a failure.
  */
 export class FallbackGeocoder implements GeocoderProvider {
-  constructor(private readonly chain: GeocoderProvider[]) {}
+  /** `carriesName` says whether a source's results include the place the
+   * query names; when they don't, the next source is asked too and both
+   * sets are returned (the first source's first) — an Apple fuzzy
+   * near-miss mustn't hide Nominatim's exact street. Absent: any result
+   * is enough. */
+  constructor(
+    private readonly chain: GeocoderProvider[],
+    private readonly carriesName: (query: string, results: GeocodeResult[]) => boolean = () => true,
+  ) {}
 
   async geocode(
     q: GeocodeQuery,
@@ -321,6 +329,7 @@ export class FallbackGeocoder implements GeocoderProvider {
   ): Promise<{ ok: true; results: GeocodeResult[] } | { ok: false; reason: string }> {
     let answered = false;
     const failures: string[] = [];
+    let found: GeocodeResult[] = [];
     for (const geocoder of this.chain) {
       const outcome = await geocoder.geocode(q, limit);
       if (!outcome.ok) {
@@ -328,10 +337,13 @@ export class FallbackGeocoder implements GeocoderProvider {
         continue;
       }
       answered = true;
-      if (outcome.results.length > 0) return outcome;
+      found = [...found, ...outcome.results];
+      if (found.length > 0 && this.carriesName(q.query, found)) {
+        return { ok: true, results: found };
+      }
     }
     return answered
-      ? { ok: true, results: [] }
+      ? { ok: true, results: found }
       : { ok: false, reason: failures.join("; ") || "no geocoder configured" };
   }
 }

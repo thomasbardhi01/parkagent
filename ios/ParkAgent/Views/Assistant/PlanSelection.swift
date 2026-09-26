@@ -107,7 +107,14 @@ struct OptionDetailPresentation: Equatable {
     /// Who takes the money and where.
     let checkout: String
 
-    init(option: SingleSpotOption, destinationLabel: String?) {
+    /// `paymentSource` is the Wallet's; `linkPays` is whether Link pays
+    /// garages right now. The payment sentences are WalletCopy's.
+    init(
+        option: SingleSpotOption,
+        destinationLabel: String?,
+        paymentSource: PaymentSource = .providerCard,
+        linkPays: Bool = false
+    ) {
         let city = option.zoneId.flatMap { $0.split(separator: "-").first.map(String.init) }
         let meterApp = CityCatalog.providerDisplayName(for: city) ?? "the city's parking app"
         let garageSite = option.provider.flatMap(GarageSource.displayName)
@@ -124,17 +131,14 @@ struct OptionDetailPresentation: Equatable {
             }
             entry = nil
             hours = Self.meterHours(option)
-            checkout = option.payOnArrival == true
-                ? "Pays automatically through \(meterApp) when you park here."
-                : "Pays through \(meterApp) with the card on your account when you confirm."
+            checkout = WalletCopy.streetPays(provider: meterApp, source: paymentSource)
         } else {
             price = garageSite.map { "\(Format.money(option.priceUsd)) at checkout on \($0)" }
                 ?? "\(Format.money(option.priceUsd)) at the garage's checkout"
             entry = option.entryType.flatMap { $0 == "unknown" ? nil : "\($0.capitalized) park" }
                 .map { $0 == "Valet park" ? "Valet" : $0 }
             hours = Self.window(option)
-            checkout = garageSite.map { "Checkout finishes on \($0); your pass lives in your \($0) account." }
-                ?? "Checkout finishes on the garage's own site."
+            checkout = WalletCopy.garageCheckout(site: garageSite, linkPays: linkPays && option.priceUsd > 0)
         }
         if let minutes = option.walkMinutes {
             walk = destinationLabel.map { "\(minutes) min walk from \($0)" } ?? "\(minutes) min walk"

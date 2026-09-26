@@ -459,7 +459,7 @@ extension MockFixtures {
         plan.planId = "mock-plan-single"
         plan.planKind = "street"
         plan.label = "Boylston St"
-        plan.totalUsd = 4.10
+        plan.plannedUsd = 4.10
         plan.explanation = "Chosen in the assistant — it pays when you park there."
         plan.conversationId = "mock-history-mfa"
         return [paid, plan, garage, declined]

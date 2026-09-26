@@ -32,7 +32,7 @@ import {
 } from "../src/services/assistant/geocoder.js";
 import type { ModelClient, ModelResponse, ModelTurn } from "../src/services/assistant/loop.js";
 import { phoneLocationLine, runAssistantTurn } from "../src/services/assistant/loop.js";
-import { classifyPlaceMatches } from "../src/services/assistant/placeMatch.js";
+import { choiceReply, classifyPlaceMatches } from "../src/services/assistant/placeMatch.js";
 import { AssistantTools } from "../src/services/assistant/tools.js";
 import type { ToolContext } from "../src/services/assistant/tools.js";
 import { API_KEY, makeFakeDb, makePolicyService, makeTestApp } from "./helpers.js";
@@ -131,6 +131,21 @@ describe("what a place search found", () => {
       MOOO_SEAPORT,
     ]);
     expect(match).toEqual({ kind: "found", place: MOOO_SEAPORT, nameMatched: true });
+  });
+
+  test("a tapped choice resolves to exactly that location (its reply round-trips)", () => {
+    // Review finding: the address words were read as part of the name, so
+    // "Mooo...., 15 Beacon St" came back as the OTHER branch, "closest".
+    for (const [picked, other] of [
+      [MOOO_BEACON_HILL, MOOO_SEAPORT],
+      [MOOO_SEAPORT, MOOO_BEACON_HILL],
+    ] as const) {
+      expect(classifyPlaceMatches(choiceReply(picked), [other, picked])).toEqual({
+        kind: "found",
+        place: picked,
+        nameMatched: true,
+      });
+    }
   });
 
   test("two locations and no area to tell them apart → choices, not a guess", () => {
@@ -721,5 +736,40 @@ describe("review fixes: names people type", () => {
       place: park,
       nameMatched: true,
     });
+  });
+});
+
+describe("independent review fixes: the chain", () => {
+  test("a first source whose results don't carry the name hands over to the next", async () => {
+    const fuzzy: GeocodeResult = { ...SEAPORT_HOTEL };
+    const chain = new FallbackGeocoder(
+      [
+        { geocode: async () => ({ ok: true, results: [fuzzy] }) },
+        { geocode: async () => ({ ok: true, results: [LOLA_42] }) },
+      ],
+      (query, results) => {
+        const match = classifyPlaceMatches(query, results);
+        return match.kind !== "found" || match.nameMatched;
+      },
+    );
+    const outcome = await chain.geocode({ query: "Lola 42" });
+    expect(outcome.ok && outcome.results).toEqual([fuzzy, LOLA_42]);
+    expect(outcome.ok && classifyPlaceMatches("Lola 42", outcome.results)).toEqual({
+      kind: "found",
+      place: LOLA_42,
+      nameMatched: true,
+    });
+  });
+
+  test("a later search that found the place clears an earlier search's choices", async () => {
+    const { geocoder } = recordingGeocoder({
+      "bos:moo steakhouse": [MOOO_BEACON_HILL, MOOO_SEAPORT],
+      "bos:mooo...., 49 melcher st": [MOOO_SEAPORT],
+    });
+    const t = tools(geocoder);
+    await t.execute(ctx, "geocode_place", { query: "Moo steakhouse" });
+    expect(ctx.placeChoices).toHaveLength(2);
+    await t.execute(ctx, "geocode_place", { query: "Mooo...., 49 Melcher St" });
+    expect(ctx.placeChoices).toBeUndefined();
   });
 });

@@ -658,6 +658,9 @@ export class AssistantTools {
     }
     const place = match.place;
     const summary = placeSummary(place);
+    // A later search that found the place supersedes an earlier ambiguous one.
+    ctx.placeChoices = undefined;
+
     await this.audit(ctx, "geocode_place", input, match.nameMatched ? "ok" : "closest_only", {
       query,
       count: outcome.results.length,
@@ -1237,6 +1240,11 @@ export class AssistantTools {
               ...o,
               garageOptionId: cached.id,
               priceUsd: cached.priceUsd,
+              // The walk and entry the recommendation reason compares are
+              // the search's, not the model's.
+              walkMinutes: cached.walkMinutes,
+
+              ...(cached.entryType ? { entryType: cached.entryType } : {}),
               provider: cached.provider,
               deepLink: cached.deepLink,
               payOnArrival: false,
@@ -1268,13 +1276,20 @@ export class AssistantTools {
           const quoted = quote?.option;
           // The stay the user asked for, or the max the meter allows (the
           // quote's clampedMinutes, which the model often proposes).
+          // And the same start: the option's, or — with none — now (a quote
+          // for 7 PM must not price, or describe, a Confirm-now option).
+          const quoteStart = quote?.startsAt ? parseEasternTime(quote.startsAt) : null;
+          const sameStart =
+            quoteStart === null
+              ? starts === null
+              : starts === null
+                ? Math.abs(quoteStart.getTime() - at) <= 15 * 60_000
+                : quoteStart.getTime() === starts.getTime();
           const sameStay =
             quote !== undefined &&
             (quote.stayMinutes === o.durationMinutes ||
               quoted?.clampedMinutes === o.durationMinutes) &&
-            (starts === null ||
-              quote.startsAt === undefined ||
-              parseEasternTime(quote.startsAt)?.getTime() === starts.getTime());
+            sameStart;
           return {
             ...rest,
             // One canonical form, so the phone parses what the server did.

@@ -258,6 +258,47 @@ export function walkMinutesFor(distanceM: number): number {
   return Math.max(1, Math.round((distanceM * DETOUR_FACTOR) / WALK_M_PER_MIN));
 }
 
+/** One block's stay: its state for the window, and its price — the whole
+ * stay when the meter allows it; when the meter runs past the max stay,
+ * the max stay's worth of metered time from the first metered minute (the
+ * rest can't be bought — the card says so). Priced from the first METERED
+ * minute, not the arrival: a stay that starts free and runs past the max
+ * pays for max-stay minutes of meter, not for its free start. */
+function priceWindow(
+  zone: Candidate,
+  policy: Policy,
+  when: Date,
+  minutes: number,
+): {
+  window: ReturnType<typeof describeStreetWindow>;
+  exceedsMaxStay: boolean;
+  clampedMinutes: number;
+  price: ReturnType<typeof priceStay>;
+} {
+  const window = describeStreetWindow(zone, when, minutes, policy.respect_enforcement_hours);
+  const exceedsMaxStay =
+    zone.maxStayMinutes !== null && window.enforcedMinutes > zone.maxStayMinutes;
+  const clampedMinutes = exceedsMaxStay ? Math.min(minutes, zone.maxStayMinutes!) : minutes;
+  const firstMetered = exceedsMaxStay
+    ? (policy.respect_enforcement_hours
+        ? enforcementProfile(zone.hours, when, minutes)
+        : [true]
+      ).indexOf(true)
+    : 0;
+  const price = priceStay(
+    {
+      city: zone.city,
+      rateFirstHourUsd: zone.rateFirstHourUsd,
+      rateAdditionalHourUsd: zone.rateAdditionalHourUsd,
+      hours: zone.hours,
+    },
+    policy,
+    new Date(when.getTime() + Math.max(firstMetered, 0) * 60_000),
+    clampedMinutes,
+  );
+  return { window, exceedsMaxStay, clampedMinutes, price };
+}
+
 /** Every metered block within `radiusM` of a destination, priced for the
  * stay and described, cheapest (then nearest) first. */
 export async function streetOptionsNear(
@@ -275,28 +316,25 @@ export async function streetOptionsNear(
   // Provider-observed terms over the dataset (e.g. Boston's real "Max 5
   // Hr"), as /parked and session start apply them.
   const zones = await applyObservedToCandidates(deps.db, raw);
-  const respect = deps.policy.respect_enforcement_hours;
 
+  // Blocks share a handful of posted terms; the per-minute window work is
+  // done once per set of terms, not once per block (150 blocks × a 12-hour
+  // stay was ~0.2 s of Intl formatting per search).
+  const byTerms = new Map<string, ReturnType<typeof priceWindow>>();
   const all = zones.map((zone): StreetOption => {
-    const window = describeStreetWindow(zone, q.when, q.minutes, respect);
-    const exceedsMaxStay =
-      zone.maxStayMinutes !== null && window.enforcedMinutes > zone.maxStayMinutes;
-    // The whole stay when the meter allows it; the max stay otherwise
-    // (the rest can't be bought — the card says so).
-    const clampedMinutes = exceedsMaxStay
-      ? Math.min(q.minutes, zone.maxStayMinutes ?? q.minutes)
-      : q.minutes;
-    const price = priceStay(
-      {
-        city: zone.city,
-        rateFirstHourUsd: zone.rateFirstHourUsd,
-        rateAdditionalHourUsd: zone.rateAdditionalHourUsd,
-        hours: zone.hours,
-      },
-      deps.policy,
-      q.when,
-      clampedMinutes,
-    );
+    const key = JSON.stringify([
+      zone.hours,
+      zone.rateFirstHourUsd,
+      zone.rateAdditionalHourUsd,
+      zone.maxStayMinutes,
+      zone.city,
+    ]);
+    let priced = byTerms.get(key);
+    if (!priced) {
+      priced = priceWindow(zone, deps.policy, q.when, q.minutes);
+      byTerms.set(key, priced);
+    }
+    const { window, exceedsMaxStay, clampedMinutes, price } = priced;
     const pin = zone.centerline ? nearestPointOn(zone.centerline, q.lat, q.lng) : null;
     const street = displayStreet(zone.street);
     const walkMinutes = walkMinutesFor(zone.distanceM);

@@ -503,6 +503,9 @@ struct ActivityItem: Codable, Sendable, Hashable, Identifiable {
     var planId: String?
     /// "street" | "itinerary"
     var planKind: String?
+    /// What the plan was priced at — never money moved (a street spot's
+    /// session row, a day's garage rows carry the real amounts).
+    var plannedUsd: Double?
     /// garage and plan rows made in the assistant: the conversation, while
     /// it is still saved.
     var conversationId: String?

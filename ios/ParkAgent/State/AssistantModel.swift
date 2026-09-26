@@ -85,7 +85,10 @@ final class AssistantModel {
     /// Opens a saved conversation to read or keep going: its transcript,
     /// its plans read-only, and the next message continues it.
     func open(conversationId id: String) async {
-        guard phase != .streaming else { return }
+        guard phase != .streaming else {
+            errorText = "Wait for the reply, then open it."
+            return
+        }
         do {
             let detail = try await api.conversation(id: id)
             conversationId = detail.id
@@ -115,6 +118,10 @@ final class AssistantModel {
         proposedPlan = nil
         errorText = nil
         input = ""
+        // The old conversation's "Show Link card" bar goes with it (the
+        // card stays reachable from Activity). A Link approval sheet still
+        // open keeps its sync.
+        approvedLinkCheckout = nil
     }
 
     /// The chips under the newest reply, if it asked something — an older

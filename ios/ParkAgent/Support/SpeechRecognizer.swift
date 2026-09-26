@@ -608,6 +608,9 @@ final class AnalyzerDictationEngine: DictationEngine {
     private var onEvent: DictationSink?
     private var generation = 0
 
+    /// A model download is in flight (see make(locale:)).
+    private static var downloading = false
+
     private init(locale: Locale, targetFormat: AVAudioFormat?) {
         self.locale = locale
         self.targetFormat = targetFormat
@@ -627,7 +630,14 @@ final class AnalyzerDictationEngine: DictationEngine {
         )
         do {
             if let install = try await AssetInventory.assetInstallationRequest(supporting: [probe]) {
-                Task.detached(priority: .utility) { try? await install.downloadAndInstall() }
+                // One download at a time, however often the mic is tapped.
+                if !downloading {
+                    downloading = true
+                    Task.detached(priority: .utility) {
+                        try? await install.downloadAndInstall()
+                        await MainActor.run { AnalyzerDictationEngine.downloading = false }
+                    }
+                }
                 return nil
             }
         } catch {

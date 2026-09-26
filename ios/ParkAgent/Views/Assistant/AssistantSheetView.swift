@@ -66,10 +66,21 @@ struct AssistantSheetView: View {
                 }
             }
             .navigationDestination(isPresented: $showingHistory) {
-                ConversationHistoryView(history: history, currentId: model?.conversationId) { id in
-                    showingHistory = false
-                    Task { await model?.open(conversationId: id) }
-                }
+                ConversationHistoryView(
+                    history: history,
+                    currentId: model?.conversationId,
+                    onOpen: { id in
+                        showingHistory = false
+                        Task { await model?.open(conversationId: id) }
+                    },
+                    onDeleted: { id in
+                        // The conversation on screen is gone: the next
+                        // message starts a new one, not a ghost of it.
+                        if id == nil || id == model?.conversationId {
+                            model?.startNewConversation()
+                        }
+                    }
+                )
             }
         }
         .task {
@@ -323,7 +334,8 @@ struct AssistantSheetView: View {
                 plan: single,
                 confirming: model.phase == .confirming,
                 // Link pays only when it's the Wallet's active way to pay.
-                linkConnected: appModel.linkWalletConnected && appModel.wallet.activeSource == .linkWallet
+                linkConnected: appModel.linkWalletConnected && appModel.wallet.activeSource == .linkWallet,
+                paymentSource: appModel.wallet.activeSource
             ) { option in
                 Task { await model.confirm(planId: plan.planId, optionId: option.id) }
             }

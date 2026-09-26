@@ -1526,7 +1526,9 @@ carries them too.
 Conversation state persists per user (last 20 turns) keyed by
 `conversation_id`; another user's id answers `404 conversation_not_found`
 before any model call (the turn would otherwise be saved over their
-transcript). Rate-limited 20/min — each turn is a paid model call.
+transcript). Ids are the server's: one that names no conversation (deleted,
+or past retention) starts a NEW conversation under a fresh id (returned
+as `conversationId`) rather than reviving the old id with the old plans. Rate-limited 20/min — each turn is a paid model call.
 
 **Times.** Every time a tool takes (`when`, `starts_at`/`ends_at`,
 `arrival`, a plan's `startsAt`) is read with an explicit offset honored
@@ -1669,7 +1671,15 @@ What was found is classified in `placeMatch.ts`:
 - An exact name beats a longer one ("Seaport" the neighborhood, not
   "Seaport Hotel").
 - A named area picks a chain's location there.
-- Matches more than 250 m apart are distinct places, which means choices.
+- Matches more than 250 m apart are distinct places. A tapped choice's
+  reply ("Mooo...., 15 Beacon St") resolves to exactly that location,
+  because street addresses count as location words, not name words.
+- Only two or more businesses of one name (a chain's locations), or the
+  name in two cities, becomes choices. Street segments, a road and a
+  transit stop sharing a name, and choices that read the same resolve to
+  the best-ranked result.
+- The chain asks Nominatim too when Apple's results don't carry the name,
+  and classifies both sets together.
 
 The decision row records which source answered. `pnpm -C server
 verify:places` runs the device-test phrases through the real chain with
@@ -2118,9 +2128,13 @@ createdAt}`:
 - `link_payment` — a Link request not already shown on a garage row:
   `spendRequestId, amountUsd, merchantName, status`.
 - `plan` — a plan made in the assistant that isn't already a garage row:
-  a street spot confirmed there (it pays when the car parks) or a
-  signed-off day. `planId, planKind (street | itinerary), label, totalUsd,
-  explanation, conversationId`.
+  a street spot confirmed there (it pays when the car parks; the row gives
+  way to the session row once a session starts in that zone after the
+  confirm) or a signed-off day (its stop count and total are the signed-off
+  itinerary's, edits included). `planId, planKind (street | itinerary),
+  label, plannedUsd, explanation, conversationId`. `plannedUsd` is what it
+  was priced at, not money moved: the real amounts are the session and
+  garage rows, and the app shows no amount for a plan row.
 
 Garage and plan rows made in the assistant carry `conversationId`, the
 conversation they came from, while that conversation is still saved.

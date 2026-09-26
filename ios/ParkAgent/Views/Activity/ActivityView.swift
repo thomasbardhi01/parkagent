@@ -177,10 +177,13 @@ struct ActivityRow: View {
             }
             Spacer(minLength: 0)
             VStack(alignment: .trailing, spacing: Spacing.quarter) {
-                Text(Format.money(total))
-                    .font(.bodyTextSemibold)
-                    .monospacedDigit()
-                    .foregroundStyle(item.status == "failed" ? Color.textSecondary : Color.textPrimary)
+                // A plan isn't money moved: no amount in the money column.
+                if item.kind != "plan" {
+                    Text(Format.money(total))
+                        .font(.bodyTextSemibold)
+                        .monospacedDigit()
+                        .foregroundStyle(item.status == "failed" ? Color.textSecondary : Color.textPrimary)
+                }
                 TagPill(label: WalletCopy.statusLabel(item), color: pillColor)
             }
         }
@@ -332,10 +335,17 @@ struct ActivityDetailView: View {
                 Spacer()
                 TagPill(label: WalletCopy.statusLabel(item), color: .textSecondary)
             }
-            Text(Format.money(item.totalUsd ?? item.priceUsd ?? item.amountUsd ?? 0))
-                .font(.numeral)
-                .foregroundStyle(Color.textPrimary)
-                .accessibilityIdentifier("activityDetail.total")
+            if let planned = WalletCopy.planned(item) {
+                Text(planned)
+                    .font(.secondaryText)
+                    .foregroundStyle(Color.textSecondary)
+                    .accessibilityIdentifier("activityDetail.planned")
+            } else {
+                Text(Format.money(item.totalUsd ?? item.priceUsd ?? item.amountUsd ?? 0))
+                    .font(.numeral)
+                    .foregroundStyle(Color.textPrimary)
+                    .accessibilityIdentifier("activityDetail.total")
+            }
             if let meter = item.meterUsd, let fee = item.feeUsd, item.kind == "session" {
                 Text("\(Format.money(meter)) meter + \(Format.money(fee)) fee")
                     .font(.captionText)

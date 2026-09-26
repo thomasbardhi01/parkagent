@@ -75,7 +75,10 @@ final class PlanSelectionTests: XCTestCase {
         XCTAssertEqual(detail.walk, "4 min walk from LoLa 42, Seaport")
         XCTAssertNil(detail.entry)
         XCTAssertEqual(detail.hours, "Meters 8 AM–6 PM today · 4 hr max")
-        XCTAssertEqual(detail.checkout, "Pays automatically through ParkBoston when you park here.")
+        XCTAssertEqual(detail.checkout, "Pays through ParkBoston with the card saved there when you park here.")
+        // The ParkAgent card pays meters for someone who chose it.
+        let onOurCard = OptionDetailPresentation(option: street, destinationLabel: nil, paymentSource: .parkagentCard)
+        XCTAssertEqual(onOurCard.checkout, "Pays through ParkBoston with the ParkAgent card when you park here.")
     }
 
     func testMeteredStreetShowsTheMeterAndFeeSplit() throws {
@@ -91,7 +94,8 @@ final class PlanSelectionTests: XCTestCase {
         let detail = OptionDetailPresentation(option: p.options[0], destinationLabel: nil)
         XCTAssertEqual(detail.price, "Meter $3.75 + ParkBoston fee $0.35 = $4.10")
         XCTAssertEqual(detail.hours, "Meters 8 AM–8 PM today · 2 hr max — your stay runs past it")
-        XCTAssertEqual(detail.checkout, "Pays through ParkBoston with the card on your account when you confirm.")
+        // A Confirm sets the spot; the meter is paid at the curb.
+        XCTAssertEqual(detail.checkout, "Pays through ParkBoston with the card saved there when you park here.")
     }
 
     func testGarageDetailNamesItsSiteEntryAndWindow() throws {
@@ -100,6 +104,11 @@ final class PlanSelectionTests: XCTestCase {
         XCTAssertEqual(detail.price, "$24.00 at checkout on ParkWhiz")
         XCTAssertEqual(detail.entry, "Self park")
         XCTAssertEqual(detail.checkout, "Checkout finishes on ParkWhiz; your pass lives in your ParkWhiz account.")
+        let viaLink = OptionDetailPresentation(option: garage, destinationLabel: nil, linkPays: true)
+        XCTAssertEqual(
+            viaLink.checkout,
+            "Approve it in Link, then pay at ParkWhiz's checkout with your Link card; the pass lives in your ParkWhiz account."
+        )
         let start = try XCTUnwrap(Format.parseArrival("2026-09-26T19:00:00-04:00"))
         XCTAssertEqual(
             detail.hours,

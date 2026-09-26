@@ -59,6 +59,7 @@ interface ApplePlace {
 
 const TIMEOUT_MS = 6_000;
 const CACHE_TTL_MS = 10 * 60_000;
+const CACHE_MAX = 500;
 
 /** The Maps auth token: what /v1/token trades for an access token. */
 export function makeMapsAuthToken(config: AppleMapsConfig, nowMs: number): string {
@@ -118,8 +119,22 @@ export class AppleMapsGeocoder implements GeocoderProvider {
         err instanceof Error ? (err.message.split("\n")[0] ?? err.message) : String(err);
       return { ok: false, reason };
     }
-    this.cache.set(key, { at: this.now().getTime(), results });
+    this.remember(key, results);
     return { ok: true, results: results.slice(0, limit) };
+  }
+
+  /** Cache a search; expired entries go, and the cache stays bounded. */
+  private remember(key: string, results: GeocodeResult[]): void {
+    const nowMs = this.now().getTime();
+    for (const [k, v] of this.cache) {
+      if (nowMs - v.at >= CACHE_TTL_MS) this.cache.delete(k);
+    }
+    while (this.cache.size >= CACHE_MAX) {
+      const oldest = this.cache.keys().next().value;
+      if (oldest === undefined) break;
+      this.cache.delete(oldest);
+    }
+    this.cache.set(key, { at: nowMs, results });
   }
 
   /** One /v1/search around a metro, keeping only in-box results. */

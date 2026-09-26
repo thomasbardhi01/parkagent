@@ -153,6 +153,39 @@ enum WalletCopy {
         }
     }
 
+    /// A street option's "who takes the money, when": the meter is paid at
+    /// the curb when the car parks (a Confirm only sets the spot), by the
+    /// street source — the ParkAgent card, or the card saved on the city's
+    /// parking account (Link never pays a meter).
+    static func streetPays(provider: String, source: PaymentSource) -> String {
+        source == .parkagentCard
+            ? "Pays through \(provider) with the ParkAgent card when you park here."
+            : "Pays through \(provider) with the card saved there when you park here."
+    }
+
+    /// A garage option's checkout: where it finishes, how it's paid, and
+    /// where the pass lives.
+    static func garageCheckout(site: String?, linkPays: Bool) -> String {
+        guard let site else {
+            return linkPays
+                ? "Approve it in Link, then pay at the garage's own checkout with your Link card."
+                : "Checkout finishes on the garage's own site."
+        }
+        return linkPays
+            ? "Approve it in Link, then pay at \(site)'s checkout with your Link card; the pass lives in your \(site) account."
+            : "Checkout finishes on \(site); your pass lives in your \(site) account."
+    }
+
+    /// A plan made in the assistant is not a payment: what it was priced
+    /// at, said so it can't be read as a charge.
+    static func planned(_ item: ActivityItem) -> String? {
+        guard item.kind == "plan", let usd = item.plannedUsd else { return nil }
+        if usd == 0 { return "Free when you park there" }
+        return item.planKind == "itinerary"
+            ? "Priced at \(Format.money(usd)) for the day — each stop pays on its own"
+            : "Priced at \(Format.money(usd)) — nothing charged until you park"
+    }
+
     /// Timeline entry wording on the detail screen.
     static func timelineLabel(_ entry: ActivityTimelineEntry) -> String {
         switch entry.kind {

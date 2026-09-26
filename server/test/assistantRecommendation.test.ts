@@ -117,3 +117,66 @@ describe("propose_plan attaches it", () => {
     expect(plan.recommendedReason).toBe("The only option found — $18.00, 3 min walk");
   });
 });
+
+describe("independent review fixes", () => {
+  test("a garage's walk is the search's, so 'closest' is never a model's number", async () => {
+    const far: GarageOption = { ...GARAGE_BASE, id: "g-far", walkMinutes: 9, priceUsd: 18 };
+    const near: GarageOption = { ...GARAGE_BASE, id: "g-near", walkMinutes: 2, priceUsd: 24 };
+    const byId = new Map([far, near].map((g) => [g.id, g]));
+    const tools = new AssistantTools({
+      db: makeFakeDb().db,
+      policy: makePolicyService(),
+      findCandidates: async () => [],
+      garage: {
+        id: "spothero",
+        canReserve: false,
+        search: async () => ({ ok: true, options: [far, near], fromCache: false }),
+        optionById: (id) => byId.get(id) ?? null,
+        book: async () => ({ kind: "deeplink_handoff", option: far, deepLink: far.deepLink }),
+      },
+    });
+    const out = await tools.execute({ userId: "u1", conversationId: "c1" }, "propose_plan", {
+      plan: {
+        kind: "single_spot",
+        options: [
+          // The model claims the far garage is a 1-minute walk.
+          {
+            id: "a",
+            type: "garage",
+            label: "Far",
+            priceUsd: 18,
+            durationMinutes: 90,
+            walkMinutes: 1,
+            garageOptionId: "g-far",
+            recommended: true,
+          },
+          {
+            id: "b",
+            type: "garage",
+            label: "Near",
+            priceUsd: 24,
+            durationMinutes: 90,
+            walkMinutes: 2,
+            garageOptionId: "g-near",
+            recommended: false,
+          },
+        ],
+      },
+    });
+    const plan = out.endTurn!.plan as SingleSpotPlan;
+    expect(plan.options[0]!.walkMinutes).toBe(9);
+    expect(plan.recommendedReason).toBe("Cheapest — $18.00, 9 min walk");
+  });
+});
+
+const GARAGE_BASE: GarageOption = {
+  id: "g",
+  provider: "spothero",
+  name: "Deck",
+  address: "1 Test St",
+  priceUsd: 18,
+  distanceM: 240,
+  walkMinutes: 3,
+  entryType: "self",
+  deepLink: "https://spothero.com/checkout/1",
+};

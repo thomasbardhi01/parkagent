@@ -16,6 +16,8 @@ struct SingleSpotPlanCards: View {
     let plan: SingleSpotPlan
     let confirming: Bool
     let linkConnected: Bool
+    /// The Wallet's way to pay — who the detail card says pays a meter.
+    var paymentSource: PaymentSource = .providerCard
     let onConfirm: (SingleSpotOption) -> Void
 
     /// The option rows and pins share; nil until the user picks one.
@@ -41,6 +43,7 @@ struct SingleSpotPlanCards: View {
                     emphasized: selectedOptionID == nil || selectedOptionID == hero.id,
                     isSelected: selectedOptionID == hero.id,
                     destinationLabel: plan.destination?.label,
+                    paymentSource: paymentSource,
                     confirming: confirming,
                     linkConnected: linkConnected,
                     onSelect: { select(hero) },
@@ -55,6 +58,7 @@ struct SingleSpotPlanCards: View {
                             option: option,
                             isExpanded: selectedOptionID == option.id,
                             destinationLabel: plan.destination?.label,
+                            paymentSource: paymentSource,
                             confirming: confirming,
                             linkConnected: linkConnected,
                             onToggle: { select(option) },
@@ -140,6 +144,7 @@ private struct HeroOptionCard: View {
     let emphasized: Bool
     let isSelected: Bool
     let destinationLabel: String?
+    let paymentSource: PaymentSource
     let confirming: Bool
     let linkConnected: Bool
     let onSelect: () -> Void
@@ -184,8 +189,13 @@ private struct HeroOptionCard: View {
             OptionFacts(option: option)
 
             if isSelected {
-                OptionDetailCard(option: option, destinationLabel: destinationLabel)
-                    .transition(.opacity)
+                OptionDetailCard(
+                    option: option,
+                    destinationLabel: destinationLabel,
+                    paymentSource: paymentSource,
+                    linkPays: linkConnected
+                )
+                .transition(.opacity)
             }
 
             if option.payOnArrival == true {
@@ -236,6 +246,7 @@ private struct CompactOptionRow: View {
     let option: SingleSpotOption
     let isExpanded: Bool
     let destinationLabel: String?
+    let paymentSource: PaymentSource
     let confirming: Bool
     let linkConnected: Bool
     let onToggle: () -> Void
@@ -286,7 +297,12 @@ private struct CompactOptionRow: View {
                             .foregroundStyle(Color.textSecondary)
                             .accessibilityIdentifier("assistant.optionDetail.\(option.id)")
                     }
-                    OptionDetailCard(option: option, destinationLabel: destinationLabel)
+                    OptionDetailCard(
+                        option: option,
+                        destinationLabel: destinationLabel,
+                        paymentSource: paymentSource,
+                        linkPays: linkConnected
+                    )
                     // Choosing a garage with Link active goes through a
                     // Link approval — say so before the tap, as the hero does.
                     if linkConnected && option.type == "garage" && option.priceUsd > 0 {
@@ -315,9 +331,16 @@ private struct CompactOptionRow: View {
 private struct OptionDetailCard: View {
     let option: SingleSpotOption
     let destinationLabel: String?
+    let paymentSource: PaymentSource
+    let linkPays: Bool
 
     var body: some View {
-        let detail = OptionDetailPresentation(option: option, destinationLabel: destinationLabel)
+        let detail = OptionDetailPresentation(
+            option: option,
+            destinationLabel: destinationLabel,
+            paymentSource: paymentSource,
+            linkPays: linkPays
+        )
         VStack(alignment: .leading, spacing: 6) {
             row("dollarsign.circle", detail.price, "price")
             if let walk = detail.walk { row("figure.walk", walk, "walk") }

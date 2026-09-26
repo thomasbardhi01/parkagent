@@ -38,6 +38,7 @@ import { makeParkWhizProvider } from "./services/garage/parkwhiz.js";
 import { makeSpotHeroProvider } from "./services/garage/spotheroDeepLink.js";
 import { AppleMapsGeocoder } from "./services/assistant/appleMaps.js";
 import { FallbackGeocoder, NominatimGeocoder } from "./services/assistant/geocoder.js";
+import { classifyPlaceMatches } from "./services/assistant/placeMatch.js";
 import { makeLinkHttpClient } from "./services/link/linkClient.js";
 import { LinkWallet } from "./services/link/linkWallet.js";
 import { makeItineraryWorker } from "./jobs/itineraryTick.js";
@@ -169,18 +170,25 @@ const findNearbyZones = makeNearbyZoneFetcher(prisma);
 // Maps (restaurants, venues, businesses by the names people use) when its
 // key is set, then Nominatim (streets, neighborhoods, landmarks — the same
 // free geocoder the Boston zone importer uses) as the fallback.
-const geocoder = new FallbackGeocoder([
-  ...(env.APPLE_MAPS_KEY && env.APPLE_MAPS_KEY_ID && env.APPLE_MAPS_TEAM_ID
-    ? [
-        new AppleMapsGeocoder({
-          privateKey: env.APPLE_MAPS_KEY,
-          keyId: env.APPLE_MAPS_KEY_ID,
-          teamId: env.APPLE_MAPS_TEAM_ID,
-        }),
-      ]
-    : []),
-  new NominatimGeocoder(),
-]);
+const geocoder = new FallbackGeocoder(
+  [
+    ...(env.APPLE_MAPS_KEY && env.APPLE_MAPS_KEY_ID && env.APPLE_MAPS_TEAM_ID
+      ? [
+          new AppleMapsGeocoder({
+            privateKey: env.APPLE_MAPS_KEY,
+            keyId: env.APPLE_MAPS_KEY_ID,
+            teamId: env.APPLE_MAPS_TEAM_ID,
+          }),
+        ]
+      : []),
+    new NominatimGeocoder(),
+  ],
+  // Ask the next source when this one's results don't carry the name.
+  (query, results) => {
+    const match = classifyPlaceMatches(query, results);
+    return match.kind !== "found" || match.nameMatched;
+  },
+);
 const assistantTools = new AssistantTools({
   db,
   policy,

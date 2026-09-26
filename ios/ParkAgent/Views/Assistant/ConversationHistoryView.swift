@@ -9,6 +9,8 @@ struct ConversationHistoryView: View {
     /// The conversation on screen in the sheet, marked in the list.
     let currentId: String?
     let onOpen: (String) -> Void
+    /// A conversation was deleted (nil: all of them).
+    var onDeleted: (String?) -> Void = { _ in }
 
     @State private var confirmingDeleteAll = false
 
@@ -44,7 +46,10 @@ struct ConversationHistoryView: View {
             titleVisibility: .visible
         ) {
             Button("Delete all", role: .destructive) {
-                Task { await history.deleteAll(api: appModel.api) }
+                Task {
+                    await history.deleteAll(api: appModel.api)
+                    onDeleted(nil)
+                }
             }
             .accessibilityIdentifier("assistant.history.confirmDeleteAll")
         } message: {
@@ -66,7 +71,10 @@ struct ConversationHistoryView: View {
                     .accessibilityIdentifier("assistant.history.row.\(conversation.id)")
                     .swipeActions(edge: .trailing) {
                         Button(role: .destructive) {
-                            Task { await history.delete(conversation.id, api: appModel.api) }
+                            Task {
+                                await history.delete(conversation.id, api: appModel.api)
+                                onDeleted(conversation.id)
+                            }
                         } label: {
                             Label("Delete", systemImage: "trash")
                         }

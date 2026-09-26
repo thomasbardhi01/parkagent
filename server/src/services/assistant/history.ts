@@ -99,7 +99,12 @@ export function titleFromTurns(turns: unknown): string | null {
  */
 export function trimTurns(messages: ModelTurn[], max: number): ModelTurn[] {
   if (messages.length <= max) return messages;
-  const isUserText = (m: ModelTurn) => m.role === "user" && typeof m.content === "string";
+  // A real user message — not the loop's own "[system reminder]", which
+  // would leave a resumed context opening on an orphaned instruction.
+  const isUserText = (m: ModelTurn) =>
+    m.role === "user" &&
+    typeof m.content === "string" &&
+    !m.content.startsWith("[system reminder]");
   let start = messages.length - max;
   while (start < messages.length && !isUserText(messages[start]!)) start += 1;
   if (start < messages.length) return messages.slice(start);
@@ -111,18 +116,25 @@ export function trimTurns(messages: ModelTurn[], max: number): ModelTurn[] {
 const money = (usd: number) => `$${usd.toFixed(2)}`;
 
 /** What a conversation came to: the plan the user confirmed most
- * recently, else the latest one proposed, else nothing. */
-export function conversationOutcome(plans: AssistantPlanRow[]): ConversationOutcome | null {
+ * recently, else the latest one proposed, else nothing. A signed-off day
+ * reads its itinerary row (`signedDays`, by plan id) — the card's edits,
+ * re-priced — rather than the proposal. */
+export function conversationOutcome(
+  plans: AssistantPlanRow[],
+  signedDays: ReadonlyMap<string, { stops: unknown; totalUsd: unknown }> = new Map(),
+): ConversationOutcome | null {
   const confirmed = plans
     .filter((p) => p.confirmedAt)
     .sort((a, b) => b.confirmedAt!.getTime() - a.confirmedAt!.getTime())[0];
   if (confirmed) {
     if (confirmed.kind === "itinerary") {
       const day = confirmed.plan as ItineraryPlan;
+      const signed = signedDays.get(confirmed.id);
+      const stops = signed ? (signed.stops as unknown[]).length : day.stops.length;
       return {
         kind: "itinerary",
-        label: `Day plan signed off — ${day.stops.length} ${day.stops.length === 1 ? "stop" : "stops"}`,
-        amountUsd: day.totalUsd,
+        label: `Day plan signed off — ${stops} ${stops === 1 ? "stop" : "stops"}`,
+        amountUsd: signed ? Number(signed.totalUsd) : day.totalUsd,
         planId: confirmed.id,
         at: confirmed.confirmedAt!.toISOString(),
       };

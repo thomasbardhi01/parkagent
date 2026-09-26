@@ -647,7 +647,7 @@ export interface AppDb {
     /** Account deletion (by user), one conversation (by id), and the
      * retention job (everything untouched since a cutoff). */
     deleteMany(args: {
-      where: { userId?: string; id?: string; updatedAt?: { lt: Date } };
+      where: { userId: string; id?: string } | { updatedAt: { lt: Date } };
     }): Promise<{ count: number }>;
   };
   assistantPlan: {

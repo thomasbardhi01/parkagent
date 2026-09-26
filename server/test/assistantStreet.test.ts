@@ -479,3 +479,64 @@ describe("review fixes: street words and grounding", () => {
     expect(option).toMatchObject({ priceUsd: 5.35, exceedsMaxStay: true });
   });
 });
+
+describe("independent review fixes", () => {
+  test("a 7 PM quote doesn't price or describe an option with no start (a Confirm-now option)", async () => {
+    const tools = toolsWith([D_STREET]);
+    const c = ctx();
+    await tools.execute(c, "quote_street", {
+      ...SEAPORT_CENTROID,
+      duration_minutes: 180,
+      when: "2026-09-26T19:00:00-04:00",
+    });
+    const out = await tools.execute(c, "propose_plan", {
+      plan: {
+        kind: "single_spot",
+        options: [
+          {
+            id: "street-d",
+            type: "street",
+            label: "D Street",
+            priceUsd: 11.6,
+            durationMinutes: 180,
+            zoneId: "bos-d-street-7e4e1b-00",
+            recommended: true,
+          },
+        ],
+      },
+    });
+    const option = (out.endTurn!.plan as SingleSpotPlan).options[0]!;
+    expect(option.payOnArrival).toBe(false);
+    expect(option.streetSummary).toBeUndefined();
+    expect(option.priceUsd).toBe(11.6);
+  });
+
+  test("a stay that starts free and runs past the max is priced for the max of meter", async () => {
+    // Metered from 8 AM, 2-hour max; 7 AM for 5 hours: two metered hours.
+    const search = await streetOptionsNear(
+      {
+        db: makeFakeDb().db,
+        policy: DEFAULT_POLICY,
+        findCandidates: async () => [],
+        findNearbyZones: async () => ({
+          zones: [
+            {
+              ...D_STREET,
+              rateFirstHourUsd: 3.75,
+              rateAdditionalHourUsd: 3.75,
+              hours: MON_SAT_8_TO_8,
+            },
+          ],
+          truncated: false,
+        }),
+      },
+      { ...SEAPORT_CENTROID, when: new Date("2026-09-26T07:00:00-04:00"), minutes: 300 },
+    );
+    expect(search.options[0]).toMatchObject({
+      state: "free_then_metered",
+      exceedsMaxStay: true,
+      meterUsd: 7.5,
+      costUsd: 7.85,
+    });
+  });
+});

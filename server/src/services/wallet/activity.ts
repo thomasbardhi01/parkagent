@@ -27,6 +27,7 @@ import type {
   AppDb,
   AssistantPlanRow,
   GarageBookingRow,
+  ItineraryRow,
   LinkSpendRequestRow,
   SessionRow,
 } from "../../db.js";
@@ -132,8 +133,10 @@ export interface PlanActivity extends ActivityBase {
   /** street: a street spot confirmed in the assistant; itinerary: a day. */
   planKind: "street" | "itinerary";
   label: string;
-  /** The price the plan was confirmed at (a street spot pays at the curb). */
-  totalUsd: number;
+  /** What the plan was priced at — NOT a charge: a street spot pays at the
+   * curb (its session row carries the real amount), a day's garages are
+   * their own rows. Never shown as money moved. */
+  plannedUsd: number;
   /** One plain sentence about what happens next. */
   explanation: string;
   conversationId: string | null;
@@ -252,12 +255,30 @@ export async function activityPage(
     db.providerAccount.findMany({ where: { userId } }),
     db.assistantPlan.findMany({ where: { userId, confirmedAt: { not: null } } }),
   ]);
-  // Plans that aren't garage rows already: a street spot, or a day.
-  const planRows = confirmedPlans
-    .filter((p) => p.confirmedAt && (p.kind === "itinerary" || confirmedStreet(p)))
+  // Plans that aren't garage rows already: a street spot — until the car
+  // parks there and its session row takes over — or a day.
+  const signedDays = new Map(
+    (await db.itinerary.findMany({ where: { userId } }))
+      .filter((i) => i.planId)
+      .map((i) => [i.planId!, i]),
+  );
+  const planCandidates = confirmedPlans
+    .filter((p) => p.confirmedAt && (p.kind === "itinerary" || confirmedStreet(p) !== null))
     .filter((p) => !before || p.confirmedAt! < before)
-    .sort((a, b) => b.confirmedAt!.getTime() - a.confirmedAt!.getTime())
-    .slice(0, take);
+    .sort((a, b) => b.confirmedAt!.getTime() - a.confirmedAt!.getTime());
+  const planRows: AssistantPlanRow[] = [];
+  for (const plan of planCandidates) {
+    if (planRows.length >= take) break;
+    const street = confirmedStreet(plan);
+    if (street?.zoneId) {
+      const parked = await db.session.findMany({
+        where: { userId, zoneId: street.zoneId, createdAt: { gte: plan.confirmedAt! } },
+        take: 1,
+      });
+      if (parked.length > 0) continue;
+    }
+    planRows.push(plan);
+  }
   const bookings = allBookings.filter((b) => !before || b.createdAt < before).slice(0, take);
   const onGarage = new Set(allBookings.map((b) => b.linkSpendRequestId).filter(Boolean));
   const standaloneLink = linkRows
@@ -373,7 +394,7 @@ export async function activityPage(
       };
     }
     if (entry.kind === "plan") {
-      return planActivity(entry.row, conversationOf(entry.row.id));
+      return planActivity(entry.row, conversationOf(entry.row.id), signedDays.get(entry.row.id));
     }
     if (entry.kind === "link_payment") {
       const r = entry.row;
@@ -488,18 +509,24 @@ export async function activityPage(
   return { items, nextCursor };
 }
 
-/** A single-spot plan confirmed on its street option. */
-function confirmedStreet(plan: AssistantPlanRow): boolean {
-  if (plan.kind !== "single_spot") return false;
+/** A single-spot plan's confirmed option, when it is a street spot. */
+function confirmedStreet(plan: AssistantPlanRow): { zoneId?: string | undefined } | null {
+  if (plan.kind !== "single_spot") return null;
   const option = (plan.plan as SingleSpotPlan).options.find((o) => o.id === plan.confirmedOptionId);
-  return option?.type === "street";
+  return option?.type === "street" ? option : null;
 }
 
-function planActivity(plan: AssistantPlanRow, conversationId: string | null): PlanActivity {
+function planActivity(
+  plan: AssistantPlanRow,
+  conversationId: string | null,
+  signed: ItineraryRow | undefined,
+): PlanActivity {
   const at = plan.confirmedAt!.toISOString();
   if (plan.kind === "itinerary") {
+    // What was signed off (the card's edits, re-priced), not what was
+    // proposed; the proposal only when the day row is missing.
     const day = plan.plan as ItineraryPlan;
-    const stops = day.stops.length;
+    const stops = signed ? (signed.stops as unknown[]).length : day.stops.length;
     return {
       id: `plan:${plan.id}`,
       kind: "plan",
@@ -508,7 +535,7 @@ function planActivity(plan: AssistantPlanRow, conversationId: string | null): Pl
       planId: plan.id,
       planKind: "itinerary",
       label: `Day plan — ${stops} ${stops === 1 ? "stop" : "stops"}`,
-      totalUsd: round2(day.totalUsd),
+      plannedUsd: round2(signed ? Number(signed.totalUsd) : day.totalUsd),
       explanation:
         "Signed off in the assistant. Street stops pay when you park; garage links arrive before each stop.",
       conversationId,
@@ -525,7 +552,7 @@ function planActivity(plan: AssistantPlanRow, conversationId: string | null): Pl
     planId: plan.id,
     planKind: "street",
     label: option.street ?? option.label,
-    totalUsd: round2(option.priceUsd),
+    plannedUsd: round2(option.priceUsd),
     explanation: "Chosen in the assistant — it pays when you park there.",
     conversationId,
   };

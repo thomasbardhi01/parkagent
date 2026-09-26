@@ -68,7 +68,7 @@ final class ConversationWireTests: XCTestCase {
     /// conversation it came from.
     func testActivityPlanRowCarriesItsConversation() async throws {
         StubURLProtocol.respond(json: #"""
-        {"items":[{"id":"plan:fr-local-plan","kind":"plan","at":"2026-09-26T01:12:17.257Z","createdAt":"2026-09-26T01:12:17.257Z","planId":"fr-local-plan","planKind":"street","label":"Seaport Blvd","totalUsd":0,"explanation":"Chosen in the assistant — it pays when you park there.","conversationId":"conv_fr_local"}],"nextCursor":null}
+        {"items":[{"id":"plan:fr-local-plan","kind":"plan","at":"2026-09-26T01:12:17.257Z","createdAt":"2026-09-26T01:12:17.257Z","planId":"fr-local-plan","planKind":"street","label":"Seaport Blvd","plannedUsd":0,"explanation":"Chosen in the assistant — it pays when you park there.","conversationId":"conv_fr_local"}],"nextCursor":null}
         """#)
         let page = try await api.walletActivity(cursor: nil)
         let item = try XCTUnwrap(page.items.first)
@@ -77,6 +77,7 @@ final class ConversationWireTests: XCTestCase {
         XCTAssertEqual(item.conversationId, "conv_fr_local")
         XCTAssertEqual(WalletCopy.place(item), "Seaport Blvd")
         XCTAssertEqual(WalletCopy.statusLabel(item), "Pays when you park")
+        XCTAssertEqual(WalletCopy.planned(item), "Free when you park there", "Priced, never shown as a charge")
     }
 
     func testDeletesAreDeletes() async throws {

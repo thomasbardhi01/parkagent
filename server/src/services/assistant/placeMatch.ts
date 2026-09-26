@@ -96,9 +96,14 @@ export type PlaceMatch =
   | { kind: "found"; place: GeocodeResult; nameMatched: boolean }
   | { kind: "ambiguous"; choices: GeocodeResult[] };
 
+/** The words that say WHERE a result is: its neighborhoods and its street
+ * address. A tapped choice sends "Mooo...., 15 Beacon St" — the address
+ * picks the location, it isn't part of the name. */
 function areaTokensOf(result: GeocodeResult): Set<string> {
   return new Set(
-    [...(result.areaNames ?? []), result.area ?? ""].flatMap((name) => nameTokens(name)),
+    [...(result.areaNames ?? []), result.area ?? "", result.address ?? ""].flatMap((name) =>
+      nameTokens(name),
+    ),
   );
 }
 

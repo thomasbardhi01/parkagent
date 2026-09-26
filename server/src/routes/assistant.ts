@@ -181,7 +181,7 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
     }
     const body = parsed.data;
     const user = req.authedUser!;
-    const conversationId = body.conversation_id ?? `conv_${randomUUID()}`;
+    let conversationId = body.conversation_id ?? `conv_${randomUUID()}`;
     const text = (body.text ?? body.transcript)!;
 
     // Someone else's conversation id: the turn would be saved over their
@@ -193,6 +193,11 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
       if (existing && existing.userId !== user.id) {
         return reply.code(404).send({ error: "conversation_not_found" });
       }
+      // Ids are the server's. One that names no conversation — deleted, or
+      // past retention — starts a NEW one: reusing it would hand the new
+      // conversation the old one's plans (and their bookings) in history
+      // and Activity.
+      if (!existing) conversationId = `conv_${randomUUID()}`;
     }
 
     // Per-user daily model-spend cap (estimated from logged token usage).
@@ -853,6 +858,14 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
   // it or keep going (POST /assistant/message with its id), delete one or
   // all. Kept for deps.conversationRetentionDays (90 by default), then the
   // retention job deletes them.
+  /** The user's signed-off days, by the plan they came from. */
+  const signedDaysOf = async (userId: string) =>
+    new Map(
+      (await deps.db.itinerary.findMany({ where: { userId } }))
+        .filter((i) => i.planId)
+        .map((i) => [i.planId!, i]),
+    );
+
   app.get("/assistant/conversations", { preHandler: limitOther }, async (req, reply) => {
     const parsed = conversationsQuerySchema.safeParse(req.query);
     if (!parsed.success) {
@@ -875,6 +888,7 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
             where: { userId: user.id, conversationId: { in: page.map((r) => r.id) } },
           })
         : [];
+    const signedDays = await signedDaysOf(user.id);
     return {
       conversations: page.map((row) => {
         const display = displayOf(row);
@@ -884,7 +898,10 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
           createdAt: row.createdAt.toISOString(),
           updatedAt: row.updatedAt.toISOString(),
           messageCount: display.length,
-          outcome: conversationOutcome(plans.filter((p) => p.conversationId === row.id)),
+          outcome: conversationOutcome(
+            plans.filter((p) => p.conversationId === row.id),
+            signedDays,
+          ),
         };
       }),
       nextCursor:
@@ -919,7 +936,7 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
           confirmedAt: p.confirmedAt?.toISOString() ?? null,
           confirmedOptionId: p.confirmedOptionId,
         })),
-      outcome: conversationOutcome(plans),
+      outcome: conversationOutcome(plans, await signedDaysOf(user.id)),
     };
   });
 

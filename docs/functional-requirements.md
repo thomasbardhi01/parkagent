@@ -10,7 +10,7 @@ the evidence that proves it. Three kinds of evidence back an FR:
   (`.github/workflows/nightly-fr.yml`) runs it against prod, uploads the
   report, and manages the "Nightly FR failures" issue. Assistant tests
   make real model calls under a hard per-run budget
-  (`FR_ASSISTANT_MAX_CALLS`, default 8) and assert structure and
+  (`FR_ASSISTANT_MAX_CALLS`, default 12) and assert structure and
   grounding, never wording.
 - **Unit / fixture suites** (`server/test/`, `executor/test/`) — hermetic
   tests over the fake DB and recorded provider fixture HTML; the executor
@@ -875,7 +875,7 @@ FR_API_BASE=http://localhost:3000 FR_API_KEY=… pnpm -C server test:fr
 ```
 
 The suite hard-refuses when the target's effective dry run is off, makes
-at most `FR_ASSISTANT_MAX_CALLS` (default 8) paid model calls per run,
+at most `FR_ASSISTANT_MAX_CALLS` (default 12) paid model calls per run,
 never links a provider, never calls `PUT /policy`, and never starts a
 session (the unlinked-start refusal is itself one of its assertions).
 Zone fixture coordinates are env-overridable (`FR_NYC_AUTOPAY_LAT`, …)

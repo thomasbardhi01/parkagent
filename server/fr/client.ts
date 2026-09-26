@@ -11,7 +11,7 @@
  *    writes parked_events/decisions rows and registers device tokens under
  *    whoever the key identifies.
  *  - Assistant turns are paid model calls; `assistantMessage()` counts them
- *    and fails the run past FR_ASSISTANT_MAX_CALLS (default 8) so a retry
+ *    and fails the run past FR_ASSISTANT_MAX_CALLS (default 12) so a retry
  *    loop can never run up a bill.
  *  - The suite never calls PUT /policy, /session/extend|stop, any /card
  *    route, or a real provider link — nothing here can change the spending
@@ -32,7 +32,7 @@ export const BASE = (process.env["FR_API_BASE"] ?? "https://parkagent-api.fly.de
 
 const KEY = process.env["FR_API_KEY"];
 
-const ASSISTANT_MAX_CALLS = Number(process.env["FR_ASSISTANT_MAX_CALLS"] ?? "8");
+const ASSISTANT_MAX_CALLS = Number(process.env["FR_ASSISTANT_MAX_CALLS"] ?? "12");
 let assistantCalls = 0;
 
 export interface FrResponse {

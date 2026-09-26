@@ -66,7 +66,9 @@ final class SpeechRecognizer {
     let pauseTolerance: TimeInterval
     /// Before any speech, how long to wait for the first word.
     let initialSilenceLimit: TimeInterval
-    static let pauseToleranceKey = "dictationPauseSeconds"
+    /// The user default that sets `pauseTolerance` (read off the main
+    /// actor by LaunchOverrides, hence nonisolated).
+    nonisolated static let pauseToleranceKey = "dictationPauseSeconds"
     static let defaultPauseTolerance: TimeInterval = 3
     /// Quiet this long (and some speech captured) shows "still listening".
     private static let pausingAfter: TimeInterval = 1

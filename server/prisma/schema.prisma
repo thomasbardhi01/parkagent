@@ -183,8 +183,26 @@ model User {
   decisions    Decision[]
   deviceTokens DeviceToken[]
   refreshTokens RefreshToken[]
+  limits       UserLimits?
 
   @@map("users")
+}
+
+// This user's own spending limits (GET/PUT /me/limits). Null = the
+// operator's default from policy.json. policy.json's caps are CEILINGS:
+// the effective cap is min(this, policy), so the operator lowering a cap
+// binds everyone at once (services/limits.ts policyFor). Tombstoning an
+// account deletes the row; a hard delete cascades.
+model UserLimits {
+  userId             String   @id @map("user_id")
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessionCapUsd      Decimal? @map("session_cap_usd") @db.Decimal(6, 2)
+  dailyCapUsd        Decimal? @map("daily_cap_usd") @db.Decimal(6, 2)
+  defaultStayMinutes Int?     @map("default_stay_minutes")
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("user_limits")
 }
 
 // One rotating refresh token. The app holds the plaintext (Keychain); we

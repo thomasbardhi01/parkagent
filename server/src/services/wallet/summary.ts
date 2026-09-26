@@ -17,6 +17,7 @@ import { spentToday } from "../sessions.js";
 import { activityPage } from "./activity.js";
 import type { ActivityPage } from "./activity.js";
 import { parkAgentCardOf } from "./parkagentCard.js";
+import { policyFor } from "../limits.js";
 
 export type PaymentSourceId = "provider_card" | "link_wallet" | "parkagent_card";
 
@@ -132,7 +133,7 @@ export async function walletSummary(
   at: Date,
   pageOptions: { activityLimit: number },
 ): Promise<WalletSummary> {
-  const policy = deps.policy.get();
+  const policy = await policyFor(deps, userId);
   const dryRun = deps.policy.effectiveDryRun();
   const user = await deps.db.user.findUnique({
     where: { id: userId },

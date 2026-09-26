@@ -280,6 +280,22 @@ describe("hold → pay → capture", () => {
     expect(t.state.sessions[0]!.paymentSource).toBe("parkagent_card");
   });
 
+  test("the hold never exceeds the owner's own per-stop cap", async () => {
+    const t = cardApp({ steps: [{ kind: "charge", usd: 5.6 }] });
+    // The quote ($5.98) fits a $7 cap; quote + the $2 floor ($7.98) doesn't.
+    t.state.userLimits.push({
+      userId: "u1",
+      sessionCapUsd: 7,
+      dailyCapUsd: null,
+      defaultStayMinutes: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const res = await start(t);
+    expect(res.statusCode).toBe(200);
+    expect(t.calls.holds).toEqual([{ amountUsd: 7, idempotencyKey: "hold:s1:start" }]);
+  });
+
   test("a declined hold pays nothing and says so: no executor, failed session, Wallet push", async () => {
     const t = cardApp({ declineWith: "insufficient_funds" });
     const res = await start(t);

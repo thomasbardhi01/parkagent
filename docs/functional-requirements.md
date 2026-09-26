@@ -34,8 +34,8 @@ the evidence that proves it. Three kinds of evidence back an FR:
 | FR-7 | Quote correctness (ladder, observed terms, receipts) | automated | `server/fr/10-parked-nyc.fr.test.ts`, `server/test/quote.test.ts`, `server/test/bostonQuote.test.ts`, `server/test/bostonBilling.test.ts`, `server/test/observedTerms.test.ts` |
 | FR-8 | Free periods and the 8 pm boundary | automated | `server/fr/20-parked-boston.fr.test.ts`, `server/test/parked.test.ts`, `server/test/bostonSession.test.ts`, `executor/test/passportParse.test.ts` |
 | FR-9 | Timestamp clamping | automated | `server/fr/10-parked-nyc.fr.test.ts`, `server/test/adversarial.test.ts` |
-| FR-10 | Session cap on every payment source | automated | `server/fr/00-gate.fr.test.ts`, `server/fr/30-session-providers.fr.test.ts`, `server/test/session.test.ts`, `server/test/paymentSource.test.ts`, `server/test/walletHolds.test.ts`, `server/test/linkWallet.test.ts`, `server/test/issuing.test.ts`, `server/test/authorization.test.ts`; iOS `OnboardingUITests`, `AccountUITests` (shared limits read-only) |
-| FR-11 | Daily cap on every payment source | automated | `server/fr/00-gate.fr.test.ts`, `server/test/session.test.ts`, `server/test/paymentSource.test.ts`, `server/test/walletHolds.test.ts`, `server/test/issuing.test.ts`, `server/test/card.test.ts`, `server/test/assistantItinerary.test.ts` |
+| FR-10 | Session cap on every payment source | automated | `server/fr/00-gate.fr.test.ts`, `server/fr/30-session-providers.fr.test.ts`, `server/test/session.test.ts`, `server/test/paymentSource.test.ts`, `server/test/walletHolds.test.ts`, `server/test/linkWallet.test.ts`, `server/test/issuing.test.ts`, `server/test/authorization.test.ts`; `server/test/limits.test.ts`, `server/test/limitsScan.test.ts`, `server/fr/35-limits.fr.test.ts`; iOS `OnboardingUITests`, `AccountUITests` (each user's own limits), `LimitsDraftTests` |
+| FR-11 | Daily cap on every payment source | automated | `server/fr/00-gate.fr.test.ts`, `server/fr/35-limits.fr.test.ts`, `server/test/limits.test.ts`, `server/test/webhookStripe.test.ts`, `server/test/session.test.ts`, `server/test/paymentSource.test.ts`, `server/test/walletHolds.test.ts`, `server/test/issuing.test.ts`, `server/test/card.test.ts`, `server/test/assistantItinerary.test.ts` |
 | FR-12 | Auto-pay rate ceiling | automated | `server/fr/10-parked-nyc.fr.test.ts`, `server/test/parked.test.ts` |
 | FR-13 | Start through the executor | automated + acceptance | `server/fr/30-session-providers.fr.test.ts`, `server/test/session.test.ts`, `server/test/bostonSession.test.ts`, `executor/test/fixtures.test.ts`, `executor/test/parse.test.ts`, `executor/test/passportParse.test.ts`; paid: acceptance report Part B (txn 831908580) |
 | FR-14 | Extend continues the ladder | automated + acceptance | `server/test/session.test.ts`, `executor/test/passportParse.test.ts`; paid: acceptance report (txn 831997285) |
@@ -246,6 +246,16 @@ Evidence: `session.test.ts`, `issuing.test.ts`, `card.test.ts`,
 `paymentSource.test.ts`, `assistantItinerary.test.ts`; live: caps
 asserted present on the active policy (a live overrun can't be staged in
 dry run without spending).
+
+**Per user (FR-10 and FR-11).** The policy's caps are ceilings; each user
+may set lower per-stop and per-day caps and their own default stay
+(`GET/PUT /me/limits`), and every check above reads the caller's own
+effective limits. **Accepted when** a user's saved cap decides that
+user's checks and no one else's, refusals are typed and worded exactly,
+and no cap is read from the global policy (`limitsScan.test.ts`).
+Evidence: `limits.test.ts` (each surface, two users), `webhookStripe.test.ts`,
+`walletHolds.test.ts`, `assistantAccuracy.test.ts`; live: FR-10/FR-11 in
+`35-limits.fr.test.ts` (a second, throwaway user proves isolation).
 
 ### FR-12 — Auto-pay rate ceiling
 

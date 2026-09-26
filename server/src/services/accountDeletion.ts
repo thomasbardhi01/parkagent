@@ -121,6 +121,7 @@ export async function deleteAccount(
   //    money audit and stay), and assistant conversations.
   await db.session.updateMany({ where: { userId }, data: { vehicleId: null } });
   await db.vehicle.deleteMany({ where: { userId } });
+  await db.userLimits.deleteMany({ where: { userId } });
   await db.conversation.deleteMany({ where: { userId } });
 
   // Sign in with Apple: revoke the token so the app leaves the person's

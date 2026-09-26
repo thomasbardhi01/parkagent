@@ -19,6 +19,7 @@ import type { ExecutorDiagnostics, ExecutorErrorCode, ExecutorProvider } from ".
 import { executorOutcome } from "./executor.js";
 import type { HoursInterval } from "./hours.js";
 import { nycStartOfDay } from "./hours.js";
+import { policyFor } from "./limits.js";
 import { LINK_COMMITTED_STATUSES, linkSpentSince } from "./link/linkSpend.js";
 import type { Policy } from "./policy.js";
 import type { RatedTerms, StayPrice } from "./quote.js";
@@ -293,7 +294,7 @@ async function extendLocked(
       dryRun,
     );
     if (!readiness.ready) return refuse("wallet_not_ready", readiness.reason);
-    const policy = deps.policy.get();
+    const policy = await policyFor(deps, session.userId);
     const spentTodayUsd = await spentToday(deps.db, session.userId, now);
     const hold = await placeHold(deps, {
       userId: session.userId,

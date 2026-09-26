@@ -13,6 +13,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
 import type { AppDeps } from "../app.js";
+import { policyFor } from "../services/limits.js";
 import { executorOutcome } from "../services/executor.js";
 import type { SessionRow } from "../db.js";
 import { cityForZone, providerForCity, providerStatusUsable } from "../providers/registry.js";
@@ -84,7 +85,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
     }
     const body = parsed.data;
     const user = req.authedUser!;
-    const policy = deps.policy.get();
+    const policy = await policyFor(deps, user.id);
     const at = now();
 
     const parkedEvent = await deps.db.parkedEvent.findUnique({ where: { id: body.parkedEventId } });
@@ -651,15 +652,10 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
     const session = await activeSession(body.sessionId, user.id, reply);
     if (!session) return;
 
-    const price = priceExtension(session, deps.policy.get(), body.minutes);
+    const policy = await policyFor(deps, user.id);
+    const price = priceExtension(session, policy, body.minutes);
     const spentTodayUsd = await spentToday(deps.db, user.id, at);
-    const violation = extensionPolicyViolation(
-      deps.policy.get(),
-      session,
-      body.minutes,
-      price,
-      spentTodayUsd,
-    );
+    const violation = extensionPolicyViolation(policy, session, body.minutes, price, spentTodayUsd);
     const decisionInputs = {
       body,
       price,

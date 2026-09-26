@@ -91,6 +91,7 @@ struct MockAPI: APIClient {
     private let store = MockSessionStore()
     private let providerStore = MockProviderStore()
     private let policyStore = MockPolicyStore()
+    private let limitsStore = MockLimitsStore()
     private let zoneStore = MockZoneNumberStore()
     private let profileStore = MockProfileStore()
 
@@ -308,9 +309,14 @@ struct MockAPI: APIClient {
         return await policyStore.current()
     }
 
-    func updatePolicy(_ policy: Policy) async throws -> PolicyResponse {
+    func limits() async throws -> UserLimitsResponse {
         try await pause()
-        return await policyStore.replace(policy)
+        return await limitsStore.current()
+    }
+
+    func updateLimits(_ limits: SpendingLimits) async throws -> UserLimitsResponse {
+        try await pause()
+        return try await limitsStore.save(limits)
     }
 
     func startSession(_ request: SessionStartRequest) async throws -> SessionStartOutcome {
@@ -729,11 +735,6 @@ private actor MockPolicyStore {
         wrap(policy ?? MockFixtures.policy().policy)
     }
 
-    func replace(_ next: Policy) -> PolicyResponse {
-        policy = next
-        return wrap(next)
-    }
-
     private func wrap(_ policy: Policy) -> PolicyResponse {
         PolicyResponse(
             policy: policy,
@@ -742,6 +743,64 @@ private actor MockPolicyStore {
             // `-policyReadOnly YES`: sign in as someone who isn't the operator.
             editable: !UserDefaults.standard.bool(forKey: MockAPI.policyReadOnlyKey)
         )
+    }
+}
+
+/// This run's saved limits, judged like the server does (services/limits.ts):
+/// the policy's caps are the ceilings, and a refusal carries the same
+/// sentences, so the screens show what production would.
+private actor MockLimitsStore {
+    private var saved: SpendingLimits?
+
+    private static let ceilings = UserLimitsResponse.LimitCeilings(sessionCapUsd: 45, dailyCapUsd: 60)
+    private static let defaults = SpendingLimits(sessionCapUsd: 45, dailyCapUsd: 60, defaultStayMinutes: 90)
+
+    func current() -> UserLimitsResponse {
+        let limits = saved ?? Self.defaults
+        return UserLimitsResponse(
+            limits: SpendingLimits(
+                sessionCapUsd: min(limits.sessionCapUsd, limits.dailyCapUsd),
+                dailyCapUsd: limits.dailyCapUsd,
+                defaultStayMinutes: limits.defaultStayMinutes
+            ),
+            saved: UserLimitsResponse.SavedLimits(
+                sessionCapUsd: saved?.sessionCapUsd,
+                dailyCapUsd: saved?.dailyCapUsd,
+                defaultStayMinutes: saved?.defaultStayMinutes
+            ),
+            defaults: Self.defaults,
+            ceilings: Self.ceilings,
+            bounds: UserLimitsResponse.LimitBounds(minCapUsd: 1, stayMinutes: .init(min: 15, max: 240)),
+            clamped: []
+        )
+    }
+
+    func save(_ next: SpendingLimits) throws -> UserLimitsResponse {
+        var issues: [LimitsIssue] = []
+        func money(_ usd: Double) -> String { String(format: "$%.2f", usd) }
+        if next.sessionCapUsd > Self.ceilings.sessionCapUsd {
+            issues.append(LimitsIssue(
+                field: "sessionCapUsd", code: "above_ceiling",
+                message: "Per stop can't be more than \(money(Self.ceilings.sessionCapUsd)) — the most ParkAgent pays right now.",
+                limit: Self.ceilings.sessionCapUsd
+            ))
+        } else if next.sessionCapUsd > next.dailyCapUsd {
+            issues.append(LimitsIssue(
+                field: "sessionCapUsd", code: "session_above_daily",
+                message: "Per stop can't be more than per day (\(money(next.dailyCapUsd))).",
+                limit: next.dailyCapUsd
+            ))
+        }
+        if next.dailyCapUsd > Self.ceilings.dailyCapUsd {
+            issues.append(LimitsIssue(
+                field: "dailyCapUsd", code: "above_ceiling",
+                message: "Per day can't be more than \(money(Self.ceilings.dailyCapUsd)) — the most ParkAgent pays right now.",
+                limit: Self.ceilings.dailyCapUsd
+            ))
+        }
+        guard issues.isEmpty else { throw LimitsRejected(issues: issues) }
+        saved = next
+        return current()
     }
 }
 

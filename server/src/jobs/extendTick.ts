@@ -24,6 +24,7 @@ import {
   sessionSpentUsd,
   spentToday,
 } from "../services/sessions.js";
+import { policyFor } from "../services/limits.js";
 
 const DECISION_WINDOW_MIN = 12; // only act when expiry is this close
 const HYSTERESIS_MS = 5 * 60_000; // don't flip a fresh decision
@@ -142,7 +143,8 @@ export function makeExtender(deps: ExtenderDeps): Extender {
   const now = () => deps.now?.() ?? new Date();
 
   async function evaluateSession(session: SessionRow, at: Date): Promise<void> {
-    const policy = deps.policy.get();
+    // The session owner's caps and default stay, not the operator's.
+    const policy = await policyFor(deps, session.userId);
     const dryRun = deps.policy.effectiveDryRun();
     const expiresAt = session.expiresAt ?? at;
     const startedAt = session.startedAt ?? session.createdAt;

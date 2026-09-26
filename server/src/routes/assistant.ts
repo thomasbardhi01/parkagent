@@ -49,6 +49,7 @@ import { LINK_PENDING_STATUSES, linkSpentSince } from "../services/link/linkSpen
 import { makeRateLimiter } from "../services/rateLimit.js";
 import { spentToday } from "../services/sessions.js";
 import { normalizeSource } from "../services/wallet/summary.js";
+import { policyFor } from "../services/limits.js";
 
 /** A plan time (offset honored, offset-less read as ET wall clock). */
 function parseStart(value: string): Date | null {
@@ -382,7 +383,7 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
     });
     const activeSource = normalizeSource(userRow?.paymentSource);
     const streetSource = activeSource === "parkagent_card" ? "parkagent_card" : "provider_card";
-    const policy = deps.policy.get();
+    const policy = await policyFor(deps, user.id);
     const dryRun = deps.policy.effectiveDryRun();
     const linkActive =
       activeSource === "link_wallet" &&
@@ -714,7 +715,7 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
     const stops = orderStopsByArrival(result.stops);
     const totalUsd = itineraryTotalUsd(stops);
     const spentTodayUsd = await spentToday(deps.db, user.id, now());
-    const capUsd = deps.policy.get().daily_cap_usd;
+    const capUsd = (await policyFor(deps, user.id)).daily_cap_usd;
     const fitsCap = spentTodayUsd + totalUsd <= capUsd;
     await deps.db.decision.create({
       data: {
@@ -780,7 +781,7 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
     const priced = await deps.assistantTools!.repriceStops(parsed.data.stops, storedById);
     const totalUsd = itineraryTotalUsd(priced.stops);
     const spentTodayUsd = await spentToday(deps.db, user.id, now());
-    const policy = deps.policy.get();
+    const policy = await policyFor(deps, user.id);
     if (spentTodayUsd + totalUsd > policy.daily_cap_usd) {
       await deps.db.decision.create({
         data: {

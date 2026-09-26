@@ -163,6 +163,38 @@ describe("a six-stop Boston day prices per stop and against the cap", () => {
     expect(result.dailyCapUsd).toBe(60);
     expect(result.remainingBudgetUsd).toBe(60);
   });
+
+  test("the budget is the user's own daily cap", async () => {
+    const { db, state } = makeFakeDb();
+    state.userLimits.push({
+      userId: CTX.userId,
+      sessionCapUsd: null,
+      dailyCapUsd: 20,
+      defaultStayMinutes: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const tools = new AssistantTools({
+      db,
+      policy: makePolicyService({ daily_cap_usd: 60 }),
+      findCandidates: async () => [streetCandidate()],
+      garage: garageProvider(),
+      now: NOW,
+    });
+    const out = await tools.execute(CTX, "build_itinerary", {
+      stops: DAY.slice(0, 1).map((s) => ({
+        label: s.label,
+        address: s.address,
+        lat: s.lat,
+        lng: s.lng,
+        arrival: isoAt(s.arrival),
+        duration_minutes: s.minutes,
+      })),
+    });
+    const result = out.result as { dailyCapUsd: number; remainingBudgetUsd: number };
+    expect(result.dailyCapUsd).toBe(20);
+    expect(result.remainingBudgetUsd).toBe(20);
+  });
 });
 
 describe("itinerary sign-off, reorder, and the cap", () => {
@@ -222,6 +254,29 @@ describe("itinerary sign-off, reorder, and the cap", () => {
     for (const s of stored.stops as { choice: string; deepLink?: string }[]) {
       if (s.choice === "garage") expect(s.deepLink).toContain("facility=");
     }
+  });
+
+  test("sign-off checks the day against the user's own daily cap", async () => {
+    const t = makeTestApp({});
+    // $33 fits the policy's $60, not the $30 this user set.
+    t.state.userLimits.push({
+      userId: "u1",
+      sessionCapUsd: null,
+      dailyCapUsd: 30,
+      defaultStayMinutes: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    seedItineraryPlan(t, stopRows);
+    const res = await t.app.inject({
+      method: "POST",
+      url: "/assistant/confirm",
+      headers: HEADERS,
+      payload: { planId: "plan-day" },
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ error: "over_daily_cap", totalUsd: 33, capUsd: 30 });
+    expect(t.state.itineraries).toHaveLength(0);
   });
 
   test("PATCH moves a stop only once its time is cleared; timed stops keep arrival order", async () => {

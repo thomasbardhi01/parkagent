@@ -131,8 +131,9 @@ struct RootView: View {
         case .signedIn:
             gate = .checking
             async let policy: Void = model.loadPolicy()
+            async let limits: Void = model.loadLimits()
             await evaluateGate()
-            await policy
+            _ = await (policy, limits)
         }
     }
 

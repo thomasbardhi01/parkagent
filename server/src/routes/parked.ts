@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
 import type { AppDeps } from "../app.js";
+import { policyFor } from "../services/limits.js";
 import { cityForZone, providerForCity, providerStatusUsable } from "../providers/registry.js";
 import type { Quote } from "../services/quote.js";
 import { spentToday } from "../services/sessions.js";
@@ -49,7 +50,8 @@ export function registerParked(app: FastifyInstance, deps: AppDeps): void {
     }
     const body = parsed.data;
     const user = req.authedUser!;
-    const policy = deps.policy.get();
+    // The caller's caps and default stay (policy.json caps are ceilings).
+    const policy = await policyFor(deps, user.id);
     // Price at the phone's detection time when it sent one; a missing or
     // delayed ts falls back to server time. A ts too far off the server
     // clock (a phone with a wrong clock, a replayed request) would price

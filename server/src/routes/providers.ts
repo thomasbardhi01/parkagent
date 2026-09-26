@@ -31,6 +31,7 @@ import {
 } from "../services/providerLink.js";
 import type { ProviderStorageState } from "../services/providerOps.js";
 import { normalizeSource } from "../services/wallet/summary.js";
+import { policyFor } from "../services/limits.js";
 
 const cookieSchema = z.object({
   name: z.string().min(1).max(256),
@@ -385,7 +386,7 @@ export function registerProviders(app: FastifyInstance, deps: AppDeps): void {
     }
     const amountUsd = Math.round(parsed.data.amountUsd * 100) / 100;
     const user = req.authedUser!;
-    const policy = deps.policy.get();
+    const policy = await policyFor(deps, user.id);
     const dryRun = deps.policy.effectiveDryRun();
 
     const account = await deps.db.providerAccount.findUnique({

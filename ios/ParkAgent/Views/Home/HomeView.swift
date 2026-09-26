@@ -562,7 +562,8 @@ struct HomeView: View {
     private var spendRow: some View {
         // The Wallet's numbers — the same spend the caps count.
         let spending = model.wallet.response?.spending
-        let cap = spending?.dailyCapUsd ?? model.policyResponse?.policy.dailyCapUsd ?? 60
+        let cap = spending?.dailyCapUsd ?? model.limitsResponse?.limits.dailyCapUsd
+            ?? model.policyResponse?.policy.dailyCapUsd ?? 60
         let today = spending?.todayUsd ?? 0
         let fraction = cap > 0 ? today / cap : 0
         return VStack(alignment: .leading, spacing: Spacing.half) {

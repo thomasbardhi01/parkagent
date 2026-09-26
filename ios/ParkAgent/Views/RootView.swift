@@ -240,6 +240,8 @@ struct MainTabView: View {
             await model.wallet.load(api: model.api)
         }
         .onChange(of: scenePhase) { _, phase in
+            // Back in the foreground: parks that waited for a signal go now.
+            if phase == .active { Task { await model.flushParkOutbox() } }
             if phase == .active, let query = AssistantIntentRouter.shared.pendingQuery {
                 AssistantIntentRouter.shared.pendingQuery = nil
                 model.openAssistant(query: query.isEmpty ? nil : query)

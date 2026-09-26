@@ -253,3 +253,25 @@ test("pReturnInTime buckets", () => {
   expect(pReturnInTime({ ...base, heading: "still" })).toBe(0.6); // dwell ends within remaining
   expect(pReturnInTime({ ...base, heading: "still", dwellP50Min: 180 })).toBe(0.25);
 });
+
+test("drain waits for the pass in progress (shutdown doesn't cut an extension off)", async () => {
+  const { extender, deps } = makeTickApp();
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  const findMany = deps.db.session.findMany.bind(deps.db.session);
+  deps.db.session.findMany = (async (args: Parameters<typeof findMany>[0]) => {
+    await held;
+    return findMany(args);
+  }) as typeof deps.db.session.findMany;
+
+  const pass = extender.tick();
+  let drained = false;
+  const drain = extender.drain().then(() => {
+    drained = true;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(drained).toBe(false);
+  release();
+  await Promise.all([pass, drain]);
+  expect(drained).toBe(true);
+});

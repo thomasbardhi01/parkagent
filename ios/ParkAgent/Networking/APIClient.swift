@@ -35,6 +35,9 @@ protocol APIClient: Sendable {
     func removeVehicle(id: String) async throws
 
     func parked(_ request: ParkedRequest) async throws -> ParkedResponse
+    /// The same, under a key the caller holds — the offline outbox keeps one
+    /// per park across launches, so a report delivered twice counts once.
+    func parked(_ request: ParkedRequest, idempotencyKey: String) async throws -> ParkedResponse
     /// The zone number the driver read off the meter (needsZoneNumber flow).
     func reportZoneNumber(zoneId: String, number: String) async throws -> ZoneNumberReportResponse
     func policy() async throws -> PolicyResponse
@@ -168,6 +171,9 @@ enum APIError: Error, LocalizedError {
     case invalidRequest(String)
     case server(status: Int)
     case transport(Error)
+    /// The caller's task was cancelled (a view went away): not a failure to
+    /// show — though a cancelled PAYMENT may still have gone through.
+    case cancelled
     /// A named refusal from the server (4xx/5xx with an `error` code), e.g.
     /// dry_run, executor_failed, card_declined.
     case refused(code: String)
@@ -204,7 +210,7 @@ enum APIError: Error, LocalizedError {
     var paymentOutcomeUnknown: Bool {
         switch self {
         case .executorFailed: !providerDeclined
-        case .transport, .server: true
+        case .transport, .server, .cancelled: true
         default: false
         }
     }
@@ -247,6 +253,8 @@ enum APIError: Error, LocalizedError {
             return "Something went wrong on our side (\(status)). Try again in a moment."
         case .transport:
             return "Could not reach the server."
+        case .cancelled:
+            return "Cancelled."
         case .refused(let code):
             return Self.refusalMessage(code)
         case .cardNotSaved(let message):
@@ -286,6 +294,10 @@ enum APIError: Error, LocalizedError {
     private static func refusalMessage(_ code: String) -> String {
         switch code {
         case "dry_run": "Dry run is on — no real money moves."
+        // The server is still finishing this very request (a retry after
+        // the answer was lost): nothing ran twice.
+        case "request_in_progress": "Still finishing that on the server. Check again in a moment."
+        case "idempotency_key_reused": "That didn't go through. Try again."
         case "no_card": "No card is set up yet."
         case "provider_not_linked": "This city's parking account is not linked yet."
         case "needs_zone_number": "This block's zone number is not known yet — read it off the meter."

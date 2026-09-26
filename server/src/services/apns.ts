@@ -389,15 +389,35 @@ export type ApnsPost = (
   payload: unknown,
 ) => Promise<{ status: number; body: string }>;
 
-function postNotification(
+/** How long one APNs POST may take. Pushes are awaited inside money paths
+ * (a start's reply, an extension under its lock): a stalled HTTP/2
+ * connection must not hold them. */
+export const APNS_TIMEOUT_MS = 8_000;
+
+export function postNotification(
   host: string,
   jwt: string,
   bundleId: string,
   deviceToken: string,
   payload: unknown,
+  // Tests only: a stand-in for node:http2's connect, and a shorter wait.
+  connectFn: (authority: string) => ReturnType<typeof connect> = connect,
+  timeoutMs: number = APNS_TIMEOUT_MS,
 ): Promise<{ status: number; body: string }> {
-  return new Promise((resolve, reject) => {
-    const client = connect(`https://${host}`);
+  return new Promise((resolvePost, rejectPost) => {
+    const client = connectFn(`https://${host}`);
+    const timer = setTimeout(() => {
+      client.destroy();
+      rejectPost(new Error(`APNs did not answer within ${timeoutMs} ms`));
+    }, timeoutMs);
+    const resolve = (value: { status: number; body: string }) => {
+      clearTimeout(timer);
+      resolvePost(value);
+    };
+    const reject = (err: unknown) => {
+      clearTimeout(timer);
+      rejectPost(err);
+    };
     client.on("error", reject);
     const req = client.request({
       [h2.HTTP2_HEADER_METHOD]: "POST",

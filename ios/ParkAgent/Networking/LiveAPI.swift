@@ -102,6 +102,10 @@ struct LiveAPI: APIClient {
     func refreshSession(refreshToken: String, deviceId: String) async -> RefreshOutcome {
         var request = URLRequest(url: Self.url(base: baseURL, path: "auth/refresh"))
         request.httpMethod = "POST"
+        // Every signed-in call waits on this one refresh (single-flight): a
+        // hung one must not hold them all for URLSession's 60 s. A timeout
+        // is `.unreachable` — the session stays.
+        request.timeoutInterval = 15
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try? Self.encoder.encode(["refreshToken": refreshToken, "deviceId": deviceId])
 
@@ -230,6 +234,10 @@ struct LiveAPI: APIClient {
         try await send("parked", method: "POST", body: request)
     }
 
+    func parked(_ request: ParkedRequest, idempotencyKey: String) async throws -> ParkedResponse {
+        try await send("parked", method: "POST", body: request, idempotencyKey: idempotencyKey)
+    }
+
     func reportZoneNumber(zoneId: String, number: String) async throws -> ZoneNumberReportResponse {
         let escaped = zoneId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? zoneId
         return try await send(
@@ -244,12 +252,12 @@ struct LiveAPI: APIClient {
     }
 
     func startSession(_ request: SessionStartRequest) async throws -> SessionStartOutcome {
-        let wire: SessionStartWire = try await send("session/start", method: "POST", body: request)
+        let wire: SessionStartWire = try await send("session/start", method: "POST", body: request, policy: .payment)
         return try wire.outcome()
     }
 
     func stopSession(sessionId: String) async throws -> SessionStopResponse {
-        try await send("session/stop", method: "POST", body: ["sessionId": sessionId])
+        try await send("session/stop", method: "POST", body: ["sessionId": sessionId], policy: .payment)
     }
 
     func extendSession(sessionId: String, minutes: Int) async throws -> SessionExtendResponse {
@@ -257,7 +265,12 @@ struct LiveAPI: APIClient {
             let sessionId: String
             let minutes: Int
         }
-        return try await send("session/extend", method: "POST", body: Body(sessionId: sessionId, minutes: minutes))
+        return try await send(
+            "session/extend",
+            method: "POST",
+            body: Body(sessionId: sessionId, minutes: minutes),
+            policy: .payment
+        )
     }
 
     func reportLocation(_ report: LocationReport) async throws {
@@ -321,7 +334,8 @@ struct LiveAPI: APIClient {
 
     func walletSetupIntent(sandbox: Bool) async throws -> WalletSetupIntent {
         struct Body: Encodable { let sandbox: Bool? }
-        return try await send("wallet/setup-intent", method: "POST", body: Body(sandbox: sandbox ? true : nil))
+        // Answers a Stripe client secret the server won't store: unkeyed.
+        return try await send("wallet/setup-intent", method: "POST", body: Body(sandbox: sandbox ? true : nil), keyed: false)
     }
 
     func addFundingMethod(setupIntentId: String) async throws -> FundingMethodResponse {
@@ -339,7 +353,8 @@ struct LiveAPI: APIClient {
 
     func revealLinkCard(spendRequestId: String) async throws -> LinkCardDetails {
         struct Empty: Encodable {}
-        return try await send("link/spend-requests/\(spendRequestId)/card", method: "POST", body: Empty())
+        // One-shot: the card is revealed once and never stored for a replay.
+        return try await send("link/spend-requests/\(spendRequestId)/card", method: "POST", body: Empty(), keyed: false)
     }
 
     func nearbyZones(lat: Double, lng: Double, radiusM: Double) async throws -> NearbyZonesResponse {
@@ -394,7 +409,7 @@ struct LiveAPI: APIClient {
 
     func setupCard(providerId: String) async throws -> SetupCardResponse {
         struct Empty: Encodable {}
-        return try await send("providers/\(providerId)/setup-card", method: "POST", body: Empty())
+        return try await send("providers/\(providerId)/setup-card", method: "POST", body: Empty(), policy: .payment)
     }
 
     func unlinkProvider(_ providerId: String) async throws -> UnlinkResponse {
@@ -580,7 +595,8 @@ struct LiveAPI: APIClient {
         return try await send(
             "assistant/confirm",
             method: "POST",
-            body: Body(planId: planId, optionId: optionId, stops: stops)
+            body: Body(planId: planId, optionId: optionId, stops: stops),
+            policy: .payment
         )
     }
 
@@ -623,7 +639,7 @@ struct LiveAPI: APIClient {
     }
 
     func linkWalletConnect() async throws -> LinkConnectResponse {
-        try await send("link/connect", method: "POST", body: ["": ""])
+        try await send("link/connect", method: "POST", body: ["": ""], keyed: false)
     }
 
     func linkWalletDisconnect() async throws {
@@ -643,26 +659,127 @@ struct LiveAPI: APIClient {
         var code: String?
     }
 
-    /// One round trip. `authenticated` requests carry the access token and,
-    /// on a 401, refresh once and retry exactly once — the AuthStore makes
-    /// concurrent refreshes collapse into a single rotation.
+    /// How long one call may take, per attempt and in all. A request that
+    /// hangs used to wait out URLSession's 60 s idle timeout and then show
+    /// "Could not reach the server" — for a payment the server went on to
+    /// finish. Payments get room for the provider (the server's queue wait
+    /// plus the browser), everything else fails fast and retries.
+    struct CallPolicy: Sendable, Equatable {
+        /// One attempt (URLRequest.timeoutInterval: idle time with no bytes).
+        var attemptTimeout: TimeInterval
+        /// Every attempt and wait together.
+        var budget: TimeInterval
+
+        static let read = CallPolicy(attemptTimeout: 20, budget: 45)
+        static let write = CallPolicy(attemptTimeout: 30, budget: 60)
+        static let payment = CallPolicy(attemptTimeout: 100, budget: 180)
+    }
+
+    /// The waits between attempts (plus a little jitter); a call makes at
+    /// most this many retries, and never past its budget.
+    static let retryDelays: [TimeInterval] = [0.5, 1.5, 3]
+
+    /// One call. `authenticated` requests carry the access token and, on a
+    /// 401, refresh once (the AuthStore collapses concurrent refreshes).
+    ///
+    /// Every unsafe call (POST/PUT/PATCH/DELETE) carries an Idempotency-Key,
+    /// one per call and the same on each retry: the server runs it once and
+    /// answers a retry with the first answer (server/API.md "Idempotency").
+    /// So an unsafe call may retry — after a timeout, a dropped connection,
+    /// a gateway error, or while the server reports the first attempt still
+    /// running — without paying, extending, or recording anything twice.
+    /// Reads retry the same way. A cancelled task stops at once, unretried.
+    ///
+    /// Not keyed, so never retried: sign-in calls (no user yet for the
+    /// server to hold a key against; Apple's code and an email code are
+    /// single-use) and `keyed: false` calls whose answer is a secret the
+    /// server won't store (a card reveal, a Stripe client secret).
     private func send<Response: Decodable>(
         _ path: String,
         query: [URLQueryItem] = [],
         method: String = "GET",
         body: (any Encodable)? = nil,
-        authenticated: Bool = true
+        authenticated: Bool = true,
+        policy: CallPolicy? = nil,
+        keyed: Bool = true,
+        idempotencyKey: String? = nil
     ) async throws -> Response {
         let encodedBody = try body.map { try Self.encoder.encode($0) }
-        let token = authenticated ? await tokens.current() : nil
         let url = Self.url(base: baseURL, path: path, query: query)
+        let unsafe = method != "GET"
+        let policy = policy ?? (unsafe ? .write : .read)
+        let key = unsafe && authenticated && keyed ? (idempotencyKey ?? UUID().uuidString) : nil
+        // An unsafe call the server can't dedupe gets one attempt.
+        let mayRetry = !unsafe || key != nil
+        let deadline = Date().addingTimeInterval(policy.budget)
+        var attempt = 0
+        while true {
+            if Task.isCancelled { throw APIError.cancelled }
+            let remaining = deadline.timeIntervalSinceNow
+            let timeout = min(policy.attemptTimeout, max(1, remaining))
+            do {
+                return try await authorized(url, method: method, body: encodedBody, authenticated: authenticated, timeout: timeout, key: key)
+            } catch {
+                let failure = error as? APIError ?? .transport(error)
+                if case .cancelled = failure { throw failure }
+                guard mayRetry, let wait = Self.retryWait(after: failure, attempt: attempt),
+                      deadline.timeIntervalSinceNow > wait + 1
+                else { throw failure }
+                attempt += 1
+                try? await Task.sleep(for: .seconds(wait))
+            }
+        }
+    }
+
+    /// Whether (and after how long) a failed attempt is worth another: only
+    /// what a retry could change — the network, a gateway, the server still
+    /// finishing the same request. A verdict (a refusal, a 4xx, a 500 that
+    /// the idempotent replay would only repeat) is final.
+    static func retryWait(after failure: APIError, attempt: Int) -> TimeInterval? {
+        let jitter = Double.random(in: 0...0.25)
+        switch failure {
+        case .refused(let code) where code == "request_in_progress":
+            // The first attempt is still running server-side: keep asking,
+            // gently, for as long as the budget allows.
+            return 2 + jitter
+        case .transport(let underlying):
+            guard attempt < retryDelays.count, Self.isTransient(underlying) else { return nil }
+            return retryDelays[attempt] + jitter
+        case .server(let status) where [502, 503, 504].contains(status):
+            guard attempt < retryDelays.count else { return nil }
+            return retryDelays[attempt] + jitter
+        default:
+            return nil
+        }
+    }
+
+    /// The network errors a retry can fix (not a bad URL, not a decode).
+    static func isTransient(_ error: Error) -> Bool {
+        guard let urlError = error as? URLError else { return false }
+        return [
+            .timedOut, .networkConnectionLost, .notConnectedToInternet, .cannotConnectToHost,
+            .cannotFindHost, .dnsLookupFailed, .secureConnectionFailed, .dataNotAllowed,
+            .internationalRoamingOff, .callIsActive,
+        ].contains(urlError.code)
+    }
+
+    /// One attempt, with the 401 → refresh → retry-once dance.
+    private func authorized<Response: Decodable>(
+        _ url: URL,
+        method: String,
+        body: Data?,
+        authenticated: Bool,
+        timeout: TimeInterval,
+        key: String?
+    ) async throws -> Response {
+        let token = authenticated ? await tokens.current() : nil
         do {
-            return try await perform(url, method: method, body: encodedBody, token: token)
+            return try await perform(url, method: method, body: body, token: token, timeout: timeout, key: key)
         } catch APIError.unauthorized where authenticated {
             guard let refreshed = await tokens.refresh(token) else {
                 throw APIError.unauthorized
             }
-            return try await perform(url, method: method, body: encodedBody, token: refreshed)
+            return try await perform(url, method: method, body: body, token: refreshed, timeout: timeout, key: key)
         }
     }
 
@@ -670,14 +787,21 @@ struct LiveAPI: APIClient {
         _ url: URL,
         method: String,
         body: Data?,
-        token: String?
+        token: String?,
+        timeout: TimeInterval,
+        key: String?
     ) async throws -> Response {
-        let request = Self.request(url, method: method, body: body, token: token)
+        var request = Self.request(url, method: method, body: body, token: token)
+        request.timeoutInterval = timeout
+        if let key { request.setValue(key, forHTTPHeaderField: "Idempotency-Key") }
         let data: Data
         let response: URLResponse
         do {
             (data, response) = try await URLSession.shared.data(for: request)
         } catch {
+            if Task.isCancelled || (error as? URLError)?.code == .cancelled || error is CancellationError {
+                throw APIError.cancelled
+            }
             throw APIError.transport(error)
         }
 

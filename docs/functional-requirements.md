@@ -65,6 +65,7 @@ the evidence that proves it. Three kinds of evidence back an FR:
 | FR-38 | Saved conversations | automated | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantHistory.test.ts`; iOS `AssistantUITests` (history, Activity link) |
 | FR-39 | Continuous dictation | automated + device-manual | iOS `DictationTranscriptTests`, `SpeechRecognizerTests`, `SpeechUITests` (scripted recognizer); the real recognizers need a phone |
 | FR-40 | Tappable questions, stated assumptions | automated | `server/test/assistantClarify.test.ts`; iOS `AssistantUITests` (duration chips, assumptions line) |
+| FR-41 | Requests that survive the network | automated | `server/fr/55-reliability.fr.test.ts`, `server/test/idempotency.test.ts`, `server/test/outbound.test.ts`, `server/test/shutdown.test.ts`, `server/test/auth.test.ts`; iOS `LiveAPIRequestTests`, `ParkOutboxTests`; `scripts/boot-check.sh` (SIGTERM → exit 0) |
 
 ---
 
@@ -910,3 +911,31 @@ against prod, uploads `fr-report.json` + `fr-summary.md` as the
 failures"** issue on failure, closing it on the next green run.
 Secrets: `FR_API_KEY` (only one — the report and issue use the built-in
 `GITHUB_TOKEN`).
+
+### FR-41 — Requests that survive the network
+
+A dropped connection, a phone that gives up waiting, or a deploy mid-request
+never double-acts and never silently loses work:
+
+- Every unsafe call carries an idempotency key and is answered once
+  ("Idempotency keys" in server/API.md).
+- The app retries only what a retry can change, within per-call budgets:
+  reads 20 s per attempt and 45 s in all; payments 100 s and 180 s.
+- A lost refresh answer doesn't sign anyone out.
+- A park reported with no signal waits in an on-disk outbox until it can
+  be sent.
+- Every outbound call has a deadline.
+- Shutdown lets work in flight finish before the browser and the database
+  close.
+
+**Accepted when** a retried keyed request is answered with the first
+answer, a reused key is refused, and readiness reflects the database
+(live); and each fault above is reproduced in a test.
+
+Evidence: live FR-41 tests; `idempotency.test.ts` (a lost extension
+answer doesn't extend twice, in-progress, a reused key, an abandoned
+claim, secrets never stored), `auth.test.ts` (the lost-rotation grace),
+`outbound.test.ts` (a silent server, a stalled APNs), `shutdown.test.ts`,
+`health.test.ts`; iOS `LiveAPIRequestTests` (the same key on retry,
+waiting out an in-progress payment, no retries for verdicts or sign-in,
+cancellation), `ParkOutboxTests`; `boot-check.sh` (SIGTERM → exit 0).

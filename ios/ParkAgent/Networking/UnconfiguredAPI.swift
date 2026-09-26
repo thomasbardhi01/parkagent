@@ -32,6 +32,7 @@ struct UnconfiguredAPI: APIClient {
     func removeVehicle(id: String) async throws { throw failure }
 
     func parked(_ request: ParkedRequest) async throws -> ParkedResponse { throw failure }
+    func parked(_ request: ParkedRequest, idempotencyKey: String) async throws -> ParkedResponse { throw failure }
     func reportZoneNumber(zoneId: String, number: String) async throws -> ZoneNumberReportResponse { throw failure }
     func policy() async throws -> PolicyResponse { throw failure }
     func startSession(_ request: SessionStartRequest) async throws -> SessionStartOutcome { throw failure }

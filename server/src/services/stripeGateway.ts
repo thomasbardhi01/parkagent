@@ -246,7 +246,9 @@ export function makeStripeGateway(
   webhookSecret: string,
   funding: FundingConfig = {},
 ): StripeGateway {
-  const stripe = new Stripe(secretKey);
+  // A deadline on every Stripe call (the SDK's default is 80 s); its own
+  // retries of a failed request reuse one idempotency key.
+  const stripe = new Stripe(secretKey, { timeout: 20_000, maxNetworkRetries: 2 });
   let cachedFinancialAccount: string | undefined = funding.financialAccount;
 
   // v2 amounts are integer minor units keyed by currency; absent means zero.

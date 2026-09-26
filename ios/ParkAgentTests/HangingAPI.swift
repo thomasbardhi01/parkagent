@@ -36,6 +36,7 @@ class HangingAPI: APIClient, @unchecked Sendable {
     }
     func removeVehicle(id: String) async throws { try await hang() as Void }
     func parked(_ request: ParkedRequest) async throws -> ParkedResponse { try await hang() }
+    func parked(_ request: ParkedRequest, idempotencyKey: String) async throws -> ParkedResponse { try await hang() }
     func reportZoneNumber(zoneId: String, number: String) async throws -> ZoneNumberReportResponse {
         try await hang()
     }

@@ -19,6 +19,7 @@ import { registerCity } from "./routes/city.js";
 import { registerDevice } from "./routes/device.js";
 import { registerLocation } from "./routes/location.js";
 import { registerLimits } from "./routes/limits.js";
+import { registerIdempotency } from "./services/idempotency.js";
 import { registerMe } from "./routes/me.js";
 import { registerParked } from "./routes/parked.js";
 import { registerPolicy } from "./routes/policy.js";
@@ -63,6 +64,8 @@ export interface AuthConfig {
 export interface AppDeps {
   db: AppDb;
   policy: PolicyService;
+  /** One round trip to the database (`SELECT 1`), for /health/ready. */
+  dbPing?: () => Promise<unknown>;
   /** Identity + sessions; absent → /auth/* answers 503 and bearer tokens
    * never authenticate (api keys still do). */
   auth?: AuthConfig;
@@ -179,6 +182,7 @@ export function makeAuthenticate(
  * (the credential is in the body). Everything else 401s by default. */
 const PUBLIC_PATHS = new Set([
   "/health",
+  "/health/ready",
   "/webhooks/stripe",
   "/link/callback",
   "/auth/methods",
@@ -205,8 +209,19 @@ export function requireAdmin(req: FastifyRequest, reply: FastifyReply): boolean 
  * on the way to buildApp — a logger that forward-references a later
  * `const app` crash-loops the process the first time boot logs through it.
  */
+/** How long a client has to finish SENDING a request (slow-drip bodies);
+ * the handler itself is never cut off — see docs/reliability.md. */
+export const REQUEST_RECEIVE_TIMEOUT_MS = 30_000;
+/** Longer than Fly's proxy keeps an idle upstream connection, so the proxy
+ * never reuses one this server has just closed. */
+export const KEEP_ALIVE_TIMEOUT_MS = 75_000;
+
 export function createFastify(): FastifyInstance {
   return Fastify({
+    requestTimeout: REQUEST_RECEIVE_TIMEOUT_MS,
+    keepAliveTimeout: KEEP_ALIVE_TIMEOUT_MS,
+    // Closing (a deploy): new requests get 503 while those in flight finish.
+    return503OnClosing: true,
     logger: {
       // Belt and braces: Fastify's default req serializer logs no headers,
       // but nothing should be one serializer tweak away from logging
@@ -257,6 +272,25 @@ export function buildApp(deps?: AppDeps, app: FastifyInstance = createFastify())
       await authenticate(req, reply);
     });
   }
+
+  // After auth (the key is per user), before any route runs.
+  if (deps) registerIdempotency(app, deps);
+
+  // Readiness: the server can reach its database. Fly routes traffic by it
+  // (fly.toml); /health stays the build-identity check deploys wait on.
+  app.get("/health/ready", async (_req, reply) => {
+    if (!deps?.dbPing) return { ok: true, db: "unchecked" };
+    const ping = deps.dbPing().then(
+      () => "ok" as const,
+      () => "down" as const,
+    );
+    const timeout = new Promise<"timeout">((resolve) =>
+      setTimeout(() => resolve("timeout"), 3_000).unref(),
+    );
+    const db = await Promise.race([ping, timeout]);
+    if (db !== "ok") return reply.code(503).send({ ok: false, db });
+    return { ok: true, db };
+  });
 
   app.get("/health", async () => ({
     ok: true,

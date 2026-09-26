@@ -19,6 +19,7 @@ import {
   rotateRefreshToken,
   startEmailLogin,
   verifyEmailLogin,
+  REFRESH_REUSE_GRACE_MS,
 } from "../src/services/authService.js";
 import {
   MONDAY_2PM,
@@ -588,8 +589,9 @@ describe("refresh rotation", () => {
     expect(rotated.statusCode).toBe(200);
     expect(rotated.json().refreshToken).not.toBe(first.refreshToken);
 
-    // Replaying the retired token is reuse: the WHOLE family dies,
-    // including the fresh token that rotation just issued.
+    // Replaying the retired token past the lost-answer grace is reuse: the
+    // WHOLE family dies, including the fresh token rotation just issued.
+    harness.clock.ms += REFRESH_REUSE_GRACE_MS + 1_000;
     const replay = await post(harness.app, "/auth/refresh", {
       refreshToken: first.refreshToken,
       deviceId: DEVICE,
@@ -605,6 +607,70 @@ describe("refresh rotation", () => {
     // Refused because it was REVOKED — not merely unknown.
     expect(harness.state.refreshTokens).toHaveLength(2);
     expect(harness.state.refreshTokens.every((t) => t.revokedAt !== null)).toBe(true);
+  });
+
+  test("a rotation whose answer was lost: the same phone asking again gets a session, not a sign-out", async () => {
+    const harness = makeAuthApp();
+    const first = await signedIn(harness);
+    // The server rotates; the answer dies in a tunnel.
+    const lost = await post(harness.app, "/auth/refresh", {
+      refreshToken: first.refreshToken,
+      deviceId: DEVICE,
+    });
+    expect(lost.statusCode).toBe(200);
+
+    // The phone still holds the old token and asks again, moments later.
+    harness.clock.ms += 5_000;
+    const again = await post(harness.app, "/auth/refresh", {
+      refreshToken: first.refreshToken,
+      deviceId: DEVICE,
+    });
+    expect(again.statusCode).toBe(200);
+    const fresh = again.json().refreshToken as string;
+    expect(fresh).not.toBe(lost.json().refreshToken);
+
+    // The answer that never arrived is dead; the one that did works.
+    const undelivered = await post(harness.app, "/auth/refresh", {
+      refreshToken: lost.json().refreshToken,
+      deviceId: DEVICE,
+    });
+    expect(undelivered.statusCode).toBe(401);
+    harness.clock.ms += REFRESH_REUSE_GRACE_MS + 1_000;
+    const next = await post(harness.app, "/auth/refresh", {
+      refreshToken: fresh,
+      deviceId: DEVICE,
+    });
+    expect(next.statusCode).toBe(200);
+  });
+
+  test("the grace is for the same phone, soon, with an unused successor — otherwise it's reuse", async () => {
+    // Another device presenting the rotated token: theft, not a lost answer.
+    const other = makeAuthApp();
+    const a = await signedIn(other);
+    await post(other.app, "/auth/refresh", { refreshToken: a.refreshToken, deviceId: DEVICE });
+    const stolen = await post(other.app, "/auth/refresh", {
+      refreshToken: a.refreshToken,
+      deviceId: "device-attacker9876",
+    });
+    expect(stolen.json().error).toBe("token_reused");
+
+    // The successor was used (the phone DID get it): the old token is reuse.
+    const used = makeAuthApp();
+    const b = await signedIn(used);
+    const rotated = await post(used.app, "/auth/refresh", {
+      refreshToken: b.refreshToken,
+      deviceId: DEVICE,
+    });
+    await post(used.app, "/auth/refresh", {
+      refreshToken: rotated.json().refreshToken,
+      deviceId: DEVICE,
+    });
+    const replay = await post(used.app, "/auth/refresh", {
+      refreshToken: b.refreshToken,
+      deviceId: DEVICE,
+    });
+    expect(replay.json().error).toBe("token_reused");
+    expect(used.state.refreshTokens.every((t) => t.revokedAt !== null)).toBe(true);
   });
 
   test("two refreshes racing with one token can't both win — the family dies", async () => {

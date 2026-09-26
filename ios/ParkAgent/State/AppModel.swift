@@ -1,5 +1,6 @@
 import CoreLocation
 import Foundation
+import Network
 import Observation
 import UIKit
 
@@ -56,6 +57,7 @@ final class AppModel {
     var sessionActionError: APIError?
     /// True while an extend round-trip is in flight (button disables).
     private(set) var isExtending = false
+    private(set) var isStopping = false
 
     /// Kept on disk: iOS ends a backgrounded app mid-session all the time,
     /// and a relaunch that forgot the session would stop reporting where
@@ -313,6 +315,8 @@ final class AppModel {
     /// Sign-out: stop reporting location and detecting parks for an
     /// account that is no longer here, and drop its in-memory state.
     func stopBackgroundWork() {
+        pathMonitor?.cancel()
+        pathMonitor = nil
         detector.disarm()
         Self.detectionArmed = false
         reporter.stop()
@@ -342,6 +346,8 @@ final class AppModel {
         // flakiness. The detector's own UI test opts back in.
         guard !LaunchOverrides.uiTesting || Self.detectorSimulation else { return }
         armDetection(reason: .arm)
+        watchConnectivity()
+        Task { await flushParkOutbox() }
         guard !LaunchOverrides.uiTesting else { return }
         PushManager.shared.activate(api: api)
         // A provider_relink push routes straight into the link flow.
@@ -460,23 +466,75 @@ final class AppModel {
             ts: detectedAt ?? AppClock.now,
             signals: signals
         )
+        // One key for this park, kept if it has to wait in the outbox, so
+        // it's recorded once however many times it's delivered.
+        let key = UUID().uuidString
         do {
-            let response = try await api.parked(request)
-            carCoordinate = coordinate
-            paymentError = nil
-            pendingParked = response
-            // Backgrounded (the usual case: the driver just walked away),
-            // the sheet waits unseen — say so with a notification.
-            if UIApplication.shared.applicationState != .active {
-                await ParkedNotice.post(for: response)
-            }
-            // A real park is the freshest city signal there is.
-            if let city = response.candidates.first?.city {
-                detectedCity = city
-            }
+            let response = try await api.parked(request, idempotencyKey: key)
+            await present(parked: response, at: coordinate)
         } catch {
-            paymentError = error as? APIError ?? .transport(error)
+            let failure = error as? APIError ?? .transport(error)
+            carCoordinate = coordinate
+            if ParkOutbox.isFinal(failure) {
+                paymentError = failure
+            } else {
+                // No signal (a garage, a tunnel): keep the report and send
+                // it when the connection is back — it used to be lost.
+                await parkOutbox.enqueue(request, key: key)
+            }
         }
+    }
+
+    /// A park the server answered, live or from the outbox: the sheet, and
+    /// a notification when the app is in the background.
+    private func present(parked response: ParkedResponse, at coordinate: CLLocationCoordinate2D) async {
+        carCoordinate = coordinate
+        paymentError = nil
+        pendingParked = response
+        // Backgrounded (the usual case: the driver just walked away),
+        // the sheet waits unseen — say so with a notification.
+        if UIApplication.shared.applicationState != .active {
+            await ParkedNotice.post(for: response)
+        }
+        // A real park is the freshest city signal there is.
+        if let city = response.candidates.first?.city {
+            detectedCity = city
+        }
+    }
+
+    // MARK: - Offline outbox
+
+    let parkOutbox = ParkOutbox()
+    private var pathMonitor: NWPathMonitor?
+
+    /// Send parks that waited for a connection. One still fresh gets the
+    /// sheet as if it had just been detected; an old one is recorded on the
+    /// server (its decision, its history) but not put in front of anyone.
+    func flushParkOutbox() async {
+        let api = self.api
+        let delivered = await parkOutbox.flush { request, key in
+            try await api.parked(request, idempotencyKey: key)
+        }
+        guard let latest = delivered.last,
+              AppClock.now.timeIntervalSince(latest.item.request.ts) < ParkedNotice.freshFor
+        else { return }
+        let request = latest.item.request
+        await present(
+            parked: latest.response,
+            at: CLLocationCoordinate2D(latitude: request.lat, longitude: request.lng)
+        )
+    }
+
+    /// Flush whenever the network comes back.
+    private func watchConnectivity() {
+        guard pathMonitor == nil else { return }
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] path in
+            guard path.status == .satisfied else { return }
+            Task { @MainActor in await self?.flushParkOutbox() }
+        }
+        monitor.start(queue: DispatchQueue(label: "parkagent.connectivity"))
+        pathMonitor = monitor
     }
 
     #if DEBUG
@@ -492,7 +550,9 @@ final class AppModel {
     #endif
 
     func pay(candidate: Candidate) async {
-        guard let parked = pendingParked else { return }
+        // One payment at a time: "Save number and pay" could be tapped again
+        // while the first start was still running.
+        guard let parked = pendingParked, !isPaying else { return }
         isPaying = true
         paymentError = nil
         Haptics.light()
@@ -582,7 +642,9 @@ final class AppModel {
     }
 
     func stopSession() async {
-        guard let session = activeSession else { return }
+        guard let session = activeSession, !isStopping else { return }
+        isStopping = true
+        defer { isStopping = false }
         do {
             _ = try await api.stopSession(sessionId: session.sessionId)
             activeSession = nil

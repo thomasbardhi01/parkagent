@@ -39,7 +39,7 @@ struct VehicleSummary: Codable, Sendable, Identifiable, Equatable {
     }
 }
 
-struct ParkedRequest: Codable, Sendable {
+struct ParkedRequest: Codable, Sendable, Equatable {
     var lat: Double
     var lng: Double
     var accuracy: Double

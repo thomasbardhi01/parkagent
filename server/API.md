@@ -170,6 +170,16 @@ racing with the same token can't both mint a successor; the loser is
 reuse. Clients should sign out only on these `401`s (and `400`/`403`) — a
 `429` or `5xx` is no verdict on the token.
 
+**A lost answer is not reuse.** The server rotates, and the answer carrying
+the successor dies in a tunnel, so the phone asks again with the token it
+still holds. Within 60 s of the rotation (`REFRESH_REUSE_GRACE_MS`), from
+the same device, and only while the successor has never been used, the
+server retires that undelivered successor (revoked, so presenting it later
+is `invalid_token`) and issues a new one. Before this, the honest retry
+read as theft and signed the user out. Anything else (another device,
+later, a successor that was used) is still `token_reused`, and the family
+dies.
+
 ### POST /auth/logout
 
 `{refreshToken}` → `{"ok": true}`. Revokes the token's whole family.
@@ -1520,9 +1530,70 @@ to start on an invalid file.
 
 ---
 
-## GET /health
+## GET /health · GET /health/ready
 
-No auth. `{ok, dryRun, commit, builtAt}`.
+No auth. `/health` is liveness plus build identity: `{ok, dryRun, commit,
+builtAt}` (deploys wait on its `commit`). `/health/ready` is readiness:
+one `SELECT 1` bounded at 3 s → `{ok: true, db: "ok"}`, or `503 {ok:
+false, db: "down" | "timeout"}`. Fly's http check uses `/health/ready`
+(fly.toml), so a machine that can't reach its database stops getting
+traffic, and a deploy that can't isn't marked healthy.
+
+## Idempotency keys (every unsafe request)
+
+A signed-in `POST`/`PUT`/`PATCH`/`DELETE` may carry `Idempotency-Key: <8–128
+of [A-Za-z0-9_-]>`, and the app sends one on every such call: one key per
+action, reused on each automatic retry. The server (`services/idempotency.ts`,
+table `idempotency_keys`, kept 24 h) runs a key once per user, and **its
+first answer is its answer**, refusals and errors included:
+
+| A request with a key that… | gets |
+|---|---|
+| is new | the route runs; its status and body are stored |
+| was answered | the stored answer, header `Idempotent-Replayed: true`, nothing runs |
+| is still running | `409 {"error": "request_in_progress", "retryAfterSeconds": 2}` |
+| was used for a different request (method, path, body) | `422 {"error": "idempotency_key_reused"}` |
+| is malformed | `400 {"error": "invalid_idempotency_key"}` |
+
+This is what makes a retry safe: a phone that gave up waiting for a
+payment (the server kept going), or lost the answer in a tunnel, asks
+again and gets the result instead of paying, extending, or recording
+twice. A claim that never finished (the process died mid-request) may be
+taken over by a retry after 10 minutes.
+
+Never stored, whatever the key: answers that carry a secret. That means the
+Link card reveal (card number and CVC; storing it would break the
+"never store card numbers" rule), `/wallet/setup-intent` and
+`/card/funding/topup-intent` (Stripe client secrets), and `/link/connect`
+(OAuth state). These keep their own one-shot semantics, and the app neither
+keys nor retries them. Sign-in calls carry no user yet, so they aren't keyed
+either.
+
+## Timeouts
+
+- **Outbound:** every call to a third party has a deadline.
+  - APNs 8 s per push. Pushes are awaited inside a start and inside an
+    extension's lock.
+  - Stripe 20 s, with the SDK's own 2 retries under one idempotency key.
+  - Resend 10 s, Nominatim/ParkWhiz/SpotHero 8 s, Link 15 s.
+  - Apple Maps, the Apple/Google JWKS, and Apple's token endpoint already
+    had their own.
+  - The database pool gives up on a connection after 10 s.
+  - `test/outboundScan.test.ts` fails a bare `fetch`.
+- **Inbound:** a client has 30 s to finish *sending* a request (slow-drip
+  bodies). Keep-alive is 75 s, longer than Fly's proxy keeps an idle
+  upstream connection.
+  - A handler is never cut off mid-run. A payment has to finish or fail
+    on its own terms, and the app waits it out through the idempotency key.
+- **Shutdown** (SIGTERM; `fly.toml` `kill_timeout` 30 s), in order:
+  1. stop the job timers;
+  2. close the server (new requests get 503; requests in flight finish);
+  3. wait for job passes in flight (an extension, a link);
+  4. then close the browser and the database, and exit 0.
+
+  All of this runs within 25 s, or the server exits 1 with a log line
+  naming the step it was on. `scripts/boot-check.sh` sends SIGTERM and
+  requires exit 0.
 
 ---
 

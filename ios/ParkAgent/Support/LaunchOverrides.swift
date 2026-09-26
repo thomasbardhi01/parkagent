@@ -6,7 +6,7 @@ import Foundation
 ///                          without it every build talks to the live server)
 ///   -skipOnboarding YES    land on Home instead of onboarding
 ///   -appearance dark       preset the appearance setting (system|light|dark)
-///   -resetState YES        wipe UserDefaults before anything reads it
+///   -resetState YES        wipe UserDefaults (and the Keychain and park outbox) before anything reads it
 ///   -mockScenario <name>   preset the mock /parked scenario
 ///   -walletScenario <name> preset the mock Wallet (see WalletMockScenario:
 ///                          providerCard|linkActive|linkNotConfigured|
@@ -143,6 +143,9 @@ enum LaunchOverrides {
             // left over from the previous test would skip the welcome
             // screen the next one is trying to exercise.
             Keychain.clearAll()
+            // Nor do they reach the park outbox's file: a park queued in one
+            // test must not be delivered in the next.
+            try? FileManager.default.removeItem(at: ParkOutbox.defaultURL)
             AuthUser.clearCache()
             // A stop the previous test left pending would fire in this one.
             DetectorStore.clearDefault()

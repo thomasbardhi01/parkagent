@@ -15,6 +15,9 @@ struct HomeView: View {
     /// every tab return and navigation pop, which snapped the map back to
     /// the car after the user had moved it.
     @State private var didCenter = false
+    /// The centering (and city check) in flight; a new one replaces it, so
+    /// launch, Retry, and a return from Settings never run two at once.
+    @State private var centerTask: Task<Void, Never>?
     /// Keep the camera on the phone as it moves, until the user pans or
     /// zooms (MapKit marks that `positionedByUser`); locate-me turns it
     /// back on. Live API only — the mock has no real location. It used to
@@ -61,16 +64,12 @@ struct HomeView: View {
                             retry: { Task { await model.loadPolicy() } }
                         )
                     }
-                    if permissions.locationDenied {
-                        PermissionBanner()
+                    if let note = mapNote {
+                        mapNoteView(note)
                     }
-                    if permissions.motionDenied {
-                        PermissionBanner(
-                            icon: "figure.walk.circle",
-                            title: "Motion & Fitness is off",
-                            message: "Park detection loses its driving-to-walking signal without it."
-                        )
-                    }
+                    // Anything missing or reduced, live: appears and clears
+                    // as permissions change in Settings.
+                    DetectionStatusBanner()
                 }
                 .padding(.top, Spacing.half)
                 .padding(.horizontal, Spacing.unit)
@@ -88,9 +87,14 @@ struct HomeView: View {
             .task {
                 guard !didCenter else { return }
                 didCenter = true
-                await centerCamera()
+                recenter()
             }
             .task(id: following) { await followPhone() }
+            .onChange(of: permissions.capabilities.locationUsable) { _, usable in
+                // Allowed in Settings and back: go find the phone now
+                // rather than keep saying location is off.
+                if usable, !following { recenter() }
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
@@ -127,7 +131,7 @@ struct HomeView: View {
                             )
                     }
                 }
-                if let car = model.carCoordinate {
+                if let car = model.carCoordinate, model.activeSession != nil || model.pendingParked != nil {
                     Annotation("Your car", coordinate: car) {
                         MapPin(kind: .car)
                     }
@@ -172,33 +176,90 @@ struct HomeView: View {
         .accessibilityIdentifier("home.locateMeButton")
     }
 
-    /// The car's spot if it's parked; else follow the phone, falling back to
-    /// the detected city while there is no fix (or no permission) — never a
-    /// fixed city constant.
+    /// At launch the map goes to the phone and follows it until the user
+    /// pans. Until a fix arrives (or when there's no location at all) it
+    /// shows the known city — and says so, rather than passing a city
+    /// center off as "you". The city check retries with backoff.
     private func centerCamera() async {
-        var known = model.carCoordinate
-        if let car = known {
-            camera = .region(MKCoordinateRegion(center: car, span: Self.streetSpan))
-        } else if let phone = mockPhoneCoordinate {
-            known = phone
+        if let phone = mockPhoneCoordinate {
             camera = .region(MKCoordinateRegion(center: phone, span: Self.streetSpan))
-        } else {
-            // The city until a fix arrives (or when location is off).
-            camera = cityPosition
-            known = await OneShotLocation.request()
-            if let phone = known {
-                camera = .region(MKCoordinateRegion(center: phone, span: Self.streetSpan))
+            await model.detectCityWithRetry { phone }
+            return
+        }
+        camera = cityPosition
+        guard permissions.capabilities.locationUsable else {
+            model.cityDetection = .noLocation
+            return
+        }
+        await model.detectCityWithRetry {
+            let fix = await OneShotLocation.request()
+            // First fix wins the camera; later retries only refine the city.
+            if let fix, !following, !camera.positionedByUser {
+                camera = .region(MKCoordinateRegion(center: fix, span: Self.streetSpan))
                 following = true
             }
+            return fix
         }
+    }
 
-        // Name the city in the chip at launch, without waiting for the
-        // first park to tell us where we are. Every launch, not only a
-        // fresh install: the detected city persists, so someone who drove
-        // from one covered city to the other was shown the old one.
-        if let known {
-            _ = await model.detectCity(lat: known.latitude, lng: known.longitude)
+    private func recenter() {
+        centerTask?.cancel()
+        centerTask = Task { await centerCamera() }
+    }
+
+    /// What the map is showing when it isn't the phone.
+    private enum MapNote: Equatable {
+        case finding
+        case showingCity(String, reason: String)
+        case cityUnknown
+    }
+
+    private var mapNote: MapNote? {
+        guard mockPhoneCoordinate == nil, !following else { return nil }
+        let shown = CityCatalog.displayName(model.effectiveCity)
+            ?? CityCatalog.displayName(CityCatalog.fallbackCity) ?? ""
+        switch model.cityDetection {
+        case .locating where !camera.positionedByUser:
+            return .finding
+        case .noLocation:
+            let reason = permissions.capabilities.locationUsable
+                ? "couldn't get your location"
+                : "location is off"
+            return camera.positionedByUser ? nil : .showingCity(shown, reason: reason)
+        case .serverUnreachable:
+            return .cityUnknown
+        default:
+            return nil
         }
+    }
+
+    private func mapNoteView(_ note: MapNote) -> some View {
+        HStack(spacing: Spacing.half) {
+            switch note {
+            case .finding:
+                ProgressView().controlSize(.mini)
+                Text("Finding your location…")
+            case .showingCity(let city, let reason):
+                Image(systemName: "location.slash")
+                Text("Showing \(city) — \(reason)")
+            case .cityUnknown:
+                Image(systemName: "questionmark.circle")
+                Text("Couldn't check which city you're in")
+            }
+            if note != .finding {
+                Button("Retry") { recenter() }
+                    .foregroundStyle(Color.actionCoralLink)
+                    .accessibilityIdentifier("home.mapNote.retry")
+            }
+        }
+        .font(.captionTextSemibold)
+        .foregroundStyle(Color.textPrimary)
+        .padding(.horizontal, 12)
+        .padding(.vertical, Spacing.half)
+        .background(Color.surface, in: Capsule())
+        .shadow(color: .black.opacity(0.1), radius: 4, y: 1)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("home.mapNote")
     }
 
     /// The mock has no real location: it answers from the city scenario so
@@ -212,12 +273,12 @@ struct HomeView: View {
         #endif
     }
 
-    /// The detected (or chosen) city at street zoom — what the map shows
-    /// until a location fix arrives.
+    /// The detected (or chosen) city — what the map shows until a location
+    /// fix arrives, and what `mapNote` names while it does.
     private var cityPosition: MapCameraPosition {
         .region(MKCoordinateRegion(
             center: CityCatalog.center(of: model.effectiveCity) ?? CityCatalog.fallbackCenter,
-            span: Self.streetSpan
+            span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)
         ))
     }
 

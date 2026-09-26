@@ -52,6 +52,9 @@ Reset onboarding?
 
 # Test-only UI: the simulated park, probes, the mock sign-in.
 home.simulateParkButton
+diagnostics.selfTest.run
+-detectorSimulation
+root.detectorProbe
 Simulate park here
 root.colorSchemeProbe
 assistant.externalLinkProbe
@@ -91,6 +94,10 @@ type AssistantMockScenario O
 type LinkMockScenario O
 type SpeechMockScenario O
 type DiagnosticsView V
+type DetectorSelfTest C
+type CapabilityOverride V
+type SpeedDerivedMotionSource C
+type MockDetectorProbe C
 + type LiveAPI V
 + type AppModel C
 + type DeleteAccountView V

@@ -100,6 +100,35 @@ enum ParkedNotice {
         return stored.response
     }
 
+    /// Enough evidence of a park, but no fix precise enough to say which
+    /// block (Precise Location off, or no GPS under cover). Nothing was
+    /// reported, so nothing can be paid; say why instead of staying silent.
+    static let unlocatedType = "parked_unlocated"
+
+    static func unlocatedContent(preciseOff: Bool) -> Content {
+        preciseOff
+            ? Content(
+                title: "Parked? ParkAgent couldn't tell where",
+                body: "Precise Location is off, so iOS blurs your location by a few kilometers. Turn it on in Settings → ParkAgent → Location, or pay at the meter."
+            )
+            : Content(
+                title: "Parked? ParkAgent couldn't tell where",
+                body: "There was no GPS fix good enough to pick the block. Pay at the meter or in your parking app this time."
+            )
+    }
+
+    static func postUnlocated(preciseOff: Bool) async {
+        let content = unlocatedContent(preciseOff: preciseOff)
+        let notification = UNMutableNotificationContent()
+        notification.title = content.title
+        notification.body = content.body
+        notification.sound = .default
+        notification.interruptionLevel = .timeSensitive
+        notification.userInfo = ["type": unlocatedType]
+        let request = UNNotificationRequest(identifier: unlocatedType, content: notification, trigger: nil)
+        try? await UNUserNotificationCenter.current().add(request)
+    }
+
     static func post(for response: ParkedResponse) async {
         guard let content = content(for: response) else { return }
         let notification = UNMutableNotificationContent()

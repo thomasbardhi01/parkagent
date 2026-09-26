@@ -187,4 +187,24 @@ private struct HangingAPI: APIClient {
     func linkWalletConnect() async throws -> LinkConnectResponse { try await hang() }
     func linkWalletDisconnect() async throws { try await hang() as Void }
     func syncLinkSpendRequest(id: String) async throws -> LinkSpendSyncResponse { try await hang() }
+
+    // MARK: - Permissions
+
+    /// While Using used to fail the gate on every launch and send the user
+    /// back through setup, where the row said "On". Now: fully granted, or
+    /// the user saw the "what won't work" summary and chose to go on.
+    func testPermissionsPassWhenGrantedOrWhenLimitsWereAcknowledged() {
+        var caps = DetectionCapabilities(
+            locationServicesEnabled: true, location: .always, preciseLocation: true,
+            motion: .authorized, notifications: .authorized, backgroundRefresh: .available, lowPowerMode: false
+        )
+        XCTAssertTrue(OnboardingGate.permissionsOK(caps, acknowledgedLimited: false))
+        caps.location = .whileUsing
+        XCTAssertFalse(OnboardingGate.permissionsOK(caps, acknowledgedLimited: false))
+        XCTAssertTrue(OnboardingGate.permissionsOK(caps, acknowledgedLimited: true))
+        // Low Power Mode is not a permission to chase anyone over.
+        caps.location = .always
+        caps.lowPowerMode = true
+        XCTAssertTrue(OnboardingGate.permissionsOK(caps, acknowledgedLimited: false))
+    }
 }

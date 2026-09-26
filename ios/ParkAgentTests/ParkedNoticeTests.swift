@@ -94,4 +94,14 @@ extension ParkedNoticeTests {
         let content = try XCTUnwrap(ParkedNotice.content(for: unlinked))
         XCTAssertTrue(content.body.hasPrefix("Connect ParkNYC in ParkAgent"), content.body)
     }
+
+    /// A park with nowhere to point says why, instead of staying silent.
+    func testAnUnlocatedParkSaysWhyAndWhatToDo() {
+        let precise = ParkedNotice.unlocatedContent(preciseOff: true)
+        XCTAssertTrue(precise.body.contains("Precise Location is off"), precise.body)
+        XCTAssertTrue(precise.body.contains("Settings"), precise.body)
+        let gps = ParkedNotice.unlocatedContent(preciseOff: false)
+        XCTAssertFalse(gps.body.contains("Precise"), gps.body)
+        XCTAssertTrue(gps.body.contains("Pay at the meter"), gps.body)
+    }
 }

@@ -35,6 +35,11 @@ import Foundation
 ///   -fixedNow <epoch>      freeze AppClock (see AppClock.swift)
 ///   -uiTesting YES         suppress detector/push side effects and expose
 ///                          the color-scheme probe label
+///   -capabilities <spec>   pin the permission state (CapabilityOverride)
+///   -detectorSignalLogEnabled YES  turn on the signal log (Diagnostics' switch)
+///   -detectorSimulation YES  run the REAL detector in a UI test, with motion
+///                          derived from the simulated location's speed (the
+///                          simulator has no motion coprocessor)
 ///
 /// `applyToDefaults()` copies the `-key value` pairs into the persistent
 /// domain and then clears the volatile argument domain. Without that step the
@@ -48,6 +53,7 @@ import Foundation
 enum LaunchOverrides {
     #if DEBUG
     static let uiTesting: Bool = flagValue("-uiTesting") == "YES"
+    static let detectorSimulation: Bool = flagValue("-detectorSimulation") == "YES"
 
     /// The mock API is a launch-time decision, never persisted: the UI tests
     /// pass `-useMockAPI YES`; every other launch — Debug and Release alike —
@@ -122,6 +128,8 @@ enum LaunchOverrides {
         let seededSession = flagValue("-seedSession")
         let googleSignIn = argued["googleSignIn"] != nil
             ? defaults.bool(forKey: "googleSignIn") : nil
+        let signalLog = argued[SignalLog.enabledKey] != nil
+            ? defaults.bool(forKey: SignalLog.enabledKey) : nil
 
         defaults.setVolatileDomain([:], forName: UserDefaults.argumentDomain)
 
@@ -132,6 +140,8 @@ enum LaunchOverrides {
             // screen the next one is trying to exercise.
             Keychain.clearAll()
             AuthUser.clearCache()
+            // A stop the previous test left pending would fire in this one.
+            DetectorStore.clearDefault()
         }
         // Scrub before the argument writes below, so UI-test launches still
         // get their scenario keys and everyone else starts clean.
@@ -169,6 +179,7 @@ enum LaunchOverrides {
         if let authScenario { defaults.set(authScenario, forKey: AuthMockScenario.defaultsKey) }
         if let authMethods { defaults.set(authMethods, forKey: MockAPI.authMethodsKey) }
         if let googleSignIn { defaults.set(googleSignIn, forKey: FeatureFlags.googleSignInKey) }
+        if let signalLog { defaults.set(signalLog, forKey: SignalLog.enabledKey) }
     }
 
     private static func flagValue(_ flag: String) -> String? {

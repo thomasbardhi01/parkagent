@@ -98,13 +98,15 @@ enum CityCatalog {
         }
     }
 
-    /// Last-resort map center when the city is unknown too. Boston, because
-    /// that is where the prototype is driven — not a claim about coverage.
+    /// Last-resort map city when the phone's city is unknown too. Boston,
+    /// because that is where the prototype is driven — not a claim about
+    /// coverage. Home says so whenever the map is showing it.
+    static let fallbackCity = "bos"
     static let fallbackCenter = CLLocationCoordinate2D(latitude: 42.3555, longitude: -71.0655)
 }
 
 /// The session the user is currently paying for.
-struct ActiveSession: Identifiable {
+struct ActiveSession: Identifiable, Codable, Equatable {
     var sessionId: String
     var zoneNumber: String
     var zoneLabel: String
@@ -132,6 +134,34 @@ struct ActiveSession: Identifiable {
     func isExpiring(at date: Date) -> Bool {
         let remaining = remaining(at: date)
         return remaining > 0 && remaining < Self.expiringThreshold
+    }
+
+    // MARK: - Surviving the process
+
+    private static let storeKey = "activeSession"
+    /// A session this long past its expiry is over whatever the server
+    /// says; restoring it would only show a dead timer.
+    static let restoreGrace: TimeInterval = 15 * 60
+
+    static func store(_ session: ActiveSession?) {
+        let defaults = UserDefaults.standard
+        guard let session, let data = try? JSONEncoder().encode(session) else {
+            defaults.removeObject(forKey: storeKey)
+            return
+        }
+        defaults.set(data, forKey: storeKey)
+    }
+
+    static func restore(now: Date = AppClock.now) -> ActiveSession? {
+        let defaults = UserDefaults.standard
+        guard let data = defaults.data(forKey: storeKey),
+              let session = try? JSONDecoder().decode(ActiveSession.self, from: data)
+        else { return nil }
+        guard now.timeIntervalSince(session.expiresAt) < restoreGrace else {
+            defaults.removeObject(forKey: storeKey)
+            return nil
+        }
+        return session
     }
 }
 

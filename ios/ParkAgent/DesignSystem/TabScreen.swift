@@ -11,9 +11,10 @@ import SwiftUI
 ///    inset, so where the system already insets correctly this only adds
 ///    breathing room instead of double-counting.
 ///
-/// 2. **Double exposure on tab switches.** Tab roots that never painted an
-///    opaque background let the outgoing tab show through the incoming one
-///    mid-transition. Every root paints `appBackground` now.
+/// 2. **A see-through tab root.** A root that never painted a background
+///    showed whatever was behind it. Every root paints `appBackground`
+///    now. That was not what caused the double exposure on tab switches:
+///    that is iOS 26's cross-dissolve, turned off in `TabTransition.swift`.
 extension View {
     /// The root of a tab. Paints an opaque background and keeps scrolled
     /// content clear of the floating tab bar.

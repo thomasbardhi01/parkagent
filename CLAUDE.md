@@ -189,8 +189,19 @@ one place that decides which setup step is missing) → Home. Developer
 tools live in `Settings/DiagnosticsView.swift`, reached by tapping the
 version number in the Account sheet's About section five times, and
 compiled out of Release. It holds exactly the field-test kit — detector
-status, signal-log export, the effective dry run, Reset onboarding, and
-the ParkAgent-card sandbox toggle — and nothing else.
+status with every capability's live state, the detector self-test,
+signal-log export, the effective dry run, Reset onboarding, and the
+ParkAgent-card sandbox toggle — and nothing else.
+
+Park detection lives outside the SwiftUI scene (`State/AppServices.swift`):
+iOS relaunches the app in the background for significant-change and
+visit events with no window, so the app delegate re-arms the detector
+there. `PermissionsManager.capabilities` is the one live answer to what
+detection can use (`Detection/DetectionCapabilities.swift` holds the
+rules and the words); Home's banner, onboarding, Account → Privacy, and
+Diagnostics all read it. The engine (`ParkFusionEngine`) is pure and
+replays signal logs (`SignalTrace`); `ios/Fixtures/drive-park-walk.gpx`
+(from `ios/Tools/make-route.py`) is the shared test route.
 
 **Release builds carry no debug code (FR-34).** Everything mock, scenario,
 launch-argument, UI-test-hook, preview, and Diagnostics is inside `#if

@@ -1392,16 +1392,62 @@ Returns the active policy plus bookkeeping:
 }
 ```
 
-The policy is shared: its caps apply to every account (each person's own
-spend counts against them). The app shows them read-only when `editable`
-is false — the budget step in onboarding and Account → Spending limits.
+The policy is the operator's. Its `session_cap_usd` and `daily_cap_usd`
+are **ceilings**: each user may set lower caps of their own, and a
+different default stay, with `/me/limits` (below). Everything else in it
+(dry run, the rate ceiling, auto-extend, fees) applies to everyone as is.
+
+## GET /me/limits · PUT /me/limits
+
+The caller's own spending limits: per stop, per day, and the default stay.
+Anyone may set theirs; the app's budget step and Account → Spending
+limits read and save through here (they used to PUT the whole shared
+policy, which is admin-only — "Couldn't save to the server" for everyone
+else).
+
+```json
+{
+  "limits":   { "sessionCapUsd": 20, "dailyCapUsd": 40, "defaultStayMinutes": 60 },  // in effect now
+  "saved":    { "sessionCapUsd": 20, "dailyCapUsd": 40, "defaultStayMinutes": null },  // null = the operator's default
+  "defaults": { "sessionCapUsd": 45, "dailyCapUsd": 60, "defaultStayMinutes": 90 },    // policy.json
+  "ceilings": { "sessionCapUsd": 45, "dailyCapUsd": 60 },                               // policy.json's caps
+  "bounds":   { "minCapUsd": 1, "stayMinutes": { "min": 15, "max": 240 } },
+  "clamped":  []                                                                         // saved values a lowered ceiling now caps
+}
+```
+
+In effect: each cap is `min(saved ?? policy, policy)`, and the per-stop cap
+never exceeds the day's — so the operator lowering a cap binds everyone at
+once, and a user who never saved runs on the policy exactly as before.
+
+`PUT` takes any of the three fields: a number sets it, `null` goes back to
+the operator's default, a field left out keeps its value. Refusals are
+`400 {"error": "invalid_limits", "issues": [{field, code, message, limit}]}`
+with `code` one of `above_ceiling`, `below_minimum` ($1), `session_above_daily`,
+`out_of_range` (stay outside 15 min – 4 h), and `message` the sentence the
+app shows as is, e.g. "Per stop can't be more than $45.00 — the most
+ParkAgent pays right now." Every PUT, saved or refused, writes a
+`decisions` row (kind `limits_update`, rule `saved` | `refused`) with what
+it replaced and the ceilings at the time.
+
+**Every cap check reads the caller's own limits** (`services/limits.ts`
+`policyFor`): the `/parked` auto-pay decision and its quote's default
+stay, session start (and its ParkAgent-card hold room), manual and
+automatic extensions, the card-authorization webhook (the card owner's
+daily cap), the Wallet's spend line, top-ups, and the assistant's budget
+checks. `test/limitsScan.test.ts` fails any new cap read from the global
+policy. One exception by design: the ParkAgent card's own Stripe
+spending controls stay at the ceilings — a backstop that a later raise
+can't trip over; the webhook enforces each user's cap in real time.
+`DELETE /me` removes the row.
 
 ## PUT /policy
 
-**Admin only** (`403 forbidden` otherwise): the policy is the shared
-spending contract — caps, dry_run, the rate ceiling — so changing it is
-the owner's call; `GET /policy` stays open to every user (the app renders
-it, and onboarding's budget step simply reports "couldn't save" on 403).
+**Admin only** (`403 forbidden` otherwise): the policy is the operator's
+spending contract — the cap ceilings, dry_run, the rate ceiling — so
+changing it is the owner's call; `GET /policy` stays open to every user
+(the app shows its rules). The app never PUTs it: users' own limits go
+through `/me/limits`.
 Full replacement of the policy document. Body is the entire policy object
 (same schema as `policy.json`; unknown keys rejected). On success the file
 is rewritten, a `policy_snapshots` row is recorded (`source: "put"`), and

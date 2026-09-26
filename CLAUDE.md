@@ -92,9 +92,13 @@ pays — use `providerStatusUsable()` from the registry, never
 `status === "linked"`.
 
 ## Paying: three sources and their gates
-`users.payment_source` picks one. Caps (`session_cap_usd`,
-`daily_cap_usd`) bind all three, and "today's spend" counts everything that
-paid, including garages approved in Link.
+`users.payment_source` picks one. Caps bind all three: each user's own
+per-stop and per-day caps (`GET/PUT /me/limits`, the `user_limits` table),
+never above `policy.json`'s `session_cap_usd` / `daily_cap_usd`, which are
+the ceilings. Every cap check reads `policyFor(user)`
+(`services/limits.ts`); `test/limitsScan.test.ts` fails a new read of the
+global caps. "Today's spend" counts everything that paid, including
+garages approved in Link.
 - `provider_card` (default, **live**): the card already saved on the
   user's ParkNYC/ParkBoston account. The executor pays with it. We never
   see the card number.

@@ -1,30 +1,27 @@
 import SwiftUI
 
-/// The caps. PUT /policy is admin-only on the server (the policy is the
-/// shared spending contract), so only the operator gets steppers and Save;
-/// everyone else sees the same values, read-only, and why.
+/// This user's own limits (GET/PUT /me/limits): per stop, per day, and the
+/// default stay — anyone may set theirs, within the ceilings the server
+/// sends. The operator's rules (rate ceiling, auto-extend, dry run) are
+/// shown read-only below.
 struct SpendingLimitsView: View {
     @Environment(AppModel.self) private var model
 
-    /// Not editable until the policy says so.
-    private var editable: Bool { model.policyResponse?.canEdit ?? false }
-
-    @State private var sessionCap: Double = 0
-    @State private var dailyCap: Double = 0
-    @State private var defaultMinutes: Int = 0
-    /// The policy hash the values came from; nil until it loads — made-up
-    /// numbers are never shown, or saved over the real caps.
-    @State private var seededHash: String?
+    /// nil until the limits load — made-up numbers are never shown, or
+    /// saved over the real ones.
+    @State private var draft: LimitsDraft?
     @State private var isSaving = false
-    @State private var saveFailed = false
+    /// The exact reason the last save didn't happen.
+    @State private var saveError: String?
     @State private var savedOK = false
 
     var body: some View {
         Form {
-            if seededHash == nil {
-                pendingSection
+            if let draft {
+                limitsSection(draft)
+                saveSection
             } else {
-                limitsSection
+                pendingSection
             }
 
             Section {
@@ -43,79 +40,52 @@ struct SpendingLimitsView: View {
             } footer: {
                 Text("Every automated decision is checked against these first.")
             }
-
-            if editable && seededHash != nil {
-                saveSection
-            }
         }
         .navigationTitle("Spending limits")
         .navigationBarTitleDisplayMode(.inline)
-        // Re-seed whenever the policy arrives or changes (a late load, or
-        // the saved values coming back).
-        .task(id: model.policyResponse?.hash) { seed() }
+        .task {
+            await model.loadLimits()
+            if model.policyResponse == nil { await model.loadPolicy() }
+        }
+        // Seed when the limits arrive (or come back saved).
+        .task(id: model.limitsResponse) {
+            if let response = model.limitsResponse { draft = LimitsDraft(response) }
+        }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("limits.view")
-    }
-
-    private func seed() {
-        guard let response = model.policyResponse, response.hash != seededHash else { return }
-        seededHash = response.hash
-        sessionCap = response.policy.sessionCapUsd
-        dailyCap = response.policy.dailyCapUsd
-        defaultMinutes = response.policy.defaultStayMinutes
     }
 
     @ViewBuilder
     private var pendingSection: some View {
         Section {
-            if model.policyLoadFailed {
-                Text("Couldn't load your limits.")
+            if model.limitsLoadFailed {
+                Text(LimitsCopy.loadFailed)
                     .foregroundStyle(Color.textSecondary)
                     .accessibilityIdentifier("limits.unavailable")
-                Button("Try again") { Task { await model.loadPolicy() } }
+                Button("Try again") { Task { await model.loadLimits() } }
                     .foregroundStyle(Color.actionCoralLink)
             } else {
                 ProgressView()
                     .frame(maxWidth: .infinity)
             }
         } header: {
-            Text("Limits")
+            Text("Your limits")
         }
     }
 
-    private var limitsSection: some View {
+    private func limitsSection(_ draft: LimitsDraft) -> some View {
         Section {
-            stepperRow(
-                "Per stop",
-                value: Format.money(sessionCap),
-                identifier: "limits.sessionCap",
-                decrement: { sessionCap = max(5, sessionCap - 5) },
-                increment: { sessionCap = min(200, sessionCap + 5) }
-            )
-            stepperRow(
-                "Per day",
-                value: Format.money(dailyCap),
-                identifier: "limits.dailyCap",
-                decrement: { dailyCap = max(5, dailyCap - 5) },
-                increment: { dailyCap = min(400, dailyCap + 5) }
-            )
-            stepperRow(
-                "Default stay",
-                value: Format.minutes(defaultMinutes),
-                identifier: "limits.defaultStay",
-                decrement: { defaultMinutes = max(15, defaultMinutes - 15) },
-                increment: { defaultMinutes = min(240, defaultMinutes + 15) }
-            )
+            stepperRow("Per stop", value: Format.money(draft.sessionCapUsd), identifier: "limits.sessionCap", field: .sessionCap)
+            stepperRow("Per day", value: Format.money(draft.dailyCapUsd), identifier: "limits.dailyCap", field: .dailyCap)
+            stepperRow("Default stay", value: Format.minutes(draft.defaultStayMinutes), identifier: "limits.defaultStay", field: .defaultStay)
         } header: {
-            Text("Limits")
+            Text("Your limits")
         } footer: {
             VStack(alignment: .leading, spacing: Spacing.half) {
-                Text("We'll pay up to \(Format.money(sessionCap)) per stop and \(Format.money(dailyCap)) per day without asking.")
+                Text(LimitsCopy.preview(draft))
                     .accessibilityIdentifier("limits.preview")
-                if !editable {
-                    Text(SharedLimitsCopy.note)
-                        .accessibilityIdentifier("limits.shared")
-                }
+                Text(LimitsCopy.ceilings(draft))
+                    .accessibilityIdentifier("limits.ceilings")
             }
         }
     }
@@ -128,8 +98,8 @@ struct SpendingLimitsView: View {
             .disabled(isSaving)
             .foregroundStyle(Color.actionCoralLink)
             .accessibilityIdentifier("limits.saveButton")
-            if saveFailed {
-                Text("Couldn't save. Check the connection and try again.")
+            if let saveError {
+                Text(saveError)
                     .font(.captionTextSemibold)
                     .foregroundStyle(Color.warningGold)
                     .accessibilityIdentifier("limits.saveFailed")
@@ -144,42 +114,36 @@ struct SpendingLimitsView: View {
     }
 
     private func save() async {
+        guard let draft else { return }
         isSaving = true
-        saveFailed = false
+        saveError = nil
         savedOK = false
-        let ok = await model.saveBudget(
-            sessionCapUsd: sessionCap,
-            dailyCapUsd: dailyCap,
-            defaultStayMinutes: defaultMinutes
-        )
+        saveError = await model.saveLimits(draft.limits)
         isSaving = false
-        saveFailed = !ok
-        savedOK = ok
+        savedOK = saveError == nil
     }
 
     private func stepperRow(
         _ label: String,
         value: String,
         identifier: String,
-        decrement: @escaping () -> Void,
-        increment: @escaping () -> Void
+        field: LimitsDraft.Field
     ) -> some View {
         HStack {
             Text(label)
                 .font(.bodyText)
                 .foregroundStyle(Color.textPrimary)
             Spacer()
-            if editable {
-                Button(action: decrement) {
-                    Image(systemName: "minus.circle")
-                        .foregroundStyle(Color.textSecondary)
-                        // 44pt targets: the glyph alone is well under HIG size.
-                        .frame(width: 44, height: 44)
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("\(identifier).minus")
-                .accessibilityLabel("Decrease \(label)")
+            Button { draft?.step(field, up: false); savedOK = false } label: {
+                Image(systemName: "minus.circle")
+                    .foregroundStyle(Color.textSecondary)
+                    // 44pt targets: the glyph alone is well under HIG size.
+                    .frame(width: 44, height: 44)
             }
+            .buttonStyle(.plain)
+            .disabled(!(draft?.canStep(field, up: false) ?? false))
+            .accessibilityIdentifier("\(identifier).minus")
+            .accessibilityLabel("Decrease \(label)")
             Text(value)
                 .font(.bodyTextSemibold)
                 .monospacedDigit()
@@ -188,24 +152,17 @@ struct SpendingLimitsView: View {
                 .accessibilityIdentifier(identifier)
                 // VoiceOver reads the field with its value ("Per stop, $45").
                 .accessibilityLabel("\(label), \(value)")
-            if editable {
-                Button(action: increment) {
-                    Image(systemName: "plus.circle")
-                        .foregroundStyle(Color.textSecondary)
-                        .frame(width: 44, height: 44)
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("\(identifier).plus")
-                .accessibilityLabel("Increase \(label)")
+            Button { draft?.step(field, up: true); savedOK = false } label: {
+                Image(systemName: "plus.circle")
+                    .foregroundStyle(Color.textSecondary)
+                    .frame(width: 44, height: 44)
             }
+            .buttonStyle(.plain)
+            .disabled(!(draft?.canStep(field, up: true) ?? false))
+            .accessibilityIdentifier("\(identifier).plus")
+            .accessibilityLabel("Increase \(label)")
         }
     }
-}
-
-/// Said wherever a non-operator sees the limits (onboarding's budget step,
-/// this screen), so the two never disagree.
-enum SharedLimitsCopy {
-    static let note = "These limits are the same for everyone while ParkAgent is in beta. They cap what ParkAgent can spend for you."
 }
 
 /// Plain-words help — what the app does, and what it never does.

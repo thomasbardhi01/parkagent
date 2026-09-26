@@ -129,6 +129,46 @@ final class LiveAPIRequestTests: XCTestCase {
         XCTAssertEqual(query(request), ["jobId": "job 1&2"])
     }
 
+    // MARK: - Limits
+
+    /// The server's own shape (routes/limits.ts, pinned in limits.test.ts).
+    private static let limitsBody = #"""
+    {"limits": {"sessionCapUsd": 20, "dailyCapUsd": 40, "defaultStayMinutes": 60}, "saved": {"sessionCapUsd": 20, "dailyCapUsd": 40, "defaultStayMinutes": null}, "defaults": {"sessionCapUsd": 45, "dailyCapUsd": 60, "defaultStayMinutes": 90}, "ceilings": {"sessionCapUsd": 45, "dailyCapUsd": 60}, "bounds": {"minCapUsd": 1, "stayMinutes": {"min": 15, "max": 240}}, "clamped": []}
+    """#
+
+    /// The app's limit screens save the user's own limits — never the
+    /// operator's whole policy document (the old PUT /policy, admin-only).
+    func testLimitsSaveToTheUsersOwnEndpoint() async throws {
+        StubURLProtocol.respond(json: Self.limitsBody)
+        let saved = try await api.updateLimits(SpendingLimits(sessionCapUsd: 20, dailyCapUsd: 40, defaultStayMinutes: 60))
+
+        let request = try sentRequest()
+        XCTAssertEqual(request.httpMethod, "PUT")
+        XCTAssertEqual(request.url?.path(), "/me/limits")
+        XCTAssertEqual(bearer(request), "Bearer access-1")
+        let sent = try body(request)
+        XCTAssertEqual(sent["sessionCapUsd"] as? Double, 20)
+        XCTAssertEqual(sent["dailyCapUsd"] as? Double, 40)
+        XCTAssertEqual(sent["defaultStayMinutes"] as? Int, 60)
+        XCTAssertEqual(saved.limits, SpendingLimits(sessionCapUsd: 20, dailyCapUsd: 40, defaultStayMinutes: 60))
+        XCTAssertNil(saved.saved.defaultStayMinutes)
+        XCTAssertEqual(saved.ceilings.dailyCapUsd, 60)
+    }
+
+    /// A refusal carries the server's sentences; they reach the screen as is.
+    func testALimitsRefusalCarriesTheServersSentences() async throws {
+        StubURLProtocol.respond(sequence: [(400, #"""
+        {"error": "invalid_limits", "issues": [{"field": "sessionCapUsd", "code": "session_above_daily", "message": "Per stop can't be more than per day ($20.00).", "limit": 20}]}
+        """#)])
+        do {
+            _ = try await api.updateLimits(SpendingLimits(sessionCapUsd: 30, dailyCapUsd: 20, defaultStayMinutes: 90))
+            XCTFail("expected a refusal")
+        } catch let rejected as LimitsRejected {
+            XCTAssertEqual(rejected.errorDescription, "Per stop can't be more than per day ($20.00).")
+            XCTAssertEqual(rejected.issues.first?.code, "session_above_daily")
+        }
+    }
+
     /// The cursor is an ISO timestamp; a "+hh:mm" offset must survive, and
     /// the server reads a bare "+" as a space.
     func testActivityCursorKeepsItsPlus() async throws {

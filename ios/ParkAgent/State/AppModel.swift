@@ -31,6 +31,10 @@ final class AppModel {
 
     var policyResponse: PolicyResponse?
     var policyLoadFailed = false
+    /// This user's own caps and default stay (GET /me/limits): what the
+    /// budget step and Account → Spending limits show and save.
+    var limitsResponse: UserLimitsResponse?
+    var limitsLoadFailed = false
 
     /// Drives the Parking Detected sheet. Kept on disk while it's fresh
     /// (ParkedNotice.store), so a notification tap after iOS ended the app
@@ -190,19 +194,14 @@ final class AppModel {
         return await detectCity(lat: coordinate.latitude, lng: coordinate.longitude)
     }
 
-    /// Onboarding's budget step: PUT the caps and default stay back as a
-    /// full policy replacement. False means the save failed (the step lets
-    /// the user retry or continue with the server's values).
-    func saveBudget(sessionCapUsd: Double, dailyCapUsd: Double, defaultStayMinutes: Int) async -> Bool {
-        guard var policy = policyResponse?.policy else { return false }
-        policy.sessionCapUsd = sessionCapUsd
-        policy.dailyCapUsd = dailyCapUsd
-        policy.defaultStayMinutes = defaultStayMinutes
+    /// Save this user's own limits (PUT /me/limits). nil when saved; else
+    /// the sentence to show — the server's own for a refused value.
+    func saveLimits(_ limits: SpendingLimits) async -> String? {
         do {
-            policyResponse = try await api.updatePolicy(policy)
-            return true
+            limitsResponse = try await api.updateLimits(limits)
+            return nil
         } catch {
-            return false
+            return LimitsCopy.saveFailure(error)
         }
     }
 
@@ -331,6 +330,8 @@ final class AppModel {
         // own rather than inheriting these (or this one's load failure).
         policyResponse = nil
         policyLoadFailed = false
+        limitsResponse = nil
+        limitsLoadFailed = false
     }
 
     /// Called once the user is past onboarding. Wires the detector to the
@@ -426,6 +427,16 @@ final class AppModel {
             // a view going away) owns what happens next.
             guard !Task.isCancelled else { return }
             policyLoadFailed = true
+        }
+    }
+
+    func loadLimits() async {
+        limitsLoadFailed = false
+        do {
+            limitsResponse = try await api.limits()
+        } catch {
+            guard !Task.isCancelled else { return }
+            limitsLoadFailed = true
         }
     }
 

@@ -75,8 +75,8 @@ final class OnboardingUITests: ParkAgentUITestCase {
 
         // 6 — Budget: preview sentence tracks the caps; save through the mock.
         XCTAssertTrue(element(app, "onboarding.budget").waitForExistence(timeout: 5))
-        // The values appear once the policy has loaded; nothing made-up
-        // is ever shown before that, so the exact cap is the policy's.
+        // The values appear once the user's limits load; nothing made-up
+        // is ever shown before that, so the exact cap is the server's.
         let preview = element(app, "onboarding.budgetPreview")
         XCTAssertTrue(preview.waitForExistence(timeout: 5))
         XCTAssertTrue(preview.label.contains("$45.00"), "Preview should show the session cap")
@@ -217,29 +217,44 @@ final class OnboardingUITests: ParkAgentUITestCase {
         XCTAssertFalse(element(app, "onboarding.permissions").exists, "Should not restart")
     }
 
-    /// Someone who isn't the operator (every invited friend) can't change
-    /// the shared limits: the budget step shows them with no steppers and
-    /// a plain Continue that saves nothing — instead of "Save and continue"
-    /// failing on a 403 in the middle of setup.
-    func testBudgetStepIsReadOnlyForSharedLimits() {
+    /// The budget step saves this user's own limits (PUT /me/limits) —
+    /// for everyone, not only the operator: "Couldn't save to the server"
+    /// on any change was the shared policy's admin-only PUT.
+    func testBudgetStepSavesTheUsersOwnLimits() {
         let app = launchApp(onboardingStep: 8, selectedCity: "nyc", skipOnboarding: false, policyReadOnly: true)
 
         XCTAssertTrue(element(app, "onboarding.budget").waitForExistence(timeout: 5))
         let sessionCap = element(app, "onboarding.budget.sessionCap")
-        XCTAssertTrue(sessionCap.waitForExistence(timeout: 5), "Limits should still be shown")
-        // The policy's own cap: the screen shows no value until it loads.
+        XCTAssertTrue(sessionCap.waitForExistence(timeout: 5))
         XCTAssertEqual(sessionCap.label, "Per stop, $45.00")
-        XCTAssertFalse(element(app, "onboarding.budget.sessionCap.plus").exists, "No steppers on shared limits")
-        XCTAssertTrue(element(app, "onboarding.budgetShared").exists, "Why they're read-only is missing")
+        element(app, "onboarding.budget.sessionCap.minus").tap()
+        XCTAssertEqual(sessionCap.label, "Per stop, $40.00")
 
         let next = element(app, "onboarding.continueButton")
-        XCTAssertEqual(next.label, "Continue")
+        XCTAssertEqual(next.label, "Save and continue")
         next.tap()
         XCTAssertTrue(
             element(app, "onboarding.budget").waitForNonExistence(timeout: 5),
-            "Continue should move past the budget step"
+            "Saving should move past the budget step"
         )
-        XCTAssertFalse(element(app, "onboarding.budgetSkipSave").exists, "Nothing was saved, so nothing failed")
+        XCTAssertFalse(element(app, "onboarding.budgetSaveError").exists)
+    }
+
+    /// A refused save stays on the step with the server's exact reason,
+    /// and still lets the user go on.
+    func testBudgetStepShowsWhyASaveWasRefused() {
+        let app = launchApp(onboardingStep: 8, selectedCity: "nyc", skipOnboarding: false)
+
+        XCTAssertTrue(element(app, "onboarding.budget.dailyCap").waitForExistence(timeout: 5))
+        for _ in 0..<4 { element(app, "onboarding.budget.dailyCap.minus").tap() }
+        element(app, "onboarding.continueButton").tap()
+
+        let reason = element(app, "onboarding.budgetSaveError")
+        XCTAssertTrue(reason.waitForExistence(timeout: 5), "No reason shown")
+        XCTAssertEqual(reason.label, "Per stop can't be more than per day ($40.00).")
+        XCTAssertTrue(element(app, "onboarding.budget").exists, "Should stay on the step")
+        element(app, "onboarding.budgetSkipSave").tap()
+        XCTAssertTrue(element(app, "onboarding.budget").waitForNonExistence(timeout: 5))
     }
 
     /// A returning user — already onboarded — skips straight to Home.

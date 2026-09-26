@@ -45,9 +45,12 @@ protocol APIClient: Sendable {
     func extendSession(sessionId: String, minutes: Int) async throws -> SessionExtendResponse
     func reportLocation(_ report: LocationReport) async throws
     func registerDevice(_ registration: DeviceRegistration) async throws
-    /// PUT /policy — full replacement; the onboarding budget step saves
-    /// the caps and default stay through this.
-    func updatePolicy(_ policy: Policy) async throws -> PolicyResponse
+    /// GET /me/limits — this user's own caps and default stay, with the
+    /// operator's ceilings.
+    func limits() async throws -> UserLimitsResponse
+    /// PUT /me/limits — throws `LimitsRejected` with the server's exact
+    /// sentences when a value is out of bounds.
+    func updateLimits(_ limits: SpendingLimits) async throws -> UserLimitsResponse
 
     // Wallet (server/API.md "Wallet"): how the user pays and what they spent.
     func wallet() async throws -> WalletResponse

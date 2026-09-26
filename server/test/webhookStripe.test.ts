@@ -162,6 +162,22 @@ describe("POST /webhooks/stripe: issuing_authorization.request", () => {
     expect(t.state.decisions[0]!.inputs).toMatchObject({ spentTodayUsd: 55 });
   });
 
+  it("declines over the card owner's own daily cap, below the policy's", async () => {
+    const t = makeWebhookApp({ ...LIVE, hasPendingSession: true });
+    // Nothing spent today; $7.28 is well inside the policy's $60 — but the
+    // owner set $5 for themselves.
+    t.state.userLimits.push({
+      userId: USER_ID,
+      sessionCapUsd: null,
+      dailyCapUsd: 5,
+      defaultStayMinutes: null,
+      createdAt: new Date(MONDAY_2PM),
+      updatedAt: new Date(MONDAY_2PM),
+    });
+    const res = await post(t.app, authRequestEvent());
+    expect(reasonOf(res)).toEqual({ approved: false, reason: "declined_over_daily_cap" });
+  });
+
   it("declines a non-parking MCC", async () => {
     const t = makeWebhookApp({ ...LIVE, hasPendingSession: true });
     const res = await post(

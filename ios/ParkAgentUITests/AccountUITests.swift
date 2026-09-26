@@ -161,7 +161,7 @@ final class AccountUITests: ParkAgentUITestCase {
         XCTAssertTrue(connect.waitForExistence(timeout: 5), "Row should offer Connect after disconnecting")
     }
 
-    /// Spending limits are editable and report the save.
+    /// Your own limits save through /me/limits and come back saved.
     func testEditSpendingLimits() {
         let app = launchApp()
         openAccountSheet(app)
@@ -171,32 +171,58 @@ final class AccountUITests: ParkAgentUITestCase {
 
         let sessionCap = element(app, "limits.sessionCap")
         XCTAssertTrue(sessionCap.waitForExistence(timeout: 5))
-        let before = sessionCap.label
-        element(app, "limits.sessionCap.plus").tap()
-        XCTAssertNotEqual(sessionCap.label, before, "Stepper didn't move the cap")
+        XCTAssertEqual(sessionCap.label, "Per stop, $45.00")
+        // At the ceiling: ParkAgent pays no more, so there's no stepping up.
+        XCTAssertFalse(element(app, "limits.sessionCap.plus").isEnabled, "Stepped past the ceiling")
+        element(app, "limits.sessionCap.minus").tap()
+        XCTAssertEqual(sessionCap.label, "Per stop, $40.00")
 
         element(app, "limits.saveButton").tap()
         XCTAssertTrue(
             element(app, "limits.savedOK").waitForExistence(timeout: 5),
             "No confirmation after saving limits"
         )
+
+        // Back and in again: the saved value, from the server.
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        scrollTo(app, "account.limitsLink").tap()
+        XCTAssertTrue(element(app, "limits.sessionCap").waitForExistence(timeout: 5))
+        waitForLabel(of: element(app, "limits.sessionCap"), toBe: "Per stop, $40.00")
     }
 
-    /// Everyone but the operator sees the shared limits read-only: the
-    /// values, why, and no steppers or Save that would only fail.
-    func testSpendingLimitsReadOnlyForSharedLimits() {
+    /// Anyone sets their own limits — not only the operator (the old screen
+    /// was read-only for everyone else, and its save PUT the shared policy).
+    func testNonOperatorSetsTheirOwnLimits() {
         let app = launchApp(policyReadOnly: true)
         openAccountSheet(app)
 
         scrollTo(app, "account.limitsLink").tap()
         XCTAssertTrue(element(app, "limits.view").waitForExistence(timeout: 5), "Limits screen missing")
-        let sessionCap = element(app, "limits.sessionCap")
-        XCTAssertTrue(sessionCap.waitForExistence(timeout: 5))
-        // The policy's own cap: the screen shows no value until it loads.
-        XCTAssertEqual(sessionCap.label, "Per stop, $45.00")
-        XCTAssertTrue(scrollTo(app, "limits.shared", swipes: 2).exists, "Why they're read-only is missing")
-        XCTAssertFalse(element(app, "limits.sessionCap.plus").exists, "No steppers on shared limits")
-        XCTAssertFalse(element(app, "limits.saveButton").exists, "No Save on shared limits")
+        let dailyCap = element(app, "limits.dailyCap")
+        XCTAssertTrue(dailyCap.waitForExistence(timeout: 5))
+        element(app, "limits.dailyCap.minus").tap()
+        XCTAssertEqual(dailyCap.label, "Per day, $55.00")
+        scrollTo(app, "limits.saveButton").tap()
+        XCTAssertTrue(element(app, "limits.savedOK").waitForExistence(timeout: 5), "A non-operator couldn't save")
+    }
+
+    /// A refused save says exactly why, in the server's words.
+    func testARefusedSaveSaysExactlyWhy() {
+        let app = launchApp()
+        openAccountSheet(app)
+
+        scrollTo(app, "account.limitsLink").tap()
+        XCTAssertTrue(element(app, "limits.dailyCap").waitForExistence(timeout: 5))
+        // Per day $40, per stop still $45: a stop can't cost more than a day.
+        for _ in 0..<4 { element(app, "limits.dailyCap.minus").tap() }
+        waitForLabel(of: element(app, "limits.dailyCap"), toBe: "Per day, $40.00")
+        scrollTo(app, "limits.saveButton").tap()
+
+        let reason = element(app, "limits.saveFailed")
+        XCTAssertTrue(reason.waitForExistence(timeout: 5), "No reason shown")
+        XCTAssertEqual(reason.label, "Per stop can't be more than per day ($40.00).")
+        XCTAssertFalse(element(app, "limits.savedOK").exists)
+        attachScreenshot(of: app, named: "pr-limits-refused")
     }
 
     /// Switching Appearance to Dark flips the applied color scheme, read

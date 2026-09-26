@@ -18,6 +18,7 @@ import { registerCard } from "./routes/card.js";
 import { registerCity } from "./routes/city.js";
 import { registerDevice } from "./routes/device.js";
 import { registerLocation } from "./routes/location.js";
+import { registerLimits } from "./routes/limits.js";
 import { registerMe } from "./routes/me.js";
 import { registerParked } from "./routes/parked.js";
 import { registerPolicy } from "./routes/policy.js";
@@ -273,6 +274,7 @@ export function buildApp(deps?: AppDeps, app: FastifyInstance = createFastify())
     registerSession(app, deps);
     registerLocation(app, deps);
     registerMe(app, deps);
+    registerLimits(app, deps);
     registerDevice(app, deps);
     registerCard(app, deps);
     registerProviders(app, deps);

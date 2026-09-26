@@ -31,6 +31,7 @@ import {
   hasLiveHold,
   releaseHoldClaim,
 } from "../services/wallet/holds.js";
+import { policyFor } from "../services/limits.js";
 
 function cardId(auth: Stripe.Issuing.Authorization): string {
   return typeof auth.card === "string" ? auth.card : auth.card.id;
@@ -99,7 +100,6 @@ async function handleAuthorizationRequest(
 ) {
   const auth = event.data.object;
   const at = deps.now?.() ?? new Date();
-  const policy = deps.policy.get();
   const stripeCardId = cardId(auth);
   // On .request the hold being asked for is pending_request.amount;
   // auth.amount is still 0.
@@ -112,6 +112,9 @@ async function handleAuthorizationRequest(
     include: { cardholder: true },
   });
   const userId = card?.cardholder.userId ?? null;
+  // The card owner's own caps (policy.json's are the ceilings); an unknown
+  // card is declined before any cap matters.
+  const policy = userId ? await policyFor(deps, userId) : deps.policy.get();
 
   const spentTodayUsd = userId
     ? (

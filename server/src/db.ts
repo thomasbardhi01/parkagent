@@ -475,6 +475,24 @@ export interface EmailLoginCodeRow {
   createdAt: Date;
 }
 
+/** A user's own limits; null = the operator's default (policy.json). The
+ * caps are Postgres DECIMAL (a Prisma Decimal at runtime): read with
+ * Number(). */
+export interface UserLimitsRow {
+  userId: string;
+  sessionCapUsd: unknown;
+  dailyCapUsd: unknown;
+  defaultStayMinutes: number | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface UserLimitsData {
+  sessionCapUsd: number | null;
+  dailyCapUsd: number | null;
+  defaultStayMinutes: number | null;
+}
+
 export interface VehicleRow {
   id: string;
   userId: string;
@@ -664,6 +682,15 @@ export interface AppDb {
         lastSeenAt: Date;
       };
     }): Promise<ZoneTermsObservedRow>;
+  };
+  userLimits: {
+    findUnique(args: { where: { userId: string } }): Promise<UserLimitsRow | null>;
+    upsert(args: {
+      where: { userId: string };
+      create: UserLimitsData & { userId: string };
+      update: UserLimitsData;
+    }): Promise<UserLimitsRow>;
+    deleteMany(args: { where: { userId: string } }): Promise<{ count: number }>;
   };
   vehicle: {
     /** The session's vehicle: the caller's first saved plate. */

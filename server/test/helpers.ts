@@ -29,6 +29,7 @@ import type {
   SessionRow,
   SessionWhere,
   UserIdentityRow,
+  UserLimitsRow,
   VehicleRow,
   ZoneNumberImportRow,
   ZoneNumberReportRow,
@@ -294,6 +295,7 @@ export interface FakeDbState {
   zoneNumberImports: ZoneNumberImportRow[];
   zoneTermsObserved: ZoneTermsObservedRow[];
   vehicles: VehicleRow[];
+  userLimits: UserLimitsRow[];
   processedTopups: { paymentIntentId: string; amountUsd: number; userId: string | null }[];
   conversations: ConversationRow[];
   assistantPlans: AssistantPlanRow[];
@@ -467,6 +469,7 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
     zoneNumberImports: [],
     zoneTermsObserved: [],
     vehicles: [],
+    userLimits: [],
     processedTopups: [],
     linkJobs: [],
     conversations: [],
@@ -829,6 +832,28 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
         } as ZoneTermsObservedRow;
         state.zoneTermsObserved.push(row);
         return row;
+      },
+    },
+    userLimits: {
+      findUnique: async ({ where }) => {
+        const row = state.userLimits.find((r) => r.userId === where.userId);
+        return row ? { ...row } : null;
+      },
+      upsert: async ({ where, create, update }) => {
+        const at = new Date(MONDAY_2PM);
+        const index = state.userLimits.findIndex((r) => r.userId === where.userId);
+        if (index < 0) {
+          const row: UserLimitsRow = { ...create, createdAt: at, updatedAt: at };
+          state.userLimits.push(row);
+          return { ...row };
+        }
+        state.userLimits[index] = { ...state.userLimits[index]!, ...update, updatedAt: at };
+        return { ...state.userLimits[index]! };
+      },
+      deleteMany: async ({ where }) => {
+        const before = state.userLimits.length;
+        state.userLimits = state.userLimits.filter((r) => r.userId !== where.userId);
+        return { count: before - state.userLimits.length };
       },
     },
     vehicle: {

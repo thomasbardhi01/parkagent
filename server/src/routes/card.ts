@@ -24,6 +24,7 @@ import { requireAdmin } from "../app.js";
 import { nycStartOfDay, nycStartOfMonth } from "../services/hours.js";
 import { FundingUnavailableError } from "../services/stripeGateway.js";
 import { ensureParkAgentCard } from "../services/wallet/parkagentCard.js";
+import { policyFor } from "../services/limits.js";
 
 const transactionsSchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
@@ -179,7 +180,7 @@ export function registerCard(app: FastifyInstance, deps: AppDeps): void {
     }
     const amountUsd = Math.round(parsed.data.amountUsd * 100) / 100;
     const user = req.authedUser!;
-    const policy = deps.policy.get();
+    const policy = await policyFor(deps, user.id);
     const dryRun = deps.policy.effectiveDryRun();
 
     const found = await requireCard(user.id, reply);
@@ -301,7 +302,7 @@ export function registerCard(app: FastifyInstance, deps: AppDeps): void {
       }
       const amountUsd = Math.round(parsed.data.amountUsd * 100) / 100;
       const user = req.authedUser!;
-      const policy = deps.policy.get();
+      const policy = await policyFor(deps, user.id);
       const dryRun = deps.policy.effectiveDryRun();
       const kind = direction === "topup" ? "card_topup" : "card_withdraw";
 

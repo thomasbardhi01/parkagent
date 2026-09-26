@@ -270,8 +270,21 @@ struct LiveAPI: APIClient {
         let _: Ignored = try await send("device", method: "POST", body: registration)
     }
 
-    func updatePolicy(_ policy: Policy) async throws -> PolicyResponse {
-        try await send("policy", method: "PUT", body: policy)
+    func limits() async throws -> UserLimitsResponse {
+        try await send("me/limits")
+    }
+
+    func updateLimits(_ limits: SpendingLimits) async throws -> UserLimitsResponse {
+        do {
+            return try await send("me/limits", method: "PUT", body: limits)
+        } catch APIError.invalidRequest(let body) {
+            // 400 invalid_limits carries the sentences to show.
+            struct Rejection: Decodable { var issues: [LimitsIssue] }
+            if let rejection = try? JSONDecoder().decode(Rejection.self, from: Data(body.utf8)) {
+                throw LimitsRejected(issues: rejection.issues)
+            }
+            throw APIError.invalidRequest(body)
+        }
     }
 
     // MARK: - Payment source

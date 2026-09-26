@@ -215,12 +215,71 @@ struct PolicyResponse: Codable, Sendable {
     var policy: Policy
     var hash: String
     var dryRun: Bool
-    /// May this user PUT the policy? It is shared by every account and only
-    /// the operator edits it, so everyone else sees the limits read-only.
-    /// nil (an older server) reads as editable, as before.
+    /// May this user PUT the policy (the operator's document)? The app never
+    /// does any more — each user's limits save through /me/limits.
     var editable: Bool?
+}
 
-    var canEdit: Bool { editable ?? true }
+// Per-user limits (server/API.md "GET/PUT /me/limits").
+
+/// Per stop, per day, and the default stay: what every check uses.
+struct SpendingLimits: Codable, Sendable, Hashable {
+    var sessionCapUsd: Double
+    var dailyCapUsd: Double
+    var defaultStayMinutes: Int
+}
+
+struct UserLimitsResponse: Codable, Sendable, Equatable {
+    /// In effect now: the user's own, capped by the ceilings.
+    var limits: SpendingLimits
+    /// What the user saved; nil = the operator's default.
+    var saved: SavedLimits
+    /// The operator's defaults.
+    var defaults: SpendingLimits
+    /// The most a cap may be.
+    var ceilings: LimitCeilings
+    var bounds: LimitBounds
+    /// Fields whose saved value a lowered ceiling now caps.
+    var clamped: [String]
+
+    struct SavedLimits: Codable, Sendable, Equatable {
+        var sessionCapUsd: Double?
+        var dailyCapUsd: Double?
+        var defaultStayMinutes: Int?
+    }
+
+    struct LimitCeilings: Codable, Sendable, Equatable {
+        var sessionCapUsd: Double
+        var dailyCapUsd: Double
+    }
+
+    struct LimitBounds: Codable, Sendable, Equatable {
+        var minCapUsd: Double
+        var stayMinutes: StayBounds
+
+        struct StayBounds: Codable, Sendable, Equatable {
+            var min: Int
+            var max: Int
+        }
+    }
+}
+
+/// One reason the server refused a PUT /me/limits; `message` is the
+/// sentence to show as is.
+struct LimitsIssue: Codable, Sendable, Equatable {
+    var field: String
+    var code: String
+    var message: String
+    var limit: Double?
+}
+
+/// 400 invalid_limits: the server's own sentences, shown as they are.
+struct LimitsRejected: Error, LocalizedError, Equatable {
+    var issues: [LimitsIssue]
+
+    var errorDescription: String? {
+        issues.isEmpty ? "Those limits weren't saved." : issues.map(\.message).joined(separator: " ")
+    }
 }
 
 // Sessions (server/API.md "Sessions").

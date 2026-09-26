@@ -43,6 +43,7 @@ import type {
 import type { GarageOption } from "../garage/garageProvider.js";
 import type { StreetOption, StreetSearch } from "./streetOptions.js";
 import { DEFAULT_STREET_RADIUS_M, streetOptionsNear, walkMinutesFor } from "./streetOptions.js";
+import { policyFor } from "../limits.js";
 
 export interface AssistantDeps {
   db: AppDb;
@@ -1033,7 +1034,7 @@ export class AssistantTools {
     input: Record<string, unknown>,
   ): Promise<ToolOutcome> {
     const stops = input["stops"] as Record<string, unknown>[];
-    const policy = this.deps.policy.get();
+    const policy = await policyFor(this.deps, ctx.userId);
     const at = this.now();
     const out = [];
     for (const stop of stops) {
@@ -1110,7 +1111,7 @@ export class AssistantTools {
       };
     }
     let plan = parsed.data;
-    const policy = this.deps.policy.get();
+    const policy = await policyFor(this.deps, ctx.userId);
     if (plan.kind === "itinerary") {
       // Never trust model arithmetic: recompute the total, pin the cap,
       // and refuse a plan that busts the day's remaining budget.

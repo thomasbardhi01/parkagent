@@ -81,7 +81,9 @@ script-made user across with
 stays. It also revokes the person's Sign in with Apple token at Apple
 (App Store 5.1.1(v)): the sign-in's authorization code is exchanged for a
 refresh token stored sealed, which needs the `APPLE_SIGNIN_KEY` /
-`_KEY_ID` / `_TEAM_ID` group; a failed revoke is retried hourly. See server/API.md "Identity & sessions" for the full contract.
+`_KEY_ID` / `_TEAM_ID` group; a failed revoke is retried with backoff
+(1 h doubling, at most daily) and dead-lettered after 8 attempts, shown
+in `/admin/summary`. See server/API.md "Identity & sessions" for the full contract.
 
 A daily job (`jobs/providerHealthTick.ts`) verifies each linked provider
 session headlessly and pushes "Reconnect …" when one is expiring or

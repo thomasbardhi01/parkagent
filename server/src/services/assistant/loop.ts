@@ -15,6 +15,7 @@ import { nycStartOfDay } from "../hours.js";
 import { homeMetroForPoint } from "./geocoder.js";
 import type { AssistantPlanBody } from "./plans.js";
 import { TOOL_DEFINITIONS } from "./tools.js";
+import type { StreetOption } from "./streetOptions.js";
 import type { AssistantTools, StreetQuote, Suggestion, ToolContext } from "./tools.js";
 
 /** Overridden by ASSISTANT_MODEL (legacy fallback: ANTHROPIC_MODEL). */
@@ -36,6 +37,7 @@ Rules you cannot break (the tools enforce them too):
 - How the tap works, so you phrase cards correctly: a garage option and a street option for RIGHT NOW get a Confirm button. A street option for a FUTURE time gets no button at all — set startsAt on the option and the card says "We'll pay automatically when you park here" (the detector pays at the curb) — that line is the card's own, so keep it out of the option's detail, which describes the spot. Don't promise to start future meters now; meters run from the moment they're paid.
 - book_garage and start_session work only with a confirmation_token from a card tap. You normally never have one; if a call is refused, propose a plan instead.
 - Quote street prices with quote_street and garages with search_garages — never invent a price, address, or availability.
+- quote_street searches every metered block within a walk of the point and says what each is doing during the stay ("Free after 6 PM on Seaport Blvd — 4 min walk", "Metered until 8 PM, then free", "$3.75/hr, 2 hr max"). Offer the best street option (or two) using its summary. Say there's no street parking ONLY when quote_street returns found:false, and then say the radius it searched.
 - When the user names a PLACE rather than "here" — a restaurant, bar, venue, business, hotel, landmark, street, or neighborhood — call geocode_place FIRST with their words (keep the area they named: "Lola 42 Seaport"), then quote_street / search_garages at the place's coordinates — never silently use the phone's location for a named place. For garages at a named place, pass within_m: 600 so every option is walkable from it. When you geocoded a place, put it on the plan as destination {lat, lng, label} so the card can show it on a map. If geocode_place returns choices, ask which one with ask_user. If its match is "closest", the name wasn't found: say so and say what you're searching instead. If it finds nothing, say you couldn't find it and ask for the address — never substitute the current location or a neighborhood center.
 - To ask the user anything, call ask_user (one short question, 2–4 tappable suggestions) — never ask in prose. Ask only when you truly can't proceed.
 - If search_garages returns garage_search_unavailable, the search FAILED — say "I couldn't check garages right now", never "no garages available", and still propose the street option. Only an empty options list means none were found. If every garage was dropped for distance, the result's nearestBeyondM says how far the closest one is — tell the user that distance ("the nearest garage is about 900 m away") rather than "none found".
@@ -196,6 +198,8 @@ interface QuoteContext {
   street: {
     zoneId: string;
     zoneNumber: string | null;
+    street: string | null;
+    summary: string | null;
     costUsd: number;
     minutes: number;
     startsAt: string;
@@ -466,7 +470,27 @@ export function groundingIn(
       } catch {
         continue; // Not JSON — nothing grounded.
       }
-      if (call.name === "quote_street" && r["found"] === true && typeof r["zoneId"] === "string") {
+      if (call.name === "quote_street" && r["found"] === true && Array.isArray(r["options"])) {
+        const window = r["window"] as { startsAt?: string } | undefined;
+        const stay = call.input["duration_minutes"];
+        for (const option of r["options"] as StreetOption[]) {
+          if (typeof option.zoneId !== "string") continue;
+          streetQuotes.push({
+            zoneId: option.zoneId,
+            costUsd: Number(option.costUsd ?? 0),
+            lat: option.lat,
+            lng: option.lng,
+            option,
+            ...(typeof window?.startsAt === "string" ? { startsAt: window.startsAt } : {}),
+            ...(typeof stay === "number" ? { stayMinutes: stay } : {}),
+          });
+        }
+      } else if (
+        call.name === "quote_street" &&
+        r["found"] === true &&
+        typeof r["zoneId"] === "string"
+      ) {
+        // A quote stored before street search: one zone at the quoted point.
         const { lat, lng } = call.input;
         streetQuotes.push({
           zoneId: r["zoneId"],
@@ -505,15 +529,18 @@ export function streetQuotesIn(turns: ModelTurn[]): StreetQuote[] {
 function captureQuotes(quotes: QuoteContext, tool: string, input: unknown, result: unknown): void {
   const r = result as Record<string, unknown>;
   const args = input as Record<string, unknown>;
-  if (tool === "quote_street" && r["found"] === true) {
+  const best = Array.isArray(r["options"]) ? (r["options"] as StreetOption[])[0] : undefined;
+  if (tool === "quote_street" && r["found"] === true && best) {
     quotes.street = {
-      zoneId: String(r["zoneId"]),
-      zoneNumber: typeof r["zoneNumber"] === "string" ? r["zoneNumber"] : null,
-      costUsd: Number(r["costUsd"] ?? 0),
-      minutes: Number(r["clampedMinutes"] ?? args["duration_minutes"] ?? 60),
+      zoneId: best.zoneId,
+      zoneNumber: best.zoneNumber,
+      street: best.street,
+      summary: best.summary,
+      costUsd: best.costUsd,
+      minutes: best.clampedMinutes,
       startsAt: String(args["when"] ?? ""),
     };
-    quotes.minutes = quotes.street.minutes;
+    quotes.minutes = Number(args["duration_minutes"] ?? best.clampedMinutes);
   }
   if (tool === "search_garages" && Array.isArray(r["options"])) {
     quotes.garages = (r["options"] as Record<string, unknown>[]).slice(0, 2).map((o) => ({
@@ -539,10 +566,12 @@ function synthesizePlan(quotes: QuoteContext): Record<string, unknown> | null {
       type: "street",
       // The zone id is an internal slug ("bos-…") and never shown; a
       // block with no known number says so on the meter instead.
-      label: quotes.street.zoneNumber
-        ? `Street — Zone ${quotes.street.zoneNumber}`
-        : "Street — zone number on the meter",
-      detail: "Metered street parking",
+      label: quotes.street.street
+        ? `Street — ${quotes.street.street}`
+        : quotes.street.zoneNumber
+          ? `Street — Zone ${quotes.street.zoneNumber}`
+          : "Street — zone number on the meter",
+      detail: quotes.street.summary ?? "Metered street parking",
       priceUsd: quotes.street.costUsd,
       durationMinutes: quotes.street.minutes,
       zoneId: quotes.street.zoneId,

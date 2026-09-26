@@ -60,6 +60,7 @@ the evidence that proves it. Three kinds of evidence back an FR:
 | FR-33 | Wallet | automated + device-manual | `server/fr/70-wallet.fr.test.ts`, `server/test/walletHolds.test.ts`, `server/test/wallet.test.ts`, `server/test/linkWallet.test.ts`, `server/test/paymentSource.test.ts`, `server/test/adversarial.test.ts`, `server/test/webhookStripe.test.ts`; iOS `LiveAPIRequestTests`, `CardBrandTests`, `WalletUITests`, `SessionUITests`, `OnboardingUITests`, `AccountUITests`, `AssistantUITests`; real Apple Pay / PaymentSheet, a real hold, and Link need a phone, the Stripe sandbox, and the Link OAuth client |
 | FR-34 | Release builds carry no debug code | automated | iOS `ParkAgentReleaseTests` (scheme `ParkAgentRelease`, runs inside the Release build), `ReleaseDenylistTests`, `ios/Tools/check-release-binary.sh`; UI `AccountUITests` (Diagnostics contents), `WalletUITests` (sandbox toggle) |
 | FR-35 | Places people name | automated | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantPlaces.test.ts`; iOS `AssistantUITests` (place choices) |
+| FR-36 | Street options with their state | automated | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantStreet.test.ts`; iOS `AssistantUITests` (street detail) |
 
 ---
 
@@ -760,6 +761,22 @@ Evidence: `assistantPlaces.test.ts` (adapter, fallback chain, matcher,
 Braintree bias, ask_user, loop suggestions); live FR-35 tests (the phrases
 on a real model turn); `pnpm -C server verify:places` (the real search,
 no model); iOS `AssistantUITests.testAmbiguousPlaceOffersTappableChoices`.
+
+### FR-36 — Street parking that tells the truth
+
+Street options come from every metered zone within a walking radius of
+the destination (default 400 m), not one point. Each is described for
+the requested window: "Free after 6 PM on Seaport Blvd — 4 min walk",
+"Metered until 8 PM, then free", or "$3.75/hr, 2 hr max". It is priced
+for that stay and pinned at the nearest curb. **Accepted when** the
+Seaport at 7 PM yields street options in the right free/metered state for
+the time, and "no street parking" is said only for an empty radius, with
+the radius.
+
+Evidence: `assistantStreet.test.ts` (state words, the real zones around
+LoLa 42, quote_street, the plan's server-attached facts); live FR-36
+tests; `pnpm -C server verify:places` (real zones, no model); iOS
+`AssistantUITests.testStreetOptionSaysWhatTheBlockIsDoing`.
 
 ---
 

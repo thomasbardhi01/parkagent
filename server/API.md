@@ -1571,11 +1571,51 @@ When everything is dropped the result carries `nearestBeyondM` so the
 reply says how far the closest one actually is instead of "none found",
 and `searchedAt` + the provider id ride along as the card's provenance.
 A multi-provider search where some providers failed reports them in
-`degraded` — partial coverage, said out loud. `quote_street(lat, lng, duration, when)` — now
-applies provider-observed terms (`zone_terms_observed`) the same way
-`/parked` and session start do, so a named-area quote matches what the
-curb actually charges (result carries `termsSource: "observed"` when a
-driver-reported term overrode the dataset). `build_itinerary(stops[])`,
+`degraded` — partial coverage, said out loud. `quote_street(lat, lng,
+duration, when, radius_m?)` searches **every metered zone within a
+walking radius** of the point (default 400 m, about a 7-minute walk; up
+to 800 m), not the old "nearest zone within 25 m". A destination isn't a
+curb: on the device test the Seaport's centroid had no zone within 25 m
+but six within 400 m, and the assistant said there was no street parking
+(`services/assistant/streetOptions.ts`). Each zone is priced for the stay
+and described for THAT window (`state` is one of `free`, `metered`,
+`metered_then_free`, `free_then_metered`, or `mixed`, in ET wall clock):
+
+```json
+{ "found": true, "radiusM": 400,
+  "window": { "startsAt": "2026-09-26T19:00:00-04:00", "endsAt": "2026-09-26T22:00:00-04:00" },
+  "options": [ { "zoneId": "bos-seaport-blvd-de413d-01", "street": "Seaport Blvd", "zoneNumber": null,
+                 "lat": 42.3531, "lng": -71.0463, "distanceM": 271, "walkMinutes": 4,
+                 "state": "free", "stateText": "Free after 6 PM",
+                 "summary": "Free after 6 PM on Seaport Blvd — 4 min walk",
+                 "costUsd": 0, "meterUsd": 0, "feeUsd": 0, "ratePerHourUsd": 3.75, "rateAdditionalHourUsd": 3.75,
+                 "maxStayMinutes": 240, "clampedMinutes": 180, "enforcedMinutes": 0, "exceedsMaxStay": false,
+                 "hoursToday": [ { "start": "08:00", "end": "18:00" } ] }, … ] }
+```
+
+Zones of one street in the same state and price collapse to the nearest,
+so the two sides of a block are one choice. The cheapest option comes
+first, then the nearest; at most five are returned. Each option's pin is
+the curb point nearest the destination. The walk is straight-line
+distance × 1.3 at 80 m/min. A stay is priced whole when the meter allows
+it. When the meter runs past the max stay, the stay is priced to the max,
+and `exceedsMaxStay` plus "(2 hr max)" in the words say so. Provider-
+observed terms (`zone_terms_observed`) apply exactly as they do for
+`/parked` and session start (`termsSource: "observed"`). `found: false`
+comes back only when the radius holds no zone, and it names the radius:
+"No metered street parking in our data within 400 m (about a 7-minute
+walk) of that point." The model must repeat that radius. The same search
+prices itinerary stops (the first option) and their re-pricing.
+
+`propose_plan` attaches the search's facts to each street option from the
+latest quote of its zone, as server truth (model values are ignored).
+Always attached: the pin, `walkMinutes`, `street`, `zoneNumber`,
+`ratePerHourUsd`, `hoursToday`, and `maxStayMinutes`. Attached only when
+that quote was for this option's stay (same duration and start): the
+price, `streetState`, `streetSummary`, `priceBreakdown {meterUsd,
+feeUsd}`, and `exceedsMaxStay`. A "make it 90 minutes" proposed without
+re-quoting keeps the user's stay and doesn't borrow an older window's
+words. `build_itinerary(stops[])`,
 `propose_plan(plan)` (ends the turn with the structured plan),
 `book_garage(option_id, confirmation_token)` and
 `start_session(zone, duration, confirmation_token)` (REFUSED without a

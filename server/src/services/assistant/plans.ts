@@ -39,6 +39,24 @@ export const singleSpotOptionSchema = z.object({
    * card, the handoff note, and the Link merchant name the right site. */
   provider: z.string().optional(),
   deepLink: z.string().url().optional(),
+  /** SERVER-ATTACHED on street options from the street search (model
+   * input ignored): the block's street and pay-by-app number, what it's
+   * doing during the stay ("Free after 6 PM on Seaport Blvd — 4 min
+   * walk"), the price's meter/fee split, the rate, the posted hours that
+   * day, and the max stay — the card's detail. */
+  street: z.string().optional(),
+  zoneNumber: z.string().nullable().optional(),
+  streetState: z
+    .enum(["free", "metered", "metered_then_free", "free_then_metered", "mixed"])
+    .optional(),
+  streetSummary: z.string().max(200).optional(),
+  priceBreakdown: z
+    .object({ meterUsd: z.number().nonnegative(), feeUsd: z.number().nonnegative() })
+    .optional(),
+  ratePerHourUsd: z.number().nonnegative().optional(),
+  hoursToday: z.array(z.object({ start: z.string(), end: z.string() })).optional(),
+  maxStayMinutes: z.number().int().positive().nullable().optional(),
+  exceedsMaxStay: z.boolean().optional(),
   recommended: z.boolean().default(false),
 });
 
@@ -112,7 +130,22 @@ export const planSchema = z.discriminatedUnion("kind", [singleSpotPlanSchema, it
  * bounced call (three per turn on a live Sonnet 5 run, 2026-09-24).
  */
 const modelOptionSchema = singleSpotOptionSchema
-  .omit({ payOnArrival: true, provider: true, deepLink: true, lat: true, lng: true })
+  .omit({
+    payOnArrival: true,
+    provider: true,
+    deepLink: true,
+    lat: true,
+    lng: true,
+    street: true,
+    zoneNumber: true,
+    streetState: true,
+    streetSummary: true,
+    priceBreakdown: true,
+    ratePerHourUsd: true,
+    hoursToday: true,
+    maxStayMinutes: true,
+    exceedsMaxStay: true,
+  })
   .extend({
     zoneId: z.string().optional().describe("street options: the zoneId quote_street returned"),
     garageOptionId: z

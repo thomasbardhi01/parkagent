@@ -60,6 +60,16 @@ final class AssistantUITests: ParkAgentUITestCase {
         attachScreenshot(of: app, named: "assistant-street-confirmed")
     }
 
+    /// A street option says what the block is doing during the stay, in
+    /// the street search's own words — not the model's "meter" blurb.
+    func testStreetOptionSaysWhatTheBlockIsDoing() {
+        let app = openAssistant("singleSpot")
+        ask(app, "Park me near the MFA for 90 minutes")
+        let detail = element(app, "assistant.optionDetail.opt-street")
+        XCTAssertTrue(detail.waitForExistence(timeout: 10))
+        XCTAssertEqual(detail.label, "Metered until 8 PM, then free on Boylston St — 2 min walk")
+    }
+
     /// The results layout: ONE hero with the only coral action, the rest
     /// as compact rows that stay collapsed until tapped, a mini map, and
     /// the provenance note once under the list.

@@ -1,0 +1,215 @@
+{
+  "source": "dev DB zones within 500 m of LoLa 42 (22 Liberty Dr), Boston open data via data/build_boston_zones.py, dumped 2026-09-25",
+  "destination": {
+    "lat": 42.35458,
+    "lng": -71.04526
+  },
+  "zones": [
+    {
+      "zoneId": "bos-northern-av-36f4fd-00",
+      "city": "bos",
+      "providerZoneNumber": "180",
+      "street": "NORTHERN AV",
+      "rateFirstHourUsd": 3.75,
+      "rateAdditionalHourUsd": 3.75,
+      "maxStayMinutes": 120,
+      "hours": [
+        {
+          "end": "20:00",
+          "days": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
+          "start": "08:00"
+        }
+      ],
+      "distanceM": 169.9,
+      "containsPoint": false,
+      "centerline": [
+        [
+          [-71.046777, 42.353472],
+          [-71.046692, 42.353433],
+          [-71.046685, 42.3533],
+          [-71.046623, 42.353273],
+          [-71.046583, 42.353381],
+          [-71.046523, 42.353354],
+          [-71.046507, 42.353219],
+          [-71.046449, 42.353194],
+          [-71.04638, 42.353292],
+          [-71.046342, 42.353149],
+          [-71.046324, 42.353268],
+          [-71.046281, 42.353116],
+          [-71.046239, 42.353234],
+          [-71.046178, 42.353205],
+          [-71.046171, 42.353069],
+          [-71.046126, 42.353045],
+          [-71.046086, 42.35316],
+          [-71.045934, 42.352947],
+          [-71.045327, 42.352634],
+          [-71.045221, 42.352737],
+          [-71.045138, 42.352553],
+          [-71.045129, 42.352697],
+          [-71.044879, 42.352576]
+        ]
+      ]
+    },
+    {
+      "zoneId": "bos-northern-av-067c09",
+      "city": "bos",
+      "providerZoneNumber": "984",
+      "street": "NORTHERN AV",
+      "rateFirstHourUsd": 3.75,
+      "rateAdditionalHourUsd": 3.75,
+      "maxStayMinutes": 120,
+      "hours": [
+        {
+          "end": "17:00",
+          "days": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
+          "start": "08:00"
+        }
+      ],
+      "distanceM": 174.7,
+      "containsPoint": false,
+      "centerline": [
+        [
+          [-71.045918, 42.353085],
+          [-71.045497, 42.352874]
+        ]
+      ]
+    },
+    {
+      "zoneId": "bos-seaport-blvd-de413d-01",
+      "city": "bos",
+      "providerZoneNumber": "",
+      "street": "SEAPORT BLVD",
+      "rateFirstHourUsd": 3.75,
+      "rateAdditionalHourUsd": 3.75,
+      "maxStayMinutes": 240,
+      "hours": [
+        {
+          "end": "18:00",
+          "days": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
+          "start": "08:00"
+        }
+      ],
+      "distanceM": 271.3,
+      "containsPoint": false,
+      "centerline": [
+        [
+          [-71.046237, 42.351973],
+          [-71.04623, 42.352246],
+          [-71.046168, 42.352213],
+          [-71.046102, 42.351905],
+          [-71.046036, 42.351874],
+          [-71.045991, 42.352142],
+          [-71.045934, 42.352109],
+          [-71.045908, 42.351813],
+          [-71.045844, 42.351785],
+          [-71.045801, 42.352045],
+          [-71.045745, 42.351738],
+          [-71.045741, 42.352019],
+          [-71.045683, 42.35171],
+          [-71.045639, 42.351971],
+          [-71.045582, 42.351944],
+          [-71.045462, 42.351609],
+          [-71.045293, 42.351536],
+          [-71.04521, 42.351771],
+          [-71.045206, 42.351501],
+          [-71.045145, 42.351473],
+          [-71.045122, 42.351734],
+          [-71.04506, 42.351709],
+          [-71.045036, 42.351425],
+          [-71.044982, 42.351667],
+          [-71.044972, 42.351397],
+          [-71.044933, 42.351644],
+          [-71.04404, 42.351227]
+        ]
+      ]
+    },
+    {
+      "zoneId": "bos-northern-av-36f4fd-01",
+      "city": "bos",
+      "providerZoneNumber": "985",
+      "street": "NORTHERN AV",
+      "rateFirstHourUsd": 3.75,
+      "rateAdditionalHourUsd": 3.75,
+      "maxStayMinutes": 120,
+      "hours": [
+        {
+          "end": "20:00",
+          "days": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
+          "start": "08:00"
+        }
+      ],
+      "distanceM": 273,
+      "containsPoint": false,
+      "centerline": [
+        [
+          [-71.044072, 42.352286],
+          [-71.043951, 42.352043],
+          [-71.043888, 42.352013],
+          [-71.043887, 42.352197],
+          [-71.043826, 42.352165],
+          [-71.043718, 42.351937],
+          [-71.043693, 42.352097],
+          [-71.04365, 42.351905],
+          [-71.043632, 42.352067],
+          [-71.04352, 42.351837],
+          [-71.043426, 42.351966],
+          [-71.043367, 42.351935]
+        ]
+      ]
+    },
+    {
+      "zoneId": "bos-seaport-blvd-de413d-00",
+      "city": "bos",
+      "providerZoneNumber": "",
+      "street": "SEAPORT BLVD",
+      "rateFirstHourUsd": 3.75,
+      "rateAdditionalHourUsd": 3.75,
+      "maxStayMinutes": 240,
+      "hours": [
+        {
+          "end": "18:00",
+          "days": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
+          "start": "08:00"
+        }
+      ],
+      "distanceM": 292.5,
+      "containsPoint": false,
+      "centerline": [
+        [
+          [-71.04818, 42.352899],
+          [-71.047721, 42.352682]
+        ]
+      ]
+    },
+    {
+      "zoneId": "bos-boston-wharf-rd-95c83d-01",
+      "city": "bos",
+      "providerZoneNumber": "93",
+      "street": "BOSTON WHARF RD",
+      "rateFirstHourUsd": 3.75,
+      "rateAdditionalHourUsd": 3.75,
+      "maxStayMinutes": 240,
+      "hours": [
+        {
+          "end": "18:00",
+          "days": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
+          "start": "08:00"
+        }
+      ],
+      "distanceM": 331.6,
+      "containsPoint": false,
+      "centerline": [
+        [
+          [-71.046153, 42.350781],
+          [-71.045866, 42.351168],
+          [-71.046044, 42.351182],
+          [-71.046009, 42.351233],
+          [-71.045803, 42.351252],
+          [-71.045763, 42.351301],
+          [-71.04594, 42.351318],
+          [-71.045699, 42.351613]
+        ]
+      ]
+    }
+  ]
+}

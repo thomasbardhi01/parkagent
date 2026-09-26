@@ -1855,6 +1855,7 @@ export function makeTestApp(options: {
     db,
     policy: policyService,
     findCandidates,
+    ...(options.nearbyZones ? { findNearbyZones } : {}),
     garage,
     ...(options.geocoder ? { geocoder: options.geocoder } : {}),
     linkWallet,

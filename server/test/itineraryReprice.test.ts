@@ -130,7 +130,7 @@ async function streetQuote(t: ReturnType<typeof makeTestApp>, when: string, minu
       when,
     },
   );
-  return (out.result as { costUsd: number }).costUsd;
+  return (out.result as { options: { costUsd: number }[] }).options[0]!.costUsd;
 }
 
 /** The card's stops as the phone sends them: its costs are made up. */

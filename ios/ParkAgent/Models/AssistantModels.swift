@@ -116,6 +116,35 @@ struct SingleSpotOption: Decodable, Identifiable, Sendable {
     /// the garage search cache or the street quote's point.
     let lat: Double?
     let lng: Double?
+    /// Server-attached on street options from the street search: the block
+    /// during the stay in one line ("Free after 6 PM on Seaport Blvd — 4 min
+    /// walk"), and the facts behind the detail card.
+    var streetSummary: String?
+    /// "free" | "metered" | "metered_then_free" | "free_then_metered" | "mixed"
+    var streetState: String?
+    var street: String?
+    var zoneNumber: String?
+    var priceBreakdown: PriceBreakdown?
+    var ratePerHourUsd: Double?
+    var hoursToday: [HoursInterval]?
+    var maxStayMinutes: Int?
+    var exceedsMaxStay: Bool?
+
+    struct PriceBreakdown: Decodable, Equatable, Sendable {
+        let meterUsd: Double
+        let feeUsd: Double
+    }
+
+    struct HoursInterval: Decodable, Equatable, Sendable {
+        let start: String
+        let end: String
+    }
+
+    /// The line under the option's name: the street search's own words for
+    /// a street block, else what the plan said about it.
+    var detailLine: String {
+        streetSummary ?? detail
+    }
 
     var coordinate: CLLocationCoordinate2D? {
         guard let lat, let lng else { return nil }

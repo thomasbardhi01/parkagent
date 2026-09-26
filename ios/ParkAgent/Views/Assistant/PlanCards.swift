@@ -117,10 +117,11 @@ private struct HeroOptionCard: View {
                 Spacer(minLength: Spacing.half)
                 TagPill(label: "Recommended", color: .success)
             }
-            if !option.detail.isEmpty {
-                Text(option.detail)
+            if !option.detailLine.isEmpty {
+                Text(option.detailLine)
                     .font(.secondaryText)
                     .foregroundStyle(Color.textSecondary)
+                    .accessibilityIdentifier("assistant.optionDetail.\(option.id)")
             }
             OptionFacts(option: option)
 
@@ -208,10 +209,11 @@ private struct CompactOptionRow: View {
 
             if isExpanded {
                 VStack(alignment: .leading, spacing: Spacing.half) {
-                    if !option.detail.isEmpty {
-                        Text(option.detail)
+                    if !option.detailLine.isEmpty {
+                        Text(option.detailLine)
                             .font(.secondaryText)
                             .foregroundStyle(Color.textSecondary)
+                            .accessibilityIdentifier("assistant.optionDetail.\(option.id)")
                     }
                     OptionFacts(option: option)
                     // Choosing a garage with Link active goes through a

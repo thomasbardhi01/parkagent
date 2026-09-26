@@ -20,14 +20,10 @@ import { homeMetroForPoint, metersBetween, metroForPoint } from "./geocoder.js";
 import { choiceLabel, choiceReply, classifyPlaceMatches, nameTokens } from "./placeMatch.js";
 import type { ModelClient, ModelUsage } from "./loop.js";
 import { easternIso, parseEasternTime } from "../hours.js";
-import type { HoursInterval } from "../hours.js";
 import type { LinkWallet } from "../link/linkWallet.js";
 import type { PolicyService } from "../policy.js";
-import { priceStay } from "../quote.js";
 import { spentToday } from "../sessions.js";
-import type { CandidateFetcher } from "../zoneLookup.js";
-import { lookupRadiusM, resolveCandidates } from "../zoneLookup.js";
-import { applyObservedToCandidates } from "../zoneTermsObserved.js";
+import type { CandidateFetcher, NearbyZoneFetcher } from "../zoneLookup.js";
 import { currentTimeLine } from "./loop.js";
 import {
   MODEL_PLAN_JSON_SCHEMA,
@@ -43,13 +39,17 @@ import type {
   SingleSpotPlan,
 } from "./plans.js";
 import type { GarageOption } from "../garage/garageProvider.js";
-import type { StayPrice } from "../quote.js";
-import type { Candidate } from "../zoneLookup.js";
+import type { StreetOption, StreetSearch } from "./streetOptions.js";
+import { DEFAULT_STREET_RADIUS_M, streetOptionsNear, walkMinutesFor } from "./streetOptions.js";
 
 export interface AssistantDeps {
   db: AppDb;
   policy: PolicyService;
   findCandidates: CandidateFetcher;
+  /** Zones with street names and curb geometry (/zones/near's fetcher):
+   * street options within a walk of a destination name their street and
+   * pin the nearest curb. Absent → findCandidates, pinned at the point. */
+  findNearbyZones?: NearbyZoneFetcher | undefined;
   garage: GarageProvider;
   /** Named-place geocoding (Boston/NYC biased). Absent → geocode_place
    * answers "geocoding not configured" and the model uses coordinates or
@@ -66,9 +66,15 @@ export interface AssistantDeps {
 export interface StreetQuote {
   zoneId: string;
   costUsd: number;
-  /** The point quote_street was asked about — the option's map pin. */
+  /** The option's map pin: the curb nearest the destination (the quoted
+   * point, for a quote stored before street search had geometry). */
   lat?: number | undefined;
   lng?: number | undefined;
+  /** The rest of the street search's option — what the card shows. */
+  option?: StreetOption | undefined;
+  /** The window the quote priced: its start (ET ISO) and the stay asked for. */
+  startsAt?: string | undefined;
+  stayMinutes?: number | undefined;
 }
 
 /** The place geocode_place resolved — the card's destination pin. */
@@ -216,8 +222,7 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: "quote_street",
-    description:
-      "Quote metered street parking at a point: nearest zone terms and the cost of a stay of the given duration starting at the given time. Uses the same zone data and pricing as automatic payments.",
+    description: `Street parking within a walk of a point (the destination, or the phone): every metered block within radius_m (default ${DEFAULT_STREET_RADIUS_M} m, about a ${walkMinutesFor(DEFAULT_STREET_RADIUS_M)}-minute walk), each priced for the stay and described for THAT window — free (e.g. "Free after 6 PM"), metered then free, or metered with its rate and max stay — cheapest first, with the walk from the point. Uses the same zone data and pricing as automatic payments. found:false means no metered block within the radius: say that, with the radius.`,
     input_schema: {
       type: "object" as const,
       additionalProperties: false,
@@ -227,6 +232,12 @@ export const TOOL_DEFINITIONS = [
         lng: { type: "number" },
         duration_minutes: { type: "integer", minimum: 1, maximum: 720 },
         when: { type: "string", description: "ISO start time of the stay" },
+        radius_m: {
+          type: "integer",
+          minimum: 100,
+          maximum: 800,
+          description: `Walking radius in metres (default ${DEFAULT_STREET_RADIUS_M})`,
+        },
       },
     },
   },
@@ -400,17 +411,6 @@ export function groundStreetOptions(
 
 const TIME_FORMAT_HINT =
   "Send times as ISO 8601 with the UTC offset, e.g. 2026-09-26T18:00:00-04:00.";
-
-/** What a street stay costs at a point and window — found or not. */
-type StreetPrice =
-  | { found: false }
-  | {
-      found: true;
-      zone: Candidate & { termsSource?: "observed" | "dataset" };
-      price: StayPrice;
-      clampedMinutes: number;
-      ambiguous: boolean;
-    };
 
 /**
  * An itinerary stop priced by the server. The client's costUsd, zoneId,
@@ -803,37 +803,29 @@ export class AssistantTools {
 
   /**
    * The one street pricing path — quote_street, build_itinerary, and the
-   * re-pricing of an edited itinerary all come through here. The nearest
-   * zone within 25 m, provider-observed terms over the dataset (e.g.
-   * Boston's real "Max 5 Hr" vs the data's assumed 2-hour cap — the same
-   * override /parked and session start apply), the stay clamped to the
-   * zone's max, priced through the ladder at that time.
+   * re-pricing of an edited itinerary all come through here: every zone
+   * within a walk of the point (streetOptions.ts), provider-observed terms
+   * over the dataset (e.g. Boston's real "Max 5 Hr" vs the data's assumed
+   * 2-hour cap — the same override /parked and session start apply),
+   * each stay priced through the ladder for its window. The first option
+   * is the one an itinerary stop takes: the cheapest, then the nearest.
    */
-  private async priceStreet(
+  private streetSearch(
     lat: number,
     lng: number,
     when: Date,
     minutes: number,
-  ): Promise<StreetPrice> {
-    const policy = this.deps.policy.get();
-    const raw = await this.deps.findCandidates({ lat, lng, radiusM: lookupRadiusM(25) });
-    const found = await applyObservedToCandidates(this.deps.db, raw);
-    const resolution = resolveCandidates(found, when, policy.respect_enforcement_hours);
-    if (resolution.kind === "unknown") return { found: false };
-    const zone = resolution.nearest;
-    const clampedMinutes = Math.min(minutes, zone.maxStayMinutes ?? minutes);
-    const price = priceStay(
+    radiusM?: number,
+  ): Promise<StreetSearch> {
+    return streetOptionsNear(
       {
-        city: zone.city,
-        rateFirstHourUsd: zone.rateFirstHourUsd,
-        rateAdditionalHourUsd: zone.rateAdditionalHourUsd,
-        hours: zone.hours as HoursInterval[],
+        db: this.deps.db,
+        policy: this.deps.policy.get(),
+        findCandidates: this.deps.findCandidates,
+        findNearbyZones: this.deps.findNearbyZones,
       },
-      policy,
-      when,
-      clampedMinutes,
+      { lat, lng, when, minutes, radiusM },
     );
-    return { found: true, zone, price, clampedMinutes, ambiguous: resolution.kind === "disagree" };
   }
 
   /** The garage search build_itinerary runs for a stop's window, in the
@@ -915,13 +907,14 @@ export class AssistantTools {
       }
       repriced.push(stop.id);
       if (stop.choice === "street") {
-        const priced = await this.priceStreet(stop.lat, stop.lng, arrivalAt, stop.durationMinutes);
-        if (!priced.found) {
+        const best = (await this.streetSearch(stop.lat, stop.lng, arrivalAt, stop.durationMinutes))
+          .options[0];
+        if (!best) {
           stops.push(carried(true));
           estimates.push({ id: stop.id, reason: "no_zone" });
           continue;
         }
-        stops.push({ ...base, costUsd: priced.price.totalUsd, zoneId: priced.zone.zoneId });
+        stops.push({ ...base, costUsd: best.costUsd, zoneId: best.zoneId });
         continue;
       }
       const garages = await this.searchGarageWindow(
@@ -962,35 +955,61 @@ export class AssistantTools {
     const minutes = num(input["duration_minutes"]);
     // Readable by construction: pastWindowError bounced anything else.
     const when = parseEasternTime(String(input["when"]))!;
-    const priced = await this.priceStreet(lat, lng, when, minutes);
-    if (!priced.found) {
-      await this.audit(ctx, "quote_street", input, "unknown_zone", {});
-      return { result: { found: false, reason: "no metered zone within 25 m of that point" } };
+    const search = await this.streetSearch(
+      lat,
+      lng,
+      when,
+      minutes,
+      input["radius_m"] !== undefined ? num(input["radius_m"]) : undefined,
+    );
+    const radiusText = `${search.radiusM} m (about a ${walkMinutesFor(search.radiusM)}-minute walk)`;
+    if (search.options.length === 0) {
+      await this.audit(ctx, "quote_street", input, "unknown_zone", { radiusM: search.radiusM });
+      return {
+        result: {
+          found: false,
+          radiusM: search.radiusM,
+          reason: `No metered street parking in our data within ${radiusText} of that point.`,
+          instruction: `Say there's no metered street parking within ${radiusText} of the place — say the radius — and still offer garages.`,
+        },
+      };
     }
-    const { zone, price } = priced;
-    const result = {
-      found: true,
-      zoneId: zone.zoneId,
-      city: zone.city,
-      zoneNumber: zone.providerZoneNumber || null,
-      maxStayMinutes: zone.maxStayMinutes,
-      ambiguousWithOtherSide: priced.ambiguous,
-      clampedMinutes: priced.clampedMinutes,
-      costUsd: price.totalUsd,
-      chargedMinutes: price.chargedMinutes,
-      freePeriod: price.totalUsd === 0,
-      // "observed" when a driver-reported provider term (rate/max stay)
-      // overrode the dataset for this zone number.
-      ...(zone.termsSource === "observed" ? { termsSource: "observed" as const } : {}),
+    const window = {
+      startsAt: easternIso(when),
+      endsAt: easternIso(new Date(when.getTime() + minutes * 60_000)),
     };
     await this.audit(ctx, "quote_street", input, "ok", {
-      zoneId: zone.zoneId,
-      costUsd: price.totalUsd,
-      ...(zone.termsSource === "observed" ? { termsSource: "observed" } : {}),
+      radiusM: search.radiusM,
+      zonesInRadius: search.zonesInRadius,
+      options: search.options.map((o) => ({
+        zoneId: o.zoneId,
+        costUsd: o.costUsd,
+        state: o.state,
+      })),
     });
-    // The quoted point becomes the street option's map pin.
-    (ctx.streetQuotes ??= []).push({ zoneId: zone.zoneId, costUsd: price.totalUsd, lat, lng });
-    return { result };
+    // Each option is grounding for a street card: its zone, price, and pin
+    // (the curb nearest the destination).
+    for (const option of search.options) {
+      (ctx.streetQuotes ??= []).push({
+        zoneId: option.zoneId,
+        costUsd: option.costUsd,
+        lat: option.lat,
+        lng: option.lng,
+        option,
+        startsAt: window.startsAt,
+        stayMinutes: minutes,
+      });
+    }
+    return {
+      result: {
+        found: true,
+        radiusM: search.radiusM,
+        window,
+        options: search.options,
+        instruction:
+          "Offer the street options that fit (usually the best one or two) with their summary; each option's zoneId goes on its plan option. A free block is $0.00.",
+      },
+    };
   }
 
   private async buildItinerary(
@@ -1218,12 +1237,49 @@ export class AssistantTools {
           const pin = [...(ctx.streetQuotes ?? [])]
             .reverse()
             .find((q) => q.zoneId === o.zoneId && q.lat !== undefined && q.lng !== undefined);
+          // The street search's own facts for this zone are server truth,
+          // as a garage's price and link are: where the block is, the walk,
+          // its street, hours, and max stay always; its price, state line,
+          // and meter/fee split only when the quote was for THIS stay — a
+          // "make it 90 minutes" proposed without re-quoting keeps the
+          // user's stay rather than an older quote's.
+          const quote = [...(ctx.streetQuotes ?? [])]
+            .reverse()
+            .find((q) => q.zoneId === o.zoneId && q.option !== undefined);
+          const quoted = quote?.option;
+          const sameStay =
+            quote !== undefined &&
+            quote.stayMinutes === o.durationMinutes &&
+            (starts === null ||
+              quote.startsAt === undefined ||
+              parseEasternTime(quote.startsAt)?.getTime() === starts.getTime());
           return {
             ...rest,
             // One canonical form, so the phone parses what the server did.
             ...(starts ? { startsAt: easternIso(starts) } : {}),
             payOnArrival: future,
             ...(o.lat === undefined && pin ? { lat: pin.lat!, lng: pin.lng! } : {}),
+            ...(quoted
+              ? {
+                  lat: quoted.lat,
+                  lng: quoted.lng,
+                  walkMinutes: quoted.walkMinutes,
+                  ...(quoted.street ? { street: quoted.street } : {}),
+                  zoneNumber: quoted.zoneNumber,
+                  ratePerHourUsd: quoted.ratePerHourUsd,
+                  hoursToday: quoted.hoursToday,
+                  maxStayMinutes: quoted.maxStayMinutes,
+                }
+              : {}),
+            ...(quoted && sameStay
+              ? {
+                  priceUsd: quoted.costUsd,
+                  streetState: quoted.state,
+                  streetSummary: quoted.summary,
+                  priceBreakdown: { meterUsd: quoted.meterUsd, feeUsd: quoted.feeUsd },
+                  exceedsMaxStay: quoted.exceedsMaxStay,
+                }
+              : {}),
           };
         }),
         ...(plan.destination === undefined && ctx.geocode ? { destination: ctx.geocode } : {}),

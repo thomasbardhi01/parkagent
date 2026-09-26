@@ -184,6 +184,7 @@ const assistantTools = new AssistantTools({
   db,
   policy,
   findCandidates,
+  findNearbyZones,
   garage,
   geocoder,
   linkWallet,

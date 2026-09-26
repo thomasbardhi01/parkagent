@@ -226,6 +226,7 @@ struct MockAPI: APIClient {
 
     func parked(_ request: ParkedRequest) async throws -> ParkedResponse {
         try await pause()
+        await MockDetectorProbe.shared.parked(request)
         let provider = await parknycProvider()
         switch scenario {
         case .singleQuote, .paymentFailed, .freePeriodAtStart, .cardDeclined:
@@ -341,6 +342,7 @@ struct MockAPI: APIClient {
 
     func reportLocation(_ report: LocationReport) async throws {
         try await pause()
+        await MockDetectorProbe.shared.located(report)
     }
 
     func registerDevice(_ registration: DeviceRegistration) async throws {

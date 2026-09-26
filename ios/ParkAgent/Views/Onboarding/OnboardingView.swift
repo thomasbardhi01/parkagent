@@ -115,11 +115,38 @@ struct OnboardingView: View {
 
 // MARK: - Step 1: Permissions
 
+/// Location (While Using, then straight away the Always upgrade), Motion,
+/// and Notifications, each row saying exactly where it stands. There is
+/// no skipping past silently: Continue with anything missing shows what
+/// won't work first, and only "Continue anyway" there moves on.
 private struct OnboardingPermissionsStep: View {
     @Environment(PermissionsManager.self) private var permissions
     let onContinue: () -> Void
 
+    private enum Phase {
+        case rows
+        /// Always was declined, or iOS didn't show its prompt.
+        case alwaysExplainer
+        /// Continue was tapped with something missing.
+        case limitedSummary
+    }
+
+    @State private var phase: Phase = .rows
+
     var body: some View {
+        switch phase {
+        case .rows:
+            rows
+        case .alwaysExplainer:
+            AlwaysLocationExplainer(onDone: { withAnimation { phase = .rows } })
+        case .limitedSummary:
+            limitedSummary
+        }
+    }
+
+    private var capabilities: DetectionCapabilities { permissions.capabilities }
+
+    private var rows: some View {
         VStack(alignment: .leading, spacing: Spacing.unit) {
             Spacer()
             Text("Three permissions")
@@ -129,55 +156,162 @@ private struct OnboardingPermissionsStep: View {
             permissionRow(
                 icon: "location.fill",
                 title: "Location — Always",
-                reason: "Notices where you parked, even in the background.",
-                granted: permissions.locationGranted,
-                denied: permissions.locationDenied,
+                reason: capabilities.locationUsable && !capabilities.preciseLocation
+                    ? "Precise Location is off, so ParkAgent can't tell which block you parked on."
+                    : "Notices where you parked, even with the app closed.",
+                state: locationState,
+                satisfied: capabilities.detectionLevel == .full && capabilities.preciseLocation,
                 identifier: "onboarding.permission.location",
-                action: permissions.requestLocation
+                action: locationAction
             )
             permissionRow(
                 icon: "figure.walk.motion",
                 title: "Motion",
                 reason: "Tells driving from walking, so parks are real.",
-                granted: permissions.motionStatus == .authorized,
-                denied: permissions.motionStatus == .denied || !permissions.motionAvailable,
-                deniedLabel: permissions.motionAvailable ? "Denied" : "Unavailable here",
+                state: capabilities.value(of: .motion),
+                satisfied: capabilities.isSatisfied(.motion),
                 identifier: "onboarding.permission.motion",
-                action: permissions.requestMotion
+                action: rowAction(.motion)
             )
             permissionRow(
                 icon: "bell.fill",
                 title: "Notifications",
-                reason: "Tells you when a meter was paid or is running out.",
-                granted: permissions.notificationsGranted,
-                denied: permissions.notificationsDenied,
+                reason: "Tells you a park was noticed, a meter was paid, or time is running out.",
+                state: capabilities.value(of: .notifications),
+                satisfied: capabilities.isSatisfied(.notifications),
                 identifier: "onboarding.permission.notifications",
-                action: permissions.requestNotifications
+                action: rowAction(.notifications)
             )
 
-            Text("You can skip any of these, but detection won't work without location and motion.")
+            Text(DetectionCopy.levelSentence(capabilities.detectionLevel))
                 .font(.captionText)
                 .foregroundStyle(Color.textSecondary)
                 .accessibilityIdentifier("onboarding.permissionsNote")
             Spacer()
-            Button("Continue") { onContinue() }
-                .buttonStyle(.primary)
-                .accessibilityIdentifier("onboarding.continueButton")
+            Button(capabilities.fullyGranted ? "Continue" : "Continue with limited detection") {
+                if capabilities.fullyGranted {
+                    onContinue()
+                } else {
+                    withAnimation { phase = .limitedSummary }
+                }
+            }
+            .buttonStyle(.primary)
+            .accessibilityIdentifier("onboarding.continueButton")
         }
         .padding(Spacing.unitAndHalf)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("onboarding.permissions")
     }
 
+    /// iOS Settings' word for it, plus Precise when that's the problem.
+    private var locationState: String {
+        let value = capabilities.value(of: .location)
+        guard capabilities.locationUsable, !capabilities.preciseLocation else { return value }
+        return "\(value), not precise"
+    }
+
+    /// The location row's button: ask for While Using (and then Always)
+    /// while iOS will; after that the explainer, which leads to Settings.
+    private var locationAction: (title: String, run: () -> Void)? {
+        guard capabilities.locationServicesEnabled else { return ("Open Settings", { open(.openAppSettings) }) }
+        switch capabilities.location {
+        case .notDetermined:
+            return ("Enable", requestLocation)
+        case .whileUsing:
+            if permissions.alwaysUpgradeAvailable { return ("Allow Always", requestLocation) }
+            return ("Allow Always", showAlwaysExplainer)
+        case .always:
+            if capabilities.preciseLocation { return nil }
+            return ("Turn on", { open(.openAppSettings) })
+        case .denied:
+            return ("Open Settings", { open(.openAppSettings) })
+        case .restricted:
+            return nil
+        }
+    }
+
+    private func rowAction(_ row: CapabilityRow) -> (title: String, run: () -> Void)? {
+        guard !capabilities.isSatisfied(row) else { return nil }
+        let action = capabilities.action(for: row, alwaysUpgradeAvailable: permissions.alwaysUpgradeAvailable)
+        switch action {
+        case .none: return nil
+        case .requestMotion, .requestNotifications: return ("Enable", { open(action) })
+        default: return ("Open Settings", { open(action) })
+        }
+    }
+
+    private func showAlwaysExplainer() {
+        withAnimation { phase = .alwaysExplainer }
+    }
+
+    private func requestLocation() {
+        Task {
+            let outcome = await permissions.requestLocation()
+            // Kept While Using, or iOS didn't show the upgrade: the only
+            // road to Always is Settings, so explain it right here.
+            if outcome == .declined || outcome == .notShown {
+                withAnimation { phase = .alwaysExplainer }
+            }
+        }
+    }
+
+    private func open(_ action: CapabilityAction) {
+        Task { await permissions.perform(action) }
+    }
+
+    private var limitedSummary: some View {
+        VStack(alignment: .leading, spacing: Spacing.unit) {
+            Spacer()
+            Text("What won't work")
+                .font(.numeral)
+                .foregroundStyle(Color.textPrimary)
+            Text(DetectionCopy.levelSentence(capabilities.detectionLevel))
+                .font(.bodyText)
+                .foregroundStyle(Color.textSecondary)
+                .accessibilityIdentifier("onboarding.limited.level")
+            ForEach(capabilities.issues) { issue in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(issue.title)
+                        .font(.bodyTextSemibold)
+                        .foregroundStyle(Color.textPrimary)
+                    Text(issue.consequence)
+                        .font(.captionText)
+                        .foregroundStyle(Color.textSecondary)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("onboarding.limited.issue.\(issue.rawValue)")
+            }
+            Text("You can fix any of these later from the banner on the map or Account → Privacy.")
+                .font(.captionText)
+                .foregroundStyle(Color.textSecondary)
+            Spacer()
+            Button("Go back and allow") { withAnimation { phase = .rows } }
+                .buttonStyle(.primary)
+                .accessibilityIdentifier("onboarding.limited.goBack")
+            Button("Continue anyway") {
+                OnboardingGate.limitedDetectionAcknowledged = true
+                onContinue()
+            }
+            .buttonStyle(.secondary)
+            .accessibilityIdentifier("onboarding.limited.continueAnyway")
+        }
+        .padding(Spacing.unitAndHalf)
+        .onChange(of: capabilities.fullyGranted) { _, granted in
+            // Fixed it in Settings and came back: nothing left to warn about.
+            if granted { withAnimation { phase = .rows } }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("onboarding.limited")
+    }
+
     private func permissionRow(
         icon: String,
         title: String,
         reason: String,
-        granted: Bool,
-        denied: Bool,
-        deniedLabel: String = "Denied",
+        state: String,
+        satisfied: Bool,
         identifier: String,
-        action: @escaping () -> Void
+        action: (title: String, run: () -> Void)?
     ) -> some View {
         HStack(alignment: .top, spacing: Spacing.unit) {
             Image(systemName: icon)
@@ -192,27 +326,40 @@ private struct OnboardingPermissionsStep: View {
                     .font(.captionText)
                     .foregroundStyle(Color.textSecondary)
             }
+            // The row's identifier lives on its text, not the whole row: on
+            // the row it would overwrite the state's and button's own.
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier(identifier)
             Spacer()
-            if granted {
-                Label("On", systemImage: "checkmark.circle.fill")
+            VStack(alignment: .trailing, spacing: Spacing.quarter) {
+                if satisfied {
+                    // Identifier on the Text, not a Label: on a Label it
+                    // lands on the icon, whose label is "Selected".
+                    HStack(spacing: Spacing.quarter) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .accessibilityHidden(true)
+                        Text(state)
+                            .accessibilityIdentifier("\(identifier).state")
+                    }
                     .font(.captionTextSemibold)
                     .foregroundStyle(Color.success)
-            } else if denied {
-                Text(deniedLabel)
-                    .font(.captionTextSemibold)
-                    .foregroundStyle(Color.textSecondary)
-            } else {
-                Button("Enable", action: action)
-                    .font(.captionTextSemibold)
-                    .foregroundStyle(Color.actionCoralLink)
+                } else {
+                    Text(state)
+                        .font(.captionTextSemibold)
+                        .foregroundStyle(Color.textSecondary)
+                        .accessibilityIdentifier("\(identifier).state")
+                }
+                if let action {
+                    Button(action.title, action: action.run)
+                        .font(.captionTextSemibold)
+                        .foregroundStyle(Color.actionCoralLink)
+                        .accessibilityIdentifier("\(identifier).action")
+                }
             }
         }
         .padding(Spacing.unit)
         .background(Color.surface)
         .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
-        // Identifier only, no container: a container here would be
-        // flattened by the step's own and vanish from the hierarchy.
-        .accessibilityIdentifier(identifier)
     }
 }
 

@@ -16,7 +16,7 @@ struct RootView: View {
     @State private var authStore: AuthStore
     @State private var model: AppModel
     @State private var auth: AuthModel
-    @State private var permissions = PermissionsManager()
+    @State private var permissions: PermissionsManager
     @State private var gate: Gate = .checking
 
     /// Onboarding is gated by what is actually true — permissions, the
@@ -35,12 +35,14 @@ struct RootView: View {
     }
 
     init() {
-        // One store, shared: AppModel reads tokens through it and AuthModel
-        // writes them. A second instance would mint a second device id.
-        let store = AuthStore()
-        let model = AppModel(authStore: store)
+        // The same instances the app delegate re-arms detection through on
+        // a background launch (AppServices), so there is one of each.
+        let services = AppServices.shared
+        let store = services.authStore
+        let model = services.model
         _authStore = State(initialValue: store)
         _model = State(initialValue: model)
+        _permissions = State(initialValue: services.permissions)
         #if DEBUG
         _auth = State(initialValue: AuthModel(
             api: model.api,
@@ -86,7 +88,7 @@ struct RootView: View {
         .environment(permissions)
         // Read the Keychain and wire the refresh transport before anything
         // makes a protected request.
-        .task { model.restoreSession() }
+        .task { AppServices.shared.restoreSessionOnce() }
         .task(id: sessionPhase) { await enter(sessionPhase) }
         .onChange(of: hasOnboarded) { _, onboarded in
             // Diagnostics' Reset onboarding cleared it: back through the
@@ -168,13 +170,13 @@ struct RootView: View {
     }
 
     private func gatherFacts() async -> OnboardingGate.Facts {
-        await permissions.refreshNotificationStatus()
-        let permissionsOK = permissions.locationStatus == .authorizedAlways
-            && (!permissions.motionAvailable || permissions.motionStatus == .authorized)
-            && permissions.notificationsGranted
+        await permissions.refresh()
         let server = await OnboardingGate.serverFacts(api: model.api)
         return OnboardingGate.Facts(
-            permissionsOK: permissionsOK,
+            permissionsOK: OnboardingGate.permissionsOK(
+                permissions.capabilities,
+                acknowledgedLimited: OnboardingGate.limitedDetectionAcknowledged
+            ),
             serverHasVehicle: server.hasVehicle,
             localVehicleOK: OnboardingGate.localVehicleOK(),
             city: UserDefaults.standard.string(forKey: "selectedCity"),
@@ -204,6 +206,7 @@ struct MainTabView: View {
                 .tag(AppTab.wallet)
         }
         .tint(.actionCoral)
+        .instantTabSwitches()
         // At the tab level, not inside HomeView: a park detected while the
         // user is on another tab must still surface the sheet.
         .sheet(item: $model.pendingParked) { parked in
@@ -277,6 +280,15 @@ struct MainTabView: View {
                     .font(.system(size: 2))
                     .opacity(0.02)
                     .accessibilityIdentifier("root.colorSchemeProbe")
+            }
+        }
+        .overlay(alignment: .bottomTrailing) {
+            if LaunchOverrides.uiTesting, LaunchOverrides.detectorSimulation {
+                // The detector UI test reads what the mock server heard.
+                Text(MockDetectorProbe.shared.summary)
+                    .font(.system(size: 2))
+                    .opacity(0.02)
+                    .accessibilityIdentifier("root.detectorProbe")
             }
         }
         #endif

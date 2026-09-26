@@ -38,7 +38,12 @@ class ParkAgentUITestCase: XCTestCase {
         googleSignIn: Bool = false,
         /// The mock server's switched-on sign-in methods; nil = its
         /// default, Apple only (as a real deployment ships).
-        authMethods: String? = nil
+        authMethods: String? = nil,
+        /// The phone's permission state (CapabilityOverride spec). Default:
+        /// everything granted, so flows that aren't about permissions pass
+        /// the permissions step; nil = the simulator's real grants.
+        capabilities: String? = "granted",
+        extraArguments: [String] = []
     ) -> XCUIApplication {
         let app = XCUIApplication()
         var args = [
@@ -64,7 +69,8 @@ class ParkAgentUITestCase: XCTestCase {
         if issuingLive { args += ["-issuingLive", "YES"] }
         args += ["-parkAgentSandbox", parkAgentSandbox ? "YES" : "NO"]
         if policyReadOnly { args += ["-policyReadOnly", "YES"] }
-        app.launchArguments = args
+        if let capabilities { args += ["-capabilities", capabilities] }
+        app.launchArguments = args + extraArguments
         app.launch()
         return app
     }

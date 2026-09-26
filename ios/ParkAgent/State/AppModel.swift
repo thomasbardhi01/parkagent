@@ -15,8 +15,10 @@ final class AppModel {
     /// banner; signed out, the welcome screen's sign-in failure says it.
     private(set) var liveAPIUnavailable = false
 
-    let detector = ParkDetector()
+    let detector: ParkDetector
     let reporter = LocationReporter()
+    /// The live permission state (see AppServices for who owns it).
+    let permissions: PermissionsManager
 
     #if DEBUG
     /// Launch-time only (UI tests and previews); see LaunchOverrides.
@@ -51,7 +53,15 @@ final class AppModel {
     /// True while an extend round-trip is in flight (button disables).
     private(set) var isExtending = false
 
-    var activeSession: ActiveSession?
+    /// Kept on disk: iOS ends a backgrounded app mid-session all the time,
+    /// and a relaunch that forgot the session would stop reporting where
+    /// the driver is, leaving the extension worker blind.
+    var activeSession: ActiveSession? {
+        didSet {
+            guard activeSession != oldValue else { return }
+            ActiveSession.store(activeSession)
+        }
+    }
 
     /// How the user pays and what they've spent — one instance, read by the
     /// Wallet tab, the Account sheet, onboarding, and Home's "today" bar,
@@ -123,6 +133,47 @@ final class AppModel {
         return response
     }
 
+    /// Where the Home map's city answer stands, so the chip can say
+    /// "finding you" or "couldn't" instead of quietly showing a default.
+    enum CityDetection: Equatable {
+        case idle
+        /// Attempt n of `cityRetryDelays.count + 1`.
+        case locating(attempt: Int)
+        case detected
+        /// No fix (location off or GPS silent): the map shows the saved
+        /// city or the fallback center, and says so.
+        case noLocation
+        /// A fix, but the server didn't answer after every retry.
+        case serverUnreachable
+    }
+
+    var cityDetection: CityDetection = .idle
+    /// Backoff between attempts; the last failure stands until the next
+    /// launch or a tap on Retry. Tests shorten it.
+    var cityRetryDelays: [Duration] = [.seconds(2), .seconds(5), .seconds(15), .seconds(30)]
+
+    /// The phone's city, retried with backoff: a fix first (city-level
+    /// accuracy is plenty), then GET /city. Returns the fix it used.
+    @discardableResult
+    func detectCityWithRetry(fix: @escaping () async -> CLLocationCoordinate2D?) async -> CLLocationCoordinate2D? {
+        var attempt = 0
+        while true {
+            attempt += 1
+            cityDetection = .locating(attempt: attempt)
+            let coordinate = await fix()
+            if let coordinate, await detectCity(lat: coordinate.latitude, lng: coordinate.longitude) != nil {
+                cityDetection = .detected
+                return coordinate
+            }
+            guard !Task.isCancelled, attempt <= cityRetryDelays.count else {
+                if !Task.isCancelled { cityDetection = coordinate == nil ? .noLocation : .serverUnreachable }
+                return coordinate
+            }
+            try? await Task.sleep(for: cityRetryDelays[attempt - 1])
+            if Task.isCancelled { return nil }
+        }
+    }
+
     /// Onboarding's "Your city": detect from where the phone is now. The
     /// mock skips CoreLocation so the simulator and UI tests stay
     /// deterministic; nil means "couldn't tell — offer the manual choice".
@@ -170,8 +221,14 @@ final class AppModel {
     /// Supplies the access token to LiveAPI and performs silent refresh.
     private let authStore: AuthStore
 
-    init(authStore: AuthStore = AuthStore()) {
+    init(authStore: AuthStore = AuthStore(), permissions: PermissionsManager = PermissionsManager()) {
         self.authStore = authStore
+        self.permissions = permissions
+        #if DEBUG
+        detector = ParkDetector(simulated: LaunchOverrides.detectorSimulation)
+        #else
+        detector = ParkDetector()
+        #endif
         #if DEBUG
         useMockAPI = LaunchOverrides.useMockAPI
         let mockAPI: (any APIClient)? = useMockAPI ? MockAPI() : nil
@@ -199,6 +256,22 @@ final class AppModel {
         }
         // A park detected before iOS ended the app; stale ones are dropped.
         pendingParked = ParkedNotice.restore()
+        activeSession = ActiveSession.restore()
+        // The car pin belongs to a park being paid or a session running.
+        // Anything else is a park the driver dismissed, and it used to pin
+        // the map (and the city check) to that spot on every launch.
+        if activeSession == nil, pendingParked == nil { carCoordinate = nil }
+
+        permissions.onChange = { [weak self] capabilities in
+            self?.detector.capabilitiesChanged(capabilities)
+            self?.reporter.capabilitiesChanged(capabilities)
+        }
+        // onChange only reports changes; start from what's true now, or a
+        // session paid before any change would report nothing.
+        reporter.capabilitiesChanged(permissions.capabilities)
+        detector.requestPrecise = { [weak permissions] in
+            await permissions?.requestTemporaryPrecise() ?? false
+        }
     }
 
     /// LiveAPI's view of the AuthStore: the current access token, and the
@@ -238,7 +311,8 @@ final class AppModel {
     /// Sign-out: stop reporting location and detecting parks for an
     /// account that is no longer here, and drop its in-memory state.
     func stopBackgroundWork() {
-        detector.stop()
+        detector.disarm()
+        Self.detectionArmed = false
         reporter.stop()
         activeSession = nil
         pendingParked = nil
@@ -261,15 +335,10 @@ final class AppModel {
     func startBackgroundWork() {
         // UI tests drive parks through Home's test-only button; real motion,
         // location, and the notification permission prompt would only add
-        // flakiness.
+        // flakiness. The detector's own UI test opts back in.
+        guard !LaunchOverrides.uiTesting || Self.detectorSimulation else { return }
+        armDetection(reason: .arm)
         guard !LaunchOverrides.uiTesting else { return }
-        detector.onPark = { [weak self] coordinate, accuracy, signals in
-            Task { await self?.handleDetectedPark(coordinate: coordinate, accuracy: accuracy, signals: signals) }
-        }
-        reporter.onDistance = { [weak self] meters in
-            self?.distanceFromCarMeters = meters
-        }
-        detector.start()
         PushManager.shared.activate(api: api)
         // A provider_relink push routes straight into the link flow.
         PushManager.shared.onProviderRelink = { [weak self] providerId in
@@ -285,9 +354,62 @@ final class AppModel {
         }
         // A tap that launched the app before these were wired.
         PushManager.shared.replayPendingOpen()
-        if activeSession != nil {
+    }
+
+    // MARK: - Detection
+
+    /// Set once the user is past onboarding and cleared at sign-out: the
+    /// app delegate re-arms detection at every launch while it is set,
+    /// including a background relaunch for a location event.
+    private static let detectionArmedKey = "detectionArmed"
+    static var detectionArmed: Bool {
+        get { UserDefaults.standard.bool(forKey: detectionArmedKey) }
+        set { UserDefaults.standard.set(newValue, forKey: detectionArmedKey) }
+    }
+
+    #if DEBUG
+    static var detectorSimulation: Bool { LaunchOverrides.detectorSimulation }
+    #else
+    static var detectorSimulation: Bool { false }
+    #endif
+
+    /// Launch (foreground or background): pick detection back up if this
+    /// install had it on, without waiting for a screen to appear.
+    func resumeDetectionIfArmed(reason: ParkDetector.WakeReason) {
+        guard Self.detectionArmed, authStore.isSignedIn else { return }
+        guard !LaunchOverrides.uiTesting || Self.detectorSimulation else { return }
+        armDetection(reason: reason)
+    }
+
+    private func armDetection(reason: ParkDetector.WakeReason) {
+        Self.detectionArmed = true
+        detector.onPark = { [weak self] fix, signals in
+            Task { await self?.handleDetectedPark(coordinate: fix.coordinate, accuracy: fix.accuracy, signals: signals, detectedAt: fix.at) }
+        }
+        detector.onUnlocatedPark = { preciseOff in
+            Task { await ParkedNotice.postUnlocated(preciseOff: preciseOff) }
+        }
+        reporter.onDistance = { [weak self] meters in
+            self?.distanceFromCarMeters = meters
+        }
+        reporter.onSessionEnded = { [weak self] in
+            self?.sessionEndedElsewhere()
+        }
+        detector.arm(capabilities: permissions.capabilities, reason: reason)
+        reporter.capabilitiesChanged(permissions.capabilities)
+        if activeSession != nil, !reporter.isRunning {
             reporter.start(api: api, carCoordinate: carCoordinate)
         }
+    }
+
+    /// The server has no active session for us (the worker expired it, or
+    /// it was stopped from another device).
+    private func sessionEndedElsewhere() {
+        reporter.stop()
+        activeSession = nil
+        carCoordinate = nil
+        distanceFromCarMeters = nil
+        Task { await wallet.load(api: api) }
     }
 
     // MARK: - Policy
@@ -308,12 +430,20 @@ final class AppModel {
 
     /// The real path: the detector saw a park (or a UI test simulated one),
     /// so report it and let the response drive the sheet.
-    func handleDetectedPark(coordinate: CLLocationCoordinate2D, accuracy: Double, signals: [String]) async {
+    func handleDetectedPark(
+        coordinate: CLLocationCoordinate2D,
+        accuracy: Double,
+        signals: [String],
+        detectedAt: Date? = nil
+    ) async {
+        // Priced at when the car stopped, not when the report got out: a
+        // park confirmed by walking away (or replayed after a relaunch)
+        // happened a minute or more before this call.
         let request = ParkedRequest(
             lat: coordinate.latitude,
             lng: coordinate.longitude,
             accuracy: accuracy,
-            ts: AppClock.now,
+            ts: detectedAt ?? AppClock.now,
             signals: signals
         )
         do {
@@ -402,6 +532,8 @@ final class AppModel {
         pendingParked = nil
         paymentError = nil
         freePeriodNotice = nil
+        // Not paid here: the pin would outlive the park (see init).
+        if activeSession == nil { carCoordinate = nil }
     }
 
     /// The needsZoneNumber flow: store the number the driver read off the

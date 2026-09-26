@@ -334,13 +334,13 @@ struct AccountSheetView: View {
 
     private var notificationsSection: some View {
         Section {
-            LabeledContent("Push notifications", value: permissions.notificationsGranted ? "On" : "Off")
-                .accessibilityIdentifier("account.notificationsStatus")
-            if !permissions.notificationsGranted {
-                Button("Turn on") { permissions.requestNotifications() }
-                    .foregroundStyle(Color.actionCoralLink)
-                    .accessibilityIdentifier("account.notificationsEnable")
-            }
+            // The exact state, and tapping it asks iOS while it still will,
+            // else opens this app's notification settings.
+            CapabilityRowsView(
+                rows: [.notifications],
+                identifierPrefix: "account.push",
+                titles: [.notifications: "Push notifications"]
+            )
         } header: {
             Text("Notifications")
         } footer: {
@@ -362,19 +362,13 @@ struct AccountSheetView: View {
 
     private var privacySection: some View {
         Section {
-            LabeledContent("Location", value: locationStatusText)
-                .accessibilityIdentifier("account.privacy.location")
-            LabeledContent("Motion", value: motionStatusText)
-                .accessibilityIdentifier("account.privacy.motion")
-            if needsPermissionFix {
-                Button("Fix in Settings") { openSystemSettings() }
-                    .foregroundStyle(Color.actionCoralLink)
-                    .accessibilityIdentifier("account.privacyFixButton")
-            }
+            // Each row reads iOS Settings' own word for the state and acts
+            // on a tap: ask while iOS will, else Settings.
+            CapabilityRowsView(identifierPrefix: "account.privacy")
         } header: {
             Text("Privacy")
         } footer: {
-            Text("Detection needs Location — Always and Motion. Your plate and location never leave your account.")
+            Text("\(DetectionCopy.levelSentence(permissions.capabilities.detectionLevel)) Detection needs Location \"Always\" with Precise Location, and Motion. Your plate and location never leave your account.")
         }
     }
 
@@ -464,29 +458,6 @@ struct AccountSheetView: View {
         await loadProviders()
     }
 
-    private var locationStatusText: String {
-        if permissions.locationGranted { return "Allowed" }
-        if permissions.locationDenied { return "Denied" }
-        return "Not requested"
-    }
-
-    private var motionStatusText: String {
-        guard permissions.motionAvailable else { return "Unavailable" }
-        switch permissions.motionStatus {
-        case .authorized: return "Allowed"
-        case .denied, .restricted: return "Denied"
-        default: return "Not requested"
-        }
-    }
-
-    private var needsPermissionFix: Bool {
-        permissions.locationDenied || permissions.motionStatus == .denied
-    }
-
-    private func openSystemSettings() {
-        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
-        UIApplication.shared.open(url)
-    }
 }
 
 /// Initials in a coral circle — the Home button and the sheet header.

@@ -25,7 +25,7 @@ the evidence that proves it. Three kinds of evidence back an FR:
 
 | FR | Requirement | Coverage | Test file(s) |
 |---|---|---|---|
-| FR-1 | Park detection → `/parked` | automated + device-manual | `server/fr/10-parked-nyc.fr.test.ts`, `server/test/parked.test.ts`; detector: iOS `ParkAgentTests` (fusion), `ParkedNoticeTests` (background notification); field test |
+| FR-1 | Park detection → `/parked` | automated + device-manual | `server/fr/10-parked-nyc.fr.test.ts`, `server/test/parked.test.ts`, `server/test/walkAwayRoute.test.ts`; detector: iOS `ParkFusionEngineTests` (red light, headphones, relaunch, visits, a whole drive), `FixGateTests`, `SignalTraceTests` (replayed signal logs), `DetectionCapabilitiesTests`, `DetectionPersistenceTests`, `LocationReporterTests`, `ParkedNoticeTests`; UI `DetectorUITests` (real permission prompts; the GPX route through the real detector), `PermissionUITests`; field test |
 | FR-2 | NYC zone resolution | automated | `server/fr/10-parked-nyc.fr.test.ts`, `server/test/zoneLookup.test.ts`, `server/test/city.test.ts` |
 | FR-3 | Boston resolution with a provider number | automated | `server/fr/20-parked-boston.fr.test.ts`, `server/test/zoneNumber.test.ts` |
 | FR-4 | Boston resolution without a number | automated | `server/fr/20-parked-boston.fr.test.ts`, `server/test/parked.test.ts`, `server/test/session.test.ts` |
@@ -73,10 +73,22 @@ call writes a `parked_events` row and a `decisions` row and answers an
 action (`pay | confirm | ignore | unknown_zone`), a quote (or null), the
 effective dry-run flag, and both row ids.
 
+The detector keeps working with the app closed: iOS's significant-change
+and visit monitoring wake (or relaunch) the app, the app delegate re-arms
+detection without any screen, CoreMotion history replays what happened
+while suspended, and a pending stop survives a relaunch on disk. It fires
+exactly once per park, never at a red light, and never on a fix too vague
+to pick the block (Precise Location off → it asks for full accuracy at
+park time, or says it couldn't tell).
+
 Evidence: live FR-1 test asserts the response contract (ids, dryRun,
-action vocabulary); `parked.test.ts` pins the row writes; the detector
-itself is iOS `ParkAgentTests` (ParkFusionEngine) plus the field test —
-device-manual.
+action vocabulary); `parked.test.ts` pins the row writes; the detector is
+iOS `ParkFusionEngineTests` / `FixGateTests` / `SignalTraceTests`, and
+`DetectorUITests` drives `ios/Fixtures/drive-park-walk.gpx` through the
+real detector in the simulator (one park, not at the light; the walk
+away and back reach the server, which `walkAwayRoute.test.ts` turns into
+"away" → extend and "toward" → hold). Background relaunch and real
+CoreMotion are device-manual (the field test).
 
 ### FR-2 — NYC zone resolution
 

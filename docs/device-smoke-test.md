@@ -28,18 +28,24 @@ app isn't configured, `API_BASE_URL` is missing. After
 sign-in you land on the first setup step you haven't done, or Home.
 
 Home's map should settle on **where you are** within a second or
-two, and the chip at the top should read your city (e.g. "Boston · No
-active session"). If the map sits on a city center (your chosen city's, or
-Boston Common when no city is known) instead of on you, the location fix
-failed. Check Location permission (step 3).
+two and follow you, and the chip at the top should read your city (e.g.
+"Boston · No active session"). While it looks for you it says "Finding
+your location…". If it can't, it says so, e.g. "Showing Boston —
+location is off" with a Retry. It never quietly shows a city center as
+if it were you. Check Location permission (step 3).
 
 ### 3. Permissions are actually granted
 
-Home → the avatar (top right) → Account → Privacy. Location should read
-**Allowed**, Motion **Allowed**. Then iOS Settings → ParkAgent → Location must say **Always**,
-not "While Using". While Using means no background detection: the whole
-unattended-park loop is off, and Diagnostics (step 11) will list
-`Location (Always)` as missing.
+Home → the avatar (top right) → Account → Privacy. Each row names the
+state exactly as iOS Settings does. Expect **Location: Always**, **Precise
+Location: On**, **Motion & Fitness: Allowed**, **Notifications: Allowed**,
+and **Background App Refresh: On**. Tapping a row asks iOS right there if
+it still will, otherwise it opens this app's page in Settings (the
+notification page for Notifications).
+
+"While Using" means parks are only noticed while the app is open. Home
+shows a banner saying so, with **Allow Always** (iOS's own upgrade prompt,
+once per install) or **Open Settings** once that prompt is spent.
 
 ### 4. Real data, not fixtures
 
@@ -112,15 +118,17 @@ transcript.
 Activity and Wallet tabs: scroll to the very bottom. The last row must be
 fully visible and tappable above the floating tab bar. The Account sheet
 covers the tab bar; its last row (Version) must scroll fully into view. Switch tabs a few
-times quickly — you should never see two screens superimposed.
+times quickly. The screen must swap at once, never showing two screens
+superimposed. iOS 26's cross-dissolve is switched off for this app.
 
 ### 11. The detector is armed
 
-Diagnostics → Detection. Expect **Detector: Running** and "Fully armed".
-If it lists missing permissions, fix them before driving. Detection needs
-any two of motion stop, car-audio disconnect, and location settling, and
-every park also needs a location fix to send. Without Location Always, no
-park can fire in the background.
+Diagnostics → Detection. Expect **Detector: Running (idle)** (or
+tracking, if you're moving), every capability row in its good state,
+"Background wake-ups: Significant-change on, visits on", and "Fully
+armed". Then tap **Run detector self-test**: every line should be green,
+ending in **PASS — ready to drive**. A red line names what to fix. Without
+Location Always, no park can fire with the app closed.
 
 Turn on **Log raw detector signals** here before a field-test drive; it is
 the only way to debug a missed or false park afterwards.

@@ -32,6 +32,13 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         UNUserNotificationCenter.current().delegate = PushManager.shared
+        // iOS relaunched us for a location event (a significant move, a
+        // visit), often with no screen at all: re-arm park detection here,
+        // because no view will. Any other launch re-arms it too.
+        let locationLaunch = launchOptions?[.location] != nil
+        MainActor.assumeIsolated {
+            AppServices.shared.applicationDidFinishLaunching(locationLaunch: locationLaunch)
+        }
         return true
     }
 

@@ -218,21 +218,53 @@ final class AccountUITests: ParkAgentUITestCase {
         waitForLabel(of: probe, toBe: "dark")
     }
 
-    /// Privacy shows permission status; denied permissions get a Fix button
-    /// into iOS Settings. The simulator grants nothing, so the row reads
-    /// "Not requested" and no Fix button is offered.
-    func testPrivacySectionShowsPermissionStatus() {
+    /// Privacy names each permission exactly as iOS Settings does — While
+    /// Using used to read "Allowed" here, which hid the missing Always.
+    func testPrivacyRowsShowTheExactState() {
+        let app = launchApp(capabilities: "location=whileUsing,precise=off,motion=denied,notifications=denied")
+        openAccountSheet(app)
+        let location = scrollTo(app, "account.privacy.location")
+        XCTAssertTrue(location.waitForExistence(timeout: 5), "Location row missing")
+        XCTAssertEqual(location.label, "Location, While Using")
+        XCTAssertEqual(element(app, "account.privacy.precise").label, "Precise Location, Off")
+        XCTAssertEqual(element(app, "account.privacy.motion").label, "Motion & Fitness, Off")
+        XCTAssertEqual(element(app, "account.privacy.notifications").label, "Notifications, Off")
+        XCTAssertEqual(element(app, "account.privacy.backgroundRefresh").label, "Background App Refresh, On")
+    }
+
+    /// Everything granted reads that way too (the pair to the test above).
+    func testPrivacyRowsShowAlwaysWhenGranted() {
         let app = launchApp()
         openAccountSheet(app)
-
         let location = scrollTo(app, "account.privacy.location")
-        XCTAssertTrue(location.waitForExistence(timeout: 5), "Location status row missing")
-        // A fresh simulator has asked for nothing: the rows say so, and
-        // with nothing DENIED there is nothing to fix.
-        XCTAssertEqual(location.label, "Location, Not requested")
-        // The simulator has no motion coprocessor, so the row says so.
-        XCTAssertEqual(element(app, "account.privacy.motion").label, "Motion, Unavailable")
-        XCTAssertFalse(element(app, "account.privacyFixButton").exists, "Fix offered with nothing denied")
+        XCTAssertTrue(location.waitForExistence(timeout: 5), "Location row missing")
+        XCTAssertEqual(location.label, "Location, Always")
+        XCTAssertEqual(element(app, "account.privacy.notifications").label, "Notifications, Allowed")
+    }
+
+    /// Tapping a row iOS won't prompt for again opens Settings — for
+    /// notifications, their own page.
+    func testDeniedNotificationsRowOpensSettings() {
+        let app = launchApp(capabilities: "notifications=denied")
+        openAccountSheet(app)
+        let push = scrollTo(app, "account.push.notifications")
+        XCTAssertTrue(push.waitForExistence(timeout: 5), "Push notifications row missing")
+        XCTAssertEqual(push.label, "Push notifications, Off")
+        push.tap()
+        let settings = XCUIApplication(bundleIdentifier: "com.apple.Preferences")
+        XCTAssertTrue(settings.wait(for: .runningForeground, timeout: 10), "Settings didn't open")
+        settings.terminate()
+    }
+
+    /// While iOS will still prompt, tapping asks right there instead.
+    func testNotAskedMotionRowAsksInPlace() {
+        let app = launchApp(capabilities: "motion=notDetermined")
+        openAccountSheet(app)
+        let motion = scrollTo(app, "account.privacy.motion")
+        XCTAssertTrue(motion.waitForExistence(timeout: 5))
+        XCTAssertEqual(motion.label, "Motion & Fitness, Not asked yet")
+        motion.tap()
+        waitForLabel(of: motion, toBe: "Motion & Fitness, Allowed")
     }
 
     /// "How you pay" is the Wallet's own answer — same words, same card —

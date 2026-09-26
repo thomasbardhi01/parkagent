@@ -62,41 +62,6 @@ struct ErrorBanner: View {
     }
 }
 
-/// Shown on Home when location permission is missing — without it the whole
-/// detect-and-pay loop is off.
-struct PermissionBanner: View {
-    var icon = "location.slash.fill"
-    var title = "Location is off"
-    var message = "ParkAgent cannot detect parking without it."
-
-    var body: some View {
-        HStack(spacing: Spacing.half) {
-            Image(systemName: icon)
-                .foregroundStyle(Color.warningGold)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.captionTextSemibold)
-                    .foregroundStyle(Color.textPrimary)
-                Text(message)
-                    .font(.captionText)
-                    .foregroundStyle(Color.textSecondary)
-            }
-            Spacer()
-            Button("Open Settings") {
-                if let url = URL(string: UIApplication.openSettingsURLString) {
-                    UIApplication.shared.open(url)
-                }
-            }
-            .font(.captionTextSemibold)
-            .foregroundStyle(Color.actionCoralLink)
-        }
-        .padding(Spacing.unit)
-        .background(Color.surface)
-        .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
-        .shadow(color: .black.opacity(0.1), radius: 4, y: 1)
-    }
-}
-
 #if DEBUG
 #Preview("Empty state") {
     EmptyStateView(
@@ -104,11 +69,5 @@ struct PermissionBanner: View {
         title: "No sessions yet",
         message: "Once ParkAgent pays a meter, the session shows up here."
     )
-}
-
-#Preview("Permission banner") {
-    PermissionBanner()
-        .padding(Spacing.unit)
-        .background(Color.appBackground)
 }
 #endif

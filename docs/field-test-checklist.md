@@ -16,10 +16,15 @@ and you pay the meter by hand as usual.
    one for its rate and zone number), and the Home chip names your city
    when you're in one.
 3. **Phone setup** (per phone, both users):
-   - Location: Settings → ParkAgent → **Always** (not While Using).
-   - Motion & Fitness: on. Notifications: on.
-   - If either is off, Home shows a banner with an Open Settings button —
-     clear the banners before the drive.
+   - Location: Settings → ParkAgent → **Always** (not While Using), with
+     **Precise Location on**. Motion & Fitness: on. Notifications: on.
+     Background App Refresh: on.
+   - Account → Privacy names each one exactly as iOS Settings does
+     ("Always", "While Using", …). Home shows a banner for anything
+     missing, with the fix one tap away; clear the banners before the drive.
+   - Diagnostics → **Run detector self-test** must end in "PASS — ready to
+     drive" (it takes a real fix, reads motion history, and checks the
+     background wake-ups).
 4. **Turn on the signal log** (a Debug build from Xcode — TestFlight builds
    have no Diagnostics): Account (the avatar on Home) → About → tap the version five
    times → Diagnostics → **Log raw detector signals**. This writes every motion, car-audio, and location event
@@ -67,7 +72,9 @@ and you pay the meter by hand as usual.
    charges.
 5. While parked, walk a block away and back with the app backgrounded —
    the extension worker's inputs (distance, heading) come from the
-   60-second location reports; you'll read its decisions in the evening.
+   session's location reports (every 25 m moved, at most every 15 s, and a
+   60-second heartbeat standing still); you'll read its decisions in the
+   evening.
 6. Drive through at least one red light and one drive-through/pickup lane
    during the day — these must NOT fire a park. If a sheet appears, note
    the time and what you were doing.
@@ -75,27 +82,36 @@ and you pay the meter by hand as usual.
 ## What "working" looks like per signal (in the exported log)
 
 Export: Account → About → version ×5 → Diagnostics → **Export signal log** (share sheet → AirDrop /
-Files / mail to yourself). One line per event:
-`2026-09-27T14:03:22.512Z motion_stop`.
+Files / mail to yourself). One line per event, v2 format (this PR):
+`2026-09-27T14:03:22.512Z location_fix 42.350380,-71.076300 ±6m 0.3m/s`.
+Fixes carry coordinates, so an exported log can be replayed through the
+engine in a unit test (`ios/Fixtures/Traces/`, `SignalTraceTests`).
 
-- **motion** — `motion_driving` while driving; `motion_stop` shortly
-  after you park and start walking. At a red light you should see either
-  nothing, or a `motion_stop` followed by `driving_resumed_cleared` when
-  you pull away (that clearing is what stops false parks).
-- **car audio** — `audio_disconnect` the moment the car (CarPlay or
-  Bluetooth) lets go of audio, i.e. when you turn the car off. If you
-  never see it, check the phone was actually connected to the car.
-- **location** — a run of `location_fix ±Nm` lines right after motion or
-  audio (the burst), ending in `location_settled ±Nm` once three fixes
-  agree within 20 m. In an urban canyon expect larger ±N and a slower
-  settle.
-- **the verdict** — `park_fired motion_stop+location_settled` (any two
-  names) when the event was reported; `debounced` when a would-be fire
-  was inside the 3-minute cooldown.
+- **lifecycle** — `armed`, `wake <reason>` (significantChange, visit…,
+  foreground, locationLaunch), `tracking_started`/`tracking_stopped`. No
+  `wake` for a whole drive means iOS never woke the app: check Always and
+  Background App Refresh.
+- **motion** — raw `motion automotive high` lines, then `motion_driving`
+  while driving and `motion_stop` shortly after you stop. At a red light
+  you should see nothing (CoreMotion stays "automotive" while stopped), or a
+  `motion_stop` followed by `driving_resumed_cleared` when you pull away.
+  `motion_walking` is you walking away from the car.
+- **car audio** — `audio_disconnect carPlay|bluetooth` the moment the car
+  lets go of audio. `audio_disconnect_ignored` is Bluetooth dropping with
+  no drive behind it (headphones), deliberately not a park signal.
+- **location** — a `burst_started`, a run of `location_fix` lines, ending
+  in `location_settled` once three fixes agree within 20 m.
+  `fix_rejected coarse|stale|outlier` are fixes too vague, too old, or too
+  jumpy to say which block (coarse on every fix = Precise Location off).
+- **the verdict** — `park_fired <signals>`. A park needs two of motion,
+  audio, and location, plus something a red light never does (walking
+  away, the car audio dropping, an iOS visit, or 150 s stopped) and a
+  precise fix. `park_unlocated` means a park with no fix good enough to
+  report (you get a notification saying so). `debounced` is a would-be
+  fire inside the 3-minute cooldown.
 
-A missed park = which of the three lines never appeared. A false park =
-which two lines paired that shouldn't have. Say exactly that when
-reporting the bug.
+A missed park = which line never appeared. A false park = which lines
+paired that shouldn't have. Say exactly that when reporting the bug.
 
 ## During/after the day: /admin/summary
 

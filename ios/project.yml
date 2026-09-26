@@ -84,6 +84,14 @@ targets:
         NSLocationWhenInUseUsageDescription: >-
           ParkAgent uses your location to show the meters around you and find
           the zone you parked in.
+        # Precise Location off blurs every fix by kilometers; at park time
+        # the detector asks iOS for full accuracy for that session only,
+        # and iOS shows this sentence with the one-time prompt.
+        NSLocationTemporaryUsageDescriptionDictionary:
+          ParkLocation: >-
+            ParkAgent needs your exact spot for a moment to find the meter
+            zone you just parked in. Neighboring blocks can have different
+            rates and zone numbers.
         NSMotionUsageDescription: >-
           ParkAgent uses motion activity to tell when you have stopped
           driving, so it only offers to pay once you have actually parked.
@@ -103,10 +111,13 @@ targets:
           - CFBundleURLName: com.thomasbardhi.parkagent
             CFBundleURLSchemes: [parkagent]
 
-        # Background location is the whole unattended-park loop. Nothing
-        # else runs in the background: pushes are plain alerts (no silent
-        # pushes), and there are no BGTaskScheduler tasks — a declared mode
-        # with no use is an App Review rejection, and `processing` without
+        # Background location is the whole unattended-park loop: tracking
+        # a drive under a CLBackgroundActivitySession, the park burst, and
+        # the session's location reports. Significant-change and visit
+        # monitoring need no mode of their own. Nothing else runs in the
+        # background: pushes are plain alerts (no silent pushes), and there
+        # are no BGTaskScheduler tasks — a declared mode with no use is an
+        # App Review rejection, and `processing` without
         # BGTaskSchedulerPermittedIdentifiers fails the upload itself.
         UIBackgroundModes:
           - location
@@ -146,6 +157,13 @@ targets:
     platform: iOS
     sources:
       - path: ParkAgentTests
+      # The detector's test route and recorded signal-log traces, shared
+      # with the UI tests (Tools/make-route.py writes the route).
+      - path: Fixtures/RouteFixture.swift
+      - path: Fixtures/drive-park-walk.gpx
+        buildPhase: resources
+      - path: Fixtures/Traces
+        buildPhase: resources
       # Proves the Release denylist's type entries are real names (see
       # ReleaseDenylistTests).
       - path: Tools/ReleaseDenylist.swift
@@ -185,6 +203,9 @@ targets:
     platform: iOS
     sources:
       - path: ParkAgentUITests
+      - path: Fixtures/RouteFixture.swift
+      - path: Fixtures/drive-park-walk.gpx
+        buildPhase: resources
     dependencies:
       - target: ParkAgent
     settings:

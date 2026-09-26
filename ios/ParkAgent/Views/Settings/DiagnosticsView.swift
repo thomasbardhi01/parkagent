@@ -4,10 +4,11 @@ import SwiftUI
 /// The hidden Diagnostics screen: reachable only by tapping the version
 /// number five times, and compiled out of Release builds entirely.
 ///
-/// Exactly what a field test needs and nothing else: is the detector armed
-/// (and if not, which permission is missing), the raw signal log to export
-/// after a drive, whether the server can move money right now, a way back
-/// through onboarding, and the ParkAgent card's sandbox switch. No
+/// Exactly what a field test needs and nothing else: every capability the
+/// detector depends on with its live state, the detector's own state and
+/// self-test, the raw signal log to export after a drive, whether the
+/// server can move money right now, a way back through onboarding, and the
+/// ParkAgent card's sandbox switch. No
 /// simulated parks, no fixture points, no mock switches — the mock only
 /// exists behind the UI-test launch argument.
 struct DiagnosticsView: View {
@@ -18,10 +19,12 @@ struct DiagnosticsView: View {
     @AppStorage("hasOnboarded") private var hasOnboarded = false
 
     @State private var confirmingReset = false
+    @State private var selfTest = DetectorSelfTest()
 
     var body: some View {
         Form {
             detectionSection
+            selfTestSection
             signalLogSection
             dryRunSection
             sandboxSection
@@ -39,33 +42,84 @@ struct DiagnosticsView: View {
 
     @ViewBuilder
     private var detectionSection: some View {
+        let detector = model.detector
         Section {
-            LabeledContent("Detector", value: model.detector.isRunning ? "Running" : "Stopped")
+            LabeledContent("Detector", value: detector.isArmed ? "Running (\(detector.mode.rawValue))" : "Stopped")
                 .accessibilityIdentifier("diagnostics.detectorStatus")
-            LabeledContent("Location", value: locationStatusText)
-            LabeledContent("Motion", value: motionStatusText)
-            LabeledContent("Notifications", value: notificationStatusText)
-            if model.detector.missingPermissions.isEmpty {
+            // Every capability, live, each tappable like Account → Privacy.
+            CapabilityRowsView(identifierPrefix: "diagnostics.capability")
+            LabeledContent("Low Power Mode", value: permissions.capabilities.lowPowerMode ? "On" : "Off")
+                .accessibilityIdentifier("diagnostics.capability.lowPower")
+            LabeledContent(
+                "Background wake-ups",
+                value: "Significant-change \(detector.monitoringSignificantChanges ? "on" : "off"), visits \(detector.monitoringVisits ? "on" : "off")"
+            )
+            if let wake = detector.lastWake {
+                LabeledContent("Last wake", value: "\(wake.reason.rawValue), \(Format.clockTime(wake.at))")
+            }
+            if let fix = detector.lastFix {
+                LabeledContent("Last fix", value: String(format: "±%.0f m, %@", fix.accuracy, Format.clockTime(fix.at)))
+            }
+            LabeledContent("Pending stop", value: detector.engine.hasPendingStop ? "Yes" : "No")
+            let issues = permissions.capabilities.issues
+            if issues.isEmpty {
                 Label("Fully armed", systemImage: "checkmark.circle.fill")
                     .font(.captionTextSemibold)
                     .foregroundStyle(Color.success)
             } else {
-                // The detector keeps running on whatever remains (two of
-                // three signals still fire), so this is a warning, not an error.
+                // Detection keeps running on whatever remains, so this is
+                // a warning list, not an error.
                 Label(
-                    "Missing: \(model.detector.missingPermissions.map(\.rawValue).joined(separator: ", "))",
+                    "Missing: \(issues.map(\.title).joined(separator: "; "))",
                     systemImage: "exclamationmark.triangle.fill"
                 )
                 .font(.captionTextSemibold)
                 .foregroundStyle(Color.warningGold)
                 .accessibilityIdentifier("diagnostics.missingPermissions")
-                Button("Open Settings") { openSystemSettings() }
-                    .foregroundStyle(Color.actionCoralLink)
             }
         } header: {
             Text("Detection")
         } footer: {
-            Text("Park detection needs Location Always and Motion. It fires on any two of motion stop, car-audio disconnect, and location settling.")
+            Text(DetectionCopy.levelSentence(permissions.capabilities.detectionLevel) + " A park needs two of: motion stop or walking away, car audio disconnecting, the location settling or an iOS visit — and a precise fix.")
+        }
+    }
+
+    // MARK: - Self-test
+
+    @ViewBuilder
+    private var selfTestSection: some View {
+        Section {
+            Button(selfTest.isRunning ? "Testing…" : "Run detector self-test") {
+                Task { await selfTest.run(model: model, permissions: permissions) }
+            }
+            .disabled(selfTest.isRunning)
+            .accessibilityIdentifier("diagnostics.selfTest.run")
+            ForEach(selfTest.checks) { check in
+                HStack(alignment: .firstTextBaseline) {
+                    Image(systemName: check.outcome == .pass ? "checkmark.circle.fill"
+                        : check.outcome == .warn ? "exclamationmark.triangle.fill" : "xmark.octagon.fill")
+                        .foregroundStyle(check.outcome == .pass ? Color.success
+                            : check.outcome == .warn ? Color.warningGold : Color.danger)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(check.title).font(.bodyText)
+                        Text(check.detail)
+                            .font(.captionText)
+                            .foregroundStyle(Color.textSecondary)
+                    }
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("diagnostics.selfTest.\(check.id)")
+            }
+            if !selfTest.checks.isEmpty, !selfTest.isRunning {
+                Text(selfTest.passed ? "PASS — ready to drive" : "FAIL — fix the red items first")
+                    .font(.captionTextSemibold)
+                    .foregroundStyle(selfTest.passed ? Color.success : Color.danger)
+                    .accessibilityIdentifier("diagnostics.selfTest.verdict")
+            }
+        } header: {
+            Text("Detector self-test")
+        } footer: {
+            Text("Checks each permission and signal source live: a real location fix, motion history, the car audio route, background wake-ups, notifications, and the server.")
         }
     }
 
@@ -166,7 +220,7 @@ struct DiagnosticsView: View {
 
     private func resetOnboarding() {
         let defaults = UserDefaults.standard
-        for key in ["hasOnboarded", OnboardingStep.defaultsKey, "selectedCity",
+        for key in ["hasOnboarded", OnboardingStep.defaultsKey, "selectedCity", OnboardingGate.limitedDetectionKey,
                     "vehicle.plate", "vehicle.state", "vehicle.nickname"] {
             defaults.removeObject(forKey: key)
         }
@@ -174,36 +228,6 @@ struct DiagnosticsView: View {
         hasOnboarded = false
     }
 
-    // MARK: - Status text
-
-    private var locationStatusText: String {
-        switch permissions.locationStatus {
-        case .authorizedAlways: "Always"
-        case .authorizedWhenInUse: "While Using (needs Always)"
-        case .denied, .restricted: "Denied"
-        default: "Not requested"
-        }
-    }
-
-    private var motionStatusText: String {
-        guard permissions.motionAvailable else { return "Unavailable" }
-        switch permissions.motionStatus {
-        case .authorized: return "Allowed"
-        case .denied, .restricted: return "Denied"
-        default: return "Not requested"
-        }
-    }
-
-    private var notificationStatusText: String {
-        if permissions.notificationsGranted { return "Allowed" }
-        if permissions.notificationsDenied { return "Denied" }
-        return "Not requested"
-    }
-
-    private func openSystemSettings() {
-        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
-        UIApplication.shared.open(url)
-    }
 }
 
 #Preview {

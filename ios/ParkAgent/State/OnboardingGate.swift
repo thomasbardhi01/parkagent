@@ -10,8 +10,8 @@ import Foundation
 /// and a user without a valid session never reaches it.
 enum OnboardingGate {
     struct Facts: Equatable {
-        /// Location Always + Motion (where the hardware has it) +
-        /// notifications.
+        /// Everything detection needs is granted, or the user has seen
+        /// plainly what won't work and chosen to go on (see below).
         var permissionsOK: Bool
         /// Whether the ACCOUNT has a car — the plate the executor types at
         /// the provider lives on the server now. nil when the server didn't
@@ -26,6 +26,20 @@ enum OnboardingGate {
         /// Provider ids whose link is usable (linked or expiring). nil when
         /// the server didn't answer in time.
         var usableProviders: Set<String>?
+    }
+
+    /// The permissions step is done when nothing is missing, or when the
+    /// user read the "what won't work" summary and continued anyway. Later
+    /// changes (a revoke in Settings) are Home's banner's job, not a
+    /// reason to send anyone back through setup on every launch.
+    static func permissionsOK(_ capabilities: DetectionCapabilities, acknowledgedLimited: Bool) -> Bool {
+        capabilities.fullyGranted || acknowledgedLimited
+    }
+
+    static let limitedDetectionKey = "limitedDetectionAcknowledged"
+    static var limitedDetectionAcknowledged: Bool {
+        get { UserDefaults.standard.bool(forKey: limitedDetectionKey) }
+        set { UserDefaults.standard.set(newValue, forKey: limitedDetectionKey) }
     }
 
     static func firstMissingStep(_ facts: Facts) -> OnboardingStep? {

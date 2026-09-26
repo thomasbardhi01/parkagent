@@ -15,6 +15,8 @@ executor/storageState*.json
 executor/fixtures/
 executor/captures/
 *.log
+# …except recorded detector traces, which the unit tests replay.
+!ios/Fixtures/Traces/*.log
 .DS_Store
 .claude/settings.local.json
 # Claude Code helper-agent worktrees: full checkouts of other branches.

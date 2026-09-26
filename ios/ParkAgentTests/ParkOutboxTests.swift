@@ -53,6 +53,27 @@ final class ParkOutboxTests: XCTestCase {
         XCTAssertTrue(pending.isEmpty)
     }
 
+    /// Two passes at once (the network back as the app comes forward): each
+    /// report goes once, and none is dropped unsent.
+    func testOverlappingFlushesSendEachParkOnce() async {
+        let outbox = ParkOutbox(fileURL: file)
+        await outbox.enqueue(park(3), key: "key-1")
+        await outbox.enqueue(park(1), key: "key-2")
+        let sent = LockedKeys()
+        let send: @Sendable (ParkedRequest, String) async throws -> ParkedResponse = { _, key in
+            sent.append(key)
+            try await Task.sleep(for: .milliseconds(50))
+            return Self.answer
+        }
+        async let first = outbox.flush(send: send)
+        async let second = outbox.flush(send: send)
+        let delivered = await first + second
+        XCTAssertEqual(sent.values, ["key-1", "key-2"])
+        XCTAssertEqual(delivered.map(\.item.key).sorted(), ["key-1", "key-2"])
+        let pending = await outbox.pending
+        XCTAssertTrue(pending.isEmpty)
+    }
+
     func testStillOfflineKeepsEverythingAndStops() async {
         let outbox = ParkOutbox(fileURL: file)
         await outbox.enqueue(park(), key: "key-1")

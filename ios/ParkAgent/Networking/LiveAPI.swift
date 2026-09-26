@@ -102,6 +102,10 @@ struct LiveAPI: APIClient {
     func refreshSession(refreshToken: String, deviceId: String) async -> RefreshOutcome {
         var request = URLRequest(url: Self.url(base: baseURL, path: "auth/refresh"))
         request.httpMethod = "POST"
+        // Every signed-in call waits on this one refresh (single-flight): a
+        // hung one must not hold them all for URLSession's 60 s. A timeout
+        // is `.unreachable` — the session stays.
+        request.timeoutInterval = 15
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try? Self.encoder.encode(["refreshToken": refreshToken, "deviceId": deviceId])
 

@@ -30,6 +30,11 @@ actor ParkOutbox {
 
     private let fileURL: URL
     private var items: [Item]
+    /// One pass at a time. The actor is re-entrant at each `await`: two
+    /// passes (the network back while the app comes forward) would both
+    /// send the head, and the second would then drop the NEXT report —
+    /// unsent.
+    private var flushing = false
 
     init(fileURL: URL = ParkOutbox.defaultURL) {
         self.fileURL = fileURL
@@ -56,6 +61,9 @@ actor ParkOutbox {
         now: Date = Date(),
         send: @Sendable (ParkedRequest, String) async throws -> ParkedResponse
     ) async -> [Delivery] {
+        guard !flushing else { return [] }
+        flushing = true
+        defer { flushing = false }
         items.removeAll { now.timeIntervalSince($0.queuedAt) > Self.maxAge }
         var delivered: [Delivery] = []
         while let item = items.first {

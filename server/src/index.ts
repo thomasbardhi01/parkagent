@@ -6,6 +6,7 @@ import { asAppDb, createPrisma } from "./db.js";
 import { makeCardJanitor } from "./jobs/cardJanitor.js";
 import { makeLinkJobJanitor } from "./jobs/linkJobJanitor.js";
 import { makeConversationRetention } from "./jobs/conversationRetentionTick.js";
+import { makeLinkWorker } from "./jobs/linkWorker.js";
 import { makeExtender } from "./jobs/extendTick.js";
 import { makeAppleRevocationJob } from "./jobs/appleRevocationTick.js";
 import { makeProviderHealth } from "./jobs/providerHealthTick.js";
@@ -22,12 +23,16 @@ import { makeApnsDelivery, makeApnsSender } from "./services/apns.js";
 import { makeAppleTokenClient } from "./services/appleTokens.js";
 import { makeStateCrypto } from "./services/crypto.js";
 import { withDecisionLogging } from "./services/decisionLog.js";
+import { CircuitBreaker } from "./services/circuitBreaker.js";
 import { DryRunExecutor } from "./services/executor.js";
+import { ExecutorGate } from "./services/executorGate.js";
 import {
   closeExecutorBrowser,
   makeProviderOpsFactory,
   makeUserExecutorProvider,
+  warmExecutorBrowser,
 } from "./services/parknycExecutor.js";
+import type { ExecutorRuntime } from "./services/parknycExecutor.js";
 import { makePendingSessionCheck } from "./services/pendingSession.js";
 import { PolicyService, snapshotPolicy } from "./services/policy.js";
 import { makeAnthropicModelClient } from "./services/assistant/anthropicClient.js";
@@ -110,6 +115,32 @@ const executorOptions = {
     : {}),
 };
 const dryRunExecutor = new DryRunExecutor((msg) => app.log.info(msg));
+// Every real provider call: the provider's circuit breaker, then a slot on
+// the browser gate. Breaker state changes are automated decisions: each
+// one gets a decisions row.
+const executorRuntime: ExecutorRuntime = {
+  gate: new ExecutorGate(env.EXECUTOR_CONCURRENCY),
+  breaker: new CircuitBreaker({
+    onTransition: (transition) => {
+      app.log.warn(
+        `circuit breaker ${transition.provider}: ${transition.from} -> ${transition.to} ` +
+          `(${transition.consecutiveFailures} failures, last ${transition.lastCode ?? "-"})`,
+      );
+      void db.decision
+        .create({
+          data: {
+            kind: "circuit_breaker",
+            inputs: { ...transition },
+            rule: transition.to,
+            outcome: { provider: transition.provider, state: transition.to },
+            userId: null,
+          },
+        })
+        .catch((err: unknown) => app.log.warn(`breaker decision not written: ${String(err)}`));
+    },
+  }),
+  sessionQueueWaitMs: 45_000,
+};
 const executorFor = makeUserExecutorProvider({
   db,
   ...(stateCrypto ? { stateCrypto } : {}),
@@ -117,8 +148,9 @@ const executorFor = makeUserExecutorProvider({
   sendPush,
   ...executorOptions,
   warn: (msg) => app.log.warn(msg),
+  runtime: executorRuntime,
 });
-const providerOps = makeProviderOpsFactory(executorOptions);
+const providerOps = makeProviderOpsFactory(executorOptions, executorRuntime);
 
 // env.ts guarantees the webhook secret is present whenever the key is.
 const stripe =
@@ -248,6 +280,20 @@ const appleTokens =
     : undefined;
 if (!appleTokens) log.info("APPLE_SIGNIN_* not set; Apple tokens are not stored or revoked");
 
+// Provider links run as durable jobs (POST …/link answers at once with a
+// job id); the worker verifies, reads the card, retries with backoff, and
+// resumes whatever a previous process left mid-attempt.
+const linkWorker = makeLinkWorker({
+  db,
+  policy,
+  sendPush,
+  stateCrypto,
+  providerOps,
+  stripe,
+  issuingLive: env.ISSUING_LIVE === "true",
+  log,
+});
+
 buildApp(
   {
     db,
@@ -269,6 +315,8 @@ buildApp(
     ...(stateCrypto ? { stateCrypto } : {}),
     ...(appleTokens ? { appleTokens } : {}),
     providerOps,
+    linkWorker,
+    executorRuntime,
     issuingLive: env.ISSUING_LIVE === "true",
     // A test-mode Stripe key can't move real money, so a Debug build may
     // choose the ParkAgent card against it before ISSUING_LIVE.
@@ -305,6 +353,17 @@ const appleRevocations = makeAppleRevocationJob({ db, appleTokens, stateCrypto, 
 
 app.listen({ port: env.PORT, host: "0.0.0.0" });
 extender.start();
+linkWorker.start();
+// Chromium up front, off the request path: the first link or payment after
+// a deploy shouldn't also pay for launching it. A failure is logged, never
+// fatal (no browser installed → real calls fail typed, as before).
+if (stateCrypto && env.EXECUTOR_WARM_AT_BOOT === "true") {
+  void warmExecutorBrowser()
+    .then((ms) => app.log.info(`executor browser warm in ${ms} ms`))
+    .catch((err: unknown) =>
+      app.log.warn(`executor browser warm-up failed: ${String(err).split("\n")[0]}`),
+    );
+}
 cardJanitor.start();
 linkJobJanitor.start();
 conversationRetention.start();
@@ -320,6 +379,7 @@ appleRevocations.start();
 for (const signal of ["SIGTERM", "SIGINT"] as const) {
   process.once(signal, () => {
     extender.stop();
+    linkWorker.stop();
     cardJanitor.stop();
     linkJobJanitor.stop();
     conversationRetention.stop();

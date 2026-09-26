@@ -59,7 +59,23 @@ export type ExecutorErrorCode =
   | "free_period" // the provider says this zone isn't charging now (after hours)
   | "vehicle_missing" // the provider account has no saved vehicle matching the plate
   | "parking_denied" // the operator blocked re-parking (repark/zone lockout); NOT a charge
+  | "timeout" // a hard budget ran out before the provider answered (linking)
+  | "provider_unavailable" // the provider's circuit breaker is open: failing fast, nothing ran
+  | "busy" // no browser slot freed up in time: nothing ran
   | "unknown"; // none of the above matched
+
+/** How one real executor call went, for decisions and /admin/summary. Set
+ * by the bridge (parknycExecutor.ts), never by the Playwright package. */
+export interface ExecutorCallMeta {
+  /** Waiting for a browser slot (ExecutorGate). */
+  queueMs: number;
+  /** In the browser. */
+  runMs: number;
+  /** Navigations retried once on a transient failure, before paying. */
+  retries: number;
+  /** How many calls were ahead when this one queued. */
+  queuedBehind: number;
+}
 
 /** Evidence from an unexpected screen; the caller attaches it to decisions. */
 export interface ExecutorDiagnostics {
@@ -106,6 +122,8 @@ export interface ExecutorOk {
    * Vehicles chooser); logged on the decision and fed to
    * zone_terms_observed. */
   providerTerms?: ProviderZoneTerms;
+  retries?: number;
+  meta?: ExecutorCallMeta;
 }
 
 /** Zone terms as the provider displayed them (mirrors executor/types.ts). */
@@ -140,9 +158,24 @@ export interface ExecutorError {
   /** Terms the provider displayed before the flow failed — kept so a run
    * that died after the Vehicles chooser still feeds zone_terms_observed. */
   providerTerms?: ProviderZoneTerms;
+  /** The flow reached the pay click: whether it charged is unknown, and
+   * nothing retried it. */
+  afterPayClick?: boolean;
+  retries?: number;
+  meta?: ExecutorCallMeta;
 }
 
 export type ExecutorResult = ExecutorOk | ExecutorError;
+
+/** The call's timings and retries for its decisions row (and
+ * /admin/summary's per-stage p50/p95). Empty for dry-run calls. */
+export function executorOutcome(result: ExecutorResult): Record<string, unknown> {
+  const afterPayClick = !result.ok && result.afterPayClick === true;
+  if (!result.meta && !afterPayClick) return {};
+  return {
+    executor: { ...(result.meta ?? {}), ...(afterPayClick ? { afterPayClick: true } : {}) },
+  };
+}
 
 export interface Executor {
   startSession(args: StartSessionArgs): Promise<ExecutorResult>;

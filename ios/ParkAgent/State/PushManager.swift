@@ -85,7 +85,8 @@ final class PushManager: NSObject, UNUserNotificationCenterDelegate {
             return
         }
         switch type {
-        case "provider_relink":
+        case "provider_relink", "provider_link_failed":
+            // Sign in again, or retry a link the provider let time out.
             if let provider { onProviderRelink?(provider) }
         case "card_declined":
             // The fix is in the Wallet (update the card), not a retry.

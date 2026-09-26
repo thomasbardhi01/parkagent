@@ -266,6 +266,16 @@ linked account for the zone's provider; each call gets a fresh browser
 context on one warm shared Chromium process. The old single-secret
 `PARKNYC_STATE_PATH`/`PARKNYC_STATE_JSON` plumbing is gone
 (`pnpm -C executor run login` remains as a local way to capture cookies).
+Linking is a durable job: `POST /providers/:provider/link` answers `202`
+with a job id at once and `jobs/linkWorker.ts` verifies in the background
+under a 45 s budget, retrying transient failures (1 then 5 min) before
+dead-lettering; the app polls `link-status` for the real step and offers
+"Continue — we'll let you know" (a push) after 20 s. All provider calls go
+through one `ExecutorGate` (`EXECUTOR_CONCURRENCY`, default 2 — sized for
+the 1 GB machine) and a per-provider `CircuitBreaker`; the browser warms
+at boot (`EXECUTOR_WARM_AT_BOOT`). Nothing is ever retried after the pay
+click (`afterPayClick`). See server/API.md "Executor capacity and
+resilience".
 Its tests run over recorded fixture HTML and never touch a provider's live
 site. A few DOM tests launch a local headless Chromium, and they skip
 themselves where it is absent. CI's required `executor` job runs lint and

@@ -16,21 +16,25 @@
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { warmBrowser } from "./browser.js";
 import { withBrowserCrashRetry } from "./retry.js";
 import { ParkNycClient } from "./parknyc/client.js";
 import { PassportClient } from "./passport/client.js";
 import type { PassportClientOptions } from "./passport/client.js";
 import type {
+  AccountOpOptions,
   AccountOps,
   Executor,
   ExecutorResult,
   ExtendSessionArgs,
+  ProviderOpError,
   StartSessionArgs,
   StopSessionArgs,
   StorageStateValue,
 } from "./types.js";
 
 export type {
+  AccountOpOptions,
   AccountOps,
   CardFormDetails,
   Executor,
@@ -52,6 +56,7 @@ export type {
 } from "./types.js";
 export { closeWarmBrowser, warmBrowser } from "./browser.js";
 export { withBrowserCrashRetry } from "./retry.js";
+export { gotoWithRetry, isTransientNavigationError } from "./navigate.js";
 export { ParkNycClient } from "./parknyc/client.js";
 export type { ParkNycClientOptions } from "./parknyc/client.js";
 export { PassportClient } from "./passport/client.js";
@@ -229,41 +234,90 @@ export function createPassportExecutor(options: PassportExecutorOptions): Execut
 
 /** Account operations against a linked Passport account. */
 export function createPassportAccountOps(options: PassportExecutorOptions): AccountOps {
-  async function withClient<T>(fn: (client: PassportClient) => Promise<T>): Promise<T> {
-    const client = makePassportClient(options);
-    try {
-      return await fn(client);
-    } finally {
-      await client.close();
-    }
-  }
+  const withClient = <T extends { ok: boolean }>(
+    fn: (client: PassportClient) => Promise<T>,
+    budget?: AccountOpOptions,
+  ) => withBudget(makePassportClient(options), fn, budget);
 
   return {
-    verifyAccount: () => withClient((c) => c.verifyAccount()),
+    verifyAccount: (budget) => withClient((c) => c.verifyAccount(budget), budget),
     setupCard: (card) => withClient((c) => c.setupCard(card)),
     removeCard: (last4) => withClient((c) => c.removeCard(last4)),
     topupWallet: (amountUsd) => withClient((c) => c.topupWallet(amountUsd)),
-    readSavedCard: () => withClient((c) => c.readSavedCard()),
+    readSavedCard: (budget) => withClient((c) => c.readSavedCard(budget), budget),
   };
 }
 
 /** Account operations against a linked ParkNYC account (verify cookies,
  * card setup/removal, wallet top-up). Same isolation as the executor. */
 export function createParkNycAccountOps(options: ParkNycExecutorOptions): AccountOps {
-  async function withClient<T>(fn: (client: ParkNycClient) => Promise<T>): Promise<T> {
-    const client = makeClient(options);
-    try {
-      return await fn(client);
-    } finally {
-      await client.close();
-    }
-  }
+  const withClient = <T extends { ok: boolean }>(
+    fn: (client: ParkNycClient) => Promise<T>,
+    budget?: AccountOpOptions,
+  ) => withBudget(makeClient(options), fn, budget);
 
   return {
-    verifyAccount: () => withClient((c) => c.verifyAccount()),
+    verifyAccount: (budget) => withClient((c) => c.verifyAccount(budget), budget),
     setupCard: (card) => withClient((c) => c.setupCard(card)),
     removeCard: (last4) => withClient((c) => c.removeCard(last4)),
     topupWallet: (amountUsd) => withClient((c) => c.topupWallet(amountUsd)),
-    readSavedCard: () => withClient((c) => c.readSavedCard()),
+    readSavedCard: (budget) => withClient((c) => c.readSavedCard(budget), budget),
   };
+}
+
+/**
+ * Run one account op on its own client, under the caller's budget. When
+ * the budget runs out (or the caller aborts) the client's context is
+ * closed, so the browser work stops rather than running on unseen, and the
+ * answer is a typed "timeout".
+ */
+export async function withBudget<C extends { close(): Promise<void> }, T extends { ok: boolean }>(
+  client: C,
+  fn: (client: C) => Promise<T>,
+  budget?: AccountOpOptions,
+): Promise<T> {
+  let expired = false;
+  const expire = () => {
+    expired = true;
+    void client.close();
+  };
+  const timer = budget?.budgetMs !== undefined ? setTimeout(expire, budget.budgetMs) : null;
+  if (budget?.signal?.aborted) expire();
+  budget?.signal?.addEventListener("abort", expire, { once: true });
+  try {
+    const result = await fn(client);
+    if (expired) return timedOut(budget) as unknown as T;
+    return result;
+  } catch (err) {
+    if (expired) return timedOut(budget) as unknown as T;
+    throw err;
+  } finally {
+    if (timer) clearTimeout(timer);
+    budget?.signal?.removeEventListener("abort", expire);
+    await client.close();
+  }
+}
+
+function timedOut(budget?: AccountOpOptions): ProviderOpError {
+  return {
+    ok: false,
+    code: "timeout",
+    message:
+      budget?.budgetMs !== undefined
+        ? `provider did not answer within ${Math.round(budget.budgetMs / 1000)}s`
+        : "stopped by the caller",
+  };
+}
+
+/**
+ * Launch the shared Chromium ahead of the first call (server boot), and
+ * open and close one context so the first real call doesn't pay for that
+ * either. Returns how long it took; throws when Chromium can't start.
+ */
+export async function warmUpBrowser(): Promise<number> {
+  const started = Date.now();
+  const browser = await warmBrowser(true);
+  const context = await browser.newContext();
+  await context.close();
+  return Date.now() - started;
 }

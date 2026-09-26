@@ -291,6 +291,12 @@ struct AccountSheetView: View {
         switch response.activeSource {
         case .providerCard:
             let title = WalletCopy.title(.providerCard, provider: providerShortName)
+            // The Wallet hero's answer: an account that isn't connected has
+            // no card paying — and another account's card is not this one.
+            if let account = response.providers.first(where: { $0.displayName == providerShortName }),
+               !account.isLinked {
+                return "\(title) · \(WalletCopy.notConnected)"
+            }
             let card = response.providerCard.cards.first { $0.displayName == providerShortName }
                 ?? response.providerCard.cards.first
             return [title, card.flatMap { WalletCopy.masked(brand: $0.brand, last4: $0.last4) }]

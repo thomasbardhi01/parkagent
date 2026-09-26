@@ -49,6 +49,37 @@ describe("FR-29 admin summary", () => {
     // This suite itself parked several times today — the trail must show.
     expect(res.body["decisionCount"] as number).toBeGreaterThan(0);
   });
+
+  it("FR-29 GET /admin/summary reports provider reliability, the executor gate, and dead letters", async (ctx) => {
+    const res = await frFetch("GET", "/admin/summary");
+    if (res.status === 403) {
+      ctx.skip(); // FR key is not admin on this deployment
+      return;
+    }
+    expect(res.status).toBe(200);
+    // Per provider: stage timings (p50/p95), timeouts, retries, breaker trips.
+    const providers = res.body["providers"] as Record<string, Record<string, unknown>>;
+    expect(typeof providers).toBe("object");
+    for (const summary of Object.values(providers)) {
+      expect(typeof summary["stages"]).toBe("object");
+      expect(typeof summary["timeouts"]).toBe("number");
+      expect(typeof summary["retries"]).toBe("number");
+      expect(typeof summary["breakerTrips"]).toBe("number");
+    }
+    // The gate is null only on a server without the executor.
+    const executor = res.body["executor"] as Record<string, unknown> | null;
+    if (executor) {
+      expect(executor["capacity"] as number).toBeGreaterThanOrEqual(1);
+      expect(typeof executor["inUse"]).toBe("number");
+      expect(typeof executor["queued"]).toBe("number");
+    }
+    const dead = res.body["deadLetters"] as Record<string, unknown>;
+    expect(Array.isArray(dead["linkJobs"])).toBe(true);
+    expect(typeof dead["appleRevocations"]).toBe("number");
+    expect(typeof (res.body["jobs"] as Record<string, unknown>)["appleRevocationsPending"]).toBe(
+      "number",
+    );
+  });
 });
 
 describe("FR-28 pushes", () => {

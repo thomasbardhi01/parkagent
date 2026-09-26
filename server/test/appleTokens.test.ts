@@ -255,16 +255,21 @@ describe("DELETE /me revokes the Apple token", () => {
       outcome: { appleRevoked: false },
     });
 
+    let clock = new Date();
     const job = makeAppleRevocationJob({
       db: deps.db,
       appleTokens: apple.client,
       stateCrypto: testStateCrypto(),
       log: { info: () => {}, warn: () => {} },
+      now: () => clock,
     });
-    await job.tick(); // still down: kept for the next hour
+    await job.tick(); // still down: kept, with the next try an hour out
     expect(row.appleRefreshTokenSealed).toEqual(expect.any(String));
 
     apple.setRevokeOk(true);
+    await job.tick(); // not due yet: backoff, not a hammer
+    expect(row.appleRefreshTokenSealed).toEqual(expect.any(String));
+    clock = new Date(clock.getTime() + 61 * 60_000);
     await job.tick();
     expect(row.appleRefreshTokenSealed ?? null).toBeNull();
     expect(apple.calls.revoked).toEqual([

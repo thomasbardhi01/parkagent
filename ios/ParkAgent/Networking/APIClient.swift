@@ -82,6 +82,8 @@ protocol APIClient: Sendable {
         consent: Bool
     ) async throws -> ProviderLinkResponse
     func linkStatus(providerId: String, jobId: String) async throws -> LinkStatusResponse
+    /// The user moved on before the link finished: push its outcome.
+    func notifyLinkJob(providerId: String, jobId: String) async throws -> LinkNotifyResponse
     func setupCard(providerId: String) async throws -> SetupCardResponse
     func unlinkProvider(_ providerId: String) async throws -> UnlinkResponse
 
@@ -182,6 +184,9 @@ enum APIError: Error, LocalizedError {
     static let preChargeExecutorCodes: Set<String> = [
         "auth_expired", "zone_not_found", "payment_declined",
         "payment_method_missing", "vehicle_missing", "parking_denied",
+        // Nothing ran: the provider's circuit breaker was open, or no
+        // browser slot freed up on the server in time.
+        "provider_unavailable", "busy",
     ]
 
     /// True only when the provider certainly didn't take the money.
@@ -204,6 +209,9 @@ enum APIError: Error, LocalizedError {
     /// The parked sheet's sentence for a failed START — what is true about
     /// the meter, and what to do before trying again.
     var startFailureMessage: String {
+        if case .executorFailed(let code) = self, let nothingRan = Self.nothingRanMessage(code) {
+            return nothingRan
+        }
         if case .executorFailed = self {
             return providerDeclined
                 ? "The parking provider turned the payment down, so the meter isn't paid. Try again, or pay at the meter."
@@ -240,11 +248,25 @@ enum APIError: Error, LocalizedError {
             return Self.refusalMessage(code)
         case .cardNotSaved(let message):
             return message
-        case .executorFailed:
+        case .executorFailed(let code):
             // Extend and stop read this; a start uses startFailureMessage.
+            if let nothingRan = Self.nothingRanMessage(code) { return nothingRan }
             return providerDeclined
                 ? "The parking provider turned it down, so nothing changed. Try again, or use your parking app."
                 : "The parking provider didn't confirm it. Check your parking app to see where it stands before trying again."
+        }
+    }
+
+    /// The server never started the call (the provider's circuit breaker
+    /// was open, or every browser slot stayed busy): certainly nothing paid.
+    private static func nothingRanMessage(_ code: String?) -> String? {
+        switch code {
+        case "provider_unavailable":
+            "The parking provider isn't responding right now, so ParkAgent didn't try — nothing was charged. Pay at the meter or in your parking app."
+        case "busy":
+            "ParkAgent couldn't reach the parking provider in time — nothing was charged. Try again in a moment, or pay at the meter."
+        default:
+            nil
         }
     }
 

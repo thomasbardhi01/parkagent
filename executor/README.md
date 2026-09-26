@@ -248,8 +248,24 @@ the `#sessStopBtn` stop-confirm path (no covered zone enables early stop).
 | `parking_denied` | The operator blocked re-parking (a repark/zone lockout — ParkBoston's "Parking Denied" popup after the confirm-Yes click). **No charge**: the provider refused before authorizing. The server pushes "wait or move the car", not "tap to pay" (a retry would just be denied again) |
 | `ui_changed` | An expected screen/element never appeared (capture attached) — includes captcha/bot-check walls, which classify.ts deliberately never reads as `auth_expired` (that would wrongly expire the linked account and push a relink) |
 | `network` | Couldn't reach the provider |
-| `browser_crashed` | The shared Chromium died mid-call. The executor retries the call ONCE on a fresh context first (warmBrowser relaunches lazily); this code means the retry failed too |
+| `browser_crashed` | The shared Chromium died mid-call. Before the pay click, the executor retries the call ONCE on a fresh context (warmBrowser relaunches lazily) and this code means the retry failed too. After the pay click it is never retried — a second run could pay twice — and the error carries `afterPayClick: true` |
+| `timeout` | The call ran past its budget (`AccountOpOptions.budgetMs` for `verifyAccount`/`readSavedCard`; the server's 45 s link budget). The client is closed and nothing more happens on the provider |
 | `unknown` | Anything else |
+
+**The pay-click boundary.** Each client sets `payClicked` right before the
+first click that can charge (Passport: the duration Continue, start and
+extend; ParkNYC: the wallet pay). Before it, a page load that fails
+transiently (`net::ERR_*`, a navigation timeout — `isTransientNavigationError`)
+is retried once in place (`gotoWithRetry`), and a crash once on a fresh
+context; the counts come back as `retries`. After it, nothing is retried,
+and every failure carries `afterPayClick: true` so the server says
+"Payment not confirmed" rather than "unpaid".
+
+**Light mode for account checks.** `verifyAccount` and `readSavedCard`
+block images, fonts, and media and wait for `domcontentloaded` only: the
+lightest load that proves the session (or shows the card), on a 1 GB
+machine where every megabyte counts. `warmUpBrowser()` launches the shared
+Chromium ahead of the first call (the server does it at boot).
 
 Account ops (`setupCard` — see the card flow) can additionally return
 `unsupported_card_brand`: the Stripe card's brand has no mapping to the

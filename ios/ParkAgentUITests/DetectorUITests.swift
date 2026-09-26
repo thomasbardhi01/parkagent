@@ -27,8 +27,11 @@ final class DetectorUITests: ParkAgentUITestCase {
 
         // Start at the route's first point before the app arms.
         setLocation(route.points[0])
+        // Boston all the way through: the route is Boylston St, so the mock
+        // answers with a Boston zone (456) and the chip says Boston.
         let app = launchApp(
-            scenario: "singleQuote",
+            scenario: "bostonKnownZone",
+            cityScenario: "bos",
             capabilities: nil,
             // The signal log is on so a run can be kept as a replay fixture
             // (see Fixtures/Traces).

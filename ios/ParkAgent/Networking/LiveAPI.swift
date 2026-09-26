@@ -374,6 +374,11 @@ struct LiveAPI: APIClient {
         )
     }
 
+    func notifyLinkJob(providerId: String, jobId: String) async throws -> LinkNotifyResponse {
+        struct Empty: Encodable {}
+        return try await send("providers/\(providerId)/link-jobs/\(jobId)/notify", method: "POST", body: Empty())
+    }
+
     func setupCard(providerId: String) async throws -> SetupCardResponse {
         struct Empty: Encodable {}
         return try await send("providers/\(providerId)/setup-card", method: "POST", body: Empty())

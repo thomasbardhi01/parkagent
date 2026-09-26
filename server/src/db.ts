@@ -351,6 +351,69 @@ export interface UserIdentityRow {
 export interface PendingAppleRevocationRow {
   id: string;
   appleRefreshTokenSealed: string | null;
+  appleRevokeAttempts: number;
+}
+
+/** A link job as the worker and the poll read it (routes/providers.ts,
+ * jobs/linkWorker.ts). */
+export interface LinkJobRow {
+  id: string;
+  userId: string;
+  provider: string;
+  phase: string;
+  reason: string | null;
+  retrySafe: boolean | null;
+  dryRun: boolean | null;
+  createdAt: Date;
+  updatedAt?: Date;
+  stateSealed: string | null;
+  setUpCard: boolean;
+  attempts: number;
+  maxAttempts: number;
+  nextAttemptAt: Date | null;
+  lockedUntil: Date | null;
+  startedAt: Date | null;
+  finishedAt: Date | null;
+  deadAt: Date | null;
+  lastError: string | null;
+  queuePosition: number | null;
+  stages: unknown;
+  notify: boolean;
+  notifiedAt: Date | null;
+}
+
+export interface LinkJobPatch {
+  phase?: string;
+  reason?: string | null;
+  retrySafe?: boolean | null;
+  dryRun?: boolean;
+  stateSealed?: string | null;
+  attempts?: number;
+  nextAttemptAt?: Date | null;
+  lockedUntil?: Date | null;
+  startedAt?: Date;
+  finishedAt?: Date;
+  deadAt?: Date;
+  lastError?: string | null;
+  queuePosition?: number | null;
+  stages?: Record<string, number>;
+  notify?: boolean;
+  notifiedAt?: Date;
+}
+
+/** The link-job queries in use: the worker's due scan and lease claim,
+ * the janitor's legacy sweep, and /admin/summary's day. */
+export interface LinkJobWhere {
+  id?: string;
+  userId?: string;
+  attempts?: number;
+  phase?: { in: string[] };
+  createdAt?: { lt?: Date; gte?: Date };
+  nextAttemptAt?: { lte: Date } | null;
+  finishedAt?: null;
+  deadAt?: null | { not: null };
+  lockedUntil?: null;
+  OR?: ({ lockedUntil: null } | { lockedUntil: { lt: Date } })[];
 }
 
 /** What the FR throwaway purge checks before touching a row: identity,
@@ -380,6 +443,10 @@ export interface UserUpdate {
   appleSub?: string | null;
   googleSub?: string | null;
   appleRefreshTokenSealed?: string | null;
+  appleRevokeAttempts?: number;
+  appleRevokeNextAt?: Date | null;
+  appleRevokeDeadAt?: Date;
+  appleRevokeLastError?: string | null;
   deletedAt?: Date;
   apiKey?: null;
   apiKeyHash?: null;
@@ -479,13 +546,26 @@ export interface AppDb {
       where: { id: { in: string[] } };
       select: Record<keyof ThrowawayCheckRow, true>;
     }): Promise<ThrowawayCheckRow[]>;
-    /** Deleted accounts whose Apple revoke hasn't gone through yet
-     * (jobs/appleRevocationTick.ts). */
+    /** Deleted accounts whose Apple revoke hasn't gone through yet and is
+     * due (jobs/appleRevocationTick.ts); dead-lettered ones are left. */
     findMany(args: {
-      where: { deletedAt: { not: null }; appleRefreshTokenSealed: { not: null } };
+      where: {
+        deletedAt: { not: null };
+        appleRefreshTokenSealed: { not: null };
+        appleRevokeDeadAt: null;
+        OR: ({ appleRevokeNextAt: null } | { appleRevokeNextAt: { lte: Date } })[];
+      };
       select: Record<keyof PendingAppleRevocationRow, true>;
       take: number;
     }): Promise<PendingAppleRevocationRow[]>;
+    /** /admin/summary: revocations still pending, and dead-lettered. */
+    count(args: {
+      where: {
+        deletedAt: { not: null };
+        appleRefreshTokenSealed: { not: null };
+        appleRevokeDeadAt: null | { not: null };
+      };
+    }): Promise<number>;
   };
   refreshToken: {
     create(args: {
@@ -916,27 +996,21 @@ export interface AppDb {
         reason?: string;
         retrySafe?: boolean;
         dryRun?: boolean;
+        stateSealed?: string;
+        setUpCard?: boolean;
+        maxAttempts?: number;
+        nextAttemptAt?: Date;
       };
     }): Promise<{ id: string }>;
-    update(args: {
-      where: { id: string };
-      data: { phase?: string; reason?: string; retrySafe?: boolean; dryRun?: boolean };
-    }): Promise<unknown>;
-    findUnique(args: { where: { id: string } }): Promise<{
-      id: string;
-      userId: string;
-      provider: string;
-      phase: string;
-      reason: string | null;
-      retrySafe: boolean | null;
-      dryRun: boolean | null;
-      createdAt: Date;
-    } | null>;
-    /** The janitor's timeout sweep. */
-    updateMany(args: {
-      where: { phase: { in: string[] }; createdAt: { lt: Date } };
-      data: { phase: string; reason: string; retrySafe: boolean };
-    }): Promise<{ count: number }>;
+    update(args: { where: { id: string }; data: LinkJobPatch }): Promise<unknown>;
+    findUnique(args: { where: { id: string } }): Promise<LinkJobRow | null>;
+    findMany(args: {
+      where: LinkJobWhere;
+      orderBy?: { nextAttemptAt: "asc" } | { createdAt: "asc" };
+      take?: number;
+    }): Promise<LinkJobRow[]>;
+    /** Lease claims (compare-and-set) and the janitor's legacy sweep. */
+    updateMany(args: { where: LinkJobWhere; data: LinkJobPatch }): Promise<{ count: number }>;
   };
   decision: {
     create(args: {

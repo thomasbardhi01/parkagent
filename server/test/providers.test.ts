@@ -48,7 +48,14 @@ function post(t: ReturnType<typeof makeTestApp>, url: string, body?: unknown) {
 async function waitForJob(
   t: ReturnType<typeof makeTestApp>,
   jobId: string,
-): Promise<{ phase: string; reason?: string; retrySafe?: boolean; dryRun?: boolean }> {
+): Promise<{
+  phase: string;
+  reason?: string;
+  retrySafe?: boolean;
+  dryRun?: boolean;
+  linked?: boolean;
+  walletBalanceCents?: number;
+}> {
   for (let i = 0; i < 100; i += 1) {
     const res = await t.app.inject({
       method: "GET",
@@ -98,7 +105,7 @@ describe("state crypto", () => {
 });
 
 describe("POST /providers/:provider/link", () => {
-  it("verifies, seals the state, and reports the wallet balance", async () => {
+  it("answers at once with a job; the worker verifies, seals the state, and reports the balance", async () => {
     const verified: string[] = [];
     const t = makeTestApp({
       seedLinkedProvider: false,
@@ -115,8 +122,13 @@ describe("POST /providers/:provider/link", () => {
       cookies: [SESSION_COOKIE, WRONG_DOMAIN_COOKIE],
       set_up_card: false,
     });
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ status: "linked", walletBalanceCents: 1250, jobId: null });
+    // The request no longer waits on a browser: 202 and a job to poll.
+    expect(res.statusCode).toBe(202);
+    const { jobId } = res.json() as { jobId: string };
+    expect(res.json()).toMatchObject({ status: "verifying", phase: "queued" });
+
+    const job = await waitForJob(t, jobId);
+    expect(job).toMatchObject({ phase: "done", linked: true, walletBalanceCents: 1250 });
     expect(verified).toEqual(["yes"]);
 
     const account = t.state.providerAccounts[0]!;
@@ -128,10 +140,12 @@ describe("POST /providers/:provider/link", () => {
     };
     expect(opened.cookies).toHaveLength(1);
     expect(opened.cookies[0]!.domain).toBe(".nyc.flowbirdapp.com");
-    // The audit records counts and domains, never values.
-    const decision = t.state.decisions.find((d) => d.kind === "provider_link")!;
-    expect(decision.rule).toBe("link_ok");
-    expect(JSON.stringify(decision.inputs)).not.toContain("cookie-value-1");
+    // The cookies left the job once it ended.
+    expect(t.state.linkJobs[0]!.stateSealed).toBeNull();
+    // The audit records counts, codes, and timings, never values.
+    const decisions = t.state.decisions.filter((d) => d.kind === "provider_link");
+    expect(decisions.map((d) => d.rule)).toEqual(["link_queued", "link_ok"]);
+    expect(JSON.stringify(decisions)).not.toContain("cookie-value-1");
   });
 
   it("400s when no cookie is on the provider's domains", async () => {
@@ -143,10 +157,11 @@ describe("POST /providers/:provider/link", () => {
     expect(res.statusCode).toBe(400);
     expect(res.json()).toMatchObject({ error: "no_session_cookies" });
     expect(t.state.providerAccounts).toHaveLength(0);
+    expect(t.state.linkJobs).toHaveLength(0);
     expect(t.state.decisions.at(-1)).toMatchObject({ rule: "no_session_cookies" });
   });
 
-  it("409s when verification fails, storing nothing", async () => {
+  it("a sign-in that isn't a session fails the job at once, storing nothing", async () => {
     const t = makeTestApp({
       seedLinkedProvider: false,
       providerOps: () =>
@@ -162,8 +177,15 @@ describe("POST /providers/:provider/link", () => {
       cookies: [SESSION_COOKIE],
       set_up_card: false,
     });
-    expect(res.statusCode).toBe(409);
-    expect(res.json()).toMatchObject({ error: "verification_failed", code: "auth_expired" });
+    const job = await waitForJob(t, (res.json() as { jobId: string }).jobId);
+    // No retries: the app is still on the provider's page and resubmits.
+    expect(job).toMatchObject({
+      phase: "failed",
+      reason: "auth_expired",
+      retrySafe: false,
+      linked: false,
+    });
+    expect(t.state.linkJobs[0]!.attempts).toBe(1);
     expect(t.state.providerAccounts).toHaveLength(0);
   });
 
@@ -238,7 +260,7 @@ describe("chained link → setup-card", () => {
       set_up_card: true,
       consent_replace_payment_method: true,
     });
-    expect(res.statusCode).toBe(200);
+    expect(res.statusCode).toBe(202);
     const { jobId } = res.json() as { jobId: string };
     expect(jobId).toBeTruthy();
 

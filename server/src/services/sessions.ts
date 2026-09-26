@@ -16,6 +16,7 @@ import {
   sessionExtendedPush,
 } from "./apns.js";
 import type { ExecutorDiagnostics, ExecutorErrorCode, ExecutorProvider } from "./executor.js";
+import { executorOutcome } from "./executor.js";
 import type { HoursInterval } from "./hours.js";
 import { nycStartOfDay } from "./hours.js";
 import { LINK_COMMITTED_STATUSES, linkSpentSince } from "./link/linkSpend.js";
@@ -133,6 +134,8 @@ export type ExtensionOutcome =
       /** Present when shadow mode fired (or tried to fire) a test auth. */
       shadow?: ShadowResult;
       hold?: HoldOutcome;
+      /** The executor call's queue/browser timings and retries. */
+      executor?: Record<string, unknown>;
     }
   | {
       ok: false;
@@ -149,6 +152,7 @@ export type ExtensionOutcome =
       price: StayPrice;
       durationMs: number;
       diagnostics?: ExecutorDiagnostics;
+      executor?: Record<string, unknown>;
       hold?: HoldOutcome;
     };
 
@@ -366,6 +370,7 @@ async function extendLocked(
       durationMs,
       ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}),
       ...(hold ? { hold } : {}),
+      ...executorOutcome(result),
     };
   }
 
@@ -398,6 +403,7 @@ async function extendLocked(
       durationMs,
       ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}),
       ...(hold ? { hold } : {}),
+      ...executorOutcome(result),
     };
   }
 
@@ -455,5 +461,6 @@ async function extendLocked(
     durationMs,
     ...(shadow ? { shadow } : {}),
     ...(hold ? { hold } : {}),
+    ...executorOutcome(result),
   };
 }

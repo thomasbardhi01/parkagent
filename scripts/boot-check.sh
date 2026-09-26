@@ -56,7 +56,7 @@ OPTIONAL_VARS=(
   STRIPE_SECRET_KEY STRIPE_WEBHOOK_SECRET STRIPE_FINANCIAL_ACCOUNT STRIPE_PAYOUT_RECIPIENT
   APNS_KEY APNS_KEY_ID APNS_TEAM_ID APNS_BUNDLE_ID
   ISSUING_LIVE
-  PROVIDER_STATE_KEY
+  PROVIDER_STATE_KEY EXECUTOR_CONCURRENCY EXECUTOR_WARM_AT_BOOT
   APPLE_AUDIENCE APPLE_SIGNIN_KEY APPLE_SIGNIN_KEY_ID APPLE_SIGNIN_TEAM_ID
   APPLE_MAPS_KEY APPLE_MAPS_KEY_ID APPLE_MAPS_TEAM_ID
   EMAIL_SIGNIN_ENABLED RESEND_API_KEY RESEND_FROM
@@ -86,6 +86,7 @@ if [[ "$MODE" == "off" ]]; then
   export EMAIL_SIGNIN_ENABLED=false
   export GOOGLE_SIGNIN_ENABLED=false
   export PARKWHIZ_ENABLED=false
+  export EXECUTOR_WARM_AT_BOOT=false
   EXPECTED_METHODS='{"apple":true,"email":false,"google":false}'
 else
   # Live mode against an empty database: no users, sessions, or linked
@@ -103,6 +104,10 @@ else
   export ISSUING_LIVE=true
   PROVIDER_STATE_KEY="$(openssl rand -base64 32)"
   export PROVIDER_STATE_KEY
+  # The warm-up runs (and, with no Chromium on the runner, fails and is
+  # logged); the server must stay up either way.
+  export EXECUTOR_CONCURRENCY=2
+  export EXECUTOR_WARM_AT_BOOT=true
   export APPLE_AUDIENCE="com.thomasbardhi.parkagent"
   APPLE_SIGNIN_KEY="$(p8_key)"
   export APPLE_SIGNIN_KEY

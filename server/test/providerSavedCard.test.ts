@@ -1,8 +1,9 @@
 /**
- * provider_card display info at link time: linking reads the brand/last4
- * off the provider's Your Cards screen (best effort), stores it, and
- * /providers/status serves it for the Account sheet's masked-card row.
- * issuing_card users never trigger the read — their card is ours.
+ * provider_card display info at link time: the link job reads the
+ * brand/last4 off the provider's Your Cards screen once the sign-in is
+ * verified (best effort, never blocking the link), stores it, and
+ * link-status and /providers/status serve it. issuing_card users never
+ * trigger the read — their card is ours.
  */
 
 import { expect, test } from "vitest";
@@ -13,17 +14,31 @@ const HEADERS = { "x-api-key": API_KEY };
 
 const COOKIES = [{ name: "session", value: "abc", domain: ".ppprk.com", path: "/" }];
 
-function link(app: ReturnType<typeof makeTestApp>["app"]) {
-  return app.inject({
+/** Link, let the worker finish the job, and return the job's answer. */
+async function link(t: ReturnType<typeof makeTestApp>) {
+  const res = await t.app.inject({
     method: "POST",
     url: "/providers/passport/link",
     headers: HEADERS,
     payload: { cookies: COOKIES, set_up_card: false },
   });
+  expect(res.statusCode).toBe(202);
+  await t.linkWorker.tick();
+  const status = await t.app.inject({
+    method: "GET",
+    url: `/providers/passport/link-status?jobId=${(res.json() as { jobId: string }).jobId}`,
+    headers: HEADERS,
+  });
+  return status.json() as {
+    phase: string;
+    linked: boolean;
+    cardBrand?: string;
+    cardLast4?: string;
+  };
 }
 
 test("provider_card link stores and serves the saved card's brand/last4", async () => {
-  const { app, state } = makeTestApp({
+  const t = makeTestApp({
     paymentSource: "provider_card",
     seedLinkedProvider: false,
     providerOps: () =>
@@ -31,9 +46,14 @@ test("provider_card link stores and serves the saved card's brand/last4", async 
         readSavedCard: async () => ({ ok: true, brand: "Mastercard", last4: "7788" }),
       }),
   });
-  const res = await link(app);
-  expect(res.statusCode).toBe(200);
-  expect(res.json()).toMatchObject({ cardBrand: "Mastercard", cardLast4: "7788" });
+  const { app, state } = t;
+  const job = await link(t);
+  expect(job).toMatchObject({
+    phase: "done",
+    linked: true,
+    cardBrand: "Mastercard",
+    cardLast4: "7788",
+  });
 
   const account = state.providerAccounts.find((a) => a.provider === "passport")!;
   expect(account.cardBrand).toBe("Mastercard");
@@ -47,7 +67,7 @@ test("provider_card link stores and serves the saved card's brand/last4", async 
 });
 
 test("a failed read never blocks the link — nulls are stored", async () => {
-  const { app, state } = makeTestApp({
+  const t = makeTestApp({
     paymentSource: "provider_card",
     seedLinkedProvider: false,
     providerOps: () =>
@@ -55,9 +75,10 @@ test("a failed read never blocks the link — nulls are stored", async () => {
         readSavedCard: async () => ({ ok: false, code: "ui_changed", message: "moved" }),
       }),
   });
-  const res = await link(app);
-  expect(res.statusCode).toBe(200);
-  expect(res.json().status).toBe("linked");
+  const { state } = t;
+  const job = await link(t);
+  expect(job).toMatchObject({ phase: "done", linked: true });
+  expect(job.cardLast4).toBeUndefined();
   const account = state.providerAccounts.find((a) => a.provider === "passport")!;
   expect(account.cardBrand).toBeNull();
   expect(account.cardLast4).toBeNull();
@@ -65,7 +86,7 @@ test("a failed read never blocks the link — nulls are stored", async () => {
 
 test("issuing_card users never trigger the saved-card read", async () => {
   let readCalls = 0;
-  const { app } = makeTestApp({
+  const t = makeTestApp({
     // The ONE difference from the provider_card test above.
     paymentSource: "issuing_card",
     seedLinkedProvider: false,
@@ -77,24 +98,20 @@ test("issuing_card users never trigger the saved-card read", async () => {
         },
       }),
   });
-  const res = await app.inject({
-    method: "POST",
-    url: "/providers/passport/link",
-    headers: HEADERS,
-    payload: { cookies: COOKIES, set_up_card: false },
-  });
-  expect(res.statusCode).toBe(200);
+  const job = await link(t);
+  expect(job).toMatchObject({ phase: "done", linked: true });
   expect(readCalls).toBe(0);
-  expect(res.json().cardBrand).toBeNull();
+  expect(job.cardBrand).toBeUndefined();
 });
 
 test("unlink clears the stored display card", async () => {
-  const { app, state } = makeTestApp({
+  const t = makeTestApp({
     paymentSource: "provider_card",
     seedLinkedProvider: false,
     providerOps: () => makeFakeProviderOps(),
   });
-  await link(app);
+  const { app, state } = t;
+  await link(t);
   expect(state.providerAccounts[0]!.cardLast4).toBe("4242");
   const res = await app.inject({
     method: "POST",

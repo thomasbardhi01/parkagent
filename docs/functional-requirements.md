@@ -41,7 +41,7 @@ the evidence that proves it. Three kinds of evidence back an FR:
 | FR-14 | Extend continues the ladder | automated + acceptance | `server/test/session.test.ts`, `executor/test/passportParse.test.ts`; paid: acceptance report (txn 831997285) |
 | FR-15 | Stop (incl. no-early-stop zones) | automated + acceptance | `server/test/session.test.ts`, `executor/test/passportParse.test.ts`, `executor/test/sessionScreen.dom.test.ts`; walked live 2026-09-23 |
 | FR-16 | Auto-extend decisions | automated | `server/test/extendTick.test.ts`, `server/test/adversarial.test.ts` |
-| FR-17 | Provider link (per-user, sealed) | automated | `server/fr/30-session-providers.fr.test.ts`, `server/test/providers.test.ts`, `server/test/linkJobs.test.ts`, `server/test/registry.test.ts` |
+| FR-17 | Provider link (per-user, sealed, background job) | automated | `server/fr/30-session-providers.fr.test.ts`, `server/test/providers.test.ts`, `server/test/linkJobs.test.ts`, `server/test/linkWorker.test.ts`, `server/test/registry.test.ts` |
 | FR-18 | Link expiry → relink push | automated | `server/test/executorProvider.test.ts`, `server/test/providers.test.ts` |
 | FR-19 | Relink restores the account | automated | `server/test/providers.test.ts` |
 | FR-20 | Zone-number reporting & precedence | automated | `server/fr/20-parked-boston.fr.test.ts`, `server/test/zoneNumber.test.ts`, `server/test/zoneNumberReverts.test.ts`, `data/test_import_parkboston_zones.py` |
@@ -53,7 +53,7 @@ the evidence that proves it. Three kinds of evidence back an FR:
 | FR-26 | No plan without a quote | automated | `server/test/assistantPlanEnforcement.test.ts`, `server/test/assistantAccuracy.test.ts` |
 | FR-27 | Explanations | automated | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantLoop.test.ts` |
 | FR-28 | Pushes | automated + device-manual | `server/fr/50-ops.fr.test.ts`, `server/test/device.test.ts`, `server/test/apnsPush.test.ts`, `server/test/admin.test.ts`, `server/test/session.test.ts` (copy); live delivery needs a registered phone |
-| FR-29 | Admin summary | automated | `server/fr/50-ops.fr.test.ts`, `server/test/admin.test.ts`, `server/test/authorization.test.ts` |
+| FR-29 | Admin summary | automated | `server/fr/50-ops.fr.test.ts`, `server/test/admin.test.ts`, `server/test/providerMetrics.test.ts`, `server/test/authorization.test.ts` |
 | FR-30 | Decision audit | automated | `server/fr/10-parked-nyc.fr.test.ts` (decisionId on every response), `server/test/parked.test.ts`, `server/test/adversarial.test.ts`, `server/test/security.test.ts` |
 | FR-31 | Dry-run discipline | automated | `server/fr/00-gate.fr.test.ts`, `server/test/policy.test.ts`, `server/test/session.test.ts` |
 | FR-32 | Accounts | automated + device-manual | `server/fr/60-accounts.fr.test.ts`, `server/test/auth.test.ts`, `server/test/appleTokens.test.ts`, `server/test/frThrowawayPurge.test.ts`, `server/test/authTokens.test.ts`, `server/test/security.test.ts`, `server/test/vehicles.test.ts`; iOS `AuthStoreTests`, `LiveAPIRequestTests`, `OnboardingGateTests`, `AuthUITests`, `AccountUITests`; Apple sign-in and email-code delivery need a phone and a mailbox |
@@ -340,13 +340,21 @@ left → `400 no_session_cookies`), verified headlessly, sealed with
 AES-256-GCM under `PROVIDER_STATE_KEY`, and stored per (user, provider).
 State is never logged and never returned; link decisions record only
 cookie counts and domains. The registry advertises both cities' display
-names, login URLs, and cookie domains. **Accepted when** the registry
-answers for both providers, an unlinked user's start refuses, and the
-cookie filter rejects at the door.
+names, login URLs, and cookie domains. The link request answers at once
+(`202` + a job id); verification runs as a durable background job under
+a 45-second budget, retrying transient provider failures with backoff
+before dead-lettering, and the app shows its real steps and, after 20
+seconds, lets the user move on and hear the outcome by push. **Accepted
+when** the registry answers for both providers, an unlinked user's start
+refuses, the cookie filter rejects at the door, and a job's status and
+notify answer only its owner.
 
 Evidence: live FR-17 tests (`/providers/status`, wrong-domain link
-refusal, unlinked start); `providers.test.ts`, `registry.test.ts`,
-`linkJobs.test.ts`, `security.test.ts` (nothing leaks state).
+refusal, unlinked start, unknown-job status/notify); `providers.test.ts`,
+`registry.test.ts`, `linkJobs.test.ts`, `linkWorker.test.ts` (budget,
+backoff, dead letter, restart, no double run), `security.test.ts`
+(nothing leaks state); iOS `ProviderLinkModelTests`,
+`ProviderUITests.testSlowLinkShowsTheStepAndLetsTheUserMoveOn`.
 
 ### FR-18 — Expiry
 
@@ -539,10 +547,14 @@ physical phone is device-manual (prod creds + registered device).
 activity per city — parks, unknown zones, sessions started/failed,
 auto/manual extensions, declines and executor errors by code, shadow
 results, spend — plus detector signal counts and the day's decision
-count. **Accepted when** the live shape holds and non-admin access is
-refused.
+count, and per provider the p50/p95 of each stage (queue, verify, card
+read, setup, link, start, extend, stop) with counts of timeouts, retries,
+and circuit-breaker trips, the executor gate's load, and dead-lettered
+link jobs and Apple revocations. **Accepted when** the live shape holds
+and non-admin access is refused.
 
-Evidence: live FR-29 test; `admin.test.ts`, `authorization.test.ts`.
+Evidence: live FR-29 tests; `admin.test.ts`, `providerMetrics.test.ts`,
+`authorization.test.ts`.
 
 ## Cross-cutting
 

@@ -148,16 +148,10 @@ extension MockAPI {
         let parkagentSelectable = issuingLive || sandboxSelectable
 
         // Linked accounts follow the provider scenario (nothing linked yet
-        // during onboarding's notLinked runs), and the registry's order —
-        // ParkNYC first — so "whose card" is the user's city's, never the
-        // list's first row by accident.
-        let providerScenario = ProviderMockScenario(
-            rawValue: UserDefaults.standard.string(forKey: ProviderMockScenario.defaultsKey) ?? ""
-        ) ?? .linked
-        let linkedProviders: [String] = scenario == .empty
-            || providerScenario == .notLinked || providerScenario == .linkFails
-            ? []
-            : ["parknyc", "passport"]
+        // during onboarding's notLinked runs) and any link made this run,
+        // in the registry's order — ParkNYC first — so "whose card" is the
+        // user's city's, never the list's first row by accident.
+        let linkedProviders = await mockLinkedProviders(emptyWallet: scenario == .empty)
         let card = hasCard
             ? ParkAgentCard(
                 stripeCardId: "ic_mock_1",
@@ -285,10 +279,7 @@ extension MockAPI {
             if await MockWalletStore.shared.fundingMethods().isEmpty {
                 throw APIError.refused(code: "no_funding_method")
             }
-            let providerScenario = ProviderMockScenario(
-                rawValue: UserDefaults.standard.string(forKey: ProviderMockScenario.defaultsKey) ?? ""
-            ) ?? .linked
-            let anyLinked = scenario != .empty && providerScenario != .notLinked && providerScenario != .linkFails
+            let anyLinked = await !mockLinkedProviders(emptyWallet: scenario == .empty).isEmpty
             if anyLinked && !consent && scenario != .parkagentSandbox {
                 throw APIError.refused(code: "consent_required")
             }

@@ -8,10 +8,37 @@ import { expect, test } from "vitest";
 
 import { buildApp } from "../src/app.js";
 import { makeLinkJobJanitor } from "../src/jobs/linkJobJanitor.js";
+import type { LinkJobRow } from "../src/db.js";
 import { API_KEY, MONDAY_2PM, makeFakeProviderOps, makeTestApp } from "./helpers.js";
 
 const HEADERS = { "x-api-key": API_KEY, "content-type": "application/json" };
 const NOW = new Date(MONDAY_2PM);
+
+/** A row as the pre-worker code wrote it: none of the worker's columns set. */
+function legacyJob(row: Pick<LinkJobRow, "id" | "phase" | "createdAt">): LinkJobRow {
+  return {
+    userId: "u1",
+    provider: "parknyc",
+    reason: null,
+    retrySafe: null,
+    dryRun: null,
+    stateSealed: null,
+    setUpCard: false,
+    attempts: 0,
+    maxAttempts: 3,
+    nextAttemptAt: null,
+    lockedUntil: null,
+    startedAt: null,
+    finishedAt: null,
+    deadAt: null,
+    lastError: null,
+    queuePosition: null,
+    stages: {},
+    notify: false,
+    notifiedAt: null,
+    ...row,
+  };
+}
 
 const LINK_BODY = {
   cookies: [{ name: "session", value: "abc", domain: ".nyc.flowbirdapp.com" }],
@@ -34,7 +61,7 @@ test("a link job survives a restart: a second app over the same db answers the p
     headers: HEADERS,
     payload: LINK_BODY,
   });
-  expect(link.statusCode).toBe(200);
+  expect(link.statusCode).toBe(202);
   const { jobId } = link.json();
   expect(jobId).toBeTruthy();
   expect(t.state.linkJobs).toHaveLength(1);
@@ -55,35 +82,34 @@ test("a link job survives a restart: a second app over the same db answers the p
 test("the janitor times out jobs stuck in progress past 15 minutes", async () => {
   const t = makeTestApp({ now: () => NOW });
   t.state.linkJobs.push(
-    {
+    legacyJob({
       id: "job-stuck",
-      userId: "u1",
-      provider: "parknyc",
       phase: "adding_card",
-      reason: null,
-      retrySafe: null,
-      dryRun: null,
       createdAt: new Date(NOW.getTime() - 20 * 60_000),
-    },
-    {
+    }),
+    legacyJob({
       id: "job-fresh",
-      userId: "u1",
-      provider: "parknyc",
       phase: "adding_card",
-      reason: null,
-      retrySafe: null,
-      dryRun: null,
       createdAt: new Date(NOW.getTime() - 5 * 60_000),
+    }),
+    legacyJob({ id: "job-done", phase: "done", createdAt: new Date(NOW.getTime() - 60 * 60_000) }),
+    // The worker's own jobs are never the janitor's: one mid-attempt
+    // (a lease) and one waiting on a retry, both "old".
+    {
+      ...legacyJob({
+        id: "job-leased",
+        phase: "adding_card",
+        createdAt: new Date(NOW.getTime() - 20 * 60_000),
+      }),
+      lockedUntil: new Date(NOW.getTime() + 60_000),
     },
     {
-      id: "job-done",
-      userId: "u1",
-      provider: "parknyc",
-      phase: "done",
-      reason: null,
-      retrySafe: null,
-      dryRun: null,
-      createdAt: new Date(NOW.getTime() - 60 * 60_000),
+      ...legacyJob({
+        id: "job-retrying",
+        phase: "retrying",
+        createdAt: new Date(NOW.getTime() - 20 * 60_000),
+      }),
+      nextAttemptAt: new Date(NOW.getTime() + 60_000),
     },
   );
 
@@ -98,6 +124,8 @@ test("the janitor times out jobs stuck in progress past 15 minutes", async () =>
   const stuck = t.state.linkJobs.find((j) => j.id === "job-stuck")!;
   expect(stuck).toMatchObject({ phase: "failed", reason: "timeout", retrySafe: true });
   expect(t.state.linkJobs.find((j) => j.id === "job-fresh")!.phase).toBe("adding_card");
+  expect(t.state.linkJobs.find((j) => j.id === "job-leased")!.phase).toBe("adding_card");
+  expect(t.state.linkJobs.find((j) => j.id === "job-retrying")!.phase).toBe("retrying");
   expect(t.state.linkJobs.find((j) => j.id === "job-done")!.phase).toBe("done");
 
   // The app's poll now gets the settled failure.

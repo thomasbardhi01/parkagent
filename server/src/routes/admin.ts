@@ -13,6 +13,7 @@ import { requireAdmin } from "../app.js";
 import { cityForZone } from "../providers/registry.js";
 import { nycStartOfDay } from "../services/hours.js";
 import { PUSH_TEST_TYPES, samplePush } from "../services/apns.js";
+import { providerReliability } from "../services/providerMetrics.js";
 import type { PushTestType } from "../services/apns.js";
 
 interface CitySummary {
@@ -95,11 +96,29 @@ export function registerAdmin(app: FastifyInstance, deps: AppDeps): void {
     const at = deps.now?.() ?? new Date();
     const since = nycStartOfDay(at);
 
-    const [decisions, parks, sessions] = await Promise.all([
-      deps.db.decision.findMany({ where: { createdAt: { gte: since } } }),
-      deps.db.parkedEvent.findMany({ where: { ts: { gte: since } } }),
-      deps.db.session.findMany({ where: { createdAt: { gte: since } } }),
-    ]);
+    const [decisions, parks, sessions, linkJobs, deadLinkJobs, revokesPending, revokesDead] =
+      await Promise.all([
+        deps.db.decision.findMany({ where: { createdAt: { gte: since } } }),
+        deps.db.parkedEvent.findMany({ where: { ts: { gte: since } } }),
+        deps.db.session.findMany({ where: { createdAt: { gte: since } } }),
+        deps.db.linkJob.findMany({ where: { createdAt: { gte: since } } }),
+        // Dead letters from any day stay visible until someone looks.
+        deps.db.linkJob.findMany({ where: { deadAt: { not: null } } }),
+        deps.db.user.count({
+          where: {
+            deletedAt: { not: null },
+            appleRefreshTokenSealed: { not: null },
+            appleRevokeDeadAt: null,
+          },
+        }),
+        deps.db.user.count({
+          where: {
+            deletedAt: { not: null },
+            appleRefreshTokenSealed: { not: null },
+            appleRevokeDeadAt: { not: null },
+          },
+        }),
+      ]);
 
     const cities: Record<string, CitySummary> = {};
     const cityOf = (key: string | null): CitySummary => {
@@ -184,6 +203,17 @@ export function registerAdmin(app: FastifyInstance, deps: AppDeps): void {
       summary.spendUsd = Math.round(summary.spendUsd * 100) / 100;
     }
 
+    // Talking to the providers: per-stage p50/p95, timeouts, retries,
+    // breaker trips (today), plus the live gate and breaker state.
+    const runtime = deps.executorRuntime;
+    const providers = providerReliability({
+      linkJobs,
+      decisions,
+      sessionCity,
+      decisionSession: (d) => (d as { sessionId?: string | null }).sessionId ?? null,
+      ...(runtime ? { breakerState: (provider: string) => runtime.breaker.state(provider) } : {}),
+    });
+
     return {
       since: since.toISOString(),
       now: at.toISOString(),
@@ -192,6 +222,27 @@ export function registerAdmin(app: FastifyInstance, deps: AppDeps): void {
       cities,
       detectorSignals,
       decisionCount: decisions.length,
+      providers,
+      executor: runtime
+        ? {
+            capacity: runtime.gate.capacity,
+            inUse: runtime.gate.inUse,
+            queued: runtime.gate.queued,
+          }
+        : null,
+      // Background work that gave up after its last attempt, for a person.
+      deadLetters: {
+        linkJobs: deadLinkJobs.map((job) => ({
+          id: job.id,
+          provider: job.provider,
+          userId: job.userId,
+          reason: job.reason,
+          attempts: job.attempts,
+          deadAt: job.deadAt?.toISOString() ?? null,
+        })),
+        appleRevocations: revokesDead,
+      },
+      jobs: { appleRevocationsPending: revokesPending },
     };
   });
 }

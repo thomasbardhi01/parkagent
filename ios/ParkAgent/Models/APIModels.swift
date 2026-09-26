@@ -686,23 +686,75 @@ struct ProviderLinkRequest: Codable, Sendable {
     }
 }
 
+/// 202 from POST /providers/:provider/link: the link runs as a job the app
+/// polls (the server no longer holds the request open while a browser
+/// verifies the sign-in).
 struct ProviderLinkResponse: Codable, Sendable {
+    /// "verifying"
     var status: String
-    /// The provider account's own card, read at link time (provider_card).
+    var phase: String?
+    /// The provider account's own card — older servers answered it here;
+    /// now it arrives on link-status once read.
     var cardBrand: String?
     var cardLast4: String?
-    /// Non-nil when card setup was chained; poll link-status with it.
     var jobId: String?
 }
 
-struct LinkStatusResponse: Codable, Sendable {
-    /// "linking" | "adding_card" | "done" | "failed"
+struct LinkStatusResponse: Codable, Sendable, Equatable {
+    /// "queued" | "verifying" | "reading_card" | "adding_card" |
+    /// "retrying" | "done" | "failed" (older rows: "linking")
     var phase: String
-    /// Executor code, "unsupported_card_brand", or "no_card" on failure.
+    /// Typed failure (or retry) reason: an executor code, "timeout",
+    /// "busy", "provider_unavailable", "unsupported_card_brand", "no_card".
     var reason: String?
     /// Whether re-running setup-card as-is is worth it.
     var retrySafe: Bool?
     var dryRun: Bool?
+    /// The account is linked (verification passed), even while the card
+    /// is still being read.
+    var linked: Bool?
+    var elapsedMs: Int?
+    var attempt: Int?
+    var maxAttempts: Int?
+    /// Calls ahead of this one for a browser slot on the server.
+    var queuePosition: Int?
+    var nextAttemptAt: Date?
+    var cardBrand: String?
+    var cardLast4: String?
+
+    init(
+        phase: String,
+        reason: String? = nil,
+        retrySafe: Bool? = nil,
+        dryRun: Bool? = nil,
+        linked: Bool? = nil,
+        elapsedMs: Int? = nil,
+        attempt: Int? = nil,
+        maxAttempts: Int? = nil,
+        queuePosition: Int? = nil,
+        nextAttemptAt: Date? = nil,
+        cardBrand: String? = nil,
+        cardLast4: String? = nil
+    ) {
+        self.phase = phase
+        self.reason = reason
+        self.retrySafe = retrySafe
+        self.dryRun = dryRun
+        self.linked = linked
+        self.elapsedMs = elapsedMs
+        self.attempt = attempt
+        self.maxAttempts = maxAttempts
+        self.queuePosition = queuePosition
+        self.nextAttemptAt = nextAttemptAt
+        self.cardBrand = cardBrand
+        self.cardLast4 = cardLast4
+    }
+}
+
+struct LinkNotifyResponse: Codable, Sendable {
+    var ok: Bool
+    var phase: String?
+    var notify: Bool?
 }
 
 struct SetupCardResponse: Codable, Sendable {

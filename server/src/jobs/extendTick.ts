@@ -333,6 +333,7 @@ export function makeExtender(deps: ExtenderDeps): Extender {
           price,
           expiresAt: result.expiresAt.toISOString(),
           durationMs: result.durationMs,
+          ...(result.executor ? { executor: result.executor } : {}),
           ...(result.shadow ? { shadow: result.shadow } : {}),
           ...(result.hold ? { hold: result.hold } : {}),
         };
@@ -363,6 +364,7 @@ export function makeExtender(deps: ExtenderDeps): Extender {
           code: result.code,
           message: result.message,
           durationMs: result.durationMs,
+          ...(result.executor ? { executor: result.executor } : {}),
           ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}),
           ...(result.hold ? { hold: result.hold } : {}),
         };

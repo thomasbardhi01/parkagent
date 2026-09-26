@@ -37,6 +37,7 @@ import type { StateCrypto } from "./services/crypto.js";
 import type { ExecutorProvider } from "./services/executor.js";
 import type { PendingSessionCheck } from "./services/pendingSession.js";
 import type { PolicyService } from "./services/policy.js";
+import type { ExecutorRuntime } from "./services/parknycExecutor.js";
 import type { ProviderOpsFactory } from "./services/providerOps.js";
 import type { StripeGateway } from "./services/stripeGateway.js";
 import type { CandidateFetcher, NearbyZoneFetcher } from "./services/zoneLookup.js";
@@ -90,6 +91,11 @@ export interface AppDeps {
   /** Real Playwright-backed account ops (parknycExecutor.ts) or test fakes;
    * absent → provider linking answers 503. */
   providerOps?: ProviderOpsFactory;
+  /** Runs link jobs (jobs/linkWorker.ts); POST …/link kicks it so a new
+   * job starts now rather than at the next poll. */
+  linkWorker?: { kick(): void };
+  /** The executor's browser gate and circuit breakers, for /admin/summary. */
+  executorRuntime?: ExecutorRuntime;
   /** The assistant's Anthropic transport; absent (no ANTHROPIC_API_KEY)
    * → /assistant/* answers 503. Tests inject a scripted fake. */
   assistantModel?: ModelClient;

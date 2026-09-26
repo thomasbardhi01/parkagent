@@ -13,6 +13,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
 import type { AppDeps } from "../app.js";
+import { executorOutcome } from "../services/executor.js";
 import type { SessionRow } from "../db.js";
 import { cityForZone, providerForCity, providerStatusUsable } from "../providers/registry.js";
 import {
@@ -515,6 +516,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
             code: result.code,
             message: result.message,
             durationMs,
+            ...executorOutcome(result),
             // ui_changed evidence: screenshot + visible text, straight onto
             // the decision row (non-negotiable: decisions carry the inputs).
             ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}),
@@ -606,6 +608,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
           sessionId: session.id,
           price,
           durationMs,
+          ...executorOutcome(result),
           // What the provider actually charged (ParkBoston's receipt), when
           // it differs from `price` (the estimate) — the audit shows both.
           ...(result.receipt ? { providerReceipt: result.receipt } : {}),
@@ -706,6 +709,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
               expiresAt: outcome.expiresAt.toISOString(),
               price,
               durationMs: outcome.durationMs,
+              ...(outcome.executor ? { executor: outcome.executor } : {}),
               ...(outcome.shadow ? { shadow: outcome.shadow } : {}),
               ...(outcome.hold ? { hold: outcome.hold } : {}),
             }
@@ -715,6 +719,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
               code: outcome.code,
               message: outcome.message,
               durationMs: outcome.durationMs,
+              ...(outcome.executor ? { executor: outcome.executor } : {}),
               ...(outcome.diagnostics ? { diagnostics: outcome.diagnostics } : {}),
               ...(outcome.hold ? { hold: outcome.hold } : {}),
             },
@@ -793,6 +798,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
             code: result.code,
             message: result.message,
             durationMs,
+            ...executorOutcome(result),
             ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}),
           },
           userId: user.id,
@@ -816,7 +822,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
         kind: "session_stop",
         inputs: decisionInputs,
         rule: "stop_ok",
-        outcome: { ok: true, stoppedAt: at.toISOString(), durationMs },
+        outcome: { ok: true, stoppedAt: at.toISOString(), durationMs, ...executorOutcome(result) },
         userId: user.id,
         sessionId: session.id,
       },

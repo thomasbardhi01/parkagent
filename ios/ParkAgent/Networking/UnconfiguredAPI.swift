@@ -66,6 +66,7 @@ struct UnconfiguredAPI: APIClient {
         consent: Bool
     ) async throws -> ProviderLinkResponse { throw failure }
     func linkStatus(providerId: String, jobId: String) async throws -> LinkStatusResponse { throw failure }
+    func notifyLinkJob(providerId: String, jobId: String) async throws -> LinkNotifyResponse { throw failure }
     func setupCard(providerId: String) async throws -> SetupCardResponse { throw failure }
     func unlinkProvider(_ providerId: String) async throws -> UnlinkResponse { throw failure }
 

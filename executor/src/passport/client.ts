@@ -57,9 +57,11 @@ import {
   parseVehicleChooser,
   recentZonesState,
 } from "./parse.js";
+import { gotoWithRetry } from "../navigate.js";
 import { handleSignageModal, waitForPopupSettled } from "./signage.js";
 import { parseSavedCardLabel } from "../savedCard.js";
 import type {
+  AccountOpOptions,
   CardFormDetails,
   ExecutorError,
   ExecutorResult,
@@ -71,6 +73,7 @@ import type {
   VerifyAccountResult,
   ZoneResolution,
 } from "../types.js";
+import { atGatedEntry } from "./gatedEntry.js";
 import { BOSTON_BASE_URL, findParkingSelectors, passportUrls, selectors } from "./selectors.js";
 import type { PassportUrls } from "./selectors.js";
 
@@ -104,6 +107,15 @@ export class PassportClient {
   private context: BrowserContext | null = null;
   private page: Page | null = null;
   readonly urls: PassportUrls;
+  /** Set right before the first click that could charge (the duration
+   * Continue, then confirm Yes). From then on nothing retries: not a
+   * navigation, not the whole flow after a browser crash. */
+  private payClicked = false;
+  /** Navigations retried once on a transient failure (before paying). */
+  private navigationRetries = 0;
+  /** Account reads under a budget: DOM-ready navigations and no images,
+   * fonts, or media fetched. Session flows keep full page loads. */
+  private light = false;
 
   constructor(private readonly options: PassportClientOptions) {
     this.urls = passportUrls(options.baseUrl ?? BOSTON_BASE_URL);
@@ -111,6 +123,33 @@ export class PassportClient {
 
   private get timeoutMs(): number {
     return this.options.timeoutMs ?? 20_000;
+  }
+
+  /** One navigation, retried once on a transient failure before paying. */
+  private async goto(page: Page, url: string): Promise<void> {
+    await gotoWithRetry(page, url, {
+      timeoutMs: this.timeoutMs,
+      ...(this.light ? { waitUntil: "domcontentloaded" as const } : {}),
+      canRetry: () => !this.payClicked,
+      onRetry: (err) => {
+        this.navigationRetries += 1;
+        this.options.log?.(`navigation retry ${url}: ${String(err).split("\n")[0]}`);
+      },
+    });
+  }
+
+  /** Budgeted account reads: shorter timeouts, DOM-ready navigations, and
+   * no images/fonts/media, which a signed-in check never needs. */
+  private async useLightMode(options: AccountOpOptions | undefined, page: Page): Promise<void> {
+    this.light = true;
+    if (options?.budgetMs !== undefined) {
+      this.context?.setDefaultTimeout(Math.min(this.timeoutMs, options.budgetMs));
+    }
+    await page.route("**/*", (route) =>
+      ["image", "font", "media"].includes(route.request().resourceType())
+        ? route.abort()
+        : route.continue(),
+    );
   }
 
   private async open(): Promise<{ page: Page } | ExecutorError> {
@@ -287,7 +326,7 @@ export class PassportClient {
     });
 
     try {
-      await page.goto(this.urls.findParking);
+      await this.goto(page, this.urls.findParking);
       await this.step("find-parking", page);
 
       // Did we land on the map, or get bounced to Enter Zone / sign-in?
@@ -349,14 +388,18 @@ export class PassportClient {
     page: Page,
     flow: () => Promise<ExecutorResult>,
   ): Promise<ExecutorResult> {
+    let result: ExecutorResult;
     try {
-      return await flow();
+      result = await flow();
     } catch (err) {
       const diagnostics = await captureUnexpectedScreen(page, this.options.captureDir);
       const code = classifyFailure(err, diagnostics.pageText ?? null);
       const message = err instanceof Error ? err.message.split("\n")[0]! : String(err);
-      return { ok: false, code, message: `${goal}: ${message}`, diagnostics };
+      result = { ok: false, code, message: `${goal}: ${message}`, diagnostics };
     }
+    if (this.navigationRetries > 0) result = { ...result, retries: this.navigationRetries };
+    if (!result.ok && this.payClicked) result = { ...result, afterPayClick: true };
+    return result;
   }
 
   /**
@@ -410,6 +453,7 @@ export class PassportClient {
       .catch(() => {});
 
     if (await dialog.isVisible().catch(() => false)) {
+      this.payClicked = true;
       const settled = await waitForPopupSettled(page, dialog, 5_000);
       if (!settled) this.options.log?.(`${stepName}: confirm popup never settled; clicking anyway`);
       await yes.waitFor({ state: "visible", timeout: 5_000 }).catch(() => {});
@@ -434,6 +478,7 @@ export class PassportClient {
     // No jQM dialog — a receipt-style page. Use the labeled pay button.
     const payButton = selectors.confirm.payButton(page);
     if (await payButton.isVisible().catch(() => false)) {
+      this.payClicked = true;
       await this.stableClick(page, payButton, stepName);
       return true;
     }
@@ -457,13 +502,10 @@ export class PassportClient {
     this.options.log?.(`dispatchClick ${name}`);
   }
 
-  /** The gated entry screen means the cookies are not a signed-in session. */
-  private async atGatedEntry(page: Page): Promise<boolean> {
-    return await selectors.gatedEntry
-      .marker(page)
-      .first()
-      .isVisible({ timeout: 3_000 })
-      .catch(() => false);
+  /** The gated entry screen means the cookies are not a signed-in
+   * session (see gatedEntry.ts for why this waits). */
+  private atGatedEntry(page: Page, signedIn: Locator): Promise<boolean> {
+    return atGatedEntry(page, signedIn);
   }
 
   /**
@@ -504,9 +546,9 @@ export class PassportClient {
     const result = await this.run(goal, page, async () => {
       // Enter Zone (VERIFIED against the 2026-09-21 recording: input
       // #zoneNumber type=tel "Zone Number", button #zoneNext "Continue").
-      await page.goto(this.urls.zoneEntry);
+      await this.goto(page, this.urls.zoneEntry);
       await this.step("zone-entry", page);
-      if (await this.atGatedEntry(page)) {
+      if (await this.atGatedEntry(page, selectors.zone.zoneNumberInput(page))) {
         return this.fail(page, "auth_expired", "Passport asked to sign in; state is stale");
       }
       await selectors.zone.zoneNumberInput(page).fill(zoneNumber);
@@ -738,6 +780,9 @@ export class PassportClient {
           message: "stopped before the duration Continue (stopBeforePay recon walk); nothing paid",
         };
       }
+      // The earliest click that could charge (an account with one method
+      // may pay straight from here). Nothing retries past this point.
+      this.payClicked = true;
       await this.stableClick(page, selectors.duration.continueButton(page), "duration-continue");
       await this.step("duration-selected", page);
 
@@ -890,9 +935,9 @@ export class PassportClient {
     const goal = `extend session ${providerSessionId} by ${minutes} min`;
 
     return this.run(goal, page, async () => {
-      await page.goto(this.urls.session);
+      await this.goto(page, this.urls.session);
       await this.step("session", page);
-      if (await this.atGatedEntry(page)) {
+      if (await this.atGatedEntry(page, selectors.session.activeMarker(page))) {
         return this.fail(page, "auth_expired", "Passport asked to sign in; state is stale");
       }
       // session.js injects the action buttons a beat after navigation
@@ -990,6 +1035,8 @@ export class PassportClient {
           message: "stopped before the extend Continue (stopBeforePay recon walk); nothing paid",
         };
       }
+      // The earliest click that could charge: nothing retries past here.
+      this.payClicked = true;
       await this.stableClick(
         page,
         selectors.duration.continueButton(page),
@@ -1099,9 +1146,9 @@ export class PassportClient {
     const { page } = opened;
 
     return this.run(`stop session ${providerSessionId}`, page, async () => {
-      await page.goto(this.urls.session);
+      await this.goto(page, this.urls.session);
       await this.step("session", page);
-      if (await this.atGatedEntry(page)) {
+      if (await this.atGatedEntry(page, selectors.session.activeMarker(page))) {
         return this.fail(page, "auth_expired", "Passport asked to sign in; state is stale");
       }
       // Wait for the session screen to finish rendering — session.js injects
@@ -1161,15 +1208,16 @@ export class PassportClient {
   // runs; the card ops are drafted (TODO-verify) — shadow mode never uses
   // them, and real card setup waits for a signed-in recording.
 
-  async verifyAccount(): Promise<VerifyAccountResult> {
+  async verifyAccount(options?: AccountOpOptions): Promise<VerifyAccountResult> {
     const opened = await this.open();
     if ("ok" in opened) return opened;
     const { page } = opened;
+    await this.useLightMode(options, page);
 
     const flow = await this.run("verify account", page, async () => {
-      await page.goto(this.urls.account);
+      await this.goto(page, this.urls.account);
       await this.step("account", page);
-      if (await this.atGatedEntry(page)) {
+      if (await this.atGatedEntry(page, selectors.account.signedInMarker(page))) {
         return this.fail(
           page,
           "auth_expired",
@@ -1193,9 +1241,9 @@ export class PassportClient {
     const { page } = opened;
 
     const flow = await this.run("set up issuing card as payment method", page, async () => {
-      await page.goto(this.urls.updateCard);
+      await this.goto(page, this.urls.updateCard);
       await this.step("update-card", page);
-      if (await this.atGatedEntry(page)) {
+      if (await this.atGatedEntry(page, selectors.payment.cardNumberInput(page))) {
         return this.fail(
           page,
           "auth_expired",
@@ -1230,17 +1278,25 @@ export class PassportClient {
     const { page } = opened;
 
     const flow = await this.run(`remove card …${last4}`, page, async () => {
-      await page.goto(this.urls.paymentMethods);
+      await this.goto(page, this.urls.paymentMethods);
       await this.step("payment-methods", page);
-      if (await this.atGatedEntry(page)) {
+      if (await this.atGatedEntry(page, selectors.cards.page(page))) {
         return this.fail(
           page,
           "auth_expired",
           "Passport asked to sign in; cookies are not a session",
         );
       }
+      // The list renders a beat after the page: wait for it before
+      // concluding the card isn't there (an instant check could read
+      // "already removed" off the empty first paint).
+      await selectors.cards
+        .cardItems(page)
+        .first()
+        .waitFor({ state: "visible", timeout: 5_000 })
+        .catch(() => {});
       const row = selectors.payment.cardRow(page, last4);
-      if (!(await row.isVisible({ timeout: 5_000 }).catch(() => false))) {
+      if (!(await row.isVisible().catch(() => false))) {
         return { ok: true, providerSessionId: "remove-card", expiresAt: new Date(), amountUsd: 0 };
       }
       await row.click();
@@ -1272,16 +1328,17 @@ export class PassportClient {
    * for provider_card users, captured at link time; nothing is clicked and
    * no cards listed is a success with nulls.
    */
-  async readSavedCard(): Promise<ReadSavedCardResult> {
+  async readSavedCard(options?: AccountOpOptions): Promise<ReadSavedCardResult> {
     const opened = await this.open();
     if ("ok" in opened) return opened;
     const { page } = opened;
+    await this.useLightMode(options, page);
 
     let label: string | null = null;
     const flow = await this.run("read saved card", page, async () => {
-      await page.goto(this.urls.paymentMethods);
+      await this.goto(page, this.urls.paymentMethods);
       await this.step("your-cards", page);
-      if (await this.atGatedEntry(page)) {
+      if (await this.atGatedEntry(page, selectors.cards.page(page))) {
         return this.fail(
           page,
           "auth_expired",

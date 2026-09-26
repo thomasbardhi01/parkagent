@@ -24,7 +24,9 @@ export type PushType =
   | "provider_relink"
   | "itinerary_garage_link"
   | "free_period"
-  | "card_declined";
+  | "card_declined"
+  | "provider_linked"
+  | "provider_link_failed";
 
 export interface Push {
   type: PushType;
@@ -104,6 +106,9 @@ const PRE_CHARGE_CODES = new Set([
   "payment_method_missing",
   "vehicle_missing",
   "parking_denied",
+  // Nothing ran: the provider's breaker was open, or no browser slot freed.
+  "provider_unavailable",
+  "busy",
 ]);
 
 export function paymentFailedPush(args: {
@@ -137,13 +142,17 @@ export function paymentFailedPush(args: {
           : `${p} doesn't know your plate — add your vehicle there and pay zone ${z} in ${p} for now.`
         : args.code === "parking_denied"
           ? `${p} won't let you re-park zone ${z} right now (an operator lockout). Nothing was charged — wait or move the car.`
-          : preCharge
+          : args.code === "provider_unavailable"
             ? extend
-              ? `Zone ${z} wasn't extended. Extend in ParkAgent or ${p} before the meter runs out.`
-              : `The meter for zone ${z} is unpaid — pay in ${p} or at the meter.`
-            : extend
-              ? `${p} didn't confirm the extension for zone ${z}. Check ${p}'s app — your time may still end as before.`
-              : `${p} didn't confirm the payment for zone ${z}. Check ${p}'s app before paying again, so you don't pay twice.`;
+              ? `${p} isn't responding, so zone ${z} wasn't extended and nothing was charged. Extend in ${p} before the meter runs out.`
+              : `${p} isn't responding, so ParkAgent didn't try — nothing was charged. Pay zone ${z} in ${p} or at the meter.`
+            : preCharge
+              ? extend
+                ? `Zone ${z} wasn't extended. Extend in ParkAgent or ${p} before the meter runs out.`
+                : `The meter for zone ${z} is unpaid — pay in ${p} or at the meter.`
+              : extend
+                ? `${p} didn't confirm the extension for zone ${z}. Check ${p}'s app — your time may still end as before.`
+                : `${p} didn't confirm the payment for zone ${z}. Check ${p}'s app before paying again, so you don't pay twice.`;
   return {
     type: "payment_failed",
     title:
@@ -219,6 +228,49 @@ export function providerRelinkPush(args: { provider: string; displayName: string
     body: `Your ${args.displayName} session expired — sign in again so ParkAgent can keep paying meters.`,
     extra: {
       provider: args.provider,
+      deepLink: `parkagent://providers/link?provider=${encodeURIComponent(args.provider)}`,
+    },
+  };
+}
+
+/** A link that outlasted the app's wait: the user moved on (onboarding's
+ * "Continue — we'll let you know"), so the outcome arrives as a push. */
+export function providerLinkedPush(args: {
+  provider: string;
+  displayName: string;
+  cardLabel: string | null;
+}): Push {
+  return {
+    type: "provider_linked",
+    title: `${args.displayName} connected`,
+    body: args.cardLabel
+      ? `ParkAgent will pay meters with your ${args.cardLabel} on ${args.displayName}.`
+      : `ParkAgent can pay meters through your ${args.displayName} account now.`,
+    extra: { provider: args.provider },
+  };
+}
+
+/** The same, when it didn't work: what went wrong, and a tap reopens the
+ * link flow. */
+export function providerLinkFailedPush(args: {
+  provider: string;
+  displayName: string;
+  reason: string;
+}): Push {
+  const why: Record<string, string> = {
+    auth_expired: "the sign-in didn't stick",
+    timeout: `${args.displayName} took too long to answer`,
+    busy: "ParkAgent was too busy to check it",
+    provider_unavailable: `${args.displayName} isn't responding`,
+    network: `${args.displayName} couldn't be reached`,
+  };
+  return {
+    type: "provider_link_failed",
+    title: `Couldn't connect ${args.displayName}`,
+    body: `${(why[args.reason] ?? "something went wrong").replace(/^./, (c) => c.toUpperCase())}. Tap to try again.`,
+    extra: {
+      provider: args.provider,
+      reason: args.reason,
       deepLink: `parkagent://providers/link?provider=${encodeURIComponent(args.provider)}`,
     },
   };

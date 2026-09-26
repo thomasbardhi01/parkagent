@@ -26,6 +26,10 @@ enum MockScenario: String, Sendable {
     /// session/start answers card_declined: the ParkAgent card's hold was
     /// refused, nothing was paid, and the fix is in the Wallet.
     case cardDeclined
+    /// A Boston block whose ParkBoston number is known (zone 456): pays
+    /// like singleQuote. The detector's Boston route test uses it, so a
+    /// Boston drive isn't answered with a New York zone.
+    case bostonKnownZone
 
     static let defaultsKey = "mockScenario"
 }
@@ -45,6 +49,10 @@ enum ProviderMockScenario: String, Sendable {
     /// Nothing linked, and the chained card-setup job fails once —
     /// exercises the failed-link retry path.
     case linkFails
+    /// Nothing linked, and the provider is slow: the link job sits in
+    /// "verifying" long past the app's 20-second "Continue — we'll let
+    /// you know" offer.
+    case linkSlow
 
     static let defaultsKey = "providerScenario"
 }
@@ -95,6 +103,24 @@ struct MockAPI: APIClient {
         ProviderMockScenario(
             rawValue: UserDefaults.standard.string(forKey: ProviderMockScenario.defaultsKey) ?? ""
         ) ?? .linked
+    }
+
+    /// The accounts the Wallet shows as connected: whatever this run linked
+    /// or unlinked, else the scenario's starting state (none for an empty
+    /// wallet) — so connecting from the Wallet shows up in the Wallet.
+    func mockLinkedProviders(emptyWallet: Bool) async -> [String] {
+        var linked: [String] = []
+        for id in ["parknyc", "passport"] {
+            let status = if let override = await providerStore.override(of: id) {
+                override
+            } else if emptyWallet {
+                "unlinked"
+            } else {
+                await providerStore.status(of: id, scenario: providerScenario)
+            }
+            if status != "unlinked" { linked.append(id) }
+        }
+        return linked
     }
 
     private var cityScenario: CityMockScenario {
@@ -237,6 +263,12 @@ struct MockAPI: APIClient {
             return MockFixtures.freePeriod(provider: provider)
         case .unknownZone:
             return MockFixtures.unknownZone()
+        case .bostonKnownZone:
+            let passportStatus = await providerStore.status(of: "passport", scenario: providerScenario)
+            return MockFixtures.bostonQuote(
+                provider: MockFixtures.parkedProvider(id: "passport", status: passportStatus),
+                zoneNumber: "456"
+            )
         case .bostonNeedsZone, .bostonImportConflict:
             // Once someone reported the block's number, parking there is
             // automatic — like the real zones table.
@@ -398,17 +430,15 @@ struct MockAPI: APIClient {
         try await pause()
         guard !cookies.isEmpty else { throw APIError.refused(code: "no_session_cookies") }
         if setUpCard && !consent { throw APIError.invalidRequest("consent_required") }
+        // Like the server: 202 and a job for everything, the card read and
+        // any card setup included.
         let jobId = await providerStore.link(
             providerId,
             setUpCard: setUpCard,
-            failsFirstSetup: providerScenario == .linkFails
+            failsFirstSetup: providerScenario == .linkFails,
+            slow: providerScenario == .linkSlow
         )
-        return ProviderLinkResponse(
-            status: "linked",
-            cardBrand: "Visa",
-            cardLast4: providerId == "passport" ? "1234" : "4242",
-            jobId: jobId
-        )
+        return ProviderLinkResponse(status: "verifying", phase: "queued", jobId: jobId)
     }
 
     func linkStatus(providerId: String, jobId: String) async throws -> LinkStatusResponse {
@@ -419,6 +449,12 @@ struct MockAPI: APIClient {
             throw APIError.refused(code: "unknown_job")
         }
         return status
+    }
+
+    func notifyLinkJob(providerId: String, jobId: String) async throws -> LinkNotifyResponse {
+        try await pause()
+        await providerStore.markNotify(jobId)
+        return LinkNotifyResponse(ok: true, phase: "verifying", notify: true)
     }
 
     func setupCard(providerId: String) async throws -> SetupCardResponse {
@@ -482,8 +518,11 @@ private actor MockProviderStore {
     private struct Job {
         var provider: String
         var polls = 0
+        var setUpCard: Bool
         var failsFirstSetup: Bool
+        var slow: Bool
         var retried = false
+        var notify = false
     }
 
     private var jobs: [String: Job] = [:]
@@ -495,7 +534,7 @@ private actor MockProviderStore {
         switch scenario {
         // Both providers linked, so NYC and Boston pay flows both work.
         case .linked: return "linked"
-        case .notLinked, .linkFails: return "unlinked"
+        case .notLinked, .linkFails, .linkSlow: return "unlinked"
         case .expired: return providerId == "parknyc" ? "expired" : "unlinked"
         case .expiring: return providerId == "parknyc" ? "expiring" : "unlinked"
         }
@@ -505,29 +544,62 @@ private actor MockProviderStore {
         cardAddedFlags[providerId] ?? false
     }
 
-    func link(_ providerId: String, setUpCard: Bool, failsFirstSetup: Bool) -> String? {
-        statusOverrides[providerId] = "linked"
-        guard setUpCard else { return nil }
+    /// A link or unlink made during this run, if any.
+    func override(of providerId: String) -> String? {
+        statusOverrides[providerId]
+    }
+
+    func link(_ providerId: String, setUpCard: Bool, failsFirstSetup: Bool, slow: Bool) -> String {
         jobCounter += 1
         let id = "mock-job-\(jobCounter)"
-        jobs[id] = Job(provider: providerId, failsFirstSetup: failsFirstSetup)
+        jobs[id] = Job(provider: providerId, setUpCard: setUpCard, failsFirstSetup: failsFirstSetup, slow: slow)
         return id
     }
 
-    /// First poll reports adding_card, the second resolves — so the progress
-    /// screen shows each phase.
+    func markNotify(_ jobId: String) {
+        jobs[jobId]?.notify = true
+    }
+
+    /// Poll by poll, the phases the real job goes through — so the progress
+    /// screen shows each: queued (one ahead), verifying, reading the card
+    /// (or adding the ParkAgent card), done.
     func pollJob(_ jobId: String) -> LinkStatusResponse? {
         guard var job = jobs[jobId] else { return nil }
         job.polls += 1
         jobs[jobId] = job
-        if job.polls <= 1 {
-            return LinkStatusResponse(phase: "adding_card", reason: nil, retrySafe: nil, dryRun: nil)
+        let elapsed = job.polls * 700
+        if job.slow {
+            // Checking the sign-in, for a long time (past 20 s of polls).
+            return LinkStatusResponse(phase: "verifying", linked: false, elapsedMs: elapsed, attempt: 1, maxAttempts: 3)
+        }
+        switch job.polls {
+        case 1:
+            return LinkStatusResponse(phase: "queued", linked: false, elapsedMs: elapsed, attempt: 1, maxAttempts: 3, queuePosition: 1)
+        case 2:
+            return LinkStatusResponse(phase: "verifying", linked: false, elapsedMs: elapsed, attempt: 1, maxAttempts: 3)
+        default:
+            break
+        }
+        // Verified: the account is linked from here on.
+        statusOverrides[job.provider] = "linked"
+        let last4 = job.provider == "passport" ? "1234" : "4242"
+        if !job.setUpCard {
+            if job.polls == 3 {
+                return LinkStatusResponse(phase: "reading_card", linked: true, elapsedMs: elapsed, attempt: 1, maxAttempts: 3)
+            }
+            return LinkStatusResponse(
+                phase: "done", linked: true, elapsedMs: elapsed, attempt: 1, maxAttempts: 3,
+                cardBrand: "Visa", cardLast4: last4
+            )
+        }
+        if job.polls == 3 {
+            return LinkStatusResponse(phase: "adding_card", linked: true, elapsedMs: elapsed, attempt: 1, maxAttempts: 3)
         }
         if job.failsFirstSetup && !job.retried {
-            return LinkStatusResponse(phase: "failed", reason: "network", retrySafe: true, dryRun: nil)
+            return LinkStatusResponse(phase: "failed", reason: "network", retrySafe: true, linked: true, elapsedMs: elapsed)
         }
         cardAddedFlags[job.provider] = true
-        return LinkStatusResponse(phase: "done", reason: nil, retrySafe: nil, dryRun: true)
+        return LinkStatusResponse(phase: "done", dryRun: true, linked: true, elapsedMs: elapsed)
     }
 
     func retrySetup(_ providerId: String) {

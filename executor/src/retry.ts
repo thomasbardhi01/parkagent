@@ -3,15 +3,17 @@
  * during calls (crash, OOM); warmBrowser relaunches lazily on the next
  * use, so a single retry against a fresh client/context very likely
  * succeeds. Anything that fails twice — or fails for any other reason —
- * surfaces unchanged. Never retries provider-side failures: paying a
- * meter twice is worse than failing loudly.
+ * surfaces unchanged. Never retries provider-side failures, and never a
+ * flow that got as far as the pay click (`afterPayClick`): whether that
+ * charged is unknown, and paying a meter twice is worse than failing
+ * loudly. The server reports those "not confirmed", never "unpaid".
  */
 
 import { isBrowserCrash } from "./parknyc/classify.js";
 import type { ExecutorResult } from "./types.js";
 
-function crashed(result: ExecutorResult): boolean {
-  return !result.ok && result.code === "browser_crashed";
+function retryable(result: ExecutorResult): boolean {
+  return !result.ok && result.code === "browser_crashed" && result.afterPayClick !== true;
 }
 
 /**
@@ -32,7 +34,7 @@ export async function withBrowserCrashRetry(
     }
   };
   const first = await once();
-  if (!crashed(first)) return first;
+  if (!retryable(first)) return first;
   const second = await once();
   return second;
 }

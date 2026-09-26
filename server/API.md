@@ -224,9 +224,13 @@ Irreversible; the app confirms in two steps. In order:
    the vehicle but remain — they are the money audit); then the **Sign in
    with Apple token revoked** at Apple's `/auth/revoke` (App Store
    5.1.1(v)), which never blocks the delete: if Apple fails (or the key
-   isn't configured yet) the sealed token stays on the tombstone and an
-   hourly job (`jobs/appleRevocationTick.ts`) retries until Apple accepts
-   — every attempt a `decisions` row;
+   isn't configured yet) the sealed token stays on the tombstone and a
+   job (`jobs/appleRevocationTick.ts`) retries with backoff — 1 h,
+   doubling, at most a day apart — and gives up after 8 attempts (or at
+   once when the sealed token can't be opened), dead-lettering the row
+   (`apple_revoke_dead_at`, listed in `/admin/summary`) for a person —
+   every attempt a `decisions` row. The schedule lives on the users row,
+   so a restart neither loses nor repeats a retry;
 6. the `users` row is **tombstoned**: name becomes "Deleted account",
    `email`/`phone`/`apple_sub`/`google_sub`/api-key/`stripe_customer_id`
    columns are nulled (and the sealed Apple token, once revoked), the
@@ -549,7 +553,16 @@ blocked re-parking — a repark/zone lockout, ParkBoston's "Parking Denied"
 popup after the confirm click; **no charge** — the provider refused before
 authorizing, and the push says "wait or move the car", not "tap to pay"),
 `ui_changed`, `network`, `browser_crashed` (Chromium died mid-call; the
-executor already retried once on a fresh context), `unknown`.
+executor already retried once on a fresh context — but only when the
+crash came **before** the pay click; after it, a retry could pay twice, so
+the error carries `afterPayClick: true`, nothing is retried, and the push
+says "Payment not confirmed" — check the provider's app — never "unpaid"), `timeout` (a step or the whole call ran past its budget),
+`busy` (every browser slot stayed taken for 45 s — nothing ran),
+`provider_unavailable` (the provider's circuit breaker is open after
+repeated network/timeout failures — nothing ran; see "Executor capacity
+and resilience"), `unknown`. A page load that fails transiently
+(`net::ERR_*`, a navigation timeout) is retried once in place — never
+after the pay click.
 
 On success the executor may also return the provider's **receipt** (meter /
 fee / total) when the confirm/session screen lists it (ParkBoston does); a
@@ -774,6 +787,11 @@ Pushes carry a standard `aps` payload plus `{"type": ...}`, one of:
   carries `provider` and a deep link into the app's link flow, `zoneNumber`, and `deepLink`
   (`parkagent://pay?zone=<zone>` — opens the Park tab, where the zone
   number is on screen)
+- `provider_linked` — a background link finished ("ParkBoston connected",
+  naming the card read from the account); carries `provider`
+- `provider_link_failed` — a background link failed for good, with the
+  plain reason; carries `provider` and the link flow's deep link, so a tap
+  starts it again
 
 Sending requires the `APNS_KEY` (contents of the `.p8` auth key),
 `APNS_KEY_ID`, `APNS_TEAM_ID`, and `APNS_BUNDLE_ID` env vars; with any of
@@ -1167,17 +1185,36 @@ else is dropped at the door; none left → `400 no_session_cookies` (with
 runs for **parkagent_card** users (see "Wallet"): with `provider_card` (the
 default) or `link_wallet`, street meters pay with whatever payment method
 the account already has, so the consent requirement doesn't apply and
-`jobId` is always `null`; the link decision records
-`setUpCard: false, paymentSource: "provider_card"`. (Shadow mode no longer
-affects linking — it only adds a test authorization alongside real
-spends.) The surviving cookies are
-verified headlessly (the executor loads the provider's account page); a
-sign-in screen → `409 {"error": "verification_failed", "code": "auth_expired"}`.
-On success the sealed state is upserted (`status: "linked"`) and:
+the link decision records `setUpCard: false, paymentSource:
+"provider_card"`. (Shadow mode no longer affects linking — it only adds a
+test authorization alongside real spends.)
+
+**The request answers at once** — verification runs in the background.
+Verifying a session drives a headless browser against the provider's
+site, and on a cold 1 GB machine that outlasted the app's request timeout
+("That didn't finish — Could not reach the server" while the server went
+on to link). Now the sealed cookies go into a durable `link_jobs` row and
+the answer is:
 
 ```json
-{ "status": "linked", "walletBalanceCents": 1250, "cardBrand": "Visa", "cardLast4": "4242", "jobId": "…" }
+202 { "status": "verifying", "phase": "queued", "jobId": "…" }
 ```
+
+The link worker (`jobs/linkWorker.ts`) then, under a hard **45 s budget**
+per attempt: waits for a browser slot (`queued`, with its place in line),
+verifies the cookies (`verifying` — the lightest page that proves the
+session, images/fonts blocked), upserts the sealed state (`status:
+"linked"`), reads the card on file (`reading_card`, its own 25 s budget),
+and chains the card setup when asked (`adding_card`). A transient failure
+(`timeout`, `network`, `busy`, `provider_unavailable`, `browser_crashed`,
+`ui_changed`, `unknown`) → `retrying`, again in 1 then 5 minutes; after the
+third attempt the job is **dead-lettered** (`deadAt`, a `link_dead_letter`
+decision, listed in `/admin/summary`). `auth_expired` (the cookies weren't
+a session) or any other code fails at once, no retry. A restart mid-attempt
+loses nothing: the claim is a lease (`lockedUntil`), and the next process
+picks the job up when it lapses; two workers never run one attempt (the
+claim is a compare-and-set on `attempts`). The sealed cookies are erased
+from the job row when it finishes. Poll `link-status` for the outcome.
 
 `cardBrand`/`cardLast4` are the card the **provider account already has
 on file**, read from its Your Cards screen at link time so the app can
@@ -1188,21 +1225,44 @@ link — and display-only: the PAN is never requested, returned, or
 stored. The decision records presence only (`savedCardSeen`), never
 digits.
 
-`jobId` is non-null when `set_up_card`: verification passed, so the card
-setup runs immediately as a background job (the executor takes seconds).
-Every link attempt writes a `decisions` row (kind `provider_link`) whose
-inputs carry only cookie counts and domains — never values.
+Every link writes `decisions` rows (kind `provider_link`: `link_queued`
+at the request, then `link_ok` / `verification_failed` /
+`link_dead_letter` with per-stage timings) whose inputs carry only cookie
+counts and domains — never values.
 
 ### GET /providers/:provider/link-status?jobId=…
 
-The chained job's phase: `linking → adding_card → done | failed` (jobs
-currently start at `adding_card` — verification happens inside the link
-request itself). On failure it carries a typed `reason`
-(executor code, `unsupported_card_brand`, or `no_card`) and `retrySafe`:
-whether re-running `POST /providers/:provider/setup-card` as-is is worth
-it (transient failure) or something needs fixing first (re-link, different
-card). `dryRun: true` marks a job that "completed" by dry-run skip. Jobs live in the link_jobs table (deploy-safe); a janitor times out rows stuck past 15 minutes. `404 unknown_job` for ids that aren't
-yours.
+The job's real step, for the app's progress screen:
+
+```json
+{ "phase": "queued", "linked": false, "elapsedMs": 2100, "attempt": 1, "maxAttempts": 3, "queuePosition": 1 }
+{ "phase": "done", "linked": true, "elapsedMs": 9400, "attempt": 1, "maxAttempts": 3, "cardBrand": "Visa", "cardLast4": "1234", "walletBalanceCents": null }
+```
+
+`phase`: `queued → verifying → reading_card → (adding_card) → done |
+failed`, or `retrying` between attempts (with `nextAttemptAt`).
+`queuePosition` (calls ahead of it for a browser slot) only while queued.
+`linked` is whether THIS job linked the account (its `linkedAt` is at or
+after the job) — a failure with `linked: true` is a card-setup failure,
+so the app offers setup-card's retry rather than a new sign-in. On
+failure it carries a typed `reason` (an executor code,
+`unsupported_card_brand`, or `no_card`) and `retrySafe`: worth trying
+again as-is (transient) or something needs fixing first (re-link, a
+different card). `dryRun: true` marks a job that "completed" by dry-run
+skip. Jobs live in the `link_jobs` table (deploy-safe); the janitor only
+times out legacy rows with no lease or schedule. `404 unknown_job` for ids
+that aren't yours.
+
+### POST /providers/:provider/link-jobs/:jobId/notify
+
+The app's "Continue — we'll let you know" (offered after 20 s, and sent
+when the link sheet is closed mid-job): the outcome arrives as a push —
+`provider_linked` ("ParkBoston connected", naming the card) or
+`provider_link_failed` (the plain reason). A user who watches the job to
+the end gets no push; a job that goes to `retrying` sets it on its own,
+since nobody waits minutes on a spinner. `200 {"ok": true, "phase": …,
+"notify": true}` (`notify: false` once the job had already finished);
+`404 unknown_job`.
 
 ### GET /providers/status
 
@@ -1273,6 +1333,37 @@ Cookies with no expiry at all (session cookies) never trigger the warning
 — they die with the browser, not the clock. Every outcome writes a
 `decisions` row (kind `provider_health`): the check decides whether to
 nag a human, and nags must be auditable.
+
+### Executor capacity and resilience
+
+Every real provider call (pay, extend, stop, link, card read, the daily
+health check) opens a Chromium context, and the 1 GB machine runs out of
+memory well before the provider does. So, in `services/parknycExecutor.ts`:
+
+- **One warm browser**, launched at boot (`EXECUTOR_WARM_AT_BOOT`, default
+  `true`; only with `PROVIDER_STATE_KEY` set) so the first link after a
+  deploy doesn't pay Chromium's cold start inside its budget.
+- **A concurrency gate**: at most `EXECUTOR_CONCURRENCY` calls at once
+  (default 2, max 8); the rest wait in arrival order and can hear their
+  place in line (a link job shows it). A session call waits at most 45 s,
+  then fails `busy` — nothing ran, and the app says so.
+- **A per-provider circuit breaker**: three provider-side failures in a
+  row (`network`, `timeout`, `ui_changed`, `unknown`) open it for 60 s,
+  doubling on each failed probe up to 10 min; while open, calls fail
+  `provider_unavailable` without touching the provider (nothing ran). A
+  success closes it. Other codes (`auth_expired`, `payment_declined`, …)
+  are the user's, not the provider's, and don't count. Every transition
+  writes a `circuit_breaker` decision.
+- **Per-step timeouts, one safe retry**: a page load that fails
+  transiently is retried once, and a Chromium crash once on a fresh
+  context — both only before the pay click. Once the click that can
+  charge has happened, nothing is retried (`afterPayClick: true` on the
+  error, recorded in the decision); the user hears "Payment not
+  confirmed", as before.
+
+Each session decision records the executor's timings (`outcome.executor:
+{queueMs, runMs, retries, queuedBehind}`), which `/admin/summary` turns
+into per-stage p50/p95.
 
 ### POST /providers/:provider/topup
 
@@ -1455,9 +1546,34 @@ decisions/parked_events/sessions tables, per city. Read-only.
     }
   },
   "detectorSignals": { "motion_stop": 4, "audio_disconnect": 3, "location_settled": 4 },
-  "decisionCount": 23
+  "decisionCount": 23,
+  "providers": {
+    "passport": {
+      "stages": {                    // ms, today; n samples
+        "queue":  { "n": 5, "p50Ms": 0, "p95Ms": 1800 },
+        "verify": { "n": 3, "p50Ms": 6200, "p95Ms": 11900 },
+        "card":   { "n": 3, "p50Ms": 3100, "p95Ms": 4000 },
+        "link":   { "n": 3, "p50Ms": 9800, "p95Ms": 16400 },
+        "start":  { "n": 2, "p50Ms": 21000, "p95Ms": 24000 }
+      },
+      "timeouts": 1, "retries": 1, "breakerTrips": 0, "breakerState": "closed",
+      "links": { "started": 3, "done": 3, "failed": 0, "retrying": 0, "deadLettered": 0 }
+    }
+  },
+  "executor": { "capacity": 2, "inUse": 0, "queued": 0 },
+  "deadLetters": { "linkJobs": [], "appleRevocations": 0 },
+  "jobs": { "appleRevocationsPending": 0 }
 }
 ```
+
+`providers` covers every stage that talks to a provider: `queue` (waiting
+for a browser slot), `verify`, `card` (the saved-card read), `setup`,
+`link` (a whole link, request to done), and a session's `start` /
+`extend` / `stop` (from the executor timings each session decision now
+records). `timeouts` counts `timeout`/`busy` outcomes, `retries` the
+in-place page-load retries plus link attempts past the first, and
+`breakerTrips` the circuit breaker opening (each a `circuit_breaker`
+decision).
 
 A decision's city comes from its session's stored `city`, the quoted
 zone's id prefix, or the first candidate; unattributable rows land under

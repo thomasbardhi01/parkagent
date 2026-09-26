@@ -24,6 +24,7 @@ export type ExecutorErrorCode =
   | "free_period" // the provider says this zone isn't charging now (after hours)
   | "vehicle_missing" // the provider account has no saved vehicle matching the plate
   | "parking_denied" // the operator blocked re-parking (repark/zone lockout); NOT a charge
+  | "timeout" // the caller's hard budget ran out (account ops: linking)
   | "unknown"; // none of the above matched
 
 /** Evidence captured from an unexpected screen; attached to decisions. */
@@ -80,6 +81,8 @@ export interface ExecutorOk {
    * Vehicles chooser shows a Zone Information line); the server logs them
    * and compares against our zone record. */
   providerTerms?: ProviderZoneTerms;
+  /** Navigations retried once on a transient failure, before the pay click. */
+  retries?: number;
 }
 
 /**
@@ -128,6 +131,11 @@ export interface ExecutorError {
    * failures too, so a run that died after the Vehicles chooser still
    * feeds zone_terms_observed. */
   providerTerms?: ProviderZoneTerms;
+  /** The flow got as far as the pay click. Nothing may retry it (not even
+   * a browser-crash retry): whether the provider charged is unknown. */
+  afterPayClick?: boolean;
+  /** Navigations retried once on a transient failure, before the pay click. */
+  retries?: number;
 }
 
 export type ExecutorResult = ExecutorOk | ExecutorError;
@@ -222,9 +230,19 @@ export interface CardFormDetails {
   brand: string;
 }
 
+/** How long a read may take, and how the caller stops it early. Linking
+ * runs these under a hard budget: when it runs out the call's browser
+ * context is closed and the result is code "timeout". */
+export interface AccountOpOptions {
+  budgetMs?: number;
+  signal?: AbortSignal;
+}
+
 export interface AccountOps {
-  /** Is this storage state a signed-in session? Reads, never writes. */
-  verifyAccount(): Promise<VerifyAccountResult>;
+  /** Is this storage state a signed-in session? Reads, never writes. The
+   * lightest check that proves it: the account page to DOM-ready, images
+   * and fonts not fetched, and the signed-in marker. */
+  verifyAccount(options?: AccountOpOptions): Promise<VerifyAccountResult>;
   /** Make our Issuing card the account's payment method (replacing any). */
   setupCard(card: CardFormDetails): Promise<ProviderOpResult>;
   /** Best-effort removal of our card (matched by last4) from the account. */
@@ -232,7 +250,7 @@ export interface AccountOps {
   /** Top up the provider wallet from the card on file. */
   topupWallet(amountUsd: number): Promise<TopupWalletResult>;
   /** Read the brand/last4 of the account's own saved card, for display. */
-  readSavedCard(): Promise<ReadSavedCardResult>;
+  readSavedCard(options?: AccountOpOptions): Promise<ReadSavedCardResult>;
 }
 
 /**

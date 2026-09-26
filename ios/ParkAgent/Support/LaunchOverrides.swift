@@ -15,7 +15,9 @@ import Foundation
 ///   -cityScenario <name>   preset the mock GET /city answer (nyc|bos|none)
 ///   -assistantScenario <name>  preset the mock assistant (auto|singleSpot|itinerary|refuse|error)
 ///   -linkScenario <name>   preset the mock Link wallet (disconnected|connected|denies)
-///   -speechScenario <name> script the assistant's dictation (scripted|denied|unavailable)
+///   -speechScenario <name> script the assistant's dictation (scripted|continuity|denied|unavailable)
+///   -dictationPauseSeconds <n>  the dictation's pause tolerance (the real
+///                          user setting; UI tests on slow runners widen it)
 ///   -paymentSource <raw>   preset the payment source (provider_card|link_wallet|parkagent_card)
 ///   -issuingLive YES       the mock reports the ParkAgent card as live
 ///   -parkAgentSandbox YES  preset Diagnostics' ParkAgent-card sandbox toggle
@@ -107,6 +109,8 @@ enum LaunchOverrides {
             ? defaults.string(forKey: LinkMockScenario.defaultsKey) : nil
         let speechScenario = argued[SpeechMockScenario.defaultsKey] != nil
             ? defaults.string(forKey: SpeechMockScenario.defaultsKey) : nil
+        let dictationPause = argued[SpeechRecognizer.pauseToleranceKey] != nil
+            ? defaults.double(forKey: SpeechRecognizer.pauseToleranceKey) : nil
         let paymentSource = argued[PaymentSource.defaultsKey] != nil
             ? defaults.string(forKey: PaymentSource.defaultsKey) : nil
         let issuingLive = argued["issuingLive"] != nil ? defaults.bool(forKey: "issuingLive") : nil
@@ -170,6 +174,7 @@ enum LaunchOverrides {
         }
         if let linkScenario { defaults.set(linkScenario, forKey: LinkMockScenario.defaultsKey) }
         if let speechScenario { defaults.set(speechScenario, forKey: SpeechMockScenario.defaultsKey) }
+        if let dictationPause { defaults.set(dictationPause, forKey: SpeechRecognizer.pauseToleranceKey) }
         if let paymentSource { defaults.set(paymentSource, forKey: PaymentSource.defaultsKey) }
         if let issuingLive { defaults.set(issuingLive, forKey: "issuingLive") }
         if let parkAgentSandbox { defaults.set(parkAgentSandbox, forKey: FeatureFlags.parkAgentSandboxKey) }

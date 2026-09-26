@@ -8,7 +8,7 @@ final class SpeechUITests: ParkAgentUITestCase {
     private static let scriptedText = "Park me near the MFA at 2 for two hours"
     private static let continuityText = "Find me parking at Seaport at 7 PM near Lola 42 for three hours"
 
-    private func openAssistant(speechScenario: String) -> XCUIApplication {
+    private func openAssistant(speechScenario: String, pauseSeconds: Int? = nil) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = [
             "-resetState", "YES",
@@ -20,7 +20,7 @@ final class SpeechUITests: ParkAgentUITestCase {
             "-fixedNow", Self.fixedNow,
             "-assistantScenario", "singleSpot",
             "-speechScenario", speechScenario,
-        ]
+        ] + (pauseSeconds.map { ["-dictationPauseSeconds", String($0)] } ?? [])
         app.launch()
         element(app, "home.askAssistantButton").tap()
         XCTAssertTrue(element(app, "assistant.inputField").waitForExistence(timeout: 5))
@@ -71,8 +71,15 @@ final class SpeechUITests: ParkAgentUITestCase {
     /// recognizer starting over all land in ONE message; it keeps listening
     /// with a waveform and a running clock until the mic is tapped, and
     /// nothing is sent until the user sends it.
+    ///
+    /// The pause limit is widened to 10 s here, through the real setting:
+    /// on a slow CI runner XCUITest's own snapshots stall the app's main
+    /// thread about a second at a time, which stretched the scripted 2 s
+    /// pause past the 3 s default and ended the dictation mid-test. The
+    /// limit itself is pinned by SpeechRecognizerTests
+    /// (testPauseToleranceIsConfigurable); this test is about continuity.
     func testContinuousDictationKeepsEveryWordUntilFinished() {
-        let app = openAssistant(speechScenario: "continuity")
+        let app = openAssistant(speechScenario: "continuity", pauseSeconds: 10)
         element(app, "assistant.micButton").tap()
 
         let text = element(app, "assistant.dictation.text")
@@ -96,9 +103,21 @@ final class SpeechUITests: ParkAgentUITestCase {
         XCTAssertFalse(element(app, "assistant.userMessage").exists)
     }
 
+    /// The pause limit is the user's setting (`dictationPauseSeconds`): at
+    /// 1 s, the same script's 2 s pause ends the dictation, and what was
+    /// said goes to the field — nothing lost, nothing sent.
+    func testPauseLimitIsTheUsersSetting() {
+        let app = openAssistant(speechScenario: "continuity", pauseSeconds: 1)
+        element(app, "assistant.micButton").tap()
+        XCTAssertTrue(element(app, "assistant.liveTranscript").waitForExistence(timeout: 5))
+        XCTAssertTrue(element(app, "assistant.liveTranscript").waitForNonExistence(timeout: 15))
+        XCTAssertEqual(element(app, "assistant.inputField").value as? String, "Find me parking at Seaport.")
+        XCTAssertFalse(element(app, "assistant.userMessage").exists)
+    }
+
     /// Send while dictating finishes the dictation and sends every word.
     func testSendFinishesTheDictation() {
-        let app = openAssistant(speechScenario: "continuity")
+        let app = openAssistant(speechScenario: "continuity", pauseSeconds: 10)
         element(app, "assistant.micButton").tap()
         let text = element(app, "assistant.dictation.text")
         XCTAssertTrue(text.waitForExistence(timeout: 5))

@@ -13,6 +13,7 @@ import type { AppDb } from "../../db.js";
 import { coveredCitiesSentence, providerForCity } from "../../providers/registry.js";
 import { nycStartOfDay } from "../hours.js";
 import { homeMetroForPoint } from "./geocoder.js";
+import { suggestionsForQuestion } from "./clarify.js";
 import { appendDisplay, displayFromTurns, titleFrom, trimTurns } from "./history.js";
 import type { AssistantPlanBody } from "./plans.js";
 import { TOOL_DEFINITIONS } from "./tools.js";
@@ -40,7 +41,8 @@ Rules you cannot break (the tools enforce them too):
 - Quote street prices with quote_street and garages with search_garages — never invent a price, address, or availability.
 - quote_street searches every metered block within a walk of the point and says what each is doing during the stay ("Free after 6 PM on Seaport Blvd — 4 min walk", "Metered until 8 PM, then free", "$3.75/hr, 2 hr max"). Offer the best street option (or two) using its summary. Say there's no street parking ONLY when quote_street returns found:false, and then say the radius it searched.
 - When the user names a PLACE rather than "here" — a restaurant, bar, venue, business, hotel, landmark, street, or neighborhood — call geocode_place FIRST with their words (keep the area they named: "Lola 42 Seaport"), then quote_street / search_garages at the place's coordinates — never silently use the phone's location for a named place. For garages at a named place, pass within_m: 600 so every option is walkable from it. When you geocoded a place, put it on the plan as destination {lat, lng, label} so the card can show it on a map. If geocode_place returns choices, ask which one with ask_user. If its match is "closest", the name wasn't found: say so and say what you're searching instead. If it finds nothing, say you couldn't find it and ask for the address — never substitute the current location or a neighborhood center.
-- To ask the user anything, call ask_user (one short question, 2–4 tappable suggestions) — never ask in prose. Ask only when you truly can't proceed.
+- To ask the user anything, call ask_user (one short question, 2–4 tappable suggestions) — never ask in prose. Ask only when you truly can't proceed: for time or duration, assume the sensible reading (now; 2 hours) instead of asking. When you do ask, offer the common answers ("1 hour", "2 hours", "3 hours"; "Now", "Tonight at 7").
+- Always state your assumptions in one short line when you propose — the window and the place, e.g. "7:00–10:00 PM, near Lola 42, Seaport". The card shows the same line.
 - If search_garages returns garage_search_unavailable, the search FAILED — say "I couldn't check garages right now", never "no garages available", and still propose the street option. Only an empty options list means none were found. If every garage was dropped for distance, the result's nearestBeyondM says how far the closest one is — tell the user that distance ("the nearest garage is about 900 m away") rather than "none found".
 - A follow-up message edits the CURRENT plan: "cheaper?", "closer", "make it 5 instead", "add a stop at 3" refer to what you just proposed. Re-run only the tools whose inputs changed and propose the revised plan. Ask a clarifying question only when you truly cannot proceed; otherwise assume the sensible reading and say what you assumed in a few words.
 - An itinerary's total must fit the user's remaining daily budget (build_itinerary shows it). If it doesn't fit, say what to cut.
@@ -396,25 +398,30 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
   }
 
   // Models often propose with tool calls alone (Sonnet 5 did on every
-  // live run): an empty reply left the card under a bare "…" bubble. An
-  // ask_user question is part of the reply, said once.
+  // live run): an empty reply left the card under a bare "…" bubble — the
+  // one-liner states what the plan assumed. An ask_user question is part
+  // of the reply, said once.
   const said = scrubVerbalConfirm(
     joinReplySegments(asked ? [...segments, asked.question] : segments),
     plan !== null,
   );
+  const assumed = plan?.plan.assumptions;
   const reply =
     said.length > 0 || plan === null
       ? said
       : plan.plan.kind === "itinerary"
-        ? "Here's a plan for your day — review it, then Sign off."
-        : "Here are your options — tap one to go ahead.";
+        ? `Here's a plan for your day${assumed ? ` (${assumed})` : ""} — review it, then Sign off.`
+        : `Here are your options${assumed ? ` (${assumed})` : ""} — tap one to go ahead.`;
 
   // The tappable answers: ask_user's own, else — when a place search this
   // turn came back ambiguous and the model asked in prose anyway — those
   // places, so the question is still one tap to answer.
+  // Else, a question asked in prose about the city, the time, or the
+  // stay gets its usual answers (clarify.ts).
   const suggestions =
     asked?.suggestions ??
-    (plan === null && (ctx.placeChoices?.length ?? 0) >= 2 ? ctx.placeChoices! : null);
+    (plan === null && (ctx.placeChoices?.length ?? 0) >= 2 ? ctx.placeChoices! : null) ??
+    (plan === null ? suggestionsForQuestion(reply) : null);
 
   // The model's context, cut only where a user message starts; and the
   // readable transcript the history list shows, which is never trimmed

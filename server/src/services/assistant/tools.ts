@@ -17,6 +17,7 @@ import { explainDecision } from "../explanations.js";
 import type { GarageProvider } from "../garage/garageProvider.js";
 import type { GeocodeResult, GeocoderProvider } from "./geocoder.js";
 import { homeMetroForPoint, metersBetween, metroForPoint } from "./geocoder.js";
+import { assumptionsFor } from "./clarify.js";
 import { choiceLabel, choiceReply, classifyPlaceMatches, nameTokens } from "./placeMatch.js";
 import type { ModelClient, ModelUsage } from "./loop.js";
 import { easternIso, parseEasternTime } from "../hours.js";
@@ -1298,6 +1299,11 @@ export class AssistantTools {
         };
       }
     }
+    // What the plan assumed — server truth from the plan itself, stated
+    // on every card however the model phrased its reply.
+    delete plan.assumptions;
+    const assumptions = assumptionsFor(plan, this.now());
+    if (assumptions) plan = { ...plan, assumptions };
     const planId = randomUUID();
     await this.deps.db.assistantPlan.create({
       data: {

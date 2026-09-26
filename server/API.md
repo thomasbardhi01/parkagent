@@ -1562,7 +1562,26 @@ of four ways:
 Without a geocoder the tool answers `geocoding_unavailable`.
 `ask_user(question, suggestions[2–4] of {label, reply})` is the only way
 the model asks the user anything. Like `propose_plan`, it ENDS the turn:
-the question becomes the reply and the suggestions ride along as chips. `search_garages(area, window, budget, within_m?)`
+the question becomes the reply and the suggestions ride along as chips.
+If a model asks in prose anyway, the loop still attaches chips
+(`clarify.ts` `suggestionsForQuestion`). Ambiguous places get one chip
+per place. The three questions a parking request needs get their common
+answers:
+
+- which city: the covered cities, from the registry;
+- how long: 1, 2, or 3 hours;
+- what time: now, in 30 minutes, or tonight at 7.
+
+A question that can be answered by assuming (now, 2 hours) should not be
+asked at all, and the prompt says so.
+
+**Assumptions.** Every plan carries a server-computed `assumptions` line,
+the window and the place (`clarify.ts` `assumptionsFor`): "Sat
+7:00–10:00 PM, near LoLa 42, Seaport", "Now–3:30 PM", "Mon 3 stops,
+10:00 AM–4:30 PM". A plan with no start is for now, for the recommended
+option's stay. The app shows it above the card ("Assuming …"). The
+one-line reply a silent proposal gets states it too: "Here are your
+options (Now–3:30 PM) — tap one to go ahead." `search_garages(area, window, budget, within_m?)`
 — pass `within_m: 600` for a named-area search so every option is
 walkable from the place; farther options are dropped and counted
 (`droppedForDistance`), the guard recomputing distance from each

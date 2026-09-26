@@ -38,6 +38,9 @@ struct ItineraryPlanCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.unit) {
+            if let assumptions = plan.assumptions {
+                AssumptionsLine(text: assumptions)
+            }
             ItineraryMap(stops: stops)
                 .frame(height: 180)
                 .clipShape(RoundedRectangle(cornerRadius: Radius.card, style: .continuous))

@@ -24,6 +24,9 @@ struct SingleSpotPlanCards: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.unit) {
+            if let assumptions = plan.assumptions {
+                AssumptionsLine(text: assumptions)
+            }
             if hasMapContent {
                 PlanMiniMap(plan: plan, selectedOptionID: $selectedOptionID)
                     .frame(height: 200)
@@ -107,6 +110,24 @@ struct SingleSpotPlanCards: View {
             return "Garage prices from \(sources)."
         }
         return "Garage prices from \(sources), checked \(Format.clockTime(searchedAt))."
+    }
+}
+
+/// What a plan assumed, said once above it: "Assuming Sat 7:00–10:00 PM,
+/// near LoLa 42, Seaport". A wrong assumption is one follow-up away.
+struct AssumptionsLine: View {
+    let text: String
+
+    var body: some View {
+        Label("Assuming \(text)", systemImage: "info.circle")
+            .font(.captionText)
+            .foregroundStyle(Color.textSecondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            // On the text: a Label's identifier would land on its icon.
+            .labelStyle(.titleAndIcon)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Assuming \(text)")
+            .accessibilityIdentifier("assistant.assumptions")
     }
 }
 

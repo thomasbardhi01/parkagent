@@ -64,6 +64,7 @@ the evidence that proves it. Three kinds of evidence back an FR:
 | FR-37 | Choosing an option | automated | `server/test/assistantRecommendation.test.ts`; iOS `PlanSelectionTests`, `AssistantUITests` (selection sync) |
 | FR-38 | Saved conversations | automated | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantHistory.test.ts`; iOS `AssistantUITests` (history, Activity link) |
 | FR-39 | Continuous dictation | automated + device-manual | iOS `DictationTranscriptTests`, `SpeechRecognizerTests`, `SpeechUITests` (scripted recognizer); the real recognizers need a phone |
+| FR-40 | Tappable questions, stated assumptions | automated | `server/test/assistantClarify.test.ts`; iOS `AssistantUITests` (duration chips, assumptions line) |
 
 ---
 
@@ -846,6 +847,19 @@ Evidence: iOS `DictationTranscriptTests`, `SpeechRecognizerTests`
 `SpeechUITests.testContinuousDictationKeepsEveryWordUntilFinished`,
 `testSendFinishesTheDictation`. The real engines (SpeechAnalyzer,
 SFSpeechRecognizer) need a phone: see the on-device script.
+
+### FR-40 — Clarifying questions and stated assumptions
+
+A clarifying question comes with tappable answers wherever possible:
+`ask_user` suggestions, ambiguous places, or, when the model asks in
+prose, the usual answers for city, time, and duration. Every plan states
+its assumptions in one server-computed line ("7:00–10:00 PM, near Lola
+42, Seaport"). **Accepted when** a duration question is answered with one
+tap and the plan that follows shows its window and place.
+
+Evidence: `assistantClarify.test.ts`; iOS
+`AssistantUITests.testClarifyingQuestionIsTappableAndThePlanStatesItsAssumptions`;
+live FR-35 (no city question after a known location).
 
 ---
 

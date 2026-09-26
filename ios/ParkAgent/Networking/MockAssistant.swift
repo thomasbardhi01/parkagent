@@ -19,6 +19,8 @@ enum AssistantMockScenario: String, Sendable {
     /// A place with two locations: the reply asks which, with one
     /// tappable suggestion per place; tapping one gets the plan.
     case placeChoices
+    /// Asks how long (with duration chips); an answer gets the plan.
+    case askDuration
     /// The parking-only refusal sentence.
     case refuse
     case error
@@ -173,6 +175,7 @@ enum MockAssistantFixtures {
               "destination": {"lat": 42.3394, "lng": -71.0940, "label": "Museum of Fine Arts"},
               "provenance": {"provider": "parkwhiz+spothero", "searchedAt": "2026-01-05T14:00:00-05:00"},
               "recommendedReason": "Cheapest and closest — $4.10, 2 min walk",
+              "assumptions": "Now–3:30 PM, near Museum of Fine Arts",
               "options": [
                 {"id": "opt-street", "type": "street", "label": "Street — Zone 81234",
                  "detail": "Boylston St meter, 2 min walk", "priceUsd": 4.10,
@@ -347,6 +350,18 @@ extension MockAPI {
                     scenario == .itinerary
                     || (scenario == .auto
                         && (lower.contains("day") || lower.contains("stops") || lower.contains("errand")))
+                if scenario == .askDuration, !lower.hasPrefix("for ") {
+                    await finish(
+                        reply: "Got it — how long will you stay?",
+                        plan: nil,
+                        suggestions: [
+                            AssistantSuggestion(label: "1 hour", reply: "For 1 hour"),
+                            AssistantSuggestion(label: "2 hours", reply: "For 2 hours"),
+                            AssistantSuggestion(label: "3 hours", reply: "For 3 hours"),
+                        ]
+                    )
+                    return
+                }
                 if asksWhichPlace {
                     await finish(
                         reply: "I found two Mooo.... steakhouses — which one?",
@@ -365,7 +380,7 @@ extension MockAPI {
                         reply: "Saturday at 7 near Fenway — the meter is cheapest.",
                         plan: MockAssistantFixtures.futureStreetPlan
                     )
-                case .itinerary, .singleSpot, .auto, .placeChoices:
+                case .itinerary, .singleSpot, .auto, .placeChoices, .askDuration:
                     if scenario == .refuse { return }
                     if wantsDay {
                         await finish(

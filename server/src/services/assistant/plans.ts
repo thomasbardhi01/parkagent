@@ -80,6 +80,9 @@ export const singleSpotPlanSchema = z.object({
    * in one line from the options on the card ("Cheapest and closest —
    * free, 4 min walk"). */
   recommendedReason: z.string().max(200).optional(),
+  /** SERVER-ATTACHED: what the plan assumed, in one line — the window and
+   * the place ("Sat 7:00–10:00 PM, near LoLa 42, Seaport"). */
+  assumptions: z.string().max(200).optional(),
   note: z.string().max(400).optional(),
 });
 
@@ -121,6 +124,9 @@ export const itineraryPlanSchema = z.object({
   totalUsd: z.number().nonnegative(),
   capUsd: z.number().positive(),
   note: z.string().max(400).optional(),
+  /** SERVER-ATTACHED: the day and window it covers ("Mon 3 stops,
+   * 10:00 AM–4:30 PM"). */
+  assumptions: z.string().max(200).optional(),
 });
 
 export const planSchema = z.discriminatedUnion("kind", [singleSpotPlanSchema, itineraryPlanSchema]);
@@ -165,9 +171,9 @@ const modelOptionSchema = singleSpotOptionSchema
 
 const modelPlanSchema = z.discriminatedUnion("kind", [
   singleSpotPlanSchema
-    .omit({ provenance: true, recommendedReason: true })
+    .omit({ provenance: true, recommendedReason: true, assumptions: true })
     .extend({ options: z.array(modelOptionSchema).min(1).max(3) }),
-  itineraryPlanSchema.extend({
+  itineraryPlanSchema.omit({ assumptions: true }).extend({
     stops: z
       .array(itineraryStopSchema.omit({ deepLink: true }))
       .min(1)

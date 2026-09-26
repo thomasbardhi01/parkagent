@@ -244,7 +244,9 @@ describe("the loop", () => {
       payload: { text: "spot near the museum" },
     });
     expect(silent.json().plan).not.toBeNull();
-    expect(silent.json().reply).toBe("Here are your options — tap one to go ahead.");
+    // The one-liner states what the plan assumed: no start given → now,
+    // for the recommended option's 90 minutes.
+    expect(silent.json().reply).toBe("Here are your options (Now–3:30 PM) — tap one to go ahead.");
 
     // Words the model did say are kept as they are.
     const t2 = makeTestApp({

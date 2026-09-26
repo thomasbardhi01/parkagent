@@ -611,6 +611,26 @@ final class AssistantUITests: ParkAgentUITestCase {
         XCTAssertTrue(opened.exists)
     }
 
+    /// A clarifying question comes with its common answers as chips, and
+    /// the plan states what it assumed.
+    func testClarifyingQuestionIsTappableAndThePlanStatesItsAssumptions() {
+        let app = openAssistant("askDuration")
+        ask(app, "park me near the MFA")
+        let twoHours = element(app, "assistant.suggestion.1")
+        XCTAssertTrue(twoHours.waitForExistence(timeout: 10))
+        XCTAssertEqual(twoHours.label, "2 hours")
+        XCTAssertFalse(element(app, "assistant.assumptions").exists, "No plan yet")
+
+        twoHours.tap()
+        let sent = app.descendants(matching: .any).matching(NSPredicate(
+            format: "identifier == 'assistant.userMessage' AND label == %@", "For 2 hours"
+        )).firstMatch
+        XCTAssertTrue(sent.waitForExistence(timeout: 5))
+        let assumptions = element(app, "assistant.assumptions")
+        XCTAssertTrue(assumptions.waitForExistence(timeout: 10))
+        XCTAssertEqual(assumptions.label, "Assuming Now–3:30 PM, near Museum of Fine Arts")
+    }
+
     /// Sending puts the keyboard away and keeps the newest reply on screen.
     func testKeyboardDismissesOnSendAndNewestReplyStaysVisible() {
         let app = openAssistant("singleSpot")

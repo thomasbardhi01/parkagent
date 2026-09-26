@@ -69,6 +69,9 @@ struct SingleSpotPlan: Decodable, Sendable {
     /// server from the options on the card ("Cheapest and closest — free,
     /// 4 min walk").
     var recommendedReason: String?
+    /// What the plan assumed — the window and the place ("Sat 7:00–10:00
+    /// PM, near LoLa 42, Seaport") — computed by the server from the plan.
+    var assumptions: String?
 
     struct Destination: Decodable, Sendable {
         let lat: Double
@@ -175,6 +178,8 @@ struct ItineraryPlan: Decodable, Sendable {
     let totalUsd: Double
     let capUsd: Double
     let note: String?
+    /// The day and window the plan covers ("Mon 3 stops, 10:00 AM–4:30 PM").
+    var assumptions: String?
 }
 
 struct ItineraryStop: Codable, Identifiable, Equatable, Sendable {

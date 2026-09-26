@@ -65,6 +65,10 @@ struct SingleSpotPlan: Decodable, Sendable {
     /// shows it once under the list ("Garage prices from ParkWhiz and
     /// SpotHero, checked 2:05 PM").
     let provenance: Provenance?
+    /// Why the recommended option is on top, in one line, computed by the
+    /// server from the options on the card ("Cheapest and closest — free,
+    /// 4 min walk").
+    var recommendedReason: String?
 
     struct Destination: Decodable, Sendable {
         let lat: Double

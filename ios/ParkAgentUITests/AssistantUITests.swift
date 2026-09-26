@@ -70,6 +70,69 @@ final class AssistantUITests: ParkAgentUITestCase {
         XCTAssertEqual(detail.label, "Metered until 8 PM, then free on Boylston St — 2 min walk")
     }
 
+    /// Choosing an option: a row tap and a pin tap are the same selection.
+    /// The selected pin is highlighted and every other pin dims — the
+    /// recommended one included, which keeps its color only while nothing
+    /// else is chosen — and the selected option's detail card opens.
+    func testSelectingAnOptionSyncsRowsAndPins() {
+        let app = openAssistant("singleSpot")
+        ask(app, "Park me near the MFA for 90 minutes")
+        XCTAssertTrue(element(app, "assistant.singleSpotPlan").waitForExistence(timeout: 10))
+
+        let streetPin = element(app, "assistant.mapPin.opt-street")
+        let deckPin = element(app, "assistant.mapPin.opt-garage")
+        let valetPin = element(app, "assistant.mapPin.opt-garage-2")
+        XCTAssertTrue(streetPin.waitForExistence(timeout: 5))
+        // Nothing chosen: the recommended pin stands out, and the card says why.
+        XCTAssertEqual(streetPin.value as? String, "recommended")
+        XCTAssertEqual(deckPin.value as? String, "normal")
+        XCTAssertEqual(
+            element(app, "assistant.recommendedReason").label,
+            "Cheapest and closest — $4.10, 2 min walk"
+        )
+        XCTAssertFalse(element(app, "assistant.detail.checkout.opt-garage").exists)
+
+        // Row → pin.
+        scrollTo(app, "assistant.optionRow.opt-garage").tap()
+        waitForValue(of: deckPin, toBe: "selected")
+        XCTAssertEqual(streetPin.value as? String, "dimmed", "The recommended pin gives up its color")
+        XCTAssertEqual(valetPin.value as? String, "dimmed")
+        XCTAssertEqual(element(app, "assistant.optionRow.opt-garage").value as? String, "selected")
+        let deckCheckout = scrollTo(app, "assistant.detail.checkout.opt-garage")
+        XCTAssertEqual(
+            deckCheckout.label,
+            "Checkout finishes on SpotHero; your pass lives in your SpotHero account."
+        )
+        XCTAssertEqual(
+            element(app, "assistant.detail.walk.opt-garage").label,
+            "3 min walk from Museum of Fine Arts"
+        )
+        attachScreenshot(of: app, named: "assistant-option-selected")
+
+        // Pin → row: the valet's pin moves the selection and the card.
+        scrollTo(app, "assistant.mapPin.opt-garage-2").tap()
+        waitForValue(of: valetPin, toBe: "selected")
+        XCTAssertEqual(deckPin.value as? String, "dimmed")
+        XCTAssertEqual(element(app, "assistant.optionRow.opt-garage-2").value as? String, "selected")
+        XCTAssertEqual(element(app, "assistant.optionRow.opt-garage").value as? String, "")
+        XCTAssertTrue(element(app, "assistant.detail.entry.opt-garage-2").waitForExistence(timeout: 3))
+        XCTAssertFalse(element(app, "assistant.detail.checkout.opt-garage").exists, "One card open")
+
+        // The same pin again clears the choice: the recommendation is back.
+        scrollTo(app, "assistant.mapPin.opt-garage-2").tap()
+        waitForValue(of: streetPin, toBe: "recommended")
+        XCTAssertEqual(valetPin.value as? String, "normal")
+    }
+
+    private func waitForValue(of element: XCUIElement, toBe expected: String, timeout: TimeInterval = 5) {
+        let predicate = NSPredicate(format: "value == %@", expected)
+        let wait = XCTNSPredicateExpectation(predicate: predicate, object: element)
+        XCTAssertEqual(
+            XCTWaiter.wait(for: [wait], timeout: timeout), .completed,
+            "\(element.identifier) value: expected \(expected), got \(String(describing: element.value))"
+        )
+    }
+
     /// The results layout: ONE hero with the only coral action, the rest
     /// as compact rows that stay collapsed until tapped, a mini map, and
     /// the provenance note once under the list.

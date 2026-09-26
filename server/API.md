@@ -1669,7 +1669,16 @@ Plan shapes (zod-validated at the tool boundary — see
 garage; price, walk minutes, entry type, exactly one `recommended`,
 optional `lat`/`lng` for the card's mini map) plus an optional
 `destination {lat,lng,label}` and server-attached
-`provenance {provider, searchedAt}`. The server backfills all three from
+`provenance {provider, searchedAt}` and `recommendedReason`: one line on
+why the recommended option is on top, computed from the final prices and
+walks on the card (`plans.ts` `recommendationReason`): "Cheapest and
+closest — free, 4 min walk", "Cheapest — …", "Closest — …", or "Best
+value — $12.00, 3 min walk; the cheapest is $4.10, 9 min walk". "Closest"
+is claimed only when every other option has a walk to compare. The app
+shows it under the recommended option. Choosing an option (a row tap or a
+map-pin tap, one shared selection) highlights its pin, recenters the map
+on it with a walking route from the destination, dims the other pins, and
+opens its detail card, built from these server fields alone. The server backfills all three from
 the conversation's grounding — derived from the stored transcript (every
 geocode, street quote, and garage search so far), so it survives a
 restart and holds across machines; models routinely drop optional

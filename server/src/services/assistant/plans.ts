@@ -76,6 +76,10 @@ export const singleSpotPlanSchema = z.object({
   /** SERVER-ATTACHED: where garage results came from and when the search
    * ran, so the card can say "From SpotHero · checked 2:05 PM". */
   provenance: z.object({ provider: z.string(), searchedAt: z.string() }).optional(),
+  /** SERVER-ATTACHED: why the recommended option is the recommended one,
+   * in one line from the options on the card ("Cheapest and closest —
+   * free, 4 min walk"). */
+  recommendedReason: z.string().max(200).optional(),
   note: z.string().max(400).optional(),
 });
 
@@ -161,7 +165,7 @@ const modelOptionSchema = singleSpotOptionSchema
 
 const modelPlanSchema = z.discriminatedUnion("kind", [
   singleSpotPlanSchema
-    .omit({ provenance: true })
+    .omit({ provenance: true, recommendedReason: true })
     .extend({ options: z.array(modelOptionSchema).min(1).max(3) }),
   itineraryPlanSchema.extend({
     stops: z
@@ -189,6 +193,42 @@ export type ItineraryStop = z.infer<typeof itineraryStopSchema>;
 export type EditedItineraryStop = z.infer<typeof editedItineraryStopSchema>;
 export type ItineraryPlan = z.infer<typeof itineraryPlanSchema>;
 export type AssistantPlanBody = z.infer<typeof planSchema>;
+
+const money = (usd: number) => (usd === 0 ? "free" : `$${usd.toFixed(2)}`);
+
+/**
+ * Why the recommended option is the one on top, in one line, from the
+ * options actually on the card: cheapest, closest, both, or — when it's
+ * neither — best value, naming what the cheapest would cost instead.
+ * "Closest" is only claimed when every other option has a walk to compare.
+ */
+export function recommendationReason(options: SingleSpotOption[]): string | null {
+  const rec = options.find((o) => o.recommended);
+  if (!rec) return null;
+  const facts = [
+    money(rec.priceUsd),
+    rec.walkMinutes !== undefined ? `${rec.walkMinutes} min walk` : null,
+  ]
+    .filter((part): part is string => part !== null)
+    .join(", ");
+  const others = options.filter((o) => o !== rec);
+  if (others.length === 0) return `The only option found — ${facts}`;
+  const cheapest = others.every((o) => rec.priceUsd <= o.priceUsd);
+  const closest =
+    rec.walkMinutes !== undefined &&
+    others.every((o) => o.walkMinutes !== undefined && rec.walkMinutes! <= o.walkMinutes);
+  if (cheapest && closest) return `Cheapest and closest — ${facts}`;
+  if (cheapest) return `Cheapest — ${facts}`;
+  if (closest) return `Closest — ${facts}`;
+  const cheapestOther = others.reduce((a, b) => (b.priceUsd < a.priceUsd ? b : a));
+  const alt = [
+    money(cheapestOther.priceUsd),
+    cheapestOther.walkMinutes !== undefined ? `${cheapestOther.walkMinutes} min walk` : null,
+  ]
+    .filter((part): part is string => part !== null)
+    .join(", ");
+  return `Best value — ${facts}; the cheapest is ${alt}`;
+}
 
 /** Recompute an itinerary's total from its stops — never trust a total
  * the model typed. Half-up to the cent. */

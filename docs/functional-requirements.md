@@ -61,6 +61,7 @@ the evidence that proves it. Three kinds of evidence back an FR:
 | FR-34 | Release builds carry no debug code | automated | iOS `ParkAgentReleaseTests` (scheme `ParkAgentRelease`, runs inside the Release build), `ReleaseDenylistTests`, `ios/Tools/check-release-binary.sh`; UI `AccountUITests` (Diagnostics contents), `WalletUITests` (sandbox toggle) |
 | FR-35 | Places people name | automated | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantPlaces.test.ts`; iOS `AssistantUITests` (place choices) |
 | FR-36 | Street options with their state | automated | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantStreet.test.ts`; iOS `AssistantUITests` (street detail) |
+| FR-37 | Choosing an option | automated | `server/test/assistantRecommendation.test.ts`; iOS `PlanSelectionTests`, `AssistantUITests` (selection sync) |
 
 ---
 
@@ -777,6 +778,22 @@ Evidence: `assistantStreet.test.ts` (state words, the real zones around
 LoLa 42, quote_street, the plan's server-attached facts); live FR-36
 tests; `pnpm -C server verify:places` (real zones, no model); iOS
 `AssistantUITests.testStreetOptionSaysWhatTheBlockIsDoing`.
+
+### FR-37 — Choosing an option
+
+Tapping an option's row or its map pin selects it (one selection, synced
+both ways). Its pin is highlighted and the map recenters on it, with a
+walking route from the destination. The other pins dim, and the
+recommended pin keeps its distinct color only while nothing else is
+selected. A detail card opens: price split, walk, entry type, hours and
+max stay, provider and where checkout happens, and the option's one
+action. The recommended option says why in one line (server-computed).
+**Accepted when** row→pin and pin→row selection stay in sync and the
+detail card shows the server's facts.
+
+Evidence: `assistantRecommendation.test.ts`; iOS `PlanSelectionTests`
+(pin styles, centering, detail wording),
+`AssistantUITests.testSelectingAnOptionSyncsRowsAndPins`.
 
 ---
 

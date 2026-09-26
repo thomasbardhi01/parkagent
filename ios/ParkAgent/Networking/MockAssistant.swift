@@ -172,6 +172,7 @@ enum MockAssistantFixtures {
               "note": "Street is cheapest; the deck is closest.",
               "destination": {"lat": 42.3394, "lng": -71.0940, "label": "Museum of Fine Arts"},
               "provenance": {"provider": "parkwhiz+spothero", "searchedAt": "2026-01-05T14:00:00-05:00"},
+              "recommendedReason": "Cheapest and closest — $4.10, 2 min walk",
               "options": [
                 {"id": "opt-street", "type": "street", "label": "Street — Zone 81234",
                  "detail": "Boylston St meter, 2 min walk", "priceUsd": 4.10,

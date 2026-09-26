@@ -30,6 +30,7 @@ import {
   itineraryTotalUsd,
   orderStopsByArrival,
   planSchema,
+  recommendationReason,
 } from "./plans.js";
 import type {
   AssistantPlanBody,
@@ -1284,8 +1285,12 @@ export class AssistantTools {
         }),
         ...(plan.destination === undefined && ctx.geocode ? { destination: ctx.geocode } : {}),
       };
-      // Provenance is server truth, never model text.
+      // Provenance and the recommendation's reason are server truth, never
+      // model text: the reason reads the final prices and walks.
       delete plan.provenance;
+      delete plan.recommendedReason;
+      const reason = recommendationReason(plan.options);
+      if (reason) plan.recommendedReason = reason;
       if (shownProviders.size > 0 && ctx.garageSearch) {
         plan.provenance = {
           provider: [...shownProviders].sort().join("+"),

@@ -59,6 +59,7 @@ the evidence that proves it. Three kinds of evidence back an FR:
 | FR-32 | Accounts | automated + device-manual | `server/fr/60-accounts.fr.test.ts`, `server/test/auth.test.ts`, `server/test/appleTokens.test.ts`, `server/test/frThrowawayPurge.test.ts`, `server/test/authTokens.test.ts`, `server/test/security.test.ts`, `server/test/vehicles.test.ts`; iOS `AuthStoreTests`, `LiveAPIRequestTests`, `OnboardingGateTests`, `AuthUITests`, `AccountUITests`; Apple sign-in and email-code delivery need a phone and a mailbox |
 | FR-33 | Wallet | automated + device-manual | `server/fr/70-wallet.fr.test.ts`, `server/test/walletHolds.test.ts`, `server/test/wallet.test.ts`, `server/test/linkWallet.test.ts`, `server/test/paymentSource.test.ts`, `server/test/adversarial.test.ts`, `server/test/webhookStripe.test.ts`; iOS `LiveAPIRequestTests`, `CardBrandTests`, `WalletUITests`, `SessionUITests`, `OnboardingUITests`, `AccountUITests`, `AssistantUITests`; real Apple Pay / PaymentSheet, a real hold, and Link need a phone, the Stripe sandbox, and the Link OAuth client |
 | FR-34 | Release builds carry no debug code | automated | iOS `ParkAgentReleaseTests` (scheme `ParkAgentRelease`, runs inside the Release build), `ReleaseDenylistTests`, `ios/Tools/check-release-binary.sh`; UI `AccountUITests` (Diagnostics contents), `WalletUITests` (sandbox toggle) |
+| FR-35 | Places people name | automated | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantPlaces.test.ts`; iOS `AssistantUITests` (place choices) |
 
 ---
 
@@ -741,6 +742,24 @@ built app with the same list (CI and the TestFlight workflow); the pre-RC
 Release build had 27 hits. Blind spot, by construction: literals of 15
 bytes or fewer live inline in the instruction stream, so the list uses
 type names and 16+-byte markers (accessibility identifiers).
+
+### FR-35 — Places people name
+
+A request that names a business, venue, or landmark ("near Lola 42",
+"Moo steakhouse in Seaport") resolves THAT place with the Apple Maps
+Server API, falling back to Nominatim. The search is biased to the city
+the phone is in or near (within 60 km of the center, so a Braintree phone
+is in Boston). Several distinct matches come back as 2–3 tappable choices,
+never a guess. A search that only found the neighborhood says so. A phone
+location that names the city is never followed by a which-city question.
+**Accepted when** the device-test phrases resolve within 300 m of the
+real place, no city question follows a known location, and an ambiguous
+name yields choices.
+
+Evidence: `assistantPlaces.test.ts` (adapter, fallback chain, matcher,
+Braintree bias, ask_user, loop suggestions); live FR-35 tests (the phrases
+on a real model turn); `pnpm -C server verify:places` (the real search,
+no model); iOS `AssistantUITests.testAmbiguousPlaceOffersTappableChoices`.
 
 ---
 

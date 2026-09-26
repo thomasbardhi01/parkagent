@@ -14,6 +14,8 @@ struct AssistantMessage: Identifiable, Equatable {
     var text: String
     /// Set on the assistant message that proposed a plan.
     var planId: String?
+    /// Tappable answers to the question this reply asks.
+    var suggestions: [AssistantSuggestion] = []
 }
 
 /// The assistant sheet's state: transcript, streaming, proposed plans,
@@ -75,6 +77,13 @@ final class AssistantModel {
 
     var api: any APIClient { appModel.api }
 
+    /// The chips under the newest reply, if it asked something — an older
+    /// question's chips go away once the conversation moves on.
+    var activeSuggestions: [AssistantSuggestion] {
+        guard phase != .streaming, let last = messages.last, last.role == .assistant else { return [] }
+        return last.suggestions
+    }
+
     func send(_ overrideText: String? = nil) async {
         let text = (overrideText ?? input).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, phase != .streaming else { return }
@@ -116,6 +125,7 @@ final class AssistantModel {
                 case .done(let reply):
                     conversationId = reply.conversationId
                     messages[assistantIndex].text = reply.reply
+                    messages[assistantIndex].suggestions = reply.suggestions ?? []
                     if let plan = reply.plan {
                         messages[assistantIndex].planId = plan.planId
                         proposedPlan = plan

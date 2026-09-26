@@ -1510,9 +1510,18 @@ payload. Otherwise plain JSON:
 {
   "conversationId": "conv_…",
   "reply": "Street is cheapest — here are your options.",
-  "plan": { "planId": "…", "plan": { "kind": "single_spot", "options": [ … ] } } | null
+  "plan": { "planId": "…", "plan": { "kind": "single_spot", "options": [ … ] } } | null,
+  "suggestions": [ { "label": "Mooo.... · 49 Melcher St, Seaport", "reply": "Mooo...., 49 Melcher St" } ] | null
 }
 ```
+
+`suggestions` are tappable answers to the question the reply asks: the
+app shows each `label` as a chip under the newest reply, and a tap sends
+`reply` as the user's next message, exactly as if they had typed it. They
+come from `ask_user` (below). When a place search this turn came back
+ambiguous and the model asked in prose anyway, the ambiguous places are
+offered instead, so the question is still one tap. The SSE `done` event
+carries them too.
 
 Conversation state persists per user (last 20 turns) keyed by
 `conversation_id`; another user's id answers `404 conversation_not_found`
@@ -1527,14 +1536,33 @@ unreadable time bounces back to the model (`unreadable_time`), and times
 are forwarded and stored in one canonical form with NYC's offset
 (`2026-09-26T18:00:00-04:00`).
 
-The model's tools: `geocode_place(query, city?)` — resolve a NAMED place
-or area (a street, neighborhood, or landmark) to coordinates, biased hard
-to the two cities we cover (NYC and Boston) so "Newbury Street" lands in
-Back Bay, not Ohio; the model calls it FIRST for any named area and quotes
-at the returned point instead of the phone's location, and results outside
-both metros' bounding boxes are dropped (found:false rather than a wrong
-fallback). Requires a geocoder (Nominatim; without one the tool answers
-`geocoding_unavailable`). `search_garages(area, window, budget, within_m?)`
+The model's tools: `geocode_place(query, city?)` resolves a NAMED place
+to coordinates. That covers a restaurant, bar, venue, business, hotel,
+landmark, street, or neighborhood. The search is biased to the phone's
+city (see "Place search" below). The model calls it FIRST for any named
+place and quotes at the returned point, never at the phone's location.
+Results outside both metros' bounding boxes are dropped. It answers one
+of four ways:
+
+- `{found: true, match: "exact", place}` — the place the user named
+  (`place` has `name`, `address`, `area`, `kind`, `lat`/`lng`, and a
+  `displayName` like "LoLa 42, Seaport", which becomes the card's
+  destination label).
+- `{found: true, match: "closest", place, instruction}` — nothing carried
+  the NAME. `place` is only the nearest thing found (often the
+  neighborhood), and the model is told to say so rather than present it as
+  the place. This was the device test's silent "Seaport center" fallback.
+- `{found: true, ambiguous: true, choices: [{label, reply, lat, lng}]}` —
+  several distinct places match (a chain's two locations). The model must
+  ask with `ask_user`; nothing is grounded until the user picks one.
+- `{found: false, instruction}` — couldn't find it. The model asks for an
+  address or cross street, and doesn't ask which city when the phone
+  answers that.
+
+Without a geocoder the tool answers `geocoding_unavailable`.
+`ask_user(question, suggestions[2–4] of {label, reply})` is the only way
+the model asks the user anything. Like `propose_plan`, it ENDS the turn:
+the question becomes the reply and the suggestions ride along as chips. `search_garages(area, window, budget, within_m?)`
 — pass `within_m: 600` for a named-area search so every option is
 walkable from the place; farther options are dropped and counted
 (`droppedForDistance`), the guard recomputing distance from each
@@ -1554,10 +1582,39 @@ driver-reported term overrode the dataset). `build_itinerary(stops[])`,
 live token), `get_history(days)`, `explain_decision(id)` (plain-language
 rendering of a decisions row via `services/explanations.ts`).
 
-`geocode_place` biases to the phone's own metro when the model names no
-city (an explicit `city` still wins), and the geocoder falls THROUGH to
-the other metro when the biased one has no match — the bias orders the
-search, it never blinds it.
+**Place search.** `geocode_place` biases to the metro the phone is in
+**or near** when the model names no city. An explicit `city` still wins.
+"Near" means inside the metro's box or within 60 km of its center
+(`NEAR_METRO_KM`): a Braintree phone is outside the Boston box but is in
+Boston for a driver, and on the device test it got asked "Boston or
+NYC?". The same rule writes the city onto the message's location line
+(`[phone location: 42.22060, -71.00410 — in or near Boston]`). The system
+prompt tells the model that line answers the city question. A phone
+inside the box searches around the phone; one outside it searches around
+the city's center, with the phone as a secondary hint. The geocoder falls
+THROUGH to the other metro when the biased one has no match: the bias
+orders the search, it never blinds it.
+
+Sources, in order (`FallbackGeocoder`): the **Apple Maps Server API**
+(`services/assistant/appleMaps.ts`) when `APPLE_MAPS_KEY` /
+`APPLE_MAPS_KEY_ID` / `APPLE_MAPS_TEAM_ID` are set (a set of three; see
+`docs/apple-maps-setup.md` for the one-time portal steps), then
+**Nominatim**. Apple knows businesses by the names people use; Nominatim
+knows streets and neighborhoods but few businesses, and alone it returns
+nothing for "Lola 42". A source that fails falls through to the next.
+What was found is classified in `placeMatch.ts`:
+
+- Names match loosely: case, punctuation, and stretched letters don't
+  count ("Moo" is "Mooo...."). Generic words ("steakhouse") and an area
+  the user named ("in Seaport") aren't part of the name.
+- An exact name beats a longer one ("Seaport" the neighborhood, not
+  "Seaport Hotel").
+- A named area picks a chain's location there.
+- Matches more than 250 m apart are distinct places, which means choices.
+
+The decision row records which source answered. `pnpm -C server
+verify:places` runs the device-test phrases through the real chain with
+no model.
 
 `propose_plan`'s input schema is generated from the same zod schemas it
 validates with (`MODEL_PLAN_JSON_SCHEMA`, minus the server-attached

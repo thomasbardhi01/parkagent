@@ -35,7 +35,8 @@ import { AssistantTools } from "./services/assistant/tools.js";
 import { makeMultiGarageProvider } from "./services/garage/multiProvider.js";
 import { makeParkWhizProvider } from "./services/garage/parkwhiz.js";
 import { makeSpotHeroProvider } from "./services/garage/spotheroDeepLink.js";
-import { NominatimGeocoder } from "./services/assistant/geocoder.js";
+import { AppleMapsGeocoder } from "./services/assistant/appleMaps.js";
+import { FallbackGeocoder, NominatimGeocoder } from "./services/assistant/geocoder.js";
 import { makeLinkHttpClient } from "./services/link/linkClient.js";
 import { LinkWallet } from "./services/link/linkWallet.js";
 import { makeItineraryWorker } from "./jobs/itineraryTick.js";
@@ -163,9 +164,22 @@ const explainModel = env.ANTHROPIC_API_KEY
 const findCandidates = makeCandidateFetcher(prisma);
 // The map's curb layer (GET /zones/near) — same prefilter, plus geometry.
 const findNearbyZones = makeNearbyZoneFetcher(prisma);
-// Named-place geocoding for the assistant, biased to the covered cities
-// (Nominatim, the same free geocoder the Boston zone importer uses).
-const geocoder = new NominatimGeocoder();
+// Place search for the assistant, biased to the covered cities: Apple
+// Maps (restaurants, venues, businesses by the names people use) when its
+// key is set, then Nominatim (streets, neighborhoods, landmarks — the same
+// free geocoder the Boston zone importer uses) as the fallback.
+const geocoder = new FallbackGeocoder([
+  ...(env.APPLE_MAPS_KEY && env.APPLE_MAPS_KEY_ID && env.APPLE_MAPS_TEAM_ID
+    ? [
+        new AppleMapsGeocoder({
+          privateKey: env.APPLE_MAPS_KEY,
+          keyId: env.APPLE_MAPS_KEY_ID,
+          teamId: env.APPLE_MAPS_TEAM_ID,
+        }),
+      ]
+    : []),
+  new NominatimGeocoder(),
+]);
 const assistantTools = new AssistantTools({
   db,
   policy,

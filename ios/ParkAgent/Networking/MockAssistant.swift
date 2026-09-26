@@ -16,6 +16,9 @@ enum AssistantMockScenario: String, Sendable {
     /// A named-place plan whose street option is for a future time: no
     /// Confirm, just "Pays automatically when you park".
     case futureStreet
+    /// A place with two locations: the reply asks which, with one
+    /// tappable suggestion per place; tapping one gets the plan.
+    case placeChoices
     /// The parking-only refusal sentence.
     case refuse
     case error
@@ -246,6 +249,13 @@ enum MockAssistantFixtures {
         )
     }
 
+    /// The two locations of one steakhouse, as the server's ambiguous
+    /// place search offers them.
+    static let mooChoices = [
+        AssistantSuggestion(label: "Mooo.... · 15 Beacon St, Beacon Hill", reply: "Mooo...., 15 Beacon St"),
+        AssistantSuggestion(label: "Mooo.... · 49 Melcher St, Seaport", reply: "Mooo...., 49 Melcher St"),
+    ]
+
     private static let stopLabels = [
         "Coffee — Tatte", "Client, Back Bay", "Lunch — Time Out", "MFA meeting",
         "Fenway errand", "Dinner — North End",
@@ -282,7 +292,11 @@ extension MockAPI {
         let scenario = assistantScenario
         return AsyncThrowingStream { continuation in
             Task {
-                func finish(reply: String, plan: AssistantReply.ProposedPlan?) async {
+                func finish(
+                    reply: String,
+                    plan: AssistantReply.ProposedPlan?,
+                    suggestions: [AssistantSuggestion]? = nil
+                ) async {
                     // Stream word-by-word so the typing UI is visible.
                     let words = reply.split(separator: " ", omittingEmptySubsequences: false)
                     for (index, word) in words.enumerated() {
@@ -298,16 +312,30 @@ extension MockAPI {
                     continuation.yield(.done(AssistantReply(
                         conversationId: conversationId ?? "mock-conv-1",
                         reply: reply,
-                        plan: plan
+                        plan: plan,
+                        suggestions: suggestions
                     )))
                     continuation.finish()
                 }
 
                 let lower = text.lowercased()
+                // A bare chain name is ambiguous — the server asks which
+                // location; a tapped choice carries the street address.
+                let asksWhichPlace =
+                    (scenario == .placeChoices || scenario == .auto)
+                    && lower.contains("moo") && !lower.contains("melcher") && !lower.contains("beacon st")
                 let wantsDay =
                     scenario == .itinerary
                     || (scenario == .auto
                         && (lower.contains("day") || lower.contains("stops") || lower.contains("errand")))
+                if asksWhichPlace {
+                    await finish(
+                        reply: "I found two Mooo.... steakhouses — which one?",
+                        plan: nil,
+                        suggestions: MockAssistantFixtures.mooChoices
+                    )
+                    return
+                }
                 switch scenario {
                 case .error:
                     continuation.finish(throwing: APIError.server(status: 500))
@@ -318,7 +346,7 @@ extension MockAPI {
                         reply: "Saturday at 7 near Fenway — the meter is cheapest.",
                         plan: MockAssistantFixtures.futureStreetPlan
                     )
-                case .itinerary, .singleSpot, .auto:
+                case .itinerary, .singleSpot, .auto, .placeChoices:
                     if scenario == .refuse { return }
                     if wantsDay {
                         await finish(

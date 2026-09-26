@@ -10,11 +10,14 @@
 import { randomUUID } from "node:crypto";
 
 import type { AppDb } from "../../db.js";
-import { coveredCitiesSentence } from "../../providers/registry.js";
+import { z } from "zod";
+
+import { coveredCitiesSentence, providerForCity } from "../../providers/registry.js";
 import { explainDecision } from "../explanations.js";
 import type { GarageProvider } from "../garage/garageProvider.js";
-import type { GeocoderProvider } from "./geocoder.js";
-import { metersBetween, metroForPoint } from "./geocoder.js";
+import type { GeocodeResult, GeocoderProvider } from "./geocoder.js";
+import { homeMetroForPoint, metersBetween, metroForPoint } from "./geocoder.js";
+import { choiceLabel, choiceReply, classifyPlaceMatches, nameTokens } from "./placeMatch.js";
 import type { ModelClient, ModelUsage } from "./loop.js";
 import { easternIso, parseEasternTime } from "../hours.js";
 import type { HoursInterval } from "../hours.js";
@@ -99,16 +102,64 @@ export interface ToolContext {
   geocode?: GeocodedPlace | undefined;
   /** The latest search_garages. */
   garageSearch?: GarageSearchStamp | undefined;
+  /** This turn's ambiguous place matches, if a search found several — the
+   * suggestions the loop offers when the model asks in prose instead of
+   * calling ask_user. */
+  placeChoices?: Suggestion[] | undefined;
   /** Model calls a tool makes on its own (explain_decision's phrasing)
    * report here, so the turn's accounting row — and the daily spend cap
    * that reads it — counts them too. */
   onModelUsage?: ((usage: ModelUsage) => void) | undefined;
 }
 
-/** What a tool hands back to the loop. `endTurn` is propose_plan's exit. */
+/** One tappable answer to a clarifying question: the chip's text and the
+ * message it sends. */
+export interface Suggestion {
+  label: string;
+  reply: string;
+}
+
+/** A clarifying question with its tappable answers — ask_user's exit. */
+export interface Ask {
+  question: string;
+  suggestions: Suggestion[];
+}
+
+/** What a tool hands back to the loop. `endTurn` is propose_plan's exit,
+ * `ask` is ask_user's; either ends the turn. */
 export interface ToolOutcome {
   result: unknown;
   endTurn?: { planId: string; plan: AssistantPlanBody };
+  ask?: Ask;
+}
+
+const askSchema = z.object({
+  question: z.string().min(1).max(300),
+  suggestions: z
+    .array(z.object({ label: z.string().min(1).max(60), reply: z.string().min(1).max(200) }))
+    .min(2)
+    .max(4),
+});
+
+/** "LoLa 42, Seaport" — a found place as the card's destination label;
+ * a source that gives no name keeps its own display name. */
+function placeLabel(place: GeocodeResult): string {
+  if (!place.name) return place.displayName;
+  return place.area && place.area !== place.name ? `${place.name}, ${place.area}` : place.name;
+}
+
+/** What the model sees of a found place. */
+function placeSummary(place: GeocodeResult) {
+  return {
+    lat: place.lat,
+    lng: place.lng,
+    displayName: placeLabel(place),
+    name: place.name ?? null,
+    address: place.address ?? null,
+    area: place.area ?? null,
+    kind: place.kind ?? null,
+    city: place.city,
+  };
 }
 
 export const CONFIRMATION_TTL_MS = 10 * 60_000;
@@ -118,7 +169,7 @@ export const CONFIRMATION_TTL_MS = 10 * 60_000;
 export const TOOL_DEFINITIONS = [
   {
     name: "geocode_place",
-    description: `Resolve a NAMED place or area to coordinates, biased to the cities ParkAgent covers (${coveredCitiesSentence()}). Call this FIRST whenever the user names a street, neighborhood, or landmark instead of relying on their current location. Returns up to 3 matches, best first, each with lat/lng, a display name, and which city it's in. Then pass the chosen lat/lng to quote_street or search_garages. Empty results mean the place isn't in a city we cover.`,
+    description: `Resolve a NAMED place to coordinates — a restaurant, bar, venue, business, hotel, landmark, street, or neighborhood — biased to the phone's city among the cities ParkAgent covers (${coveredCitiesSentence()}). Call this FIRST whenever the user names a place instead of relying on their current location, passing their words including any area they named (e.g. 'Lola 42 Seaport'). Answers: found with match "exact" → use place.lat/lng; match "closest" → the NAME wasn't found, only the nearest thing (tell the user); ambiguous with choices → call ask_user with those choices; found:false → couldn't find it. Then pass the place's lat/lng to quote_street or search_garages.`,
     input_schema: {
       type: "object" as const,
       additionalProperties: false,
@@ -127,7 +178,7 @@ export const TOOL_DEFINITIONS = [
         query: {
           type: "string",
           description:
-            "The named place: a street, neighborhood, or landmark, e.g. 'Newbury Street' or 'SoHo'",
+            "The named place in the user's words, with any area they named: e.g. 'Lola 42 Seaport', 'Moo steakhouse Seaport', 'Newbury Street', 'SoHo'",
         },
         city: {
           type: "string",
@@ -221,6 +272,36 @@ export const TOOL_DEFINITIONS = [
         plan: {
           ...MODEL_PLAN_JSON_SCHEMA,
           description: "The plan: a single_spot plan (1–3 options) or an itinerary (1–12 stops)",
+        },
+      },
+    },
+  },
+  {
+    name: "ask_user",
+    description:
+      "Ask the user ONE short clarifying question with 2–4 tappable suggestions, and END your turn. Use it whenever you must ask something instead of asking in prose: which of several matching places (use geocode_place's choices: their label and reply exactly), what time, how long, or which city (only when there's no phone location). In the question, state what you already assumed.",
+    input_schema: {
+      type: "object" as const,
+      additionalProperties: false,
+      required: ["question", "suggestions"],
+      properties: {
+        question: { type: "string", description: "One short question" },
+        suggestions: {
+          type: "array",
+          minItems: 2,
+          maxItems: 4,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["label", "reply"],
+            properties: {
+              label: { type: "string", description: "The chip's text, a few words" },
+              reply: {
+                type: "string",
+                description: "The message sent when the user taps it, in their voice",
+              },
+            },
+          },
         },
       },
     },
@@ -428,6 +509,8 @@ export class AssistantTools {
           return await this.buildItinerary(ctx, input as Record<string, unknown>);
         case "propose_plan":
           return await this.proposePlan(ctx, input as Record<string, unknown>);
+        case "ask_user":
+          return await this.askUser(ctx, input);
         case "book_garage":
           return await this.bookGarage(ctx, input as Record<string, unknown>);
         case "start_session":
@@ -497,10 +580,25 @@ export class AssistantTools {
     }
     const cityRaw = input["city"];
     // Bias order: the model's explicit choice, else the metro the phone
-    // is in — "Newbury Street" from a Boston phone searches Boston first.
-    const phoneMetro = ctx.location ? metroForPoint(ctx.location.lat, ctx.location.lng) : null;
+    // is in or near — "Seaport" from a Braintree phone searches Boston
+    // first, and never comes back as a which-city question.
+    const phoneMetro = ctx.location ? homeMetroForPoint(ctx.location.lat, ctx.location.lng) : null;
     const city = cityRaw === "nyc" || cityRaw === "bos" ? cityRaw : (phoneMetro ?? undefined);
-    const outcome = await this.deps.geocoder.geocode({ query, ...(city ? { city } : {}) }, 3);
+    // Search around the phone only when it's inside that metro; a phone
+    // outside the box (Braintree) searches around the city's center.
+    const near =
+      ctx.location && city && metroForPoint(ctx.location.lat, ctx.location.lng) === city
+        ? ctx.location
+        : undefined;
+    const outcome = await this.deps.geocoder.geocode(
+      {
+        query,
+        ...(city ? { city } : {}),
+        ...(near ? { near } : {}),
+        ...(ctx.location ? { userLocation: ctx.location } : {}),
+      },
+      5,
+    );
     if (!outcome.ok) {
       await this.audit(ctx, "geocode_place", input, "geocode_error", { reason: outcome.reason });
       return {
@@ -511,25 +609,88 @@ export class AssistantTools {
         },
       };
     }
-    if (outcome.results.length === 0) {
+    const phoneCity = phoneMetro ? providerForCity(phoneMetro)?.cityDisplayName : undefined;
+    const match = classifyPlaceMatches(query, outcome.results);
+    if (match.kind === "none") {
       await this.audit(ctx, "geocode_place", input, "no_match", { query });
       return {
         result: {
           found: false,
-          instruction: `That place isn't in ${coveredCitiesSentence()}, the cities ParkAgent covers. Say so; don't fall back to the user's current location for a place we can't place.`,
+          instruction:
+            `Couldn't find "${query}" in ${coveredCitiesSentence()}. Tell the user plainly and ask for its street address or a cross street. ` +
+            "Never substitute the phone's location or a neighborhood center for a place you couldn't find" +
+            (phoneCity
+              ? `, and don't ask which city — the phone is in or near ${phoneCity}.`
+              : "."),
         },
       };
     }
-    await this.audit(ctx, "geocode_place", input, "ok", {
+    if (match.kind === "ambiguous") {
+      const choices = match.choices.map((place) => ({
+        label: choiceLabel(place),
+        reply: choiceReply(place),
+        lat: place.lat,
+        lng: place.lng,
+      }));
+      ctx.placeChoices = choices.map(({ label, reply }) => ({ label, reply }));
+      await this.audit(ctx, "geocode_place", input, "ambiguous", { query, choices });
+      return {
+        result: {
+          found: true,
+          ambiguous: true,
+          choices,
+          instruction: `Several places match "${query}". Call ask_user now with one suggestion per choice, using each choice's label and reply exactly. Don't pick one yourself.`,
+        },
+      };
+    }
+    const place = match.place;
+    const summary = placeSummary(place);
+    await this.audit(ctx, "geocode_place", input, match.nameMatched ? "ok" : "closest_only", {
       query,
       count: outcome.results.length,
-      top: outcome.results[0],
+      top: summary,
+      source: place.source ?? null,
     });
-    const top = outcome.results[0]!;
     // Remember the resolved place so propose_plan can pin it as the
     // card's destination even when the model drops the optional field.
-    ctx.geocode = { lat: top.lat, lng: top.lng, label: top.displayName };
-    return { result: { found: true, results: outcome.results } };
+    ctx.geocode = { lat: place.lat, lng: place.lng, label: summary.displayName };
+    const named = nameTokens(query).length > 0 ? `"${query}"` : "that place";
+    return {
+      result: {
+        found: true,
+        match: match.nameMatched ? "exact" : "closest",
+        place: summary,
+        // The shape earlier turns stored (groundingIn reads results[0]).
+        results: [summary],
+        ...(match.nameMatched
+          ? {}
+          : {
+              instruction:
+                `No place called ${named} was found — the closest result is ${summary.displayName}` +
+                `${place.kind === "area" ? " (an area, not the place they named)" : ""}. ` +
+                `Tell the user you couldn't find ${named} and that you're searching around ${summary.displayName} instead, or ask for the address. ` +
+                `Never present ${summary.displayName} as the place they named.`,
+            }),
+      },
+    };
+  }
+
+  /** A clarifying question with tappable answers; ends the turn like
+   * propose_plan. */
+  private async askUser(ctx: ToolContext, input: unknown): Promise<ToolOutcome> {
+    const parsed = askSchema.safeParse(input);
+    if (!parsed.success) {
+      return {
+        result: {
+          error: "invalid ask",
+          issues: parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).slice(0, 6),
+        },
+      };
+    }
+    await this.audit(ctx, "ask_user", input, "asked", {
+      suggestions: parsed.data.suggestions.length,
+    });
+    return { result: { presented: true }, ask: parsed.data };
   }
 
   private async searchGarages(

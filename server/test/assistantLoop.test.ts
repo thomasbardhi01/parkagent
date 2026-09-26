@@ -87,7 +87,7 @@ const SINGLE_SPOT_PLAN = {
 };
 
 describe("tool schemas", () => {
-  test("all nine tools are declared with object schemas and no extras allowed", () => {
+  test("all ten tools are declared with object schemas and no extras allowed", () => {
     const names = TOOL_DEFINITIONS.map((t) => t.name);
     expect(names).toEqual([
       "geocode_place",
@@ -95,6 +95,7 @@ describe("tool schemas", () => {
       "quote_street",
       "build_itinerary",
       "propose_plan",
+      "ask_user",
       "book_garage",
       "start_session",
       "get_history",

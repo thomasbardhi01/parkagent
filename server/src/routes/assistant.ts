@@ -233,6 +233,7 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
           conversationId: result.conversationId,
           reply: result.reply,
           plan: result.plan,
+          suggestions: result.suggestions,
         });
       } catch (err) {
         req.log.error(
@@ -259,6 +260,7 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
       conversationId: result.conversationId,
       reply: result.reply,
       plan: result.plan,
+      suggestions: result.suggestions,
     };
   });
 

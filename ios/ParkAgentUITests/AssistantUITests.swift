@@ -431,6 +431,32 @@ final class AssistantUITests: ParkAgentUITestCase {
         XCTAssertFalse(element(app, "assistant.emptyState").exists)
     }
 
+    /// A name with two locations is a question with one chip per place —
+    /// never a guess — and tapping a chip sends that place as the user's
+    /// own words and gets the plan (the device test's "Moo steakhouse").
+    func testAmbiguousPlaceOffersTappableChoices() {
+        let app = openAssistant("placeChoices")
+        ask(app, "near Moo steakhouse")
+
+        let seaport = element(app, "assistant.suggestion.1")
+        XCTAssertTrue(seaport.waitForExistence(timeout: 10))
+        XCTAssertEqual(element(app, "assistant.suggestion.0").label, "Mooo.... · 15 Beacon St, Beacon Hill")
+        XCTAssertEqual(seaport.label, "Mooo.... · 49 Melcher St, Seaport")
+        XCTAssertFalse(element(app, "assistant.singleSpotPlan").exists, "Asked, not guessed")
+        attachScreenshot(of: app, named: "assistant-place-choices")
+
+        seaport.tap()
+        let sent = app.descendants(matching: .any).matching(NSPredicate(
+            format: "identifier == 'assistant.userMessage' AND label == %@", "Mooo...., 49 Melcher St"
+        )).firstMatch
+        XCTAssertTrue(sent.waitForExistence(timeout: 5), "The chip sends its reply as the user's message")
+        XCTAssertTrue(element(app, "assistant.singleSpotPlan").waitForExistence(timeout: 10))
+        XCTAssertFalse(
+            element(app, "assistant.suggestion.0").exists,
+            "An answered question's chips go away"
+        )
+    }
+
     /// Sending puts the keyboard away and keeps the newest reply on screen.
     func testKeyboardDismissesOnSendAndNewestReplyStaysVisible() {
         let app = openAssistant("singleSpot")

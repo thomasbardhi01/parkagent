@@ -18,11 +18,21 @@ struct AssistantReply: Decodable, Sendable {
     let conversationId: String
     let reply: String
     let plan: ProposedPlan?
+    /// Tappable answers to the question the reply asks ("which Mooo?",
+    /// "how long?"); nil when it asks nothing.
+    var suggestions: [AssistantSuggestion]?
 
     struct ProposedPlan: Decodable, Sendable {
         let planId: String
         let plan: AssistantPlan
     }
+}
+
+/// One tappable answer: the chip's text and the message it sends — the
+/// user's words, sent exactly as if typed.
+struct AssistantSuggestion: Decodable, Equatable, Hashable, Sendable {
+    let label: String
+    let reply: String
 }
 
 enum AssistantPlan: Decodable, Sendable {

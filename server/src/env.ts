@@ -49,6 +49,13 @@ const schema = z
     APPLE_SIGNIN_KEY: z.string().min(1).optional(),
     APPLE_SIGNIN_KEY_ID: z.string().min(1).optional(),
     APPLE_SIGNIN_TEAM_ID: z.string().min(1).optional(),
+    // The assistant's place search (Apple Maps Server API): a Maps key
+    // (.p8 contents, literal newlines or "\n" escapes), its key id, and the
+    // team id. A set of three; without them the assistant searches places
+    // with Nominatim alone, which knows few businesses by name.
+    APPLE_MAPS_KEY: z.string().min(1).optional(),
+    APPLE_MAPS_KEY_ID: z.string().min(1).optional(),
+    APPLE_MAPS_TEAM_ID: z.string().min(1).optional(),
     // Sign in with Apple is the only method on by default. Email codes are
     // off until this is "true" (and then need RESEND_API_KEY); while off,
     // /auth/email/* answers 403 email_signin_disabled and GET /auth/methods
@@ -130,6 +137,16 @@ const schema = z
         path: ["APPLE_SIGNIN_KEY"],
         message:
           "APPLE_SIGNIN_KEY, APPLE_SIGNIN_KEY_ID, and APPLE_SIGNIN_TEAM_ID are a set — set all three or none",
+      });
+    }
+    const mapsKeys = [env.APPLE_MAPS_KEY, env.APPLE_MAPS_KEY_ID, env.APPLE_MAPS_TEAM_ID];
+    const mapsSet = mapsKeys.filter((k) => k !== undefined).length;
+    if (mapsSet > 0 && mapsSet < mapsKeys.length) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["APPLE_MAPS_KEY"],
+        message:
+          "APPLE_MAPS_KEY, APPLE_MAPS_KEY_ID, and APPLE_MAPS_TEAM_ID are a set — set all three or none",
       });
     }
     // Email sign-in switched on with no way to send the code would answer

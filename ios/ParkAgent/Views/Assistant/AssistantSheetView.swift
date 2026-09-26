@@ -68,6 +68,9 @@ struct AssistantSheetView: View {
                         }
                         ForEach(model.messages) { message in
                             MessageBubble(message: message)
+                            if message.id == model.messages.last?.id, !model.activeSuggestions.isEmpty {
+                                suggestionChips(model)
+                            }
                             if let plan = model.proposedPlan, message.planId == plan.planId {
                                 planCards(model, plan: plan)
                                     .transition(
@@ -230,6 +233,34 @@ struct AssistantSheetView: View {
         // publish the card as one element and hide them.
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("assistant.emptyState")
+    }
+
+    /// The question's answers as chips: a tap sends that answer as the
+    /// user's own message, exactly as if they'd typed it.
+    private func suggestionChips(_ model: AssistantModel) -> some View {
+        FlowLayout(spacing: Spacing.half) {
+            ForEach(Array(model.activeSuggestions.enumerated()), id: \.offset) { index, suggestion in
+                Button {
+                    inputFocused = false
+                    Task { await model.send(suggestion.reply) }
+                } label: {
+                    Text(suggestion.label)
+                        .font(.captionTextSemibold)
+                        .foregroundStyle(Color.actionCoralLink)
+                        .padding(.horizontal, Spacing.unit)
+                        .padding(.vertical, Spacing.half)
+                        .background(Color.surface)
+                        .clipShape(Capsule())
+                        .overlay(Capsule().strokeBorder(Color.actionCoralLink.opacity(0.5), lineWidth: 1))
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("assistant.suggestion.\(index)")
+                .accessibilityHint("Sends this answer")
+            }
+        }
+        .padding(.leading, Spacing.half)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func errorRow(_ text: String) -> some View {

@@ -417,6 +417,28 @@ export interface VehicleRow {
   createdAt: Date;
 }
 
+export interface ConversationRow {
+  id: string;
+  userId: string;
+  turns: unknown;
+  title: string | null;
+  /** [{role, text, at, planId?, suggestions?}] — see services/assistant/history.ts. */
+  display: unknown;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface AssistantPlanRow {
+  id: string;
+  userId: string;
+  conversationId: string;
+  kind: string;
+  plan: unknown;
+  createdAt: Date;
+  confirmedAt: Date | null;
+  confirmedOptionId: string | null;
+}
+
 export interface AppDb {
   user: {
     findUnique(args: {
@@ -604,27 +626,48 @@ export interface AppDb {
     }): Promise<{ id: string; userId: string; signals: unknown; ts: Date }[]>;
   };
   conversation: {
-    findUnique(args: {
-      where: { id: string };
-    }): Promise<{ id: string; userId: string; turns: unknown } | null>;
+    findUnique(args: { where: { id: string } }): Promise<ConversationRow | null>;
     upsert(args: {
       where: { id: string };
-      create: { id: string; userId: string; turns: unknown };
-      update: { turns: unknown };
+      create: {
+        id: string;
+        userId: string;
+        turns: unknown;
+        title?: string | null;
+        display?: unknown;
+      };
+      update: { turns: unknown; display?: unknown };
     }): Promise<unknown>;
-    deleteMany(args: { where: { userId: string } }): Promise<{ count: number }>;
+    /** The history list: one user's conversations, newest first. */
+    findMany(args: {
+      where: { userId: string; updatedAt?: { lt: Date }; id?: { in: string[] } };
+      orderBy?: { updatedAt: "desc" };
+      take?: number;
+    }): Promise<ConversationRow[]>;
+    /** Account deletion (by user), one conversation (by id), and the
+     * retention job (everything untouched since a cutoff). */
+    deleteMany(args: {
+      where: { userId?: string; id?: string; updatedAt?: { lt: Date } };
+    }): Promise<{ count: number }>;
   };
   assistantPlan: {
     create(args: {
       data: { id: string; userId: string; conversationId: string; kind: string; plan: unknown };
     }): Promise<{ id: string }>;
-    findUnique(args: { where: { id: string } }): Promise<{
-      id: string;
-      userId: string;
-      conversationId: string;
-      kind: string;
-      plan: unknown;
-    } | null>;
+    findUnique(args: { where: { id: string } }): Promise<AssistantPlanRow | null>;
+    /** A conversation's plans (history), or a user's confirmed ones (Activity). */
+    findMany(args: {
+      where: {
+        userId: string;
+        conversationId?: { in: string[] };
+        confirmedAt?: { not: null };
+      };
+    }): Promise<AssistantPlanRow[]>;
+    /** The user's tap: when, and which option (null for an itinerary). */
+    update(args: {
+      where: { id: string };
+      data: { confirmedAt: Date; confirmedOptionId: string | null };
+    }): Promise<unknown>;
   };
   assistantConfirmation: {
     create(args: {

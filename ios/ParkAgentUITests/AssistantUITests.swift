@@ -530,6 +530,87 @@ final class AssistantUITests: ParkAgentUITestCase {
         )
     }
 
+    /// Saved conversations: newest first, titled by the first request, with
+    /// what each came to; opening one shows its transcript and plans
+    /// read-only, and the next message continues it; swipe deletes one;
+    /// "Delete all" clears them.
+    func testHistoryListsOpensResumesAndDeletes() {
+        let app = openAssistant("singleSpot")
+        element(app, "assistant.historyButton").tap()
+
+        let fenway = element(app, "assistant.history.row.mock-history-fenway")
+        let mfa = element(app, "assistant.history.row.mock-history-mfa")
+        XCTAssertTrue(fenway.waitForExistence(timeout: 5))
+        XCTAssertTrue(mfa.exists)
+        XCTAssertLessThan(fenway.frame.minY, mfa.frame.minY, "Newest first")
+        XCTAssertTrue(mfa.label.hasPrefix("Park me near the MFA for 90 minutes"), "got: \(mfa.label)")
+        XCTAssertTrue(mfa.label.contains("Street — Boylston St · $4.10"), "got: \(mfa.label)")
+        XCTAssertEqual(
+            element(app, "assistant.history.retention").label,
+            "Conversations are kept for 90 days after you last use them."
+        )
+        attachScreenshot(of: app, named: "assistant-history")
+
+        // Open: the transcript, and its plan read-only — no Confirm on a
+        // plan whose prices were for then.
+        XCTAssertFalse(element(app, "assistant.storedPlan.mock-plan-single").exists)
+        mfa.tap()
+        let stored = element(app, "assistant.storedPlan.mock-plan-single")
+        XCTAssertTrue(stored.waitForExistence(timeout: 5))
+        XCTAssertTrue(stored.label.contains("Chosen"), "The option the user chose is marked")
+        XCTAssertFalse(
+            app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'assistant.confirm.'")).firstMatch.exists
+        )
+        let opened = app.descendants(matching: .any).matching(NSPredicate(
+            format: "identifier == 'assistant.userMessage' AND label == %@", "Park me near the MFA for 90 minutes"
+        )).firstMatch
+        XCTAssertTrue(opened.exists)
+
+        // Resume: the next message continues this conversation — it's the
+        // newest in the list afterwards.
+        ask(app, "make it two hours")
+        XCTAssertTrue(element(app, "assistant.singleSpotPlan").waitForExistence(timeout: 10))
+        element(app, "assistant.historyButton").tap()
+        XCTAssertTrue(mfa.waitForExistence(timeout: 5))
+        XCTAssertLessThan(mfa.frame.minY, fenway.frame.minY, "The resumed conversation moved to the top")
+
+        // Swipe to delete one.
+        fenway.swipeLeft()
+        app.buttons["Delete"].firstMatch.tap()
+        XCTAssertTrue(fenway.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(mfa.exists)
+
+        // Delete all, confirmed.
+        element(app, "assistant.history.deleteAll").tap()
+        element(app, "assistant.history.confirmDeleteAll").tap()
+        XCTAssertTrue(element(app, "assistant.history.empty").waitForExistence(timeout: 5))
+        XCTAssertFalse(mfa.exists)
+    }
+
+    /// A plan made in chat shows in Activity, and its detail opens the
+    /// conversation it came from.
+    func testActivityOpensTheConversationAPlanCameFrom() {
+        let app = XCUIApplication()
+        app.launchArguments = [
+            "-resetState", "YES", "-useMockAPI", "YES", "-uiTesting", "YES",
+            "-skipOnboarding", "YES", "-signedIn", "YES", "-fixedNow", Self.fixedNow,
+        ]
+        app.launch()
+        app.tabBars.buttons["Activity"].tap()
+        let row = scrollTo(app, "activity.row.plan:mock-plan-single")
+        XCTAssertTrue(row.label.contains("Boylston St"), "got: \(row.label)")
+        row.tap()
+        let open = element(app, "activityDetail.openConversation")
+        XCTAssertTrue(open.waitForExistence(timeout: 5))
+        XCTAssertFalse(element(app, "assistant.sheet").exists)
+        open.tap()
+        XCTAssertTrue(element(app, "assistant.storedPlan.mock-plan-single").waitForExistence(timeout: 5))
+        let opened = app.descendants(matching: .any).matching(NSPredicate(
+            format: "identifier == 'assistant.userMessage' AND label == %@", "Park me near the MFA for 90 minutes"
+        )).firstMatch
+        XCTAssertTrue(opened.exists)
+    }
+
     /// Sending puts the keyboard away and keeps the newest reply on screen.
     func testKeyboardDismissesOnSendAndNewestReplyStaysVisible() {
         let app = openAssistant("singleSpot")

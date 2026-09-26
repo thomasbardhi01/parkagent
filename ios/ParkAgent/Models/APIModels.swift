@@ -498,6 +498,14 @@ struct ActivityItem: Codable, Sendable, Hashable, Identifiable {
     var spendRequestId: String?
     var amountUsd: Double?
     var merchantName: String?
+
+    // plan: a street spot or a day made in the assistant
+    var planId: String?
+    /// "street" | "itinerary"
+    var planKind: String?
+    /// garage and plan rows made in the assistant: the conversation, while
+    /// it is still saved.
+    var conversationId: String?
 }
 
 struct ActivityReceipt: Codable, Sendable, Hashable {

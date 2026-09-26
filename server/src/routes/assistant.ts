@@ -12,6 +12,9 @@
  * GET  /assistant/itineraries          today's / recent signed-off days
  * PATCH /assistant/itineraries/:id     edit or reorder stops (re-priced on
  *                           the server, cap re-checked)
+ * GET  /assistant/conversations        saved conversations, newest first
+ * GET  /assistant/conversations/:id    one, to read or resume
+ * DELETE /assistant/conversations[/:id]  delete one, or all
  *
  * Every tool call and every confirmation writes a decisions row.
  */
@@ -24,6 +27,13 @@ import { z } from "zod";
 import type { AppDeps } from "../app.js";
 import { assistantSpendTodayUsd, runAssistantTurn } from "../services/assistant/loop.js";
 import type { AssistantResult } from "../services/assistant/loop.js";
+import {
+  DEFAULT_RETENTION_DAYS,
+  conversationOutcome,
+  displayFromTurns,
+  titleFromTurns,
+} from "../services/assistant/history.js";
+import type { DisplayEntry } from "../services/assistant/history.js";
 import { CONFIRMATION_TTL_MS } from "../services/assistant/tools.js";
 import type { PreviousStop, PricedStop, RepriceResult } from "../services/assistant/tools.js";
 import {
@@ -80,6 +90,12 @@ const patchItinerarySchema = z.object({
 
 const priceSchema = z.object({
   stops: editedStopsSchema,
+});
+
+const conversationsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+  /** The previous page's nextCursor (an updatedAt, opaque to clients). */
+  cursor: z.string().max(64).optional(),
 });
 
 type EditedStops = z.infer<typeof editedStopsSchema>;
@@ -340,6 +356,13 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
         },
       });
     const ctx = { userId: user.id, conversationId: planRow.conversationId };
+    // What the tap did, on the plan: the history list and Activity show
+    // the booking or plan a conversation came to.
+    const markConfirmed = (planId: string, optionId: string | null) =>
+      deps.db.assistantPlan.update({
+        where: { id: planId },
+        data: { confirmedAt: at, confirmedOptionId: optionId },
+      });
 
     // How this confirm pays. The user's Wallet source decides:
     //  - street meters: the card on their provider account, or the
@@ -473,6 +496,7 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
             status: "handed_off",
           },
         });
+        await markConfirmed(planRow.id, option.id);
         await decide("garage_confirmed", {
           allowed: true,
           optionId: option.id,
@@ -504,6 +528,7 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
         await decide("start_failed", { allowed: true, error: confirmed.error });
         return reply.code(409).send({ error: "start_failed", detail: confirmed.error });
       }
+      await markConfirmed(planRow.id, option.id);
       await decide("street_confirmed", {
         allowed: true,
         optionId: option.id,
@@ -632,6 +657,7 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
         },
       });
     }
+    await markConfirmed(planRow.id, null);
     await decide("itinerary_signed_off", {
       allowed: true,
       itineraryId,
@@ -821,4 +847,119 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
     });
     return { id, stops, totalUsd, capUsd: policy.daily_cap_usd };
   });
+
+  // Saved conversations (services/assistant/history.ts). Newest first,
+  // titled by the first request, with what each came to; open one to read
+  // it or keep going (POST /assistant/message with its id), delete one or
+  // all. Kept for deps.conversationRetentionDays (90 by default), then the
+  // retention job deletes them.
+  app.get("/assistant/conversations", { preHandler: limitOther }, async (req, reply) => {
+    const parsed = conversationsQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: z.treeifyError(parsed.error) });
+    }
+    const user = req.authedUser!;
+    const before = parsed.data.cursor ? new Date(parsed.data.cursor) : null;
+    const rows = await deps.db.conversation.findMany({
+      where: {
+        userId: user.id,
+        ...(before && !Number.isNaN(before.getTime()) ? { updatedAt: { lt: before } } : {}),
+      },
+      orderBy: { updatedAt: "desc" },
+      take: parsed.data.limit + 1,
+    });
+    const page = rows.slice(0, parsed.data.limit);
+    const plans =
+      page.length > 0
+        ? await deps.db.assistantPlan.findMany({
+            where: { userId: user.id, conversationId: { in: page.map((r) => r.id) } },
+          })
+        : [];
+    return {
+      conversations: page.map((row) => {
+        const display = displayOf(row);
+        return {
+          id: row.id,
+          title: row.title ?? titleFromTurns(row.turns) ?? "Conversation",
+          createdAt: row.createdAt.toISOString(),
+          updatedAt: row.updatedAt.toISOString(),
+          messageCount: display.length,
+          outcome: conversationOutcome(plans.filter((p) => p.conversationId === row.id)),
+        };
+      }),
+      nextCursor:
+        rows.length > parsed.data.limit
+          ? (page[page.length - 1]?.updatedAt.toISOString() ?? null)
+          : null,
+      retentionDays: deps.conversationRetentionDays ?? DEFAULT_RETENTION_DAYS,
+    };
+  });
+
+  app.get("/assistant/conversations/:id", { preHandler: limitOther }, async (req, reply) => {
+    const user = req.authedUser!;
+    const { id } = req.params as { id: string };
+    const row = await deps.db.conversation.findUnique({ where: { id } });
+    if (!row || row.userId !== user.id) {
+      return reply.code(404).send({ error: "conversation_not_found" });
+    }
+    const plans = await deps.db.assistantPlan.findMany({
+      where: { userId: user.id, conversationId: { in: [row.id] } },
+    });
+    return {
+      id: row.id,
+      title: row.title ?? titleFromTurns(row.turns) ?? "Conversation",
+      createdAt: row.createdAt.toISOString(),
+      updatedAt: row.updatedAt.toISOString(),
+      messages: displayOf(row),
+      plans: plans
+        .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+        .map((p) => ({
+          planId: p.id,
+          plan: p.plan,
+          confirmedAt: p.confirmedAt?.toISOString() ?? null,
+          confirmedOptionId: p.confirmedOptionId,
+        })),
+      outcome: conversationOutcome(plans),
+    };
+  });
+
+  app.delete("/assistant/conversations/:id", { preHandler: limitOther }, async (req, reply) => {
+    const user = req.authedUser!;
+    const { id } = req.params as { id: string };
+    const { count } = await deps.db.conversation.deleteMany({ where: { id, userId: user.id } });
+    if (count === 0) return reply.code(404).send({ error: "conversation_not_found" });
+    await deps.db.decision.create({
+      data: {
+        kind: "assistant_history",
+        inputs: { conversationId: id },
+        rule: "conversation_deleted",
+        outcome: { deleted: count },
+        userId: user.id,
+      },
+    });
+    return { deleted: count };
+  });
+
+  app.delete("/assistant/conversations", { preHandler: limitOther }, async (req) => {
+    const user = req.authedUser!;
+    const { count } = await deps.db.conversation.deleteMany({ where: { userId: user.id } });
+    await deps.db.decision.create({
+      data: {
+        kind: "assistant_history",
+        inputs: { all: true },
+        rule: "conversations_deleted",
+        outcome: { deleted: count },
+        userId: user.id,
+      },
+    });
+    return { deleted: count };
+  });
+}
+
+/** A conversation's readable transcript: its own, or — saved before the
+ * transcript existed — rebuilt from what its model context still holds. */
+function displayOf(row: { display: unknown; turns: unknown }): DisplayEntry[] {
+  return Array.isArray(row.display) && row.display.length > 0
+    ? (row.display as DisplayEntry[])
+    : displayFromTurns(row.turns);
 }

@@ -580,6 +580,26 @@ struct LiveAPI: APIClient {
         return try await send("assistant/itineraries/\(id)", method: "PATCH", body: Body(stops: stops))
     }
 
+    func conversations(cursor: String?) async throws -> ConversationsResponse {
+        try await send(
+            "assistant/conversations",
+            query: cursor.map { [URLQueryItem(name: "cursor", value: $0)] } ?? []
+        )
+    }
+
+    func conversation(id: String) async throws -> ConversationDetail {
+        try await send("assistant/conversations/\(id)")
+    }
+
+    func deleteConversation(id: String) async throws {
+        let _: ConversationsDeleted = try await send("assistant/conversations/\(id)", method: "DELETE")
+    }
+
+    func deleteAllConversations() async throws -> Int {
+        let response: ConversationsDeleted = try await send("assistant/conversations", method: "DELETE")
+        return response.deleted
+    }
+
     func linkWalletStatus() async throws -> LinkWalletStatus {
         try await send("link/status")
     }

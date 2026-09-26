@@ -98,6 +98,8 @@ export interface AppDeps {
   /** ASSISTANT_DAILY_SPEND_CAP_USD: per-user daily ceiling on estimated
    * model spend; unset → uncapped. Over the cap → /assistant/message 429. */
   assistantDailySpendCapUsd?: number;
+  /** ASSISTANT_CONVERSATION_RETENTION_DAYS; the history list reports it. */
+  conversationRetentionDays?: number;
   /** Link wallet for agents; absent/unconfigured → /link/* answers 503. */
   linkWallet?: LinkWallet;
   /** ISSUING_LIVE env: whether the ParkAgent card may be chosen as the

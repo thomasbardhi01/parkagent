@@ -5,6 +5,7 @@ import { buildApp, createFastify, makeAuthenticate } from "./app.js";
 import { asAppDb, createPrisma } from "./db.js";
 import { makeCardJanitor } from "./jobs/cardJanitor.js";
 import { makeLinkJobJanitor } from "./jobs/linkJobJanitor.js";
+import { makeConversationRetention } from "./jobs/conversationRetentionTick.js";
 import { makeExtender } from "./jobs/extendTick.js";
 import { makeAppleRevocationJob } from "./jobs/appleRevocationTick.js";
 import { makeProviderHealth } from "./jobs/providerHealthTick.js";
@@ -250,6 +251,7 @@ buildApp(
     ...(assistantModel ? { assistantModel } : {}),
     assistantTools,
     assistantDailySpendCapUsd: env.ASSISTANT_DAILY_SPEND_CAP_USD,
+    conversationRetentionDays: env.ASSISTANT_CONVERSATION_RETENTION_DAYS,
     linkWallet,
     executorFor,
     sendPush,
@@ -278,6 +280,11 @@ const extender = makeExtender({
 });
 const cardJanitor = makeCardJanitor({ db, stripe, log });
 const linkJobJanitor = makeLinkJobJanitor({ db, log });
+const conversationRetention = makeConversationRetention({
+  db,
+  retentionDays: env.ASSISTANT_CONVERSATION_RETENTION_DAYS,
+  log,
+});
 const itineraryWorker = makeItineraryWorker({ db, sendPush, log });
 // Settles ParkAgent-card holds past their grace period and expires Link
 // approvals nobody gave inside Link's window.
@@ -292,6 +299,7 @@ app.listen({ port: env.PORT, host: "0.0.0.0" });
 extender.start();
 cardJanitor.start();
 linkJobJanitor.start();
+conversationRetention.start();
 itineraryWorker.start();
 providerHealth.start();
 walletTick.start();
@@ -306,6 +314,7 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
     extender.stop();
     cardJanitor.stop();
     linkJobJanitor.stop();
+    conversationRetention.stop();
     itineraryWorker.stop();
     providerHealth.stop();
     walletTick.stop();

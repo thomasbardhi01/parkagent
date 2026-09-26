@@ -193,6 +193,7 @@ struct ActivityRow: View {
         switch item.kind {
         case "garage": "building.2"
         case "link_payment": "link"
+        case "plan": item.planKind == "itinerary" ? "calendar" : "map"
         default: "parkingsign.circle"
         }
     }
@@ -275,6 +276,17 @@ struct ActivityDetailView: View {
                     receipt
                 }
 
+                if let conversationId = item.conversationId {
+                    // Made in the assistant: the conversation it came from.
+                    Button {
+                        model.openAssistant(conversationId: conversationId)
+                    } label: {
+                        Label("Open the conversation", systemImage: "bubble.left.and.bubble.right")
+                    }
+                    .buttonStyle(.secondary)
+                    .accessibilityIdentifier("activityDetail.openConversation")
+                }
+
                 if item.kind == "garage", let link = item.link, link.status == "approved" {
                     Button {
                         Task {
@@ -305,6 +317,7 @@ struct ActivityDetailView: View {
     private var title: String {
         switch item.kind {
         case "garage": "Garage"
+        case "plan": item.planKind == "itinerary" ? "Day plan" : "Street spot"
         case "link_payment": "Link payment"
         default: "Session"
         }

@@ -28,6 +28,7 @@ MockAssistant
 MockScenario
 MockProviderLoginView
 MockZoneNumberStore
+MockConversationStore
 useMockAPI
 usesMockSignIn
 scenarioOverride
@@ -84,6 +85,7 @@ type MockFixtures O
 type MockWalletStore C
 type MockAssistantStore C
 type MockAssistantFixtures O
+type MockConversationStore C
 type MockItineraryPricing O
 type MockScenario O
 type WalletMockScenario O

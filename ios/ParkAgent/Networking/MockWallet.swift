@@ -453,7 +453,16 @@ extension MockFixtures {
             receipt: ActivityReceipt(providerConfirmation: nil, decisionId: "mock-decision-0", holds: []),
             timeline: [ActivityTimelineEntry(kind: "failed", at: lastWeek, minutes: 90, amountUsd: nil, code: "payment_declined")]
         )
-        return [paid, garage, declined]
+        // A street spot chosen in the assistant: it links back to that
+        // (seeded) conversation.
+        var plan = ActivityItem(id: "plan:mock-plan-single", kind: "plan", at: yesterday, createdAt: yesterday)
+        plan.planId = "mock-plan-single"
+        plan.planKind = "street"
+        plan.label = "Boylston St"
+        plan.totalUsd = 4.10
+        plan.explanation = "Chosen in the assistant — it pays when you park there."
+        plan.conversationId = "mock-history-mfa"
+        return [paid, plan, garage, declined]
     }
 }
 

@@ -90,6 +90,10 @@ const schema = z
     // no control. Each turn's cost estimate is logged on its
     // assistant_turn decision row; a user over the cap gets 429.
     ASSISTANT_DAILY_SPEND_CAP_USD: z.coerce.number().positive().default(5),
+    // How long a saved assistant conversation is kept after it was last
+    // used; the retention job deletes older ones (plans, bookings, and the
+    // decisions ledger keep their own rows).
+    ASSISTANT_CONVERSATION_RETENTION_DAYS: z.coerce.number().int().positive().default(90),
     // ParkWhiz is a read-only public search (no credentials — verified
     // live 2026-09-23); flip to "false" to drop back to SpotHero only.
     PARKWHIZ_ENABLED: z.enum(["true", "false"]).default("true"),

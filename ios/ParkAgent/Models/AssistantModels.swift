@@ -266,6 +266,64 @@ struct ItineraryPatchResponse: Decodable, Sendable {
     let capUsd: Double
 }
 
+// Saved conversations (server/API.md "Saved conversations").
+
+/// One row of the assistant's history list.
+struct ConversationSummary: Decodable, Identifiable, Equatable, Sendable {
+    let id: String
+    /// The first request.
+    let title: String
+    let createdAt: Date
+    let updatedAt: Date
+    let messageCount: Int
+    /// What it came to — a booking or plan — if anything.
+    let outcome: ConversationOutcome?
+}
+
+struct ConversationOutcome: Decodable, Equatable, Sendable {
+    /// "garage" | "street" | "itinerary" (confirmed) · "proposed"
+    let kind: String
+    let label: String
+    let amountUsd: Double?
+    let planId: String
+}
+
+struct ConversationsResponse: Decodable, Sendable {
+    let conversations: [ConversationSummary]
+    let nextCursor: String?
+    /// How long a conversation is kept after it was last used.
+    let retentionDays: Int
+}
+
+/// A saved conversation, opened to read or resume.
+struct ConversationDetail: Decodable, Sendable {
+    let id: String
+    let title: String
+    let messages: [ConversationMessage]
+    let plans: [StoredPlan]
+    let outcome: ConversationOutcome?
+}
+
+struct ConversationMessage: Decodable, Sendable {
+    /// "user" | "assistant"
+    let role: String
+    let text: String
+    let planId: String?
+    let suggestions: [AssistantSuggestion]?
+}
+
+/// A plan as it was proposed, and what the user did with it.
+struct StoredPlan: Decodable, Sendable {
+    let planId: String
+    let plan: AssistantPlan
+    let confirmedAt: Date?
+    let confirmedOptionId: String?
+}
+
+struct ConversationsDeleted: Decodable, Sendable {
+    let deleted: Int
+}
+
 // Link wallet (server/API.md "Link wallet for agents").
 
 struct LinkWalletStatus: Decodable, Sendable {

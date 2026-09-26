@@ -320,8 +320,16 @@ extension MockAPI {
                             continuation.yield(.plan(plan))
                         }
                     }
+                    // Saved like the server saves it: the history list
+                    // shows this chat, and it can be reopened.
+                    let id = if let conversationId { conversationId } else {
+                        await MockConversationStore.shared.newId()
+                    }
+                    await MockConversationStore.shared.record(
+                        conversationId: id, userText: text, reply: reply, plan: plan, suggestions: suggestions
+                    )
                     continuation.yield(.done(AssistantReply(
-                        conversationId: conversationId ?? "mock-conv-1",
+                        conversationId: id,
                         reply: reply,
                         plan: plan,
                         suggestions: suggestions

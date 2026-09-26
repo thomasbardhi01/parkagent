@@ -108,6 +108,7 @@ enum WalletCopy {
     static func place(_ item: ActivityItem) -> String {
         switch item.kind {
         case "garage": return item.label ?? "Garage"
+        case "plan": return item.label ?? "Plan"
         case "link_payment": return item.merchantName ?? "Link payment"
         default:
             let zone = item.zoneNumber.map { $0.isEmpty ? nil : "Zone \($0)" } ?? nil
@@ -134,6 +135,7 @@ enum WalletCopy {
         case ("session", "free_period"): return "Free"
         case ("session", _): return item.dryRun == true ? "Dry run" : "Paid"
         case ("garage", "planned"): return "Planned"
+        case ("plan", _): return item.planKind == "itinerary" ? "Signed off" : "Pays when you park"
         case ("garage", _):
             switch item.link?.status {
             case "pending_approval", "created", "requires_action": return "Approve in Link"

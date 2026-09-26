@@ -13,8 +13,13 @@ struct AssistantSheetView: View {
     @FocusState private var inputFocused: Bool
     /// An approved Link garage payment's card, on screen for checkout.
     @State private var linkCard: LinkCardDetails?
+    /// Saved conversations, reached from the toolbar.
+    @State private var history = ConversationHistoryModel()
+    @State private var showingHistory = false
     /// Prefilled question (Siri hands one in).
     var initialQuery: String?
+    /// A saved conversation to open (Activity's "Open the conversation").
+    var initialConversationId: String?
 
     private var uiTesting: Bool { LaunchOverrides.uiTesting }
 
@@ -35,8 +40,35 @@ struct AssistantSheetView: View {
             .toolbarBackground(.regularMaterial, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        showingHistory = true
+                    } label: {
+                        Image(systemName: "clock.arrow.circlepath")
+                    }
+                    .accessibilityLabel("Conversations")
+                    .accessibilityIdentifier("assistant.historyButton")
+                }
+                if let model, !model.messages.isEmpty {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button {
+                            model.startNewConversation()
+                        } label: {
+                            Image(systemName: "square.and.pencil")
+                        }
+                        .disabled(model.phase == .streaming)
+                        .accessibilityLabel("New conversation")
+                        .accessibilityIdentifier("assistant.newConversationButton")
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
+                }
+            }
+            .navigationDestination(isPresented: $showingHistory) {
+                ConversationHistoryView(history: history, currentId: model?.conversationId) { id in
+                    showingHistory = false
+                    Task { await model?.open(conversationId: id) }
                 }
             }
         }
@@ -44,7 +76,9 @@ struct AssistantSheetView: View {
             if model == nil {
                 let fresh = AssistantModel(appModel: appModel)
                 model = fresh
-                if let initialQuery, !initialQuery.isEmpty {
+                if let initialConversationId {
+                    await fresh.open(conversationId: initialConversationId)
+                } else if let initialQuery, !initialQuery.isEmpty {
                     await fresh.send(initialQuery)
                 }
             }
@@ -78,6 +112,9 @@ struct AssistantSheetView: View {
                                             ? .opacity
                                             : .move(edge: .bottom).combined(with: .opacity)
                                     )
+                            } else if let planId = message.planId, let stored = model.storedPlans[planId] {
+                                // An opened conversation's earlier plan: read-only.
+                                StoredPlanCard(stored: stored)
                             }
                         }
                         if let errorText = model.errorText {

@@ -1693,6 +1693,52 @@ busts the remaining daily budget. Every proposed stop has an arrival
 (pricing needs one), and the stops are stored in arrival order whatever
 order the model listed them in.
 
+### Saved conversations
+
+Every turn saves the conversation. Its model context (`turns`, the last
+20 messages) is cut only where a user message starts, because a cut
+inside a tool round-trip would leave a context the Messages API refuses,
+and a resumed conversation would fail on its next turn. Beside it the
+server keeps:
+
+- `title`: the first request, set once;
+- `display`: the transcript as the user saw it, `[{role, text, at,
+  planId?, suggestions?}]`, appended every turn and never trimmed with the
+  model context (capped at 400 entries).
+
+A conversation saved before these existed reads from what its context
+still holds. The confirm tap stamps the plan (`assistant_plans.confirmed_at`,
+`confirmed_option_id`), so a conversation knows what it came to.
+
+- `GET /assistant/conversations?limit=20&cursor=…` → `{conversations:
+  [{id, title, createdAt, updatedAt, messageCount, outcome}], nextCursor,
+  retentionDays}`, newest first (by last use). `outcome` is what it came
+  to: the plan the user confirmed most recently (`kind` `garage` |
+  `street` | `itinerary`, a `label` like "Garage — Underground Deck",
+  `amountUsd`, `planId`), else the latest proposed plan (`kind:
+  "proposed"`, e.g. "3 options proposed, from $0.00"), else null.
+- `GET /assistant/conversations/:id` → `{id, title, createdAt, updatedAt,
+  messages, plans: [{planId, plan, confirmedAt, confirmedOptionId}],
+  outcome}`. The app opens it read-only: earlier plans show without
+  actions, since their prices were for then. Sending `POST
+  /assistant/message` with its id resumes it, grounding and all.
+- `DELETE /assistant/conversations/:id` → `{deleted: 1}`;
+  `DELETE /assistant/conversations` → `{deleted: n}`. Both write an
+  `assistant_history` decisions row.
+
+Another user's conversation is `404 conversation_not_found`, whether
+listing, reading, or deleting it.
+
+**Retention: 90 days.** `jobs/conversationRetentionTick.ts` (hourly)
+deletes every conversation not used for
+`ASSISTANT_CONVERSATION_RETENTION_DAYS` (default `90`): the transcript
+and the model context. The money records a conversation led to are
+kept under their own rules: plans, garage bookings, itineraries, and the
+decisions ledger. A deleted conversation just stops being linked from
+Activity. Each purge that deletes anything writes one
+`assistant_history` / `retention_purge` decisions row with the cutoff and
+the count. `DELETE /me` deletes them all at once, as before.
+
 ### POST /assistant/confirm
 
 `{planId, optionId?, stops?}` — the tap. Mints the single-use token
@@ -2052,6 +2098,15 @@ createdAt}`:
   {optionId, planId}`.
 - `link_payment` — a Link request not already shown on a garage row:
   `spendRequestId, amountUsd, merchantName, status`.
+- `plan` — a plan made in the assistant that isn't already a garage row:
+  a street spot confirmed there (it pays when the car parks) or a
+  signed-off day. `planId, planKind (street | itinerary), label, totalUsd,
+  explanation, conversationId`.
+
+Garage and plan rows made in the assistant carry `conversationId`, the
+conversation they came from, while that conversation is still saved.
+Otherwise it is null. The app's detail screen offers "Open the
+conversation".
 
 ### PUT /wallet/source
 

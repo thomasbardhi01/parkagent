@@ -13,6 +13,7 @@ import type { AppDb } from "../../db.js";
 import { coveredCitiesSentence, providerForCity } from "../../providers/registry.js";
 import { nycStartOfDay } from "../hours.js";
 import { homeMetroForPoint } from "./geocoder.js";
+import { appendDisplay, displayFromTurns, titleFrom, trimTurns } from "./history.js";
 import type { AssistantPlanBody } from "./plans.js";
 import { TOOL_DEFINITIONS } from "./tools.js";
 import type { StreetOption } from "./streetOptions.js";
@@ -408,19 +409,45 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
         ? "Here's a plan for your day — review it, then Sign off."
         : "Here are your options — tap one to go ahead.";
 
-  const trimmed = messages.slice(-MAX_STORED_TURNS);
-  await args.db.conversation.upsert({
-    where: { id: args.conversationId },
-    create: { id: args.conversationId, userId: args.userId, turns: trimmed },
-    update: { turns: trimmed },
-  });
-
   // The tappable answers: ask_user's own, else — when a place search this
   // turn came back ambiguous and the model asked in prose anyway — those
   // places, so the question is still one tap to answer.
   const suggestions =
     asked?.suggestions ??
     (plan === null && (ctx.placeChoices?.length ?? 0) >= 2 ? ctx.placeChoices! : null);
+
+  // The model's context, cut only where a user message starts; and the
+  // readable transcript the history list shows, which is never trimmed
+  // with it (history.ts).
+  const trimmed = trimTurns(messages, MAX_STORED_TURNS);
+  const owned = stored && stored.userId === args.userId ? stored : null;
+  // A conversation saved before the transcript existed starts it from
+  // what its model context still holds.
+  const prior =
+    Array.isArray(owned?.display) && (owned.display as unknown[]).length > 0
+      ? owned.display
+      : displayFromTurns(history);
+  const display = appendDisplay(prior, [
+    { role: "user", text: args.text, at: at.toISOString() },
+    {
+      role: "assistant",
+      text: reply,
+      at: at.toISOString(),
+      ...(plan ? { planId: plan.planId } : {}),
+      ...(suggestions ? { suggestions } : {}),
+    },
+  ]);
+  await args.db.conversation.upsert({
+    where: { id: args.conversationId },
+    create: {
+      id: args.conversationId,
+      userId: args.userId,
+      turns: trimmed,
+      title: titleFrom(args.text),
+      display,
+    },
+    update: { turns: trimmed, display },
+  });
 
   return { conversationId: args.conversationId, reply, plan, suggestions };
 }

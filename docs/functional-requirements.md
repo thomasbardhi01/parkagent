@@ -62,6 +62,7 @@ the evidence that proves it. Three kinds of evidence back an FR:
 | FR-35 | Places people name | automated | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantPlaces.test.ts`; iOS `AssistantUITests` (place choices) |
 | FR-36 | Street options with their state | automated | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantStreet.test.ts`; iOS `AssistantUITests` (street detail) |
 | FR-37 | Choosing an option | automated | `server/test/assistantRecommendation.test.ts`; iOS `PlanSelectionTests`, `AssistantUITests` (selection sync) |
+| FR-38 | Saved conversations | automated | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantHistory.test.ts`; iOS `AssistantUITests` (history, Activity link) |
 
 ---
 
@@ -794,6 +795,24 @@ detail card shows the server's facts.
 Evidence: `assistantRecommendation.test.ts`; iOS `PlanSelectionTests`
 (pin styles, centering, detail wording),
 `AssistantUITests.testSelectingAnOptionSyncsRowsAndPins`.
+
+### FR-38 — Saved conversations
+
+The assistant lists saved conversations newest first, each with the
+title from its first request, its date, and any booking or plan made in
+it. A conversation opens to read (earlier plans read-only) and to resume.
+Swipe deletes one; "Delete all" clears them. Plans and bookings made in
+chat appear in Activity with a link back to the conversation. A
+conversation is kept for 90 days after its last use
+(`ASSISTANT_CONVERSATION_RETENTION_DAYS`). **Accepted when** the list,
+open, resume, delete, and delete-all work for the owner only, and the
+stored model context stays valid for the Messages API after trimming.
+
+Evidence: `assistantHistory.test.ts` (15; persistence, list/paging,
+outcomes, ownership, trimming, retention, Activity links); live FR-38
+test (list/open/delete, no model); iOS
+`AssistantUITests.testHistoryListsOpensResumesAndDeletes`,
+`testActivityOpensTheConversationAPlanCameFrom`.
 
 ---
 

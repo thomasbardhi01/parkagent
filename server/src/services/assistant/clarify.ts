@@ -35,7 +35,7 @@ export function suggestionsForQuestion(reply: string): Suggestion[] | null {
       { label: "3 hours", reply: "For 3 hours" },
     ];
   }
-  if (/\bwhat time\b|\bwhen\b|\barriv/i.test(text)) {
+  if (/\bwhat time\b|\bwhen (will|do|would|are|should|can) you\b|\barriv(e|ing|al)\b/i.test(text)) {
     return [
       { label: "Now", reply: "Now" },
       { label: "In 30 minutes", reply: "In 30 minutes" },

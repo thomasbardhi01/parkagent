@@ -481,3 +481,33 @@ describe("Activity links back to the conversation", () => {
     });
   });
 });
+
+describe("review fixes: legacy conversations", () => {
+  test("a conversation saved before titles existed gets one on its next turn, from its first request", async () => {
+    const t = makeTestApp({ assistantModel: scripted([text("ok")]) });
+    t.state.conversations.push({
+      id: "conv_legacy",
+      userId: "u1",
+      turns: [
+        {
+          role: "user",
+          content: "the original question\n\n[current time: Mon 2026-01-05 14:00 ET]",
+        },
+        { role: "assistant", content: [{ type: "text", text: "old answer" }] },
+      ],
+      title: null,
+      display: [],
+      createdAt: new Date("2026-01-01T12:00:00Z"),
+      updatedAt: new Date("2026-01-01T12:00:00Z"),
+    });
+    await say(t.app, "a follow-up", "conv_legacy");
+    const row = t.state.conversations.find((c) => c.id === "conv_legacy")!;
+    expect(row.title).toBe("the original question");
+    expect((row.display as { text: string }[]).map((e) => e.text)).toEqual([
+      "the original question",
+      "old answer",
+      "a follow-up",
+      "ok",
+    ]);
+  });
+});

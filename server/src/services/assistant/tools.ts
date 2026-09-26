@@ -383,7 +383,9 @@ function num(v: unknown): number {
 /** Fill each street option's missing zoneId from the conversation's
  * quotes: a quoted zone the option's id names (prod's sonnet-5 put the
  * zone there), else the only zone quoted, else the only zone quoted at
- * the option's price. Anything else is ambiguous — the model must say. */
+ * the option's price, else the only quoted street the option's label
+ * names ("Seaport Blvd — free after 6 PM" — a street search quotes several
+ * $0 blocks at once). Anything else is ambiguous — the model must say. */
 export function groundStreetOptions(
   options: SingleSpotOption[],
   quotes: StreetQuote[],
@@ -398,13 +400,22 @@ export function groundStreetOptions(
     const atPrice = new Set(
       quotes.filter((q) => Math.abs(q.costUsd - option.priceUsd) < 0.005).map((q) => q.zoneId),
     );
+    const label = option.label.toLowerCase();
+    const byStreet = new Set(
+      quotes
+        .filter((q) => q.option?.street && label.includes(q.option.street.toLowerCase()))
+        .filter((q) => Math.abs(q.costUsd - option.priceUsd) < 0.005)
+        .map((q) => q.zoneId),
+    );
     const zoneId = zones.has(option.id)
       ? option.id
       : zones.size === 1
         ? [...zones][0]
         : atPrice.size === 1
           ? [...atPrice][0]
-          : null;
+          : byStreet.size === 1
+            ? [...byStreet][0]
+            : null;
     if (!zoneId) return { ok: false, optionId: option.id };
     grounded.push({ ...option, zoneId });
   }
@@ -1050,12 +1061,18 @@ export class AssistantTools {
         arrivalAt,
         minutes,
       );
+      // The model picks street vs garage per stop from the best street
+      // option or two; five per stop across a 12-stop day is tokens, not
+      // information.
+      const streetResult = street.result as { options?: unknown[] };
       out.push({
         label: stop["label"],
         address: stop["address"] ?? "",
         arrival,
         durationMinutes: minutes,
-        street: street.result,
+        street: Array.isArray(streetResult.options)
+          ? { ...streetResult, options: streetResult.options.slice(0, 2) }
+          : street.result,
         garage: garages.ok ? (garages.options[0] ?? null) : null,
         ...(garages.ok ? {} : { garageSearchUnavailable: true, garageSearchError: garages.error }),
       });
@@ -1249,9 +1266,12 @@ export class AssistantTools {
             .reverse()
             .find((q) => q.zoneId === o.zoneId && q.option !== undefined);
           const quoted = quote?.option;
+          // The stay the user asked for, or the max the meter allows (the
+          // quote's clampedMinutes, which the model often proposes).
           const sameStay =
             quote !== undefined &&
-            quote.stayMinutes === o.durationMinutes &&
+            (quote.stayMinutes === o.durationMinutes ||
+              quoted?.clampedMinutes === o.durationMinutes) &&
             (starts === null ||
               quote.startsAt === undefined ||
               parseEasternTime(quote.startsAt)?.getTime() === starts.getTime());

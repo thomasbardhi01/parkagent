@@ -394,3 +394,88 @@ describe("quote_street at a destination", () => {
     expect(option.street).toBe("D Street");
   });
 });
+
+describe("review fixes: street words and grounding", () => {
+  test("a midday gap says when the meters come back, not when they stopped", () => {
+    const split = [
+      { days: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"], start: "08:00", end: "12:00" },
+      { days: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"], start: "16:00", end: "20:00" },
+    ];
+    const sat1230 = new Date("2026-09-26T12:30:00-04:00");
+    expect(describeStreetWindow({ ...RATES, hours: split }, sat1230, 120, true)).toMatchObject({
+      state: "free",
+      stateText: "Free until 4 PM",
+    });
+  });
+
+  test("a street option without a zoneId is grounded by the street its label names", async () => {
+    const blvd = {
+      ...D_STREET,
+      zoneId: "bos-seaport-blvd-1",
+      street: "SEAPORT BLVD",
+      distanceM: 120,
+      hours: MON_SAT_8_TO_6,
+    };
+    const northern = {
+      ...D_STREET,
+      zoneId: "bos-northern-av-1",
+      street: "NORTHERN AV",
+      distanceM: 150,
+      hours: MON_SAT_8_TO_6,
+    };
+    const tools = toolsWith([blvd, northern]);
+    const c = ctx();
+    await tools.execute(c, "quote_street", {
+      ...SEAPORT_CENTROID,
+      duration_minutes: 180,
+      when: "2026-09-26T19:00:00-04:00",
+    });
+    // Both blocks are free at 7 PM: the price can't tell them apart.
+    const out = await tools.execute(c, "propose_plan", {
+      plan: {
+        kind: "single_spot",
+        options: [
+          {
+            id: "street-a",
+            type: "street",
+            label: "Seaport Blvd — free after 6 PM",
+            priceUsd: 0,
+            durationMinutes: 180,
+            startsAt: "2026-09-26T19:00:00-04:00",
+            recommended: true,
+          },
+        ],
+      },
+    });
+    expect((out.endTurn!.plan as SingleSpotPlan).options[0]!.zoneId).toBe("bos-seaport-blvd-1");
+  });
+
+  test("a plan at the max stay the quote clamped to still gets the server's price", async () => {
+    // Metered 3–8 PM with a 2-hour max: a 3-hour stay at 3 PM clamps to 2.
+    const tools = toolsWith([{ ...D_STREET, hours: MON_SAT_8_TO_8 }]);
+    const c = ctx();
+    await tools.execute(c, "quote_street", {
+      ...SEAPORT_CENTROID,
+      duration_minutes: 180,
+      when: "2026-09-26T15:00:00-04:00",
+    });
+    const out = await tools.execute(c, "propose_plan", {
+      plan: {
+        kind: "single_spot",
+        options: [
+          {
+            id: "street-d",
+            type: "street",
+            label: "D Street",
+            priceUsd: 99,
+            durationMinutes: 120,
+            zoneId: "bos-d-street-7e4e1b-00",
+            recommended: true,
+          },
+        ],
+      },
+    });
+    const option = (out.endTurn!.plan as SingleSpotPlan).options[0]!;
+    expect(option).toMatchObject({ priceUsd: 5.35, exceedsMaxStay: true });
+  });
+});

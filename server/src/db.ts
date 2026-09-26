@@ -636,7 +636,7 @@ export interface AppDb {
         title?: string | null;
         display?: unknown;
       };
-      update: { turns: unknown; display?: unknown };
+      update: { turns: unknown; display?: unknown; title?: string | null };
     }): Promise<unknown>;
     /** The history list: one user's conversations, newest first. */
     findMany(args: {

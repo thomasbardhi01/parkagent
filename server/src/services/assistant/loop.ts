@@ -14,7 +14,13 @@ import { coveredCitiesSentence, providerForCity } from "../../providers/registry
 import { nycStartOfDay } from "../hours.js";
 import { homeMetroForPoint } from "./geocoder.js";
 import { suggestionsForQuestion } from "./clarify.js";
-import { appendDisplay, displayFromTurns, titleFrom, trimTurns } from "./history.js";
+import {
+  appendDisplay,
+  displayFromTurns,
+  titleFrom,
+  titleFromTurns,
+  trimTurns,
+} from "./history.js";
 import type { AssistantPlanBody } from "./plans.js";
 import { TOOL_DEFINITIONS } from "./tools.js";
 import type { StreetOption } from "./streetOptions.js";
@@ -453,7 +459,13 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
       title: titleFrom(args.text),
       display,
     },
-    update: { turns: trimmed, display },
+    // A conversation saved before titles existed gets one now, from the
+    // first request its context still holds.
+    update: {
+      turns: trimmed,
+      display,
+      ...(owned && !owned.title ? { title: titleFromTurns(history) ?? titleFrom(args.text) } : {}),
+    },
   });
 
   return { conversationId: args.conversationId, reply, plan, suggestions };

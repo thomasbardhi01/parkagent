@@ -633,3 +633,93 @@ describe("POST /assistant/message", () => {
     ]);
   });
 });
+
+describe("review fixes: names people type", () => {
+  const NEWBURY: GeocodeResult = {
+    lat: 42.3503,
+    lng: -71.0811,
+    displayName: "Newbury Street, Back Bay",
+    city: "bos",
+    name: "Newbury Street",
+    areaNames: ["Back Bay", "Boston"],
+    kind: "area",
+  };
+
+  test("an abbreviation is the same street ('Newbury St' is Newbury Street)", () => {
+    expect(classifyPlaceMatches("Newbury St", [NEWBURY])).toEqual({
+      kind: "found",
+      place: NEWBURY,
+      nameMatched: true,
+    });
+  });
+
+  test("a neighborhood and a road of the same name in one city: the best-ranked, no question", () => {
+    const neighborhood: GeocodeResult = {
+      lat: 42.3429,
+      lng: -71.1003,
+      displayName: "Fenway, Fenway-Kenmore",
+      city: "bos",
+      name: "Fenway",
+      area: "Fenway-Kenmore",
+      kind: "area",
+    };
+    const road: GeocodeResult = {
+      ...neighborhood,
+      lat: 42.3401,
+      lng: -71.1049,
+      area: "Audubon Circle",
+    };
+    expect(classifyPlaceMatches("Fenway", [neighborhood, road])).toEqual({
+      kind: "found",
+      place: neighborhood,
+      nameMatched: true,
+    });
+    // The same name in two cities is still a question.
+    const elsewhere = {
+      ...neighborhood,
+      lat: 40.75,
+      lng: -73.99,
+      city: "nyc" as const,
+      area: "Midtown",
+    };
+    expect(classifyPlaceMatches("Fenway", [neighborhood, elsewhere]).kind).toBe("ambiguous");
+  });
+
+  test("a long street's segments are one place, not three identical choices", () => {
+    // Nominatim, live 2026-09-25: "Newbury St" came back as three Back Bay
+    // segments more than 250 m apart.
+    const segments = [0, 0.004, 0.008].map((d) => ({ ...NEWBURY, lng: NEWBURY.lng + d }));
+    expect(classifyPlaceMatches("Newbury St", segments)).toEqual({
+      kind: "found",
+      place: segments[0],
+      nameMatched: true,
+    });
+  });
+
+  test("a name with a neighborhood in it keeps it ('Fenway Park', not any park in Fenway)", () => {
+    const park: GeocodeResult = {
+      lat: 42.3467,
+      lng: -71.0972,
+      displayName: "Fenway Park, 4 Jersey St, Fenway",
+      city: "bos",
+      name: "Fenway Park",
+      address: "4 Jersey St",
+      area: "Fenway",
+      areaNames: ["Boston", "Fenway"],
+      kind: "poi",
+    };
+    const garage: GeocodeResult = {
+      ...park,
+      lat: 42.3441,
+      lng: -71.1003,
+      name: "Park Drive Garage",
+      displayName: "Park Drive Garage, Fenway",
+      address: "100 Park Dr",
+    };
+    expect(classifyPlaceMatches("Fenway Park", [garage, park])).toEqual({
+      kind: "found",
+      place: park,
+      nameMatched: true,
+    });
+  });
+});

@@ -12,11 +12,14 @@ import Foundation
 ///    starts) — the final is committed and the next partial appends;
 ///  - partials that silently start over ("Find me parking at Seaport" →
 ///    "At") with no final — seen as a reset and the old partial committed;
-///  - partials that start over but REPEAT what was committed ("Find me
-///    parking at Seaport at 7") — the committed text is not repeated.
+///  - partials that start over but REPEAT what this recognition task
+///    already committed ("Find me parking at Seaport at 7", even across
+///    several commits) — the committed words are not repeated.
 struct DictationTranscript: Equatable {
     private(set) var committed: [String] = []
     private(set) var partial = ""
+    /// Where the current recognition task's commits begin in `committed`.
+    private var taskStart = 0
 
     /// Everything said so far, cleaned and joined.
     var text: String { TranscriptJoiner.join(committed + [partial]) }
@@ -26,16 +29,26 @@ struct DictationTranscript: Equatable {
     /// The recognizer's current guess for the segment in progress.
     mutating func apply(partial newText: String) {
         var text = newText.trimmingCharacters(in: .whitespacesAndNewlines)
-        // A recognizer that keeps the whole utterance after a commit: the
-        // committed part isn't said twice.
-        if let last = committed.last, !last.isEmpty,
-           text.lowercased().hasPrefix(last.lowercased()) {
-            text = String(text.dropFirst(last.count)).trimmingCharacters(in: .whitespacesAndNewlines)
-        }
+        // A recognizer that keeps the task's whole utterance after a commit:
+        // what this task committed isn't said twice (word by word, so a
+        // period or a capital doesn't hide the repeat).
+        let taskText = committed[taskStart...].joined(separator: " ")
+        text = Self.dropping(prefix: taskText, from: text)
         if Self.isReset(from: partial, to: text) {
             commit()
         }
         partial = text
+    }
+
+    /// `text` without its first words when they are `prefix`'s words.
+    static func dropping(prefix: String, from text: String) -> String {
+        let core = { (word: Substring) in word.lowercased().trimmingCharacters(in: .punctuationCharacters) }
+        let prefixWords = prefix.split(separator: " ").map(core).filter { !$0.isEmpty }
+        let words = text.split(separator: " ")
+        guard !prefixWords.isEmpty, words.count >= prefixWords.count,
+              zip(words, prefixWords).allSatisfy({ core($0) == $1 })
+        else { return text }
+        return words.dropFirst(prefixWords.count).joined(separator: " ")
     }
 
     /// The recognizer finished the segment in progress.
@@ -48,6 +61,7 @@ struct DictationTranscript: Equatable {
     /// about a minute): what it had is kept, and the next task appends.
     mutating func taskEnded() {
         commit()
+        taskStart = committed.count
     }
 
     private mutating func commit() {

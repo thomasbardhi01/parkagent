@@ -158,6 +158,9 @@ private struct HeroOptionCard: View {
                         .foregroundStyle(Color.textPrimary)
                         .accessibilityAddTraits(.isButton)
                         .accessibilityValue(isSelected ? "selected" : "")
+                        // The tap lives on the header stack; VoiceOver's
+                        // activation lands on this label, so it selects too.
+                        .accessibilityAction { onSelect() }
                         .accessibilityIdentifier("assistant.heroHeader.\(option.id)")
                     Spacer(minLength: Spacing.half)
                     TagPill(label: "Recommended", color: emphasized ? .success : .steel)

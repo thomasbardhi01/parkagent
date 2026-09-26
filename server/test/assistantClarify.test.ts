@@ -198,3 +198,14 @@ describe("questions asked in prose still get taps", () => {
     ]);
   });
 });
+
+describe("review fixes: which questions get time chips", () => {
+  test("a question that merely contains 'when' is not a time question", () => {
+    expect(suggestionsForQuestion("Should I include garages when searching?")).toBeNull();
+  });
+
+  test("an arrival question is", () => {
+    expect(suggestionsForQuestion("When will you get there?")?.[0]?.label).toBe("Now");
+    expect(suggestionsForQuestion("What's your arrival time?")?.[0]?.label).toBe("Now");
+  });
+});

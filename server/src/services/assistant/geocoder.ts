@@ -162,8 +162,18 @@ interface NominatimRow {
   };
 }
 
-/** OSM categories that name an area or a street rather than a venue. */
-const NOMINATIM_AREA_CATEGORIES = new Set(["place", "boundary", "highway", "landuse"]);
+/** OSM categories that name an area, a street, or a landmark-like stop
+ * rather than a business or venue. */
+const NOMINATIM_AREA_CATEGORIES = new Set([
+  "place",
+  "boundary",
+  "highway",
+  "landuse",
+  "railway",
+  "public_transport",
+  "natural",
+  "waterway",
+]);
 
 export interface NominatimGeocoderOptions {
   /** Injectable for tests; defaults to global fetch against the public API. */

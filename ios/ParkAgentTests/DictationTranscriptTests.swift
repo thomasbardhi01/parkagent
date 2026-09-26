@@ -48,6 +48,21 @@ final class DictationTranscriptTests: XCTestCase {
         XCTAssertEqual(t.text, "Find me parking at Seaport at 7")
     }
 
+    /// A recognizer whose results within one task are cumulative, across
+    /// two commits: nothing it already committed is said twice.
+    func testCumulativeResultsAcrossSeveralCommitsDontRepeat() {
+        var t = DictationTranscript()
+        t.apply(final: "Find me parking at Seaport")
+        t.apply(final: "Find me parking at Seaport at 7 PM")
+        t.apply(partial: "Find me parking at Seaport at 7 PM near Lola")
+        XCTAssertEqual(t.text, "Find me parking at Seaport at 7 PM near Lola")
+        // A new task starts clean: its first words aren't compared with the
+        // last task's.
+        t.taskEnded()
+        t.apply(partial: "Find more")
+        XCTAssertEqual(t.text, "Find me parking at Seaport at 7 PM near Lola Find more")
+    }
+
     func testFillersAndStuttersDontSplitTheMessage() {
         XCTAssertEqual(
             TranscriptJoiner.join(["Find me parking at Seaport.", "Um, at 7 PM near near Lola 42", "uh", "For three hours"]),

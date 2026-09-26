@@ -55,17 +55,37 @@ const GENERIC_WORDS = new Set([
   "club",
 ]);
 
-/** Lowercased, accent- and punctuation-free word tokens, with stretched
- * letters collapsed ("Mooo...." → ["mo"], "LoLa 42" → ["lola", "42"]). */
+/** Street-name abbreviations people say or type, spelled out — "Newbury
+ * St" is "Newbury Street". */
+const ABBREVIATIONS: Record<string, string> = {
+  st: "street",
+  ave: "avenue",
+  av: "avenue",
+  blvd: "boulevard",
+  rd: "road",
+  sq: "square",
+  pl: "place",
+  ln: "lane",
+  dr: "drive",
+  ct: "court",
+  pkwy: "parkway",
+  hwy: "highway",
+  wy: "way",
+};
+
+/** Lowercased, accent- and punctuation-free word tokens, abbreviations
+ * spelled out, stretched letters collapsed ("Mooo...." → ["mo"], "LoLa 42"
+ * → ["lola", "42"], "Newbury St" and "Newbury Street" alike). */
 export function nameTokens(text: string): string[] {
   return text
     .normalize("NFKD")
-    .replace(/[̀-ͯ]/g, "")
+    .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
     .replace(/&/g, " and ")
     .replace(/[^a-z0-9]+/g, " ")
     .split(" ")
     .filter((t) => t.length > 0)
+    .map((t) => ABBREVIATIONS[t] ?? t)
     .map((t) => t.replace(/([a-z])\1+/g, "$1"));
 }
 
@@ -110,16 +130,21 @@ export function classifyPlaceMatches(query: string, results: GeocodeResult[]): P
   const saidArea = queryTokens.filter((t) => allAreaTokens.has(t));
   const nameOf = (r: GeocodeResult) => nameTokens(r.name ?? r.displayName.split(",")[0] ?? "");
   // The name part: what's left after generic words — and after area words
-  // only when something else remains ("Seaport" alone IS the name).
+  // only when no result carries them in its NAME ("Fenway Park" is a name
+  // with a neighborhood in it; "Lola 42 Seaport" is a name and an area;
+  // "Seaport" alone IS the name).
   const withoutGeneric = queryTokens.filter((t) => !GENERIC_WORDS.has(t));
+  const matching = (tokens: string[]) =>
+    results.filter((r) => {
+      const name = nameOf(r);
+      return tokens.every((t) => name.some((n) => tokenMatches(t, n)));
+    });
   const withoutArea = withoutGeneric.filter((t) => !saidArea.includes(t));
-  const core = withoutArea.length > 0 ? withoutArea : withoutGeneric;
+  const whole = withoutGeneric.length > 0 ? matching(withoutGeneric) : [];
+  const core = whole.length > 0 || withoutArea.length === 0 ? withoutGeneric : withoutArea;
   if (core.length === 0) return { kind: "found", place: results[0]!, nameMatched: true };
 
-  let matched = results.filter((r) => {
-    const name = nameOf(r);
-    return core.every((t) => name.some((n) => tokenMatches(t, n)));
-  });
+  let matched = whole.length > 0 ? whole : matching(core);
   if (matched.length === 0) {
     return { kind: "found", place: results[0]!, nameMatched: false };
   }
@@ -140,8 +165,27 @@ export function classifyPlaceMatches(query: string, results: GeocodeResult[]): P
     const best = Math.max(...matched.map(score));
     if (best > 0) matched = matched.filter((r) => score(r) === best);
   }
-  const places = distinctPlaces(matched);
+  // Choices the user couldn't tell apart are one place: a long street
+  // comes back as several segments ("Newbury Street · Back Bay" three
+  // times, 2026-09-25 live run) — only different names or neighborhoods
+  // are a question worth asking.
+  const seen = new Set<string>();
+  const places = distinctPlaces(matched).filter((place) => {
+    const label = choiceLabel(place).toLowerCase();
+    if (seen.has(label)) return false;
+    seen.add(label);
+    return true;
+  });
   if (places.length === 1) return { kind: "found", place: places[0]!, nameMatched: true };
+  // Streets, neighborhoods, and stops of one name in one city ("Fenway":
+  // the road called Fenway and the Fenway T stop, live 2026-09-25) mean the
+  // best-ranked one — a question there is noise. Two or more businesses of
+  // one name (a chain's locations), or the name in two cities, is a real
+  // question.
+  const oneCity = places.every((place) => place.city === places[0]!.city);
+  if (oneCity && places.filter((place) => place.kind === "poi").length < 2) {
+    return { kind: "found", place: places[0]!, nameMatched: true };
+  }
   return { kind: "ambiguous", choices: places.slice(0, 3) };
 }
 

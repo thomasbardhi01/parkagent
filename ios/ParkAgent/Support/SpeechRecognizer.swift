@@ -614,7 +614,10 @@ final class AnalyzerDictationEngine: DictationEngine {
     }
 
     /// An engine when this device can transcribe `locale` on SpeechAnalyzer
-    /// (the model installed, or installable now); nil → the fallback.
+    /// with its model already installed; nil → the fallback. A missing
+    /// model starts downloading in the background instead of holding the
+    /// mic tap hostage — this dictation runs on the fallback, a later one
+    /// on SpeechAnalyzer.
     static func make(locale: Locale) async -> AnalyzerDictationEngine? {
         guard SpeechTranscriber.isAvailable,
               let supported = await SpeechTranscriber.supportedLocale(equivalentTo: locale)
@@ -624,7 +627,8 @@ final class AnalyzerDictationEngine: DictationEngine {
         )
         do {
             if let install = try await AssetInventory.assetInstallationRequest(supporting: [probe]) {
-                try await install.downloadAndInstall()
+                Task.detached(priority: .utility) { try? await install.downloadAndInstall() }
+                return nil
             }
         } catch {
             return nil
@@ -675,9 +679,13 @@ final class AnalyzerDictationEngine: DictationEngine {
             Task { @MainActor [weak self] in self?.onEvent?(.level(level)) }
         }
         tapInstalled = true
+        // Analysis and its results run side by side: the results stream is
+        // read from the first word, whatever start() does while it runs.
+        let started = Task {
+            try await analyzer.start(inputSequence: stream)
+        }
         results = Task { [weak self] in
             do {
-                try await analyzer.start(inputSequence: stream)
                 // Volatile results replace each other; a final one closes
                 // its stretch of audio — DictationTranscript appends them.
                 for try await result in transcriber.results {
@@ -685,6 +693,9 @@ final class AnalyzerDictationEngine: DictationEngine {
                     let text = String(result.text.characters)
                     self.onEvent?(result.isFinal ? .final(text) : .partial(text))
                 }
+                // The stream ended without an error: if start() failed, that
+                // is why.
+                _ = try await started.value
             } catch {
                 // Falls through to "ended": the dictation restarts it.
             }

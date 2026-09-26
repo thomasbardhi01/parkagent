@@ -184,11 +184,13 @@ export function describeStreetWindow(
     const today = todaysIntervals(zone.hours, when);
     const endedBefore = today.filter((i) => minuteOf(i.end) <= start);
     const startsAfter = today.filter((i) => minuteOf(i.start) >= start);
+    // When the meters come back matters more than when they stopped: a
+    // midday gap is "Free until 4 PM", an evening "Free after 6 PM".
     const stateText =
-      endedBefore.length > 0
-        ? `Free after ${clockText(Math.max(...endedBefore.map((i) => minuteOf(i.end))))}`
-        : startsAfter.length > 0
-          ? `Free until ${clockText(Math.min(...startsAfter.map((i) => minuteOf(i.start))))}`
+      startsAfter.length > 0
+        ? `Free until ${clockText(Math.min(...startsAfter.map((i) => minuteOf(i.start))))}`
+        : endedBefore.length > 0
+          ? `Free after ${clockText(Math.max(...endedBefore.map((i) => minuteOf(i.end))))}`
           : today.length === 0
             ? `Free all day ${WEEKDAY_NAMES[nycWeekdayAndMinute(when).weekday] ?? ""}`.trim()
             : "Free during your stay";

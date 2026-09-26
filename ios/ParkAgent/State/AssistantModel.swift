@@ -14,6 +14,8 @@ struct AssistantMessage: Identifiable, Equatable {
     var text: String
     /// Set on the assistant message that proposed a plan.
     var planId: String?
+    /// Tappable answers to the question this reply asks.
+    var suggestions: [AssistantSuggestion] = []
 }
 
 /// The assistant sheet's state: transcript, streaming, proposed plans,
@@ -30,7 +32,12 @@ final class AssistantModel {
     }
 
     private let appModel: AppModel
-    private var conversationId: String?
+    /// The conversation this sheet is in: nil until the first reply names
+    /// one, or the one opened from history (sending continues it).
+    private(set) var conversationId: String?
+    /// An opened conversation's earlier plans, by id — shown read-only (a
+    /// plan from then carries then's prices; asking again gets today's).
+    var storedPlans: [String: StoredPlan] = [:]
 
     var messages: [AssistantMessage] = []
     var phase: Phase = .idle
@@ -75,6 +82,55 @@ final class AssistantModel {
 
     var api: any APIClient { appModel.api }
 
+    /// Opens a saved conversation to read or keep going: its transcript,
+    /// its plans read-only, and the next message continues it.
+    func open(conversationId id: String) async {
+        guard phase != .streaming else {
+            errorText = "Wait for the reply, then open it."
+            return
+        }
+        do {
+            let detail = try await api.conversation(id: id)
+            conversationId = detail.id
+            storedPlans = Dictionary(detail.plans.map { ($0.planId, $0) }, uniquingKeysWith: { _, last in last })
+            messages = detail.messages.map {
+                AssistantMessage(
+                    role: $0.role == "user" ? .user : .assistant,
+                    text: $0.text,
+                    planId: $0.planId,
+                    suggestions: $0.suggestions ?? []
+                )
+            }
+            proposedPlan = nil
+            errorText = nil
+            input = ""
+        } catch {
+            errorText = (error as? APIError)?.errorDescription ?? "Couldn't open that conversation."
+        }
+    }
+
+    /// A fresh conversation: the next message starts a new one.
+    func startNewConversation() {
+        guard phase != .streaming else { return }
+        conversationId = nil
+        messages = []
+        storedPlans = [:]
+        proposedPlan = nil
+        errorText = nil
+        input = ""
+        // The old conversation's "Show Link card" bar goes with it (the
+        // card stays reachable from Activity). A Link approval sheet still
+        // open keeps its sync.
+        approvedLinkCheckout = nil
+    }
+
+    /// The chips under the newest reply, if it asked something — an older
+    /// question's chips go away once the conversation moves on.
+    var activeSuggestions: [AssistantSuggestion] {
+        guard phase != .streaming, let last = messages.last, last.role == .assistant else { return [] }
+        return last.suggestions
+    }
+
     func send(_ overrideText: String? = nil) async {
         let text = (overrideText ?? input).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, phase != .streaming else { return }
@@ -116,6 +172,7 @@ final class AssistantModel {
                 case .done(let reply):
                     conversationId = reply.conversationId
                     messages[assistantIndex].text = reply.reply
+                    messages[assistantIndex].suggestions = reply.suggestions ?? []
                     if let plan = reply.plan {
                         messages[assistantIndex].planId = plan.planId
                         proposedPlan = plan

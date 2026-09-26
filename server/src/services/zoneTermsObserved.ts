@@ -57,10 +57,10 @@ export function effectiveTerms(
  * observed row, marking them termsSource "observed" so the decision and the
  * app can tell which quote came from where.
  */
-export async function applyObservedToCandidates(
+export async function applyObservedToCandidates<T extends Candidate>(
   db: AppDb,
-  candidates: Candidate[],
-): Promise<Candidate[]> {
+  candidates: T[],
+): Promise<T[]> {
   const byCity = new Map<string, string[]>();
   for (const c of candidates) {
     if (c.providerZoneNumber === "") continue;

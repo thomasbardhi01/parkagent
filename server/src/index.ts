@@ -5,6 +5,7 @@ import { buildApp, createFastify, makeAuthenticate } from "./app.js";
 import { asAppDb, createPrisma } from "./db.js";
 import { makeCardJanitor } from "./jobs/cardJanitor.js";
 import { makeLinkJobJanitor } from "./jobs/linkJobJanitor.js";
+import { makeConversationRetention } from "./jobs/conversationRetentionTick.js";
 import { makeExtender } from "./jobs/extendTick.js";
 import { makeAppleRevocationJob } from "./jobs/appleRevocationTick.js";
 import { makeProviderHealth } from "./jobs/providerHealthTick.js";
@@ -35,7 +36,9 @@ import { AssistantTools } from "./services/assistant/tools.js";
 import { makeMultiGarageProvider } from "./services/garage/multiProvider.js";
 import { makeParkWhizProvider } from "./services/garage/parkwhiz.js";
 import { makeSpotHeroProvider } from "./services/garage/spotheroDeepLink.js";
-import { NominatimGeocoder } from "./services/assistant/geocoder.js";
+import { AppleMapsGeocoder } from "./services/assistant/appleMaps.js";
+import { FallbackGeocoder, NominatimGeocoder } from "./services/assistant/geocoder.js";
+import { classifyPlaceMatches } from "./services/assistant/placeMatch.js";
 import { makeLinkHttpClient } from "./services/link/linkClient.js";
 import { LinkWallet } from "./services/link/linkWallet.js";
 import { makeItineraryWorker } from "./jobs/itineraryTick.js";
@@ -163,13 +166,34 @@ const explainModel = env.ANTHROPIC_API_KEY
 const findCandidates = makeCandidateFetcher(prisma);
 // The map's curb layer (GET /zones/near) — same prefilter, plus geometry.
 const findNearbyZones = makeNearbyZoneFetcher(prisma);
-// Named-place geocoding for the assistant, biased to the covered cities
-// (Nominatim, the same free geocoder the Boston zone importer uses).
-const geocoder = new NominatimGeocoder();
+// Place search for the assistant, biased to the covered cities: Apple
+// Maps (restaurants, venues, businesses by the names people use) when its
+// key is set, then Nominatim (streets, neighborhoods, landmarks — the same
+// free geocoder the Boston zone importer uses) as the fallback.
+const geocoder = new FallbackGeocoder(
+  [
+    ...(env.APPLE_MAPS_KEY && env.APPLE_MAPS_KEY_ID && env.APPLE_MAPS_TEAM_ID
+      ? [
+          new AppleMapsGeocoder({
+            privateKey: env.APPLE_MAPS_KEY,
+            keyId: env.APPLE_MAPS_KEY_ID,
+            teamId: env.APPLE_MAPS_TEAM_ID,
+          }),
+        ]
+      : []),
+    new NominatimGeocoder(),
+  ],
+  // Ask the next source when this one's results don't carry the name.
+  (query, results) => {
+    const match = classifyPlaceMatches(query, results);
+    return match.kind !== "found" || match.nameMatched;
+  },
+);
 const assistantTools = new AssistantTools({
   db,
   policy,
   findCandidates,
+  findNearbyZones,
   garage,
   geocoder,
   linkWallet,
@@ -235,6 +259,7 @@ buildApp(
     ...(assistantModel ? { assistantModel } : {}),
     assistantTools,
     assistantDailySpendCapUsd: env.ASSISTANT_DAILY_SPEND_CAP_USD,
+    conversationRetentionDays: env.ASSISTANT_CONVERSATION_RETENTION_DAYS,
     linkWallet,
     executorFor,
     sendPush,
@@ -263,6 +288,11 @@ const extender = makeExtender({
 });
 const cardJanitor = makeCardJanitor({ db, stripe, log });
 const linkJobJanitor = makeLinkJobJanitor({ db, log });
+const conversationRetention = makeConversationRetention({
+  db,
+  retentionDays: env.ASSISTANT_CONVERSATION_RETENTION_DAYS,
+  log,
+});
 const itineraryWorker = makeItineraryWorker({ db, sendPush, log });
 // Settles ParkAgent-card holds past their grace period and expires Link
 // approvals nobody gave inside Link's window.
@@ -277,6 +307,7 @@ app.listen({ port: env.PORT, host: "0.0.0.0" });
 extender.start();
 cardJanitor.start();
 linkJobJanitor.start();
+conversationRetention.start();
 itineraryWorker.start();
 providerHealth.start();
 walletTick.start();
@@ -291,6 +322,7 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
     extender.stop();
     cardJanitor.stop();
     linkJobJanitor.stop();
+    conversationRetention.stop();
     itineraryWorker.stop();
     providerHealth.stop();
     walletTick.stop();

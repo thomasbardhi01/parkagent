@@ -10,7 +10,7 @@ the evidence that proves it. Three kinds of evidence back an FR:
   (`.github/workflows/nightly-fr.yml`) runs it against prod, uploads the
   report, and manages the "Nightly FR failures" issue. Assistant tests
   make real model calls under a hard per-run budget
-  (`FR_ASSISTANT_MAX_CALLS`, default 8) and assert structure and
+  (`FR_ASSISTANT_MAX_CALLS`, default 12) and assert structure and
   grounding, never wording.
 - **Unit / fixture suites** (`server/test/`, `executor/test/`) — hermetic
   tests over the fake DB and recorded provider fixture HTML; the executor
@@ -59,6 +59,12 @@ the evidence that proves it. Three kinds of evidence back an FR:
 | FR-32 | Accounts | automated + device-manual | `server/fr/60-accounts.fr.test.ts`, `server/test/auth.test.ts`, `server/test/appleTokens.test.ts`, `server/test/frThrowawayPurge.test.ts`, `server/test/authTokens.test.ts`, `server/test/security.test.ts`, `server/test/vehicles.test.ts`; iOS `AuthStoreTests`, `LiveAPIRequestTests`, `OnboardingGateTests`, `AuthUITests`, `AccountUITests`; Apple sign-in and email-code delivery need a phone and a mailbox |
 | FR-33 | Wallet | automated + device-manual | `server/fr/70-wallet.fr.test.ts`, `server/test/walletHolds.test.ts`, `server/test/wallet.test.ts`, `server/test/linkWallet.test.ts`, `server/test/paymentSource.test.ts`, `server/test/adversarial.test.ts`, `server/test/webhookStripe.test.ts`; iOS `LiveAPIRequestTests`, `CardBrandTests`, `WalletUITests`, `SessionUITests`, `OnboardingUITests`, `AccountUITests`, `AssistantUITests`; real Apple Pay / PaymentSheet, a real hold, and Link need a phone, the Stripe sandbox, and the Link OAuth client |
 | FR-34 | Release builds carry no debug code | automated | iOS `ParkAgentReleaseTests` (scheme `ParkAgentRelease`, runs inside the Release build), `ReleaseDenylistTests`, `ios/Tools/check-release-binary.sh`; UI `AccountUITests` (Diagnostics contents), `WalletUITests` (sandbox toggle) |
+| FR-35 | Places people name | automated | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantPlaces.test.ts`; iOS `AssistantUITests` (place choices) |
+| FR-36 | Street options with their state | automated | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantStreet.test.ts`; iOS `AssistantUITests` (street detail) |
+| FR-37 | Choosing an option | automated | `server/test/assistantRecommendation.test.ts`; iOS `PlanSelectionTests`, `AssistantUITests` (selection sync) |
+| FR-38 | Saved conversations | automated | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantHistory.test.ts`; iOS `AssistantUITests` (history, Activity link) |
+| FR-39 | Continuous dictation | automated + device-manual | iOS `DictationTranscriptTests`, `SpeechRecognizerTests`, `SpeechUITests` (scripted recognizer); the real recognizers need a phone |
+| FR-40 | Tappable questions, stated assumptions | automated | `server/test/assistantClarify.test.ts`; iOS `AssistantUITests` (duration chips, assumptions line) |
 
 ---
 
@@ -742,6 +748,119 @@ Release build had 27 hits. Blind spot, by construction: literals of 15
 bytes or fewer live inline in the instruction stream, so the list uses
 type names and 16+-byte markers (accessibility identifiers).
 
+### FR-35 — Places people name
+
+A request that names a business, venue, or landmark ("near Lola 42",
+"Moo steakhouse in Seaport") resolves THAT place with the Apple Maps
+Server API, falling back to Nominatim. The search is biased to the city
+the phone is in or near (within 60 km of the center, so a Braintree phone
+is in Boston). Several distinct matches come back as 2–3 tappable choices,
+never a guess. A search that only found the neighborhood says so. A phone
+location that names the city is never followed by a which-city question.
+**Accepted when** the device-test phrases resolve within 300 m of the
+real place, no city question follows a known location, and an ambiguous
+name yields choices.
+
+Evidence: `assistantPlaces.test.ts` (adapter, fallback chain, matcher,
+Braintree bias, ask_user, loop suggestions); live FR-35 tests (the phrases
+on a real model turn); `pnpm -C server verify:places` (the real search,
+no model); iOS `AssistantUITests.testAmbiguousPlaceOffersTappableChoices`.
+
+### FR-36 — Street parking that tells the truth
+
+Street options come from every metered zone within a walking radius of
+the destination (default 400 m), not one point. Each is described for
+the requested window: "Free after 6 PM on Seaport Blvd — 4 min walk",
+"Metered until 8 PM, then free", or "$3.75/hr, 2 hr max". It is priced
+for that stay and pinned at the nearest curb. **Accepted when** the
+Seaport at 7 PM yields street options in the right free/metered state for
+the time, and "no street parking" is said only for an empty radius, with
+the radius.
+
+Evidence: `assistantStreet.test.ts` (state words, the real zones around
+LoLa 42, quote_street, the plan's server-attached facts); live FR-36
+tests; `pnpm -C server verify:places` (real zones, no model); iOS
+`AssistantUITests.testStreetOptionSaysWhatTheBlockIsDoing`.
+
+### FR-37 — Choosing an option
+
+Tapping an option's row or its map pin selects it (one selection, synced
+both ways). Its pin is highlighted and the map recenters on it, with a
+walking route from the destination. The other pins dim, and the
+recommended pin keeps its distinct color only while nothing else is
+selected. A detail card opens: price split, walk, entry type, hours and
+max stay, provider and where checkout happens, and the option's one
+action. The recommended option says why in one line (server-computed).
+**Accepted when** row→pin and pin→row selection stay in sync and the
+detail card shows the server's facts.
+
+Evidence: `assistantRecommendation.test.ts`; iOS `PlanSelectionTests`
+(pin styles, centering, detail wording),
+`AssistantUITests.testSelectingAnOptionSyncsRowsAndPins`.
+
+### FR-38 — Saved conversations
+
+The assistant lists saved conversations newest first, each with the
+title from its first request, its date, and any booking or plan made in
+it. A conversation opens to read (earlier plans read-only) and to resume.
+Swipe deletes one; "Delete all" clears them. Plans and bookings made in
+chat appear in Activity with a link back to the conversation. A
+conversation is kept for 90 days after its last use
+(`ASSISTANT_CONVERSATION_RETENTION_DAYS`). **Accepted when** the list,
+open, resume, delete, and delete-all work for the owner only, and the
+stored model context stays valid for the Messages API after trimming.
+
+Evidence: `assistantHistory.test.ts` (15; persistence, list/paging,
+outcomes, ownership, trimming, retention, Activity links); live FR-38
+test (list/open/delete, no model); iOS
+`AssistantUITests.testHistoryListsOpensResumesAndDeletes`,
+`testActivityOpensTheConversationAPlanCameFrom`.
+
+### FR-39 — Dictation that doesn't cut people off
+
+The assistant's mic is one continuous dictation (iOS
+`Support/SpeechRecognizer.swift`, `DictationTranscript.swift`):
+
+- A new segment appends instead of replacing, however the recognizer
+  marks it (a final result, a silent restart of its guess, or a repeat of
+  the committed text).
+- When iOS ends a recognition task, it restarts on the same audio
+  without losing text.
+- A pause of up to 3 s keeps listening. The `dictationPauseSeconds` user
+  default configures the limit (1–30 s); only a longer silence after
+  speech ends the dictation. The panel says "Still listening — tap the
+  mic or Send to finish" instead of counting down.
+- Nothing is sent automatically. The mic tap puts the words in the field,
+  appended to anything already typed. Send finishes and sends them.
+- Fillers and stutters don't split the message.
+- It runs on SpeechAnalyzer (SpeechTranscriber) on iOS 26 where the
+  device supports it, with SFSpeechRecognizer as the fallback.
+- A live waveform and the elapsed time show while listening.
+
+**Accepted when** the scripted continuity session (a segment, an ended
+task, a 2-second pause, fillers, a stutter, and a silent restart) yields
+one message, still listening, and nothing is sent before the user sends
+it.
+
+Evidence: iOS `DictationTranscriptTests`, `SpeechRecognizerTests`
+(continuity, restart, configurable pause, finish),
+`SpeechUITests.testContinuousDictationKeepsEveryWordUntilFinished`,
+`testSendFinishesTheDictation`. The real engines (SpeechAnalyzer,
+SFSpeechRecognizer) need a phone: see the on-device script.
+
+### FR-40 — Clarifying questions and stated assumptions
+
+A clarifying question comes with tappable answers wherever possible:
+`ask_user` suggestions, ambiguous places, or, when the model asks in
+prose, the usual answers for city, time, and duration. Every plan states
+its assumptions in one server-computed line ("7:00–10:00 PM, near Lola
+42, Seaport"). **Accepted when** a duration question is answered with one
+tap and the plan that follows shows its window and place.
+
+Evidence: `assistantClarify.test.ts`; iOS
+`AssistantUITests.testClarifyingQuestionIsTappableAndThePlanStatesItsAssumptions`;
+live FR-35 (no city question after a known location).
+
 ---
 
 ## Running the live suite
@@ -756,7 +875,7 @@ FR_API_BASE=http://localhost:3000 FR_API_KEY=… pnpm -C server test:fr
 ```
 
 The suite hard-refuses when the target's effective dry run is off, makes
-at most `FR_ASSISTANT_MAX_CALLS` (default 8) paid model calls per run,
+at most `FR_ASSISTANT_MAX_CALLS` (default 12) paid model calls per run,
 never links a provider, never calls `PUT /policy`, and never starts a
 session (the unlinked-start refusal is itself one of its assertions).
 Zone fixture coordinates are env-overridable (`FR_NYC_AUTOPAY_LAT`, …)

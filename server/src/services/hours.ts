@@ -24,7 +24,8 @@ const nycClock = new Intl.DateTimeFormat("en-US", {
   hourCycle: "h23",
 });
 
-function nycWeekdayAndMinute(at: Date): { weekday: string; minute: number } {
+/** The ET weekday token ("Mon") and minute of the day at an instant. */
+export function nycWeekdayAndMinute(at: Date): { weekday: string; minute: number } {
   let weekday = "";
   let hour = 0;
   let minute = 0;

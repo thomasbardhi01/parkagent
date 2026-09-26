@@ -16,6 +16,11 @@ enum AssistantMockScenario: String, Sendable {
     /// A named-place plan whose street option is for a future time: no
     /// Confirm, just "Pays automatically when you park".
     case futureStreet
+    /// A place with two locations: the reply asks which, with one
+    /// tappable suggestion per place; tapping one gets the plan.
+    case placeChoices
+    /// Asks how long (with duration chips); an answer gets the plan.
+    case askDuration
     /// The parking-only refusal sentence.
     case refuse
     case error
@@ -169,11 +174,18 @@ enum MockAssistantFixtures {
               "note": "Street is cheapest; the deck is closest.",
               "destination": {"lat": 42.3394, "lng": -71.0940, "label": "Museum of Fine Arts"},
               "provenance": {"provider": "parkwhiz+spothero", "searchedAt": "2026-01-05T14:00:00-05:00"},
+              "recommendedReason": "Cheapest and closest — $4.10, 2 min walk",
+              "assumptions": "Now–3:30 PM, near Museum of Fine Arts",
               "options": [
                 {"id": "opt-street", "type": "street", "label": "Street — Zone 81234",
                  "detail": "Boylston St meter, 2 min walk", "priceUsd": 4.10,
                  "durationMinutes": 90, "walkMinutes": 2, "zoneId": "bos-boylston-st-e-d-819305",
-                 "lat": 42.3399, "lng": -71.0951, "recommended": true},
+                 "lat": 42.3399, "lng": -71.0951, "recommended": true,
+                 "street": "Boylston St", "zoneNumber": "81234", "streetState": "metered_then_free",
+                 "streetSummary": "Metered until 8 PM, then free on Boylston St — 2 min walk",
+                 "priceBreakdown": {"meterUsd": 3.75, "feeUsd": 0.35}, "ratePerHourUsd": 3.75,
+                 "hoursToday": [{"start": "08:00", "end": "20:00"}], "maxStayMinutes": 120,
+                 "exceedsMaxStay": false},
                 {"id": "opt-garage", "type": "garage", "label": "Museum Underground Deck",
                  "detail": "Self park, covered", "priceUsd": 18.00, "durationMinutes": 90,
                  "walkMinutes": 3, "entryType": "self", "garageOptionId": "g1",
@@ -206,6 +218,11 @@ enum MockAssistantFixtures {
                  "detail": "Van Ness St meter", "priceUsd": 7.50, "durationMinutes": 180,
                  "walkMinutes": 3, "zoneId": "bos-van-ness-st-a-1",
                  "lat": 42.3461, "lng": -71.0965,
+                 "street": "Van Ness St", "zoneNumber": "81112", "streetState": "metered",
+                 "streetSummary": "$2.50/hr, 3 hr max on Van Ness St — 3 min walk",
+                 "priceBreakdown": {"meterUsd": 7.15, "feeUsd": 0.35}, "ratePerHourUsd": 2.50,
+                 "hoursToday": [{"start": "08:00", "end": "22:00"}], "maxStayMinutes": 180,
+                 "exceedsMaxStay": false,
                  "startsAt": "2026-01-10T19:00:00-05:00", "payOnArrival": true,
                  "recommended": true},
                 {"id": "opt-garage-fenway", "type": "garage", "label": "Landsdowne Garage",
@@ -246,6 +263,13 @@ enum MockAssistantFixtures {
         )
     }
 
+    /// The two locations of one steakhouse, as the server's ambiguous
+    /// place search offers them.
+    static let mooChoices = [
+        AssistantSuggestion(label: "Mooo.... · 15 Beacon St, Beacon Hill", reply: "Mooo...., 15 Beacon St"),
+        AssistantSuggestion(label: "Mooo.... · 49 Melcher St, Seaport", reply: "Mooo...., 49 Melcher St"),
+    ]
+
     private static let stopLabels = [
         "Coffee — Tatte", "Client, Back Bay", "Lunch — Time Out", "MFA meeting",
         "Fenway errand", "Dinner — North End",
@@ -282,7 +306,11 @@ extension MockAPI {
         let scenario = assistantScenario
         return AsyncThrowingStream { continuation in
             Task {
-                func finish(reply: String, plan: AssistantReply.ProposedPlan?) async {
+                func finish(
+                    reply: String,
+                    plan: AssistantReply.ProposedPlan?,
+                    suggestions: [AssistantSuggestion]? = nil
+                ) async {
                     // Stream word-by-word so the typing UI is visible.
                     let words = reply.split(separator: " ", omittingEmptySubsequences: false)
                     for (index, word) in words.enumerated() {
@@ -295,19 +323,53 @@ extension MockAPI {
                             continuation.yield(.plan(plan))
                         }
                     }
+                    // Saved like the server saves it: the history list
+                    // shows this chat, and it can be reopened.
+                    let id = if let conversationId { conversationId } else {
+                        await MockConversationStore.shared.newId()
+                    }
+                    await MockConversationStore.shared.record(
+                        conversationId: id, userText: text, reply: reply, plan: plan, suggestions: suggestions
+                    )
                     continuation.yield(.done(AssistantReply(
-                        conversationId: conversationId ?? "mock-conv-1",
+                        conversationId: id,
                         reply: reply,
-                        plan: plan
+                        plan: plan,
+                        suggestions: suggestions
                     )))
                     continuation.finish()
                 }
 
                 let lower = text.lowercased()
+                // A bare chain name is ambiguous — the server asks which
+                // location; a tapped choice carries the street address.
+                let asksWhichPlace =
+                    (scenario == .placeChoices || scenario == .auto)
+                    && lower.contains("moo") && !lower.contains("melcher") && !lower.contains("beacon st")
                 let wantsDay =
                     scenario == .itinerary
                     || (scenario == .auto
                         && (lower.contains("day") || lower.contains("stops") || lower.contains("errand")))
+                if scenario == .askDuration, !lower.hasPrefix("for ") {
+                    await finish(
+                        reply: "Got it — how long will you stay?",
+                        plan: nil,
+                        suggestions: [
+                            AssistantSuggestion(label: "1 hour", reply: "For 1 hour"),
+                            AssistantSuggestion(label: "2 hours", reply: "For 2 hours"),
+                            AssistantSuggestion(label: "3 hours", reply: "For 3 hours"),
+                        ]
+                    )
+                    return
+                }
+                if asksWhichPlace {
+                    await finish(
+                        reply: "I found two Mooo.... steakhouses — which one?",
+                        plan: nil,
+                        suggestions: MockAssistantFixtures.mooChoices
+                    )
+                    return
+                }
                 switch scenario {
                 case .error:
                     continuation.finish(throwing: APIError.server(status: 500))
@@ -318,7 +380,7 @@ extension MockAPI {
                         reply: "Saturday at 7 near Fenway — the meter is cheapest.",
                         plan: MockAssistantFixtures.futureStreetPlan
                     )
-                case .itinerary, .singleSpot, .auto:
+                case .itinerary, .singleSpot, .auto, .placeChoices, .askDuration:
                     if scenario == .refuse { return }
                     if wantsDay {
                         await finish(

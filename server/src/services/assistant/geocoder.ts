@@ -8,12 +8,16 @@
  * country. The user-facing city list comes from the provider registry
  * (coveredCitiesSentence); the boxes below are this file's own data.
  *
- * The provider interface has one real implementation (Nominatim, the same
- * free geocoder the Boston zone-number importer uses) behind an injectable
- * HTTP fetch so tests run offline against fixtures. Results outside both
- * metros' bounding boxes are dropped — a parking answer 500 miles away is
- * never useful — and what remains is ranked by the search's own importance
- * with a nudge toward the biasing city.
+ * Two implementations sit behind one interface, chained by
+ * FallbackGeocoder: the Apple Maps Server API (appleMaps.ts — businesses,
+ * venues, and landmarks by the names people use) when its key is
+ * configured, then Nominatim (OpenStreetMap: streets, neighborhoods,
+ * landmarks; the same free geocoder the Boston zone-number importer uses).
+ * Both take an injectable HTTP fetch so tests run offline against
+ * fixtures. Results outside both metros' bounding boxes are dropped — a
+ * parking answer 500 miles away is never useful — and what remains is
+ * ranked by the search's own relevance with a nudge toward the biasing
+ * city.
  */
 
 import { coveredCities } from "../../providers/registry.js";
@@ -27,7 +31,7 @@ export const METRO_BBOX = {
 };
 
 /** Center of each metro, for the bias nudge. */
-const METRO_CENTER = {
+export const METRO_CENTER = {
   nyc: { lat: 40.7549, lng: -73.984 },
   bos: { lat: 42.3555, lng: -71.0655 },
 };
@@ -43,6 +47,11 @@ const SEARCH_ORDER: MetroCity[] = coveredCities()
   .map((p) => p.city)
   .filter((city): city is MetroCity => city === "nyc" || city === "bos");
 
+/** The covered metros, in the registry's unbiased order. */
+export function coveredMetros(): MetroCity[] {
+  return [...SEARCH_ORDER];
+}
+
 export interface GeocodeResult {
   lat: number;
   lng: number;
@@ -50,6 +59,22 @@ export interface GeocodeResult {
   displayName: string;
   /** Which metro's box this point fell inside. */
   city: MetroCity;
+  /** The place's own name ("LoLa 42", "Seaport"), when the source has one. */
+  name?: string | undefined;
+  /** Its street address line ("22 Liberty Dr"). */
+  address?: string | undefined;
+  /** The neighborhood it sits in ("Seaport") — for the assumptions line. */
+  area?: string | undefined;
+  /** Every locality / neighborhood / area-of-interest name the source gave
+   * — how "Moo steakhouse in Seaport" prefers the Seaport location. */
+  areaNames?: string[] | undefined;
+  /** "poi": a business, venue, or landmark; "address"; "area": a street
+   * or neighborhood. */
+  kind?: "poi" | "address" | "area" | undefined;
+  /** The source's category for a POI ("Restaurant"). */
+  category?: string | undefined;
+  /** Which search produced it ("apple_maps" | "nominatim"). */
+  source?: string | undefined;
 }
 
 export interface GeocodeQuery {
@@ -57,6 +82,11 @@ export interface GeocodeQuery {
   /** Bias toward this metro when the caller knows it (e.g. the phone's
    * city). Absent → both metros are searched and whichever matches wins. */
   city?: MetroCity | undefined;
+  /** Search around this point first (the phone, when it's in the biased
+   * metro); absent → the metro's center. */
+  near?: { lat: number; lng: number } | undefined;
+  /** Where the phone is, as a secondary hint. */
+  userLocation?: { lat: number; lng: number } | undefined;
 }
 
 export interface GeocoderProvider {
@@ -81,6 +111,26 @@ export function metroForPoint(lat: number, lng: number): MetroCity | null {
   return null;
 }
 
+/** A phone this close to a metro's center is in that city as far as a
+ * driver is concerned — Braintree, Quincy, and Newton sit outside the
+ * box but mean the same city (the 2026-09-25 device test was sent from
+ * Braintree and got asked which city). The two metros are ~300 km apart,
+ * so the radii never overlap. */
+export const NEAR_METRO_KM = 60;
+
+/** The metro a phone is in or near (see NEAR_METRO_KM), or null. */
+export function homeMetroForPoint(lat: number, lng: number): MetroCity | null {
+  const inside = metroForPoint(lat, lng);
+  if (inside) return inside;
+  let best: { city: MetroCity; d: number } | null = null;
+  for (const city of SEARCH_ORDER) {
+    const c = METRO_CENTER[city];
+    const d = metersBetween(lat, lng, c.lat, c.lng);
+    if (d <= NEAR_METRO_KM * 1000 && (best === null || d < best.d)) best = { city, d };
+  }
+  return best?.city ?? null;
+}
+
 /** Haversine metres — shared with the proximity guard. */
 export function metersBetween(aLat: number, aLng: number, bLat: number, bLng: number): number {
   const R = 6_371_000;
@@ -98,8 +148,32 @@ interface NominatimRow {
   lat: string;
   lon: string;
   display_name: string;
+  name?: string;
+  category?: string;
   importance?: number;
+  /** addressdetails=1: the structured address. */
+  address?: {
+    house_number?: string;
+    road?: string;
+    neighbourhood?: string;
+    suburb?: string;
+    city?: string;
+    town?: string;
+  };
 }
+
+/** OSM categories that name an area, a street, or a landmark-like stop
+ * rather than a business or venue. */
+const NOMINATIM_AREA_CATEGORIES = new Set([
+  "place",
+  "boundary",
+  "highway",
+  "landuse",
+  "railway",
+  "public_transport",
+  "natural",
+  "waterway",
+]);
 
 export interface NominatimGeocoderOptions {
   /** Injectable for tests; defaults to global fetch against the public API. */
@@ -118,6 +192,7 @@ export interface NominatimGeocoderOptions {
  * the network (and inside the 1 req/s courtesy limit).
  */
 export class NominatimGeocoder implements GeocoderProvider {
+  readonly id = "nominatim";
   private readonly fetchFn: typeof fetch;
   private readonly userAgent: string;
   private readonly baseUrl: string;
@@ -160,11 +235,22 @@ export class NominatimGeocoder implements GeocoderProvider {
           if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
           const metro = metroForPoint(lat, lng);
           if (!metro) continue; // outside both boxes — never useful for parking
+          const parts = row.display_name.split(",").map((part) => part.trim());
+          const a = row.address ?? {};
+          const street = [a.house_number, a.road].filter(Boolean).join(" ");
           all.push({
             lat,
             lng,
-            displayName: row.display_name.split(",").slice(0, 3).join(",").trim(),
+            displayName: parts.slice(0, 3).join(", "),
             city: metro,
+            name: row.name || parts[0],
+            ...(street && street !== row.name ? { address: street } : {}),
+            area: a.neighbourhood ?? a.suburb ?? a.city ?? a.town ?? parts[1],
+            areaNames: [a.neighbourhood, a.suburb, a.city, a.town, ...parts.slice(1, 4)].filter(
+              (part): part is string => !!part,
+            ),
+            kind: NOMINATIM_AREA_CATEGORIES.has(row.category ?? "") ? "area" : "poi",
+            source: this.id,
           });
         }
       }
@@ -192,7 +278,7 @@ export class NominatimGeocoder implements GeocoderProvider {
     const params = new URLSearchParams({
       q: query,
       format: "jsonv2",
-      addressdetails: "0",
+      addressdetails: "1",
       limit: "5",
       countrycodes: "us",
       // viewbox is minLng,minLat,maxLng,maxLat with bounded=1 to HARD-limit
@@ -218,4 +304,46 @@ function dedupeByProximity(results: GeocodeResult[]): GeocodeResult[] {
     kept.push(r);
   }
   return kept;
+}
+
+/**
+ * Tries each geocoder in order and returns the first that found anything
+ * — Apple Maps (POIs) first when configured, Nominatim after it. A source
+ * that FAILS (network, quota, a bad key) falls through to the next rather
+ * than failing the lookup; only every source failing is a failure.
+ */
+export class FallbackGeocoder implements GeocoderProvider {
+  /** `carriesName` says whether a source's results include the place the
+   * query names; when they don't, the next source is asked too and both
+   * sets are returned (the first source's first) — an Apple fuzzy
+   * near-miss mustn't hide Nominatim's exact street. Absent: any result
+   * is enough. */
+  constructor(
+    private readonly chain: GeocoderProvider[],
+    private readonly carriesName: (query: string, results: GeocodeResult[]) => boolean = () => true,
+  ) {}
+
+  async geocode(
+    q: GeocodeQuery,
+    limit?: number,
+  ): Promise<{ ok: true; results: GeocodeResult[] } | { ok: false; reason: string }> {
+    let answered = false;
+    const failures: string[] = [];
+    let found: GeocodeResult[] = [];
+    for (const geocoder of this.chain) {
+      const outcome = await geocoder.geocode(q, limit);
+      if (!outcome.ok) {
+        failures.push(outcome.reason);
+        continue;
+      }
+      answered = true;
+      found = [...found, ...outcome.results];
+      if (found.length > 0 && this.carriesName(q.query, found)) {
+        return { ok: true, results: found };
+      }
+    }
+    return answered
+      ? { ok: true, results: found }
+      : { ok: false, reason: failures.join("; ") || "no geocoder configured" };
+  }
 }

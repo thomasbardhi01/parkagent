@@ -464,13 +464,12 @@ describe("street quotes for a named area use provider-observed terms", () => {
       duration_minutes: 200,
       when: "2026-09-23T15:00:00-04:00",
     });
-    const result = out.result as {
+    const found = out.result as {
       found: boolean;
-      maxStayMinutes: number;
-      clampedMinutes: number;
-      termsSource?: string;
+      options: { maxStayMinutes: number; clampedMinutes: number; termsSource?: string }[];
     };
-    expect(result.found).toBe(true);
+    const result = found.options[0]!;
+    expect(found.found).toBe(true);
     expect(result.maxStayMinutes).toBe(300);
     expect(result.clampedMinutes).toBe(200);
     expect(result.termsSource).toBe("observed");
@@ -484,11 +483,11 @@ describe("street quotes for a named area use provider-observed terms", () => {
       duration_minutes: 200,
       when: "2026-09-23T15:00:00-04:00",
     });
-    const result = out.result as {
-      maxStayMinutes: number;
-      clampedMinutes: number;
-      termsSource?: string;
-    };
+    const result = (
+      out.result as {
+        options: { maxStayMinutes: number; clampedMinutes: number; termsSource?: string }[];
+      }
+    ).options[0]!;
     expect(result.maxStayMinutes).toBe(120);
     expect(result.clampedMinutes).toBe(120);
     expect(result.termsSource).toBeUndefined();

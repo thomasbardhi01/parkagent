@@ -82,6 +82,8 @@ final class AppModel {
     var assistantPresented = false
     /// Prefilled question when Siri ("Ask ParkAgent") opened the sheet.
     var assistantInitialQuery: String?
+    /// A saved conversation to open in the sheet (Activity links here).
+    var assistantConversationId: String?
     /// Signed-off days from the server; the first signed_off one drives
     /// Home's live day section.
     var itineraries: [ItinerarySummary] = []
@@ -99,8 +101,9 @@ final class AppModel {
         linkWalletConnected = (try? await api.linkWalletStatus())?.connected ?? false
     }
 
-    func openAssistant(query: String? = nil) {
+    func openAssistant(query: String? = nil, conversationId: String? = nil) {
         assistantInitialQuery = query
+        assistantConversationId = conversationId
         assistantPresented = true
     }
 

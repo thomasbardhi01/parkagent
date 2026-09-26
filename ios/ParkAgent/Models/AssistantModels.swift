@@ -18,11 +18,21 @@ struct AssistantReply: Decodable, Sendable {
     let conversationId: String
     let reply: String
     let plan: ProposedPlan?
+    /// Tappable answers to the question the reply asks ("which Mooo?",
+    /// "how long?"); nil when it asks nothing.
+    var suggestions: [AssistantSuggestion]?
 
     struct ProposedPlan: Decodable, Sendable {
         let planId: String
         let plan: AssistantPlan
     }
+}
+
+/// One tappable answer: the chip's text and the message it sends — the
+/// user's words, sent exactly as if typed.
+struct AssistantSuggestion: Decodable, Equatable, Hashable, Sendable {
+    let label: String
+    let reply: String
 }
 
 enum AssistantPlan: Decodable, Sendable {
@@ -55,6 +65,13 @@ struct SingleSpotPlan: Decodable, Sendable {
     /// shows it once under the list ("Garage prices from ParkWhiz and
     /// SpotHero, checked 2:05 PM").
     let provenance: Provenance?
+    /// Why the recommended option is on top, in one line, computed by the
+    /// server from the options on the card ("Cheapest and closest — free,
+    /// 4 min walk").
+    var recommendedReason: String?
+    /// What the plan assumed — the window and the place ("Sat 7:00–10:00
+    /// PM, near LoLa 42, Seaport") — computed by the server from the plan.
+    var assumptions: String?
 
     struct Destination: Decodable, Sendable {
         let lat: Double
@@ -106,6 +123,35 @@ struct SingleSpotOption: Decodable, Identifiable, Sendable {
     /// the garage search cache or the street quote's point.
     let lat: Double?
     let lng: Double?
+    /// Server-attached on street options from the street search: the block
+    /// during the stay in one line ("Free after 6 PM on Seaport Blvd — 4 min
+    /// walk"), and the facts behind the detail card.
+    var streetSummary: String?
+    /// "free" | "metered" | "metered_then_free" | "free_then_metered" | "mixed"
+    var streetState: String?
+    var street: String?
+    var zoneNumber: String?
+    var priceBreakdown: PriceBreakdown?
+    var ratePerHourUsd: Double?
+    var hoursToday: [HoursInterval]?
+    var maxStayMinutes: Int?
+    var exceedsMaxStay: Bool?
+
+    struct PriceBreakdown: Decodable, Equatable, Sendable {
+        let meterUsd: Double
+        let feeUsd: Double
+    }
+
+    struct HoursInterval: Decodable, Equatable, Sendable {
+        let start: String
+        let end: String
+    }
+
+    /// The line under the option's name: the street search's own words for
+    /// a street block, else what the plan said about it.
+    var detailLine: String {
+        streetSummary ?? detail
+    }
 
     var coordinate: CLLocationCoordinate2D? {
         guard let lat, let lng else { return nil }
@@ -132,6 +178,8 @@ struct ItineraryPlan: Decodable, Sendable {
     let totalUsd: Double
     let capUsd: Double
     let note: String?
+    /// The day and window the plan covers ("Mon 3 stops, 10:00 AM–4:30 PM").
+    var assumptions: String?
 }
 
 struct ItineraryStop: Codable, Identifiable, Equatable, Sendable {
@@ -221,6 +269,64 @@ struct ItineraryPatchResponse: Decodable, Sendable {
     let stops: [ItineraryStop]
     let totalUsd: Double
     let capUsd: Double
+}
+
+// Saved conversations (server/API.md "Saved conversations").
+
+/// One row of the assistant's history list.
+struct ConversationSummary: Decodable, Identifiable, Equatable, Sendable {
+    let id: String
+    /// The first request.
+    let title: String
+    let createdAt: Date
+    let updatedAt: Date
+    let messageCount: Int
+    /// What it came to — a booking or plan — if anything.
+    let outcome: ConversationOutcome?
+}
+
+struct ConversationOutcome: Decodable, Equatable, Sendable {
+    /// "garage" | "street" | "itinerary" (confirmed) · "proposed"
+    let kind: String
+    let label: String
+    let amountUsd: Double?
+    let planId: String
+}
+
+struct ConversationsResponse: Decodable, Sendable {
+    let conversations: [ConversationSummary]
+    let nextCursor: String?
+    /// How long a conversation is kept after it was last used.
+    let retentionDays: Int
+}
+
+/// A saved conversation, opened to read or resume.
+struct ConversationDetail: Decodable, Sendable {
+    let id: String
+    let title: String
+    let messages: [ConversationMessage]
+    let plans: [StoredPlan]
+    let outcome: ConversationOutcome?
+}
+
+struct ConversationMessage: Decodable, Sendable {
+    /// "user" | "assistant"
+    let role: String
+    let text: String
+    let planId: String?
+    let suggestions: [AssistantSuggestion]?
+}
+
+/// A plan as it was proposed, and what the user did with it.
+struct StoredPlan: Decodable, Sendable {
+    let planId: String
+    let plan: AssistantPlan
+    let confirmedAt: Date?
+    let confirmedOptionId: String?
+}
+
+struct ConversationsDeleted: Decodable, Sendable {
+    let deleted: Int
 }
 
 // Link wallet (server/API.md "Link wallet for agents").

@@ -111,12 +111,18 @@ describe("FR-33 GET /wallet/activity is the unified, paginated ledger", () => {
     const items = page.body["items"] as Record<string, unknown>[];
     expect(items.length).toBeLessThanOrEqual(2);
     for (const item of items) {
-      expect(["session", "garage", "link_payment"]).toContain(item["kind"]);
+      expect(["session", "garage", "link_payment", "plan"]).toContain(item["kind"]);
       expect(
         String(item["id"]).startsWith(
           `${item["kind"] === "link_payment" ? "link" : item["kind"]}:`,
         ),
       ).toBe(true);
+      if (item["kind"] === "plan") {
+        // A plan made in the assistant is not money moved: priced, never
+        // a charge (FR-38).
+        expect(item["totalUsd"]).toBeUndefined();
+        expect(typeof item["plannedUsd"]).toBe("number");
+      }
       if (item["kind"] === "session") {
         expect(typeof item["explanation"]).toBe("string");
         expect(Array.isArray(item["timeline"])).toBe(true);

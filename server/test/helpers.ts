@@ -16,6 +16,8 @@ import { hashApiKey } from "../src/services/apiKeys.js";
 import type {
   AppDb,
   AppTx,
+  AssistantPlanRow,
+  ConversationRow,
   EmailLoginCodeRow,
   FundingMethodRow,
   GarageBookingRow,
@@ -283,14 +285,8 @@ export interface FakeDbState {
   zoneTermsObserved: ZoneTermsObservedRow[];
   vehicles: VehicleRow[];
   processedTopups: { paymentIntentId: string; amountUsd: number; userId: string | null }[];
-  conversations: { id: string; userId: string; turns: unknown }[];
-  assistantPlans: {
-    id: string;
-    userId: string;
-    conversationId: string;
-    kind: string;
-    plan: unknown;
-  }[];
+  conversations: ConversationRow[];
+  assistantPlans: AssistantPlanRow[];
   assistantConfirmations: {
     token: string;
     userId: string;
@@ -843,22 +839,65 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
       findUnique: async ({ where }) => state.conversations.find((c) => c.id === where.id) ?? null,
       upsert: async ({ where, create, update }) => {
         const existing = state.conversations.find((c) => c.id === where.id);
-        if (existing) Object.assign(existing, update);
-        else state.conversations.push({ ...create });
+        if (existing) Object.assign(existing, update, { updatedAt: fakeRowClock() });
+        else {
+          state.conversations.push({
+            title: null,
+            display: [],
+            ...create,
+            createdAt: fakeRowClock(),
+            updatedAt: fakeRowClock(),
+          });
+        }
         return {};
       },
+      findMany: async ({ where, take }) =>
+        state.conversations
+          .filter(
+            (c) =>
+              c.userId === where.userId &&
+              (!where.updatedAt || c.updatedAt < where.updatedAt.lt) &&
+              (!where.id || where.id.in.includes(c.id)),
+          )
+          .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
+          .slice(0, take ?? Infinity),
       deleteMany: async ({ where }) => {
         const before = state.conversations.length;
-        state.conversations = state.conversations.filter((c) => c.userId !== where.userId);
+        state.conversations = state.conversations.filter(
+          (c) =>
+            !(
+              (where.userId === undefined || c.userId === where.userId) &&
+              (where.id === undefined || c.id === where.id) &&
+              (where.updatedAt === undefined || c.updatedAt < where.updatedAt.lt)
+            ),
+        );
         return { count: before - state.conversations.length };
       },
     },
     assistantPlan: {
       create: async ({ data }) => {
-        state.assistantPlans.push({ ...data });
+        state.assistantPlans.push({
+          ...data,
+          createdAt: fakeRowClock(),
+          confirmedAt: null,
+          confirmedOptionId: null,
+        });
         return { id: data.id };
       },
       findUnique: async ({ where }) => state.assistantPlans.find((r) => r.id === where.id) ?? null,
+      findMany: async ({ where }) =>
+        state.assistantPlans.filter(
+          (r) =>
+            r.userId === where.userId &&
+            (!where.conversationId || where.conversationId.in.includes(r.conversationId)) &&
+            // Loose: older tests push plan rows without the column.
+            (!where.confirmedAt || r.confirmedAt != null),
+        ),
+      update: async ({ where, data }) => {
+        const row = state.assistantPlans.find((r) => r.id === where.id);
+        if (row) Object.assign(row, data);
+        return {};
+      },
     },
     assistantConfirmation: {
       create: async ({ data }) => {
@@ -1855,6 +1894,7 @@ export function makeTestApp(options: {
     db,
     policy: policyService,
     findCandidates,
+    ...(options.nearbyZones ? { findNearbyZones } : {}),
     garage,
     ...(options.geocoder ? { geocoder: options.geocoder } : {}),
     linkWallet,

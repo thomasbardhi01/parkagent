@@ -89,6 +89,10 @@ struct UnconfiguredAPI: APIClient {
     }
     func priceItinerary(planId: String, stops: [ItineraryStop]) async throws -> ItineraryPriceResponse { throw failure }
     func itineraries() async throws -> ItinerariesResponse { throw failure }
+    func conversations(cursor: String?) async throws -> ConversationsResponse { throw failure }
+    func conversation(id: String) async throws -> ConversationDetail { throw failure }
+    func deleteConversation(id: String) async throws { throw failure }
+    func deleteAllConversations() async throws -> Int { throw failure }
     func patchItinerary(id: String, stops: [ItineraryStop]) async throws -> ItineraryPatchResponse { throw failure }
 
     func linkWalletStatus() async throws -> LinkWalletStatus { throw failure }

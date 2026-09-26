@@ -10,13 +10,28 @@
  *  - garage        a garage confirmed through the assistant and handed off
  *                  to the garage's own checkout, with its Link approval
  *                  state when Link paid it;
- *  - link_payment  a Link spend request not already shown on a garage row.
+ *  - link_payment  a Link spend request not already shown on a garage row;
+ *  - plan          a plan made in the assistant that isn't a garage row: a
+ *                  street spot confirmed there (it pays when the car parks)
+ *                  or a signed-off day.
+ *
+ * Garage and plan rows made in the assistant carry the conversation they
+ * came from (`conversationId`, while that conversation is still saved), so
+ * the app can open it.
  *
  * Pages are cursored by row creation time (opaque to clients, echoed back
  * as nextCursor), merged across the three sources, `limit` rows each.
  */
 
-import type { AppDb, GarageBookingRow, LinkSpendRequestRow, SessionRow } from "../../db.js";
+import type {
+  AppDb,
+  AssistantPlanRow,
+  GarageBookingRow,
+  ItineraryRow,
+  LinkSpendRequestRow,
+  SessionRow,
+} from "../../db.js";
+import type { ItineraryPlan, SingleSpotPlan } from "../assistant/plans.js";
 import { providerForCity } from "../../providers/registry.js";
 import { garageProviderInfo } from "../garage/garageProvider.js";
 
@@ -25,12 +40,12 @@ export interface ActivityPage {
   nextCursor: string | null;
 }
 
-export type ActivityItem = SessionActivity | GarageActivity | LinkPaymentActivity;
+export type ActivityItem = SessionActivity | GarageActivity | LinkPaymentActivity | PlanActivity;
 
 interface ActivityBase {
   /** Unique across kinds: "<kind>:<row id>". */
   id: string;
-  kind: "session" | "garage" | "link_payment";
+  kind: "session" | "garage" | "link_payment" | "plan";
   /** When it happened (a session's start; a booking's or request's creation). */
   at: string;
   /** The row's creation time — the page cursor's key. */
@@ -108,6 +123,23 @@ export interface GarageActivity extends ActivityBase {
    * (pending_approval | approved | denied | expired | …). */
   link: { spendRequestId: string; status: string; approvalUrl: string | null } | null;
   receipt: { optionId: string; planId: string | null };
+  /** The assistant conversation it was made in, while that is still saved. */
+  conversationId: string | null;
+}
+
+export interface PlanActivity extends ActivityBase {
+  kind: "plan";
+  planId: string;
+  /** street: a street spot confirmed in the assistant; itinerary: a day. */
+  planKind: "street" | "itinerary";
+  label: string;
+  /** What the plan was priced at — NOT a charge: a street spot pays at the
+   * curb (its session row carries the real amount), a day's garages are
+   * their own rows. Never shown as money moved. */
+  plannedUsd: number;
+  /** One plain sentence about what happens next. */
+  explanation: string;
+  conversationId: string | null;
 }
 
 export interface LinkPaymentActivity extends ActivityBase {
@@ -210,7 +242,7 @@ export async function activityPage(
   const before = parseCursor(options.cursor);
   const take = options.limit + 1;
 
-  const [sessions, allBookings, linkRows, accounts] = await Promise.all([
+  const [sessions, allBookings, linkRows, accounts, confirmedPlans] = await Promise.all([
     db.session.findMany({
       where: { userId, ...(before ? { createdAt: { lt: before } } : {}) },
       orderBy: { createdAt: "desc" },
@@ -221,7 +253,32 @@ export async function activityPage(
     db.garageBooking.findMany({ where: { userId }, orderBy: { createdAt: "desc" }, take: 1000 }),
     db.linkSpendRequest.findMany({ where: { userId } }),
     db.providerAccount.findMany({ where: { userId } }),
+    db.assistantPlan.findMany({ where: { userId, confirmedAt: { not: null } } }),
   ]);
+  // Plans that aren't garage rows already: a street spot — until the car
+  // parks there and its session row takes over — or a day.
+  const signedDays = new Map(
+    (await db.itinerary.findMany({ where: { userId } }))
+      .filter((i) => i.planId)
+      .map((i) => [i.planId!, i]),
+  );
+  const planCandidates = confirmedPlans
+    .filter((p) => p.confirmedAt && (p.kind === "itinerary" || confirmedStreet(p) !== null))
+    .filter((p) => !before || p.confirmedAt! < before)
+    .sort((a, b) => b.confirmedAt!.getTime() - a.confirmedAt!.getTime());
+  const planRows: AssistantPlanRow[] = [];
+  for (const plan of planCandidates) {
+    if (planRows.length >= take) break;
+    const street = confirmedStreet(plan);
+    if (street?.zoneId) {
+      const parked = await db.session.findMany({
+        where: { userId, zoneId: street.zoneId, createdAt: { gte: plan.confirmedAt! } },
+        take: 1,
+      });
+      if (parked.length > 0) continue;
+    }
+    planRows.push(plan);
+  }
   const bookings = allBookings.filter((b) => !before || b.createdAt < before).slice(0, take);
   const onGarage = new Set(allBookings.map((b) => b.linkSpendRequestId).filter(Boolean));
   const standaloneLink = linkRows
@@ -233,7 +290,8 @@ export async function activityPage(
   type Entry =
     | { createdAt: Date; kind: "session"; row: SessionRow }
     | { createdAt: Date; kind: "garage"; row: GarageBookingRow }
-    | { createdAt: Date; kind: "link_payment"; row: LinkSpendRequestRow };
+    | { createdAt: Date; kind: "link_payment"; row: LinkSpendRequestRow }
+    | { createdAt: Date; kind: "plan"; row: AssistantPlanRow };
   const merged: Entry[] = [
     ...sessions.map((row) => ({ createdAt: row.createdAt, kind: "session" as const, row })),
     ...bookings.map((row) => ({ createdAt: row.createdAt, kind: "garage" as const, row })),
@@ -242,6 +300,7 @@ export async function activityPage(
       kind: "link_payment" as const,
       row,
     })),
+    ...planRows.map((row) => ({ createdAt: row.confirmedAt!, kind: "plan" as const, row })),
   ].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
 
   const page = merged.slice(0, options.limit);
@@ -269,6 +328,39 @@ export async function activityPage(
     zoneStreets.set(s.zoneId, zone?.street ?? null);
   }
   const linkById = new Map(linkRows.map((r) => [r.id, r]));
+  // The conversation each assistant row came from — linked only while it
+  // is still saved (deleted, or past retention, it isn't).
+  const planById = new Map(confirmedPlans.map((p) => [p.id, p]));
+  const garagePlanIds = page.flatMap((e) =>
+    e.kind === "garage" && e.row.planId ? [e.row.planId] : [],
+  );
+  const missingPlanIds = garagePlanIds.filter((id) => !planById.has(id));
+  for (const id of missingPlanIds) {
+    const plan = await db.assistantPlan.findUnique({ where: { id } });
+    if (plan && plan.userId === userId) planById.set(id, plan);
+  }
+  const wantedConversations = [
+    ...new Set(
+      page.flatMap((e) => {
+        const planId = e.kind === "garage" ? e.row.planId : e.kind === "plan" ? e.row.id : null;
+        const conversationId = planId ? planById.get(planId)?.conversationId : undefined;
+        return conversationId ? [conversationId] : [];
+      }),
+    ),
+  ];
+  const savedConversations = new Set(
+    wantedConversations.length > 0
+      ? (
+          await db.conversation.findMany({
+            where: { userId, id: { in: wantedConversations } },
+          })
+        ).map((c) => c.id)
+      : [],
+  );
+  const conversationOf = (planId: string | null): string | null => {
+    const id = planId ? planById.get(planId)?.conversationId : undefined;
+    return id && savedConversations.has(id) ? id : null;
+  };
 
   const items: ActivityItem[] = page.map((entry) => {
     if (entry.kind === "garage") {
@@ -298,7 +390,11 @@ export async function activityPage(
             }
           : null,
         receipt: { optionId: b.optionId, planId: b.planId },
+        conversationId: conversationOf(b.planId),
       };
+    }
+    if (entry.kind === "plan") {
+      return planActivity(entry.row, conversationOf(entry.row.id), signedDays.get(entry.row.id));
     }
     if (entry.kind === "link_payment") {
       const r = entry.row;
@@ -411,4 +507,53 @@ export async function activityPage(
   });
 
   return { items, nextCursor };
+}
+
+/** A single-spot plan's confirmed option, when it is a street spot. */
+function confirmedStreet(plan: AssistantPlanRow): { zoneId?: string | undefined } | null {
+  if (plan.kind !== "single_spot") return null;
+  const option = (plan.plan as SingleSpotPlan).options.find((o) => o.id === plan.confirmedOptionId);
+  return option?.type === "street" ? option : null;
+}
+
+function planActivity(
+  plan: AssistantPlanRow,
+  conversationId: string | null,
+  signed: ItineraryRow | undefined,
+): PlanActivity {
+  const at = plan.confirmedAt!.toISOString();
+  if (plan.kind === "itinerary") {
+    // What was signed off (the card's edits, re-priced), not what was
+    // proposed; the proposal only when the day row is missing.
+    const day = plan.plan as ItineraryPlan;
+    const stops = signed ? (signed.stops as unknown[]).length : day.stops.length;
+    return {
+      id: `plan:${plan.id}`,
+      kind: "plan",
+      at,
+      createdAt: at,
+      planId: plan.id,
+      planKind: "itinerary",
+      label: `Day plan — ${stops} ${stops === 1 ? "stop" : "stops"}`,
+      plannedUsd: round2(signed ? Number(signed.totalUsd) : day.totalUsd),
+      explanation:
+        "Signed off in the assistant. Street stops pay when you park; garage links arrive before each stop.",
+      conversationId,
+    };
+  }
+  const option = (plan.plan as SingleSpotPlan).options.find(
+    (o) => o.id === plan.confirmedOptionId,
+  )!;
+  return {
+    id: `plan:${plan.id}`,
+    kind: "plan",
+    at,
+    createdAt: at,
+    planId: plan.id,
+    planKind: "street",
+    label: option.street ?? option.label,
+    plannedUsd: round2(option.priceUsd),
+    explanation: "Chosen in the assistant — it pays when you park there.",
+    conversationId,
+  };
 }

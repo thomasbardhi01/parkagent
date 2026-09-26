@@ -222,7 +222,10 @@ struct MainTabView: View {
         }
         // Home's Ask button, the Siri intent, and parkagent://assistant.
         .sheet(isPresented: $model.assistantPresented) {
-            AssistantSheetView(initialQuery: model.assistantInitialQuery)
+            AssistantSheetView(
+                initialQuery: model.assistantInitialQuery,
+                initialConversationId: model.assistantConversationId
+            )
                 .presentationDetents([.large])
         }
         .task {

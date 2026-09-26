@@ -33,19 +33,58 @@ final class SpeechRecognizerTests: XCTestCase {
         }
     }
 
-    func testScriptedSessionStreamsCountsDownAndHandsOff() async {
-        let speech = SpeechRecognizer(scenarioOverride: .scripted)
+    /// Words stream in; a quiet moment says "still listening"; only a
+    /// silence past the pause limit ends it, and the words are handed off.
+    func testScriptedSessionStreamsPausesThenHandsOff() async {
+        let speech = SpeechRecognizer(scenarioOverride: .scripted, pauseTolerance: 1.5)
         await speech.start()
         XCTAssertEqual(speech.state, .listening)
+        XCTAssertEqual(speech.engineName, "scripted")
 
         await waitUntil("words to stream") { !speech.words.isEmpty }
-        await waitUntil("silence countdown") { speech.silenceCountdown != nil }
-        await waitUntil("auto-stop") { speech.state == .idle }
+        await waitUntil("the pausing hint") { speech.isPausing }
+        XCTAssertEqual(speech.state, .listening, "A pause shows a hint; it doesn't stop")
+        await waitUntil("the pause limit") { speech.state == .idle }
 
         XCTAssertEqual(speech.finishedTranscript, Self.script)
-        XCTAssertNil(speech.silenceCountdown)
+        XCTAssertFalse(speech.isPausing)
         speech.acknowledge()
         XCTAssertNil(speech.finishedTranscript)
+    }
+
+    /// The device test: a pause, a finished segment, an ended recognition
+    /// task, fillers, and a recognizer starting over — one dictation, every
+    /// word kept, still listening, until the user finishes it.
+    func testContinuousDictationKeepsEverySegmentUntilFinished() async {
+        let speech = SpeechRecognizer(scenarioOverride: .continuity)
+        await speech.start()
+        await waitUntil("the whole dictation") { speech.transcript == SpeechMockScenario.continuityText }
+        XCTAssertEqual(speech.state, .listening, "Past a 2-second pause and an ended task, still listening")
+        XCTAssertEqual(speech.restartCount, 1, "The ended task was restarted transparently")
+        XCTAssertNotNil(speech.startedAt)
+
+        let words = speech.finish()
+        XCTAssertEqual(words, SpeechMockScenario.continuityText)
+        XCTAssertEqual(speech.state, .idle)
+        XCTAssertNil(speech.finishedTranscript, "finish() hands the words straight to Send, not to the field")
+    }
+
+    /// A pause shorter than the limit keeps listening; the limit is the
+    /// dictation's own (the dictationPauseSeconds default can change it).
+    func testPauseToleranceIsConfigurable() async {
+        let patient = SpeechRecognizer(scenarioOverride: .continuity, pauseTolerance: 5)
+        await patient.start()
+        await waitUntil("the second segment") { patient.transcript.contains("7 PM") }
+        XCTAssertEqual(patient.state, .listening)
+        patient.stop()
+
+        let hasty = SpeechRecognizer(scenarioOverride: .continuity, pauseTolerance: 1)
+        await hasty.start()
+        await waitUntil("the 2-second pause to end it") { hasty.state == .idle }
+        XCTAssertEqual(
+            hasty.finishedTranscript, "Find me parking at Seaport.",
+            "Past a 1-second limit the dictation ends at the pause, words handed off"
+        )
     }
 
     /// A second start while one is live must not reset the session (the

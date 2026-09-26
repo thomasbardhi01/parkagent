@@ -112,6 +112,12 @@ protocol APIClient: Sendable {
     func priceItinerary(planId: String, stops: [ItineraryStop]) async throws -> ItineraryPriceResponse
     func itineraries() async throws -> ItinerariesResponse
     func patchItinerary(id: String, stops: [ItineraryStop]) async throws -> ItineraryPatchResponse
+    /// Saved conversations, newest first; `cursor` is the previous page's.
+    func conversations(cursor: String?) async throws -> ConversationsResponse
+    func conversation(id: String) async throws -> ConversationDetail
+    func deleteConversation(id: String) async throws
+    /// Deletes every saved conversation; returns how many.
+    func deleteAllConversations() async throws -> Int
 
     // Link wallet for agents.
     func linkWalletStatus() async throws -> LinkWalletStatus
@@ -121,6 +127,25 @@ protocol APIClient: Sendable {
 }
 
 extension APIClient {
+    // Saved conversations: LiveAPI, MockAPI, and UnconfiguredAPI implement
+    // these; a test double that never opens the history inherits a refusal
+    // instead of having to spell all four out.
+    func conversations(cursor: String?) async throws -> ConversationsResponse {
+        throw APIError.notConfigured
+    }
+
+    func conversation(id: String) async throws -> ConversationDetail {
+        throw APIError.notConfigured
+    }
+
+    func deleteConversation(id: String) async throws {
+        throw APIError.notConfigured
+    }
+
+    func deleteAllConversations() async throws -> Int {
+        throw APIError.notConfigured
+    }
+
     /// A confirm with nothing edited: a single-spot option, or an itinerary
     /// signed off as proposed.
     func confirmPlan(planId: String, optionId: String?) async throws -> AssistantConfirmResponse {

@@ -177,10 +177,13 @@ struct ActivityRow: View {
             }
             Spacer(minLength: 0)
             VStack(alignment: .trailing, spacing: Spacing.quarter) {
-                Text(Format.money(total))
-                    .font(.bodyTextSemibold)
-                    .monospacedDigit()
-                    .foregroundStyle(item.status == "failed" ? Color.textSecondary : Color.textPrimary)
+                // A plan isn't money moved: no amount in the money column.
+                if item.kind != "plan" {
+                    Text(Format.money(total))
+                        .font(.bodyTextSemibold)
+                        .monospacedDigit()
+                        .foregroundStyle(item.status == "failed" ? Color.textSecondary : Color.textPrimary)
+                }
                 TagPill(label: WalletCopy.statusLabel(item), color: pillColor)
             }
         }
@@ -193,6 +196,7 @@ struct ActivityRow: View {
         switch item.kind {
         case "garage": "building.2"
         case "link_payment": "link"
+        case "plan": item.planKind == "itinerary" ? "calendar" : "map"
         default: "parkingsign.circle"
         }
     }
@@ -275,6 +279,17 @@ struct ActivityDetailView: View {
                     receipt
                 }
 
+                if let conversationId = item.conversationId {
+                    // Made in the assistant: the conversation it came from.
+                    Button {
+                        model.openAssistant(conversationId: conversationId)
+                    } label: {
+                        Label("Open the conversation", systemImage: "bubble.left.and.bubble.right")
+                    }
+                    .buttonStyle(.secondary)
+                    .accessibilityIdentifier("activityDetail.openConversation")
+                }
+
                 if item.kind == "garage", let link = item.link, link.status == "approved" {
                     Button {
                         Task {
@@ -305,6 +320,7 @@ struct ActivityDetailView: View {
     private var title: String {
         switch item.kind {
         case "garage": "Garage"
+        case "plan": item.planKind == "itinerary" ? "Day plan" : "Street spot"
         case "link_payment": "Link payment"
         default: "Session"
         }
@@ -319,10 +335,17 @@ struct ActivityDetailView: View {
                 Spacer()
                 TagPill(label: WalletCopy.statusLabel(item), color: .textSecondary)
             }
-            Text(Format.money(item.totalUsd ?? item.priceUsd ?? item.amountUsd ?? 0))
-                .font(.numeral)
-                .foregroundStyle(Color.textPrimary)
-                .accessibilityIdentifier("activityDetail.total")
+            if let planned = WalletCopy.planned(item) {
+                Text(planned)
+                    .font(.secondaryText)
+                    .foregroundStyle(Color.textSecondary)
+                    .accessibilityIdentifier("activityDetail.planned")
+            } else {
+                Text(Format.money(item.totalUsd ?? item.priceUsd ?? item.amountUsd ?? 0))
+                    .font(.numeral)
+                    .foregroundStyle(Color.textPrimary)
+                    .accessibilityIdentifier("activityDetail.total")
+            }
             if let meter = item.meterUsd, let fee = item.feeUsd, item.kind == "session" {
                 Text("\(Format.money(meter)) meter + \(Format.money(fee)) fee")
                     .font(.captionText)

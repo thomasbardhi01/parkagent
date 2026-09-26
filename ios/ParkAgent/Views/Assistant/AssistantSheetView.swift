@@ -13,8 +13,13 @@ struct AssistantSheetView: View {
     @FocusState private var inputFocused: Bool
     /// An approved Link garage payment's card, on screen for checkout.
     @State private var linkCard: LinkCardDetails?
+    /// Saved conversations, reached from the toolbar.
+    @State private var history = ConversationHistoryModel()
+    @State private var showingHistory = false
     /// Prefilled question (Siri hands one in).
     var initialQuery: String?
+    /// A saved conversation to open (Activity's "Open the conversation").
+    var initialConversationId: String?
 
     private var uiTesting: Bool { LaunchOverrides.uiTesting }
 
@@ -35,16 +40,56 @@ struct AssistantSheetView: View {
             .toolbarBackground(.regularMaterial, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        showingHistory = true
+                    } label: {
+                        Image(systemName: "clock.arrow.circlepath")
+                    }
+                    .accessibilityLabel("Conversations")
+                    .accessibilityIdentifier("assistant.historyButton")
+                }
+                if let model, !model.messages.isEmpty {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button {
+                            model.startNewConversation()
+                        } label: {
+                            Image(systemName: "square.and.pencil")
+                        }
+                        .disabled(model.phase == .streaming)
+                        .accessibilityLabel("New conversation")
+                        .accessibilityIdentifier("assistant.newConversationButton")
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
                 }
+            }
+            .navigationDestination(isPresented: $showingHistory) {
+                ConversationHistoryView(
+                    history: history,
+                    currentId: model?.conversationId,
+                    onOpen: { id in
+                        showingHistory = false
+                        Task { await model?.open(conversationId: id) }
+                    },
+                    onDeleted: { id in
+                        // The conversation on screen is gone: the next
+                        // message starts a new one, not a ghost of it.
+                        if id == nil || id == model?.conversationId {
+                            model?.startNewConversation()
+                        }
+                    }
+                )
             }
         }
         .task {
             if model == nil {
                 let fresh = AssistantModel(appModel: appModel)
                 model = fresh
-                if let initialQuery, !initialQuery.isEmpty {
+                if let initialConversationId {
+                    await fresh.open(conversationId: initialConversationId)
+                } else if let initialQuery, !initialQuery.isEmpty {
                     await fresh.send(initialQuery)
                 }
             }
@@ -68,6 +113,9 @@ struct AssistantSheetView: View {
                         }
                         ForEach(model.messages) { message in
                             MessageBubble(message: message)
+                            if message.id == model.messages.last?.id, !model.activeSuggestions.isEmpty {
+                                suggestionChips(model)
+                            }
                             if let plan = model.proposedPlan, message.planId == plan.planId {
                                 planCards(model, plan: plan)
                                     .transition(
@@ -75,6 +123,9 @@ struct AssistantSheetView: View {
                                             ? .opacity
                                             : .move(edge: .bottom).combined(with: .opacity)
                                     )
+                            } else if let planId = message.planId, let stored = model.storedPlans[planId] {
+                                // An opened conversation's earlier plan: read-only.
+                                StoredPlanCard(stored: stored)
                             }
                         }
                         if let errorText = model.errorText {
@@ -132,10 +183,11 @@ struct AssistantSheetView: View {
         // goes transparent so the depth reads through it.
         .background(LivingBackground().ignoresSafeArea())
         .onChange(of: speech.finishedTranscript) { _, transcript in
-            // Dictation ended (tap or silence): the words land in the input
-            // field for editing — sending stays a deliberate tap.
+            // Dictation ended (mic tap, or a pause past the limit): the words
+            // join whatever is already in the field, for editing — sending
+            // stays a deliberate tap.
             if let transcript, !transcript.isEmpty {
-                model.input = transcript
+                model.input = Self.merge(model.input, transcript)
             }
             speech.acknowledge()
         }
@@ -232,6 +284,34 @@ struct AssistantSheetView: View {
         .accessibilityIdentifier("assistant.emptyState")
     }
 
+    /// The question's answers as chips: a tap sends that answer as the
+    /// user's own message, exactly as if they'd typed it.
+    private func suggestionChips(_ model: AssistantModel) -> some View {
+        FlowLayout(spacing: Spacing.half) {
+            ForEach(Array(model.activeSuggestions.enumerated()), id: \.offset) { index, suggestion in
+                Button {
+                    inputFocused = false
+                    Task { await model.send(suggestion.reply) }
+                } label: {
+                    Text(suggestion.label)
+                        .font(.captionTextSemibold)
+                        .foregroundStyle(Color.actionCoralLink)
+                        .padding(.horizontal, Spacing.unit)
+                        .padding(.vertical, Spacing.half)
+                        .background(Color.surface)
+                        .clipShape(Capsule())
+                        .overlay(Capsule().strokeBorder(Color.actionCoralLink.opacity(0.5), lineWidth: 1))
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("assistant.suggestion.\(index)")
+                .accessibilityHint("Sends this answer")
+            }
+        }
+        .padding(.leading, Spacing.half)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     private func errorRow(_ text: String) -> some View {
         HStack(spacing: Spacing.half) {
             Image(systemName: "exclamationmark.triangle.fill")
@@ -254,7 +334,8 @@ struct AssistantSheetView: View {
                 plan: single,
                 confirming: model.phase == .confirming,
                 // Link pays only when it's the Wallet's active way to pay.
-                linkConnected: appModel.linkWalletConnected && appModel.wallet.activeSource == .linkWallet
+                linkConnected: appModel.linkWalletConnected && appModel.wallet.activeSource == .linkWallet,
+                paymentSource: appModel.wallet.activeSource
             ) { option in
                 Task { await model.confirm(planId: plan.planId, optionId: option.id) }
             }
@@ -352,13 +433,10 @@ struct AssistantSheetView: View {
             } label: {
                 Image(systemName: "arrow.up.circle.fill")
                     .font(.system(size: 28))
-                    .foregroundStyle(
-                        model.input.isEmpty || model.phase == .streaming
-                            ? Color.steel : Color.actionCoral
-                    )
+                    .foregroundStyle(canSend(model) ? Color.actionCoral : Color.steel)
                     .frame(width: 44, height: 44)
             }
-            .disabled(model.input.isEmpty || model.phase == .streaming)
+            .disabled(!canSend(model))
             .accessibilityIdentifier("assistant.sendButton")
         }
         .padding(.vertical, Spacing.half)
@@ -370,10 +448,26 @@ struct AssistantSheetView: View {
     }
 
     /// Send and put the keyboard away: the reply and its card need the
-    /// screen more than the field does.
+    /// screen more than the field does. Send while dictating finishes the
+    /// dictation and sends everything said, with what was already typed.
     private func send(_ model: AssistantModel) {
         inputFocused = false
+        if speech.state == .listening {
+            model.input = Self.merge(model.input, speech.finish())
+        }
         Task { await model.send() }
+    }
+
+    /// Something to send: typed text, or words being dictated right now.
+    private func canSend(_ model: AssistantModel) -> Bool {
+        let dictating = speech.state == .listening && !speech.transcript.isEmpty
+        return (!model.input.isEmpty || dictating) && model.phase != .streaming
+    }
+
+    /// Dictation appends to the field's text as one message ("near Lola
+    /// 42" + "At 7 PM" → "near Lola 42 at 7 PM").
+    static func merge(_ existing: String, _ dictated: String) -> String {
+        TranscriptJoiner.join([existing, dictated])
     }
 }
 

@@ -10,27 +10,28 @@
 import { randomUUID } from "node:crypto";
 
 import type { AppDb } from "../../db.js";
-import { coveredCitiesSentence } from "../../providers/registry.js";
+import { z } from "zod";
+
+import { coveredCitiesSentence, providerForCity } from "../../providers/registry.js";
 import { explainDecision } from "../explanations.js";
 import type { GarageProvider } from "../garage/garageProvider.js";
-import type { GeocoderProvider } from "./geocoder.js";
-import { metersBetween, metroForPoint } from "./geocoder.js";
+import type { GeocodeResult, GeocoderProvider } from "./geocoder.js";
+import { homeMetroForPoint, metersBetween, metroForPoint } from "./geocoder.js";
+import { assumptionsFor } from "./clarify.js";
+import { choiceLabel, choiceReply, classifyPlaceMatches, nameTokens } from "./placeMatch.js";
 import type { ModelClient, ModelUsage } from "./loop.js";
 import { easternIso, parseEasternTime } from "../hours.js";
-import type { HoursInterval } from "../hours.js";
 import type { LinkWallet } from "../link/linkWallet.js";
 import type { PolicyService } from "../policy.js";
-import { priceStay } from "../quote.js";
 import { spentToday } from "../sessions.js";
-import type { CandidateFetcher } from "../zoneLookup.js";
-import { lookupRadiusM, resolveCandidates } from "../zoneLookup.js";
-import { applyObservedToCandidates } from "../zoneTermsObserved.js";
+import type { CandidateFetcher, NearbyZoneFetcher } from "../zoneLookup.js";
 import { currentTimeLine } from "./loop.js";
 import {
   MODEL_PLAN_JSON_SCHEMA,
   itineraryTotalUsd,
   orderStopsByArrival,
   planSchema,
+  recommendationReason,
 } from "./plans.js";
 import type {
   AssistantPlanBody,
@@ -40,13 +41,17 @@ import type {
   SingleSpotPlan,
 } from "./plans.js";
 import type { GarageOption } from "../garage/garageProvider.js";
-import type { StayPrice } from "../quote.js";
-import type { Candidate } from "../zoneLookup.js";
+import type { StreetOption, StreetSearch } from "./streetOptions.js";
+import { DEFAULT_STREET_RADIUS_M, streetOptionsNear, walkMinutesFor } from "./streetOptions.js";
 
 export interface AssistantDeps {
   db: AppDb;
   policy: PolicyService;
   findCandidates: CandidateFetcher;
+  /** Zones with street names and curb geometry (/zones/near's fetcher):
+   * street options within a walk of a destination name their street and
+   * pin the nearest curb. Absent → findCandidates, pinned at the point. */
+  findNearbyZones?: NearbyZoneFetcher | undefined;
   garage: GarageProvider;
   /** Named-place geocoding (Boston/NYC biased). Absent → geocode_place
    * answers "geocoding not configured" and the model uses coordinates or
@@ -63,9 +68,15 @@ export interface AssistantDeps {
 export interface StreetQuote {
   zoneId: string;
   costUsd: number;
-  /** The point quote_street was asked about — the option's map pin. */
+  /** The option's map pin: the curb nearest the destination (the quoted
+   * point, for a quote stored before street search had geometry). */
   lat?: number | undefined;
   lng?: number | undefined;
+  /** The rest of the street search's option — what the card shows. */
+  option?: StreetOption | undefined;
+  /** The window the quote priced: its start (ET ISO) and the stay asked for. */
+  startsAt?: string | undefined;
+  stayMinutes?: number | undefined;
 }
 
 /** The place geocode_place resolved — the card's destination pin. */
@@ -99,16 +110,64 @@ export interface ToolContext {
   geocode?: GeocodedPlace | undefined;
   /** The latest search_garages. */
   garageSearch?: GarageSearchStamp | undefined;
+  /** This turn's ambiguous place matches, if a search found several — the
+   * suggestions the loop offers when the model asks in prose instead of
+   * calling ask_user. */
+  placeChoices?: Suggestion[] | undefined;
   /** Model calls a tool makes on its own (explain_decision's phrasing)
    * report here, so the turn's accounting row — and the daily spend cap
    * that reads it — counts them too. */
   onModelUsage?: ((usage: ModelUsage) => void) | undefined;
 }
 
-/** What a tool hands back to the loop. `endTurn` is propose_plan's exit. */
+/** One tappable answer to a clarifying question: the chip's text and the
+ * message it sends. */
+export interface Suggestion {
+  label: string;
+  reply: string;
+}
+
+/** A clarifying question with its tappable answers — ask_user's exit. */
+export interface Ask {
+  question: string;
+  suggestions: Suggestion[];
+}
+
+/** What a tool hands back to the loop. `endTurn` is propose_plan's exit,
+ * `ask` is ask_user's; either ends the turn. */
 export interface ToolOutcome {
   result: unknown;
   endTurn?: { planId: string; plan: AssistantPlanBody };
+  ask?: Ask;
+}
+
+const askSchema = z.object({
+  question: z.string().min(1).max(300),
+  suggestions: z
+    .array(z.object({ label: z.string().min(1).max(60), reply: z.string().min(1).max(200) }))
+    .min(2)
+    .max(4),
+});
+
+/** "LoLa 42, Seaport" — a found place as the card's destination label;
+ * a source that gives no name keeps its own display name. */
+function placeLabel(place: GeocodeResult): string {
+  if (!place.name) return place.displayName;
+  return place.area && place.area !== place.name ? `${place.name}, ${place.area}` : place.name;
+}
+
+/** What the model sees of a found place. */
+function placeSummary(place: GeocodeResult) {
+  return {
+    lat: place.lat,
+    lng: place.lng,
+    displayName: placeLabel(place),
+    name: place.name ?? null,
+    address: place.address ?? null,
+    area: place.area ?? null,
+    kind: place.kind ?? null,
+    city: place.city,
+  };
 }
 
 export const CONFIRMATION_TTL_MS = 10 * 60_000;
@@ -118,7 +177,7 @@ export const CONFIRMATION_TTL_MS = 10 * 60_000;
 export const TOOL_DEFINITIONS = [
   {
     name: "geocode_place",
-    description: `Resolve a NAMED place or area to coordinates, biased to the cities ParkAgent covers (${coveredCitiesSentence()}). Call this FIRST whenever the user names a street, neighborhood, or landmark instead of relying on their current location. Returns up to 3 matches, best first, each with lat/lng, a display name, and which city it's in. Then pass the chosen lat/lng to quote_street or search_garages. Empty results mean the place isn't in a city we cover.`,
+    description: `Resolve a NAMED place to coordinates — a restaurant, bar, venue, business, hotel, landmark, street, or neighborhood — biased to the phone's city among the cities ParkAgent covers (${coveredCitiesSentence()}). Call this FIRST whenever the user names a place instead of relying on their current location, passing their words including any area they named (e.g. 'Lola 42 Seaport'). Answers: found with match "exact" → use place.lat/lng; match "closest" → the NAME wasn't found, only the nearest thing (tell the user); ambiguous with choices → call ask_user with those choices; found:false → couldn't find it. Then pass the place's lat/lng to quote_street or search_garages.`,
     input_schema: {
       type: "object" as const,
       additionalProperties: false,
@@ -127,7 +186,7 @@ export const TOOL_DEFINITIONS = [
         query: {
           type: "string",
           description:
-            "The named place: a street, neighborhood, or landmark, e.g. 'Newbury Street' or 'SoHo'",
+            "The named place in the user's words, with any area they named: e.g. 'Lola 42 Seaport', 'Moo steakhouse Seaport', 'Newbury Street', 'SoHo'",
         },
         city: {
           type: "string",
@@ -165,8 +224,7 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: "quote_street",
-    description:
-      "Quote metered street parking at a point: nearest zone terms and the cost of a stay of the given duration starting at the given time. Uses the same zone data and pricing as automatic payments.",
+    description: `Street parking within a walk of a point (the destination, or the phone): every metered block within radius_m (default ${DEFAULT_STREET_RADIUS_M} m, about a ${walkMinutesFor(DEFAULT_STREET_RADIUS_M)}-minute walk), each priced for the stay and described for THAT window — free (e.g. "Free after 6 PM"), metered then free, or metered with its rate and max stay — cheapest first, with the walk from the point. Uses the same zone data and pricing as automatic payments. found:false means no metered block within the radius: say that, with the radius.`,
     input_schema: {
       type: "object" as const,
       additionalProperties: false,
@@ -176,6 +234,12 @@ export const TOOL_DEFINITIONS = [
         lng: { type: "number" },
         duration_minutes: { type: "integer", minimum: 1, maximum: 720 },
         when: { type: "string", description: "ISO start time of the stay" },
+        radius_m: {
+          type: "integer",
+          minimum: 100,
+          maximum: 800,
+          description: `Walking radius in metres (default ${DEFAULT_STREET_RADIUS_M})`,
+        },
       },
     },
   },
@@ -221,6 +285,36 @@ export const TOOL_DEFINITIONS = [
         plan: {
           ...MODEL_PLAN_JSON_SCHEMA,
           description: "The plan: a single_spot plan (1–3 options) or an itinerary (1–12 stops)",
+        },
+      },
+    },
+  },
+  {
+    name: "ask_user",
+    description:
+      "Ask the user ONE short clarifying question with 2–4 tappable suggestions, and END your turn. Use it whenever you must ask something instead of asking in prose: which of several matching places (use geocode_place's choices: their label and reply exactly), what time, how long, or which city (only when there's no phone location). In the question, state what you already assumed.",
+    input_schema: {
+      type: "object" as const,
+      additionalProperties: false,
+      required: ["question", "suggestions"],
+      properties: {
+        question: { type: "string", description: "One short question" },
+        suggestions: {
+          type: "array",
+          minItems: 2,
+          maxItems: 4,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["label", "reply"],
+            properties: {
+              label: { type: "string", description: "The chip's text, a few words" },
+              reply: {
+                type: "string",
+                description: "The message sent when the user taps it, in their voice",
+              },
+            },
+          },
         },
       },
     },
@@ -289,7 +383,9 @@ function num(v: unknown): number {
 /** Fill each street option's missing zoneId from the conversation's
  * quotes: a quoted zone the option's id names (prod's sonnet-5 put the
  * zone there), else the only zone quoted, else the only zone quoted at
- * the option's price. Anything else is ambiguous — the model must say. */
+ * the option's price, else the only quoted street the option's label
+ * names ("Seaport Blvd — free after 6 PM" — a street search quotes several
+ * $0 blocks at once). Anything else is ambiguous — the model must say. */
 export function groundStreetOptions(
   options: SingleSpotOption[],
   quotes: StreetQuote[],
@@ -304,13 +400,22 @@ export function groundStreetOptions(
     const atPrice = new Set(
       quotes.filter((q) => Math.abs(q.costUsd - option.priceUsd) < 0.005).map((q) => q.zoneId),
     );
+    const label = option.label.toLowerCase();
+    const byStreet = new Set(
+      quotes
+        .filter((q) => q.option?.street && label.includes(q.option.street.toLowerCase()))
+        .filter((q) => Math.abs(q.costUsd - option.priceUsd) < 0.005)
+        .map((q) => q.zoneId),
+    );
     const zoneId = zones.has(option.id)
       ? option.id
       : zones.size === 1
         ? [...zones][0]
         : atPrice.size === 1
           ? [...atPrice][0]
-          : null;
+          : byStreet.size === 1
+            ? [...byStreet][0]
+            : null;
     if (!zoneId) return { ok: false, optionId: option.id };
     grounded.push({ ...option, zoneId });
   }
@@ -319,17 +424,6 @@ export function groundStreetOptions(
 
 const TIME_FORMAT_HINT =
   "Send times as ISO 8601 with the UTC offset, e.g. 2026-09-26T18:00:00-04:00.";
-
-/** What a street stay costs at a point and window — found or not. */
-type StreetPrice =
-  | { found: false }
-  | {
-      found: true;
-      zone: Candidate & { termsSource?: "observed" | "dataset" };
-      price: StayPrice;
-      clampedMinutes: number;
-      ambiguous: boolean;
-    };
 
 /**
  * An itinerary stop priced by the server. The client's costUsd, zoneId,
@@ -428,6 +522,8 @@ export class AssistantTools {
           return await this.buildItinerary(ctx, input as Record<string, unknown>);
         case "propose_plan":
           return await this.proposePlan(ctx, input as Record<string, unknown>);
+        case "ask_user":
+          return await this.askUser(ctx, input);
         case "book_garage":
           return await this.bookGarage(ctx, input as Record<string, unknown>);
         case "start_session":
@@ -497,10 +593,25 @@ export class AssistantTools {
     }
     const cityRaw = input["city"];
     // Bias order: the model's explicit choice, else the metro the phone
-    // is in — "Newbury Street" from a Boston phone searches Boston first.
-    const phoneMetro = ctx.location ? metroForPoint(ctx.location.lat, ctx.location.lng) : null;
+    // is in or near — "Seaport" from a Braintree phone searches Boston
+    // first, and never comes back as a which-city question.
+    const phoneMetro = ctx.location ? homeMetroForPoint(ctx.location.lat, ctx.location.lng) : null;
     const city = cityRaw === "nyc" || cityRaw === "bos" ? cityRaw : (phoneMetro ?? undefined);
-    const outcome = await this.deps.geocoder.geocode({ query, ...(city ? { city } : {}) }, 3);
+    // Search around the phone only when it's inside that metro; a phone
+    // outside the box (Braintree) searches around the city's center.
+    const near =
+      ctx.location && city && metroForPoint(ctx.location.lat, ctx.location.lng) === city
+        ? ctx.location
+        : undefined;
+    const outcome = await this.deps.geocoder.geocode(
+      {
+        query,
+        ...(city ? { city } : {}),
+        ...(near ? { near } : {}),
+        ...(ctx.location ? { userLocation: ctx.location } : {}),
+      },
+      5,
+    );
     if (!outcome.ok) {
       await this.audit(ctx, "geocode_place", input, "geocode_error", { reason: outcome.reason });
       return {
@@ -511,25 +622,91 @@ export class AssistantTools {
         },
       };
     }
-    if (outcome.results.length === 0) {
+    const phoneCity = phoneMetro ? providerForCity(phoneMetro)?.cityDisplayName : undefined;
+    const match = classifyPlaceMatches(query, outcome.results);
+    if (match.kind === "none") {
       await this.audit(ctx, "geocode_place", input, "no_match", { query });
       return {
         result: {
           found: false,
-          instruction: `That place isn't in ${coveredCitiesSentence()}, the cities ParkAgent covers. Say so; don't fall back to the user's current location for a place we can't place.`,
+          instruction:
+            `Couldn't find "${query}" in ${coveredCitiesSentence()}. Tell the user plainly and ask for its street address or a cross street. ` +
+            "Never substitute the phone's location or a neighborhood center for a place you couldn't find" +
+            (phoneCity
+              ? `, and don't ask which city — the phone is in or near ${phoneCity}.`
+              : "."),
         },
       };
     }
-    await this.audit(ctx, "geocode_place", input, "ok", {
+    if (match.kind === "ambiguous") {
+      const choices = match.choices.map((place) => ({
+        label: choiceLabel(place),
+        reply: choiceReply(place),
+        lat: place.lat,
+        lng: place.lng,
+      }));
+      ctx.placeChoices = choices.map(({ label, reply }) => ({ label, reply }));
+      await this.audit(ctx, "geocode_place", input, "ambiguous", { query, choices });
+      return {
+        result: {
+          found: true,
+          ambiguous: true,
+          choices,
+          instruction: `Several places match "${query}". Call ask_user now with one suggestion per choice, using each choice's label and reply exactly. Don't pick one yourself.`,
+        },
+      };
+    }
+    const place = match.place;
+    const summary = placeSummary(place);
+    // A later search that found the place supersedes an earlier ambiguous one.
+    ctx.placeChoices = undefined;
+
+    await this.audit(ctx, "geocode_place", input, match.nameMatched ? "ok" : "closest_only", {
       query,
       count: outcome.results.length,
-      top: outcome.results[0],
+      top: summary,
+      source: place.source ?? null,
     });
-    const top = outcome.results[0]!;
     // Remember the resolved place so propose_plan can pin it as the
     // card's destination even when the model drops the optional field.
-    ctx.geocode = { lat: top.lat, lng: top.lng, label: top.displayName };
-    return { result: { found: true, results: outcome.results } };
+    ctx.geocode = { lat: place.lat, lng: place.lng, label: summary.displayName };
+    const named = nameTokens(query).length > 0 ? `"${query}"` : "that place";
+    return {
+      result: {
+        found: true,
+        match: match.nameMatched ? "exact" : "closest",
+        place: summary,
+        // The shape earlier turns stored (groundingIn reads results[0]).
+        results: [summary],
+        ...(match.nameMatched
+          ? {}
+          : {
+              instruction:
+                `No place called ${named} was found — the closest result is ${summary.displayName}` +
+                `${place.kind === "area" ? " (an area, not the place they named)" : ""}. ` +
+                `Tell the user you couldn't find ${named} and that you're searching around ${summary.displayName} instead, or ask for the address. ` +
+                `Never present ${summary.displayName} as the place they named.`,
+            }),
+      },
+    };
+  }
+
+  /** A clarifying question with tappable answers; ends the turn like
+   * propose_plan. */
+  private async askUser(ctx: ToolContext, input: unknown): Promise<ToolOutcome> {
+    const parsed = askSchema.safeParse(input);
+    if (!parsed.success) {
+      return {
+        result: {
+          error: "invalid ask",
+          issues: parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).slice(0, 6),
+        },
+      };
+    }
+    await this.audit(ctx, "ask_user", input, "asked", {
+      suggestions: parsed.data.suggestions.length,
+    });
+    return { result: { presented: true }, ask: parsed.data };
   }
 
   private async searchGarages(
@@ -642,37 +819,29 @@ export class AssistantTools {
 
   /**
    * The one street pricing path — quote_street, build_itinerary, and the
-   * re-pricing of an edited itinerary all come through here. The nearest
-   * zone within 25 m, provider-observed terms over the dataset (e.g.
-   * Boston's real "Max 5 Hr" vs the data's assumed 2-hour cap — the same
-   * override /parked and session start apply), the stay clamped to the
-   * zone's max, priced through the ladder at that time.
+   * re-pricing of an edited itinerary all come through here: every zone
+   * within a walk of the point (streetOptions.ts), provider-observed terms
+   * over the dataset (e.g. Boston's real "Max 5 Hr" vs the data's assumed
+   * 2-hour cap — the same override /parked and session start apply),
+   * each stay priced through the ladder for its window. The first option
+   * is the one an itinerary stop takes: the cheapest, then the nearest.
    */
-  private async priceStreet(
+  private streetSearch(
     lat: number,
     lng: number,
     when: Date,
     minutes: number,
-  ): Promise<StreetPrice> {
-    const policy = this.deps.policy.get();
-    const raw = await this.deps.findCandidates({ lat, lng, radiusM: lookupRadiusM(25) });
-    const found = await applyObservedToCandidates(this.deps.db, raw);
-    const resolution = resolveCandidates(found, when, policy.respect_enforcement_hours);
-    if (resolution.kind === "unknown") return { found: false };
-    const zone = resolution.nearest;
-    const clampedMinutes = Math.min(minutes, zone.maxStayMinutes ?? minutes);
-    const price = priceStay(
+    radiusM?: number,
+  ): Promise<StreetSearch> {
+    return streetOptionsNear(
       {
-        city: zone.city,
-        rateFirstHourUsd: zone.rateFirstHourUsd,
-        rateAdditionalHourUsd: zone.rateAdditionalHourUsd,
-        hours: zone.hours as HoursInterval[],
+        db: this.deps.db,
+        policy: this.deps.policy.get(),
+        findCandidates: this.deps.findCandidates,
+        findNearbyZones: this.deps.findNearbyZones,
       },
-      policy,
-      when,
-      clampedMinutes,
+      { lat, lng, when, minutes, radiusM },
     );
-    return { found: true, zone, price, clampedMinutes, ambiguous: resolution.kind === "disagree" };
   }
 
   /** The garage search build_itinerary runs for a stop's window, in the
@@ -754,13 +923,14 @@ export class AssistantTools {
       }
       repriced.push(stop.id);
       if (stop.choice === "street") {
-        const priced = await this.priceStreet(stop.lat, stop.lng, arrivalAt, stop.durationMinutes);
-        if (!priced.found) {
+        const best = (await this.streetSearch(stop.lat, stop.lng, arrivalAt, stop.durationMinutes))
+          .options[0];
+        if (!best) {
           stops.push(carried(true));
           estimates.push({ id: stop.id, reason: "no_zone" });
           continue;
         }
-        stops.push({ ...base, costUsd: priced.price.totalUsd, zoneId: priced.zone.zoneId });
+        stops.push({ ...base, costUsd: best.costUsd, zoneId: best.zoneId });
         continue;
       }
       const garages = await this.searchGarageWindow(
@@ -801,35 +971,61 @@ export class AssistantTools {
     const minutes = num(input["duration_minutes"]);
     // Readable by construction: pastWindowError bounced anything else.
     const when = parseEasternTime(String(input["when"]))!;
-    const priced = await this.priceStreet(lat, lng, when, minutes);
-    if (!priced.found) {
-      await this.audit(ctx, "quote_street", input, "unknown_zone", {});
-      return { result: { found: false, reason: "no metered zone within 25 m of that point" } };
+    const search = await this.streetSearch(
+      lat,
+      lng,
+      when,
+      minutes,
+      input["radius_m"] !== undefined ? num(input["radius_m"]) : undefined,
+    );
+    const radiusText = `${search.radiusM} m (about a ${walkMinutesFor(search.radiusM)}-minute walk)`;
+    if (search.options.length === 0) {
+      await this.audit(ctx, "quote_street", input, "unknown_zone", { radiusM: search.radiusM });
+      return {
+        result: {
+          found: false,
+          radiusM: search.radiusM,
+          reason: `No metered street parking in our data within ${radiusText} of that point.`,
+          instruction: `Say there's no metered street parking within ${radiusText} of the place — say the radius — and still offer garages.`,
+        },
+      };
     }
-    const { zone, price } = priced;
-    const result = {
-      found: true,
-      zoneId: zone.zoneId,
-      city: zone.city,
-      zoneNumber: zone.providerZoneNumber || null,
-      maxStayMinutes: zone.maxStayMinutes,
-      ambiguousWithOtherSide: priced.ambiguous,
-      clampedMinutes: priced.clampedMinutes,
-      costUsd: price.totalUsd,
-      chargedMinutes: price.chargedMinutes,
-      freePeriod: price.totalUsd === 0,
-      // "observed" when a driver-reported provider term (rate/max stay)
-      // overrode the dataset for this zone number.
-      ...(zone.termsSource === "observed" ? { termsSource: "observed" as const } : {}),
+    const window = {
+      startsAt: easternIso(when),
+      endsAt: easternIso(new Date(when.getTime() + minutes * 60_000)),
     };
     await this.audit(ctx, "quote_street", input, "ok", {
-      zoneId: zone.zoneId,
-      costUsd: price.totalUsd,
-      ...(zone.termsSource === "observed" ? { termsSource: "observed" } : {}),
+      radiusM: search.radiusM,
+      zonesInRadius: search.zonesInRadius,
+      options: search.options.map((o) => ({
+        zoneId: o.zoneId,
+        costUsd: o.costUsd,
+        state: o.state,
+      })),
     });
-    // The quoted point becomes the street option's map pin.
-    (ctx.streetQuotes ??= []).push({ zoneId: zone.zoneId, costUsd: price.totalUsd, lat, lng });
-    return { result };
+    // Each option is grounding for a street card: its zone, price, and pin
+    // (the curb nearest the destination).
+    for (const option of search.options) {
+      (ctx.streetQuotes ??= []).push({
+        zoneId: option.zoneId,
+        costUsd: option.costUsd,
+        lat: option.lat,
+        lng: option.lng,
+        option,
+        startsAt: window.startsAt,
+        stayMinutes: minutes,
+      });
+    }
+    return {
+      result: {
+        found: true,
+        radiusM: search.radiusM,
+        window,
+        options: search.options,
+        instruction:
+          "Offer the street options that fit (usually the best one or two) with their summary; each option's zoneId goes on its plan option. A free block is $0.00.",
+      },
+    };
   }
 
   private async buildItinerary(
@@ -868,12 +1064,18 @@ export class AssistantTools {
         arrivalAt,
         minutes,
       );
+      // The model picks street vs garage per stop from the best street
+      // option or two; five per stop across a 12-stop day is tokens, not
+      // information.
+      const streetResult = street.result as { options?: unknown[] };
       out.push({
         label: stop["label"],
         address: stop["address"] ?? "",
         arrival,
         durationMinutes: minutes,
-        street: street.result,
+        street: Array.isArray(streetResult.options)
+          ? { ...streetResult, options: streetResult.options.slice(0, 2) }
+          : street.result,
         garage: garages.ok ? (garages.options[0] ?? null) : null,
         ...(garages.ok ? {} : { garageSearchUnavailable: true, garageSearchError: garages.error }),
       });
@@ -1038,6 +1240,11 @@ export class AssistantTools {
               ...o,
               garageOptionId: cached.id,
               priceUsd: cached.priceUsd,
+              // The walk and entry the recommendation reason compares are
+              // the search's, not the model's.
+              walkMinutes: cached.walkMinutes,
+
+              ...(cached.entryType ? { entryType: cached.entryType } : {}),
               provider: cached.provider,
               deepLink: cached.deepLink,
               payOnArrival: false,
@@ -1057,18 +1264,69 @@ export class AssistantTools {
           const pin = [...(ctx.streetQuotes ?? [])]
             .reverse()
             .find((q) => q.zoneId === o.zoneId && q.lat !== undefined && q.lng !== undefined);
+          // The street search's own facts for this zone are server truth,
+          // as a garage's price and link are: where the block is, the walk,
+          // its street, hours, and max stay always; its price, state line,
+          // and meter/fee split only when the quote was for THIS stay — a
+          // "make it 90 minutes" proposed without re-quoting keeps the
+          // user's stay rather than an older quote's.
+          const quote = [...(ctx.streetQuotes ?? [])]
+            .reverse()
+            .find((q) => q.zoneId === o.zoneId && q.option !== undefined);
+          const quoted = quote?.option;
+          // The stay the user asked for, or the max the meter allows (the
+          // quote's clampedMinutes, which the model often proposes).
+          // And the same start: the option's, or — with none — now (a quote
+          // for 7 PM must not price, or describe, a Confirm-now option).
+          const quoteStart = quote?.startsAt ? parseEasternTime(quote.startsAt) : null;
+          const sameStart =
+            quoteStart === null
+              ? starts === null
+              : starts === null
+                ? Math.abs(quoteStart.getTime() - at) <= 15 * 60_000
+                : quoteStart.getTime() === starts.getTime();
+          const sameStay =
+            quote !== undefined &&
+            (quote.stayMinutes === o.durationMinutes ||
+              quoted?.clampedMinutes === o.durationMinutes) &&
+            sameStart;
           return {
             ...rest,
             // One canonical form, so the phone parses what the server did.
             ...(starts ? { startsAt: easternIso(starts) } : {}),
             payOnArrival: future,
             ...(o.lat === undefined && pin ? { lat: pin.lat!, lng: pin.lng! } : {}),
+            ...(quoted
+              ? {
+                  lat: quoted.lat,
+                  lng: quoted.lng,
+                  walkMinutes: quoted.walkMinutes,
+                  ...(quoted.street ? { street: quoted.street } : {}),
+                  zoneNumber: quoted.zoneNumber,
+                  ratePerHourUsd: quoted.ratePerHourUsd,
+                  hoursToday: quoted.hoursToday,
+                  maxStayMinutes: quoted.maxStayMinutes,
+                }
+              : {}),
+            ...(quoted && sameStay
+              ? {
+                  priceUsd: quoted.costUsd,
+                  streetState: quoted.state,
+                  streetSummary: quoted.summary,
+                  priceBreakdown: { meterUsd: quoted.meterUsd, feeUsd: quoted.feeUsd },
+                  exceedsMaxStay: quoted.exceedsMaxStay,
+                }
+              : {}),
           };
         }),
         ...(plan.destination === undefined && ctx.geocode ? { destination: ctx.geocode } : {}),
       };
-      // Provenance is server truth, never model text.
+      // Provenance and the recommendation's reason are server truth, never
+      // model text: the reason reads the final prices and walks.
       delete plan.provenance;
+      delete plan.recommendedReason;
+      const reason = recommendationReason(plan.options);
+      if (reason) plan.recommendedReason = reason;
       if (shownProviders.size > 0 && ctx.garageSearch) {
         plan.provenance = {
           provider: [...shownProviders].sort().join("+"),
@@ -1076,6 +1334,11 @@ export class AssistantTools {
         };
       }
     }
+    // What the plan assumed — server truth from the plan itself, stated
+    // on every card however the model phrased its reply.
+    delete plan.assumptions;
+    const assumptions = assumptionsFor(plan, this.now());
+    if (assumptions) plan = { ...plan, assumptions };
     const planId = randomUUID();
     await this.deps.db.assistantPlan.create({
       data: {

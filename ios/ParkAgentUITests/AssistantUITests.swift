@@ -60,6 +60,79 @@ final class AssistantUITests: ParkAgentUITestCase {
         attachScreenshot(of: app, named: "assistant-street-confirmed")
     }
 
+    /// A street option says what the block is doing during the stay, in
+    /// the street search's own words — not the model's "meter" blurb.
+    func testStreetOptionSaysWhatTheBlockIsDoing() {
+        let app = openAssistant("singleSpot")
+        ask(app, "Park me near the MFA for 90 minutes")
+        let detail = element(app, "assistant.optionDetail.opt-street")
+        XCTAssertTrue(detail.waitForExistence(timeout: 10))
+        XCTAssertEqual(detail.label, "Metered until 8 PM, then free on Boylston St — 2 min walk")
+    }
+
+    /// Choosing an option: a row tap and a pin tap are the same selection.
+    /// The selected pin is highlighted and every other pin dims — the
+    /// recommended one included, which keeps its color only while nothing
+    /// else is chosen — and the selected option's detail card opens.
+    func testSelectingAnOptionSyncsRowsAndPins() {
+        let app = openAssistant("singleSpot")
+        ask(app, "Park me near the MFA for 90 minutes")
+        XCTAssertTrue(element(app, "assistant.singleSpotPlan").waitForExistence(timeout: 10))
+
+        let streetPin = element(app, "assistant.mapPin.opt-street")
+        let deckPin = element(app, "assistant.mapPin.opt-garage")
+        let valetPin = element(app, "assistant.mapPin.opt-garage-2")
+        XCTAssertTrue(streetPin.waitForExistence(timeout: 5))
+        // Nothing chosen: the recommended pin stands out, and the card says why.
+        XCTAssertEqual(streetPin.value as? String, "recommended")
+        XCTAssertEqual(deckPin.value as? String, "normal")
+        XCTAssertEqual(
+            element(app, "assistant.recommendedReason").label,
+            "Cheapest and closest — $4.10, 2 min walk"
+        )
+        XCTAssertFalse(element(app, "assistant.detail.checkout.opt-garage").exists)
+
+        // Row → pin.
+        scrollTo(app, "assistant.optionRow.opt-garage").tap()
+        waitForValue(of: deckPin, toBe: "selected")
+        XCTAssertEqual(streetPin.value as? String, "dimmed", "The recommended pin gives up its color")
+        XCTAssertEqual(valetPin.value as? String, "dimmed")
+        XCTAssertEqual(element(app, "assistant.optionRow.opt-garage").value as? String, "selected")
+        let deckCheckout = scrollTo(app, "assistant.detail.checkout.opt-garage")
+        XCTAssertEqual(
+            deckCheckout.label,
+            "Checkout finishes on SpotHero; your pass lives in your SpotHero account."
+        )
+        XCTAssertEqual(
+            element(app, "assistant.detail.walk.opt-garage").label,
+            "3 min walk from Museum of Fine Arts"
+        )
+        attachScreenshot(of: app, named: "assistant-option-selected")
+
+        // Pin → row: the valet's pin moves the selection and the card.
+        scrollTo(app, "assistant.mapPin.opt-garage-2").tap()
+        waitForValue(of: valetPin, toBe: "selected")
+        XCTAssertEqual(deckPin.value as? String, "dimmed")
+        XCTAssertEqual(element(app, "assistant.optionRow.opt-garage-2").value as? String, "selected")
+        XCTAssertEqual(element(app, "assistant.optionRow.opt-garage").value as? String, "")
+        XCTAssertTrue(element(app, "assistant.detail.entry.opt-garage-2").waitForExistence(timeout: 3))
+        XCTAssertFalse(element(app, "assistant.detail.checkout.opt-garage").exists, "One card open")
+
+        // The same pin again clears the choice: the recommendation is back.
+        scrollTo(app, "assistant.mapPin.opt-garage-2").tap()
+        waitForValue(of: streetPin, toBe: "recommended")
+        XCTAssertEqual(valetPin.value as? String, "normal")
+    }
+
+    private func waitForValue(of element: XCUIElement, toBe expected: String, timeout: TimeInterval = 5) {
+        let predicate = NSPredicate(format: "value == %@", expected)
+        let wait = XCTNSPredicateExpectation(predicate: predicate, object: element)
+        XCTAssertEqual(
+            XCTWaiter.wait(for: [wait], timeout: timeout), .completed,
+            "\(element.identifier) value: expected \(expected), got \(String(describing: element.value))"
+        )
+    }
+
     /// The results layout: ONE hero with the only coral action, the rest
     /// as compact rows that stay collapsed until tapped, a mini map, and
     /// the provenance note once under the list.
@@ -429,6 +502,133 @@ final class AssistantUITests: ParkAgentUITestCase {
         XCTAssertTrue(userMessage.waitForExistence(timeout: 5))
         XCTAssertEqual(userMessage.label, asked)
         XCTAssertFalse(element(app, "assistant.emptyState").exists)
+    }
+
+    /// A name with two locations is a question with one chip per place —
+    /// never a guess — and tapping a chip sends that place as the user's
+    /// own words and gets the plan (the device test's "Moo steakhouse").
+    func testAmbiguousPlaceOffersTappableChoices() {
+        let app = openAssistant("placeChoices")
+        ask(app, "near Moo steakhouse")
+
+        let seaport = element(app, "assistant.suggestion.1")
+        XCTAssertTrue(seaport.waitForExistence(timeout: 10))
+        XCTAssertEqual(element(app, "assistant.suggestion.0").label, "Mooo.... · 15 Beacon St, Beacon Hill")
+        XCTAssertEqual(seaport.label, "Mooo.... · 49 Melcher St, Seaport")
+        XCTAssertFalse(element(app, "assistant.singleSpotPlan").exists, "Asked, not guessed")
+        attachScreenshot(of: app, named: "assistant-place-choices")
+
+        seaport.tap()
+        let sent = app.descendants(matching: .any).matching(NSPredicate(
+            format: "identifier == 'assistant.userMessage' AND label == %@", "Mooo...., 49 Melcher St"
+        )).firstMatch
+        XCTAssertTrue(sent.waitForExistence(timeout: 5), "The chip sends its reply as the user's message")
+        XCTAssertTrue(element(app, "assistant.singleSpotPlan").waitForExistence(timeout: 10))
+        XCTAssertFalse(
+            element(app, "assistant.suggestion.0").exists,
+            "An answered question's chips go away"
+        )
+    }
+
+    /// Saved conversations: newest first, titled by the first request, with
+    /// what each came to; opening one shows its transcript and plans
+    /// read-only, and the next message continues it; swipe deletes one;
+    /// "Delete all" clears them.
+    func testHistoryListsOpensResumesAndDeletes() {
+        let app = openAssistant("singleSpot")
+        element(app, "assistant.historyButton").tap()
+
+        let fenway = element(app, "assistant.history.row.mock-history-fenway")
+        let mfa = element(app, "assistant.history.row.mock-history-mfa")
+        XCTAssertTrue(fenway.waitForExistence(timeout: 5))
+        XCTAssertTrue(mfa.exists)
+        XCTAssertLessThan(fenway.frame.minY, mfa.frame.minY, "Newest first")
+        XCTAssertTrue(mfa.label.hasPrefix("Park me near the MFA for 90 minutes"), "got: \(mfa.label)")
+        XCTAssertTrue(mfa.label.contains("Street — Boylston St · $4.10"), "got: \(mfa.label)")
+        XCTAssertEqual(
+            element(app, "assistant.history.retention").label,
+            "Conversations are kept for 90 days after you last use them."
+        )
+        attachScreenshot(of: app, named: "assistant-history")
+
+        // Open: the transcript, and its plan read-only — no Confirm on a
+        // plan whose prices were for then.
+        XCTAssertFalse(element(app, "assistant.storedPlan.mock-plan-single").exists)
+        mfa.tap()
+        let stored = element(app, "assistant.storedPlan.mock-plan-single")
+        XCTAssertTrue(stored.waitForExistence(timeout: 5))
+        XCTAssertTrue(stored.label.contains("Chosen"), "The option the user chose is marked")
+        XCTAssertFalse(
+            app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'assistant.confirm.'")).firstMatch.exists
+        )
+        let opened = app.descendants(matching: .any).matching(NSPredicate(
+            format: "identifier == 'assistant.userMessage' AND label == %@", "Park me near the MFA for 90 minutes"
+        )).firstMatch
+        XCTAssertTrue(opened.exists)
+
+        // Resume: the next message continues this conversation — it's the
+        // newest in the list afterwards.
+        ask(app, "make it two hours")
+        XCTAssertTrue(element(app, "assistant.singleSpotPlan").waitForExistence(timeout: 10))
+        element(app, "assistant.historyButton").tap()
+        XCTAssertTrue(mfa.waitForExistence(timeout: 5))
+        XCTAssertLessThan(mfa.frame.minY, fenway.frame.minY, "The resumed conversation moved to the top")
+
+        // Swipe to delete one.
+        fenway.swipeLeft()
+        app.buttons["Delete"].firstMatch.tap()
+        XCTAssertTrue(fenway.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(mfa.exists)
+
+        // Delete all, confirmed.
+        element(app, "assistant.history.deleteAll").tap()
+        element(app, "assistant.history.confirmDeleteAll").tap()
+        XCTAssertTrue(element(app, "assistant.history.empty").waitForExistence(timeout: 5))
+        XCTAssertFalse(mfa.exists)
+    }
+
+    /// A plan made in chat shows in Activity, and its detail opens the
+    /// conversation it came from.
+    func testActivityOpensTheConversationAPlanCameFrom() {
+        let app = XCUIApplication()
+        app.launchArguments = [
+            "-resetState", "YES", "-useMockAPI", "YES", "-uiTesting", "YES",
+            "-skipOnboarding", "YES", "-signedIn", "YES", "-fixedNow", Self.fixedNow,
+        ]
+        app.launch()
+        app.tabBars.buttons["Activity"].tap()
+        let row = scrollTo(app, "activity.row.plan:mock-plan-single")
+        XCTAssertTrue(row.label.contains("Boylston St"), "got: \(row.label)")
+        row.tap()
+        let open = element(app, "activityDetail.openConversation")
+        XCTAssertTrue(open.waitForExistence(timeout: 5))
+        XCTAssertFalse(element(app, "assistant.sheet").exists)
+        open.tap()
+        XCTAssertTrue(element(app, "assistant.storedPlan.mock-plan-single").waitForExistence(timeout: 5))
+        let opened = app.descendants(matching: .any).matching(NSPredicate(
+            format: "identifier == 'assistant.userMessage' AND label == %@", "Park me near the MFA for 90 minutes"
+        )).firstMatch
+        XCTAssertTrue(opened.exists)
+    }
+
+    /// A clarifying question comes with its common answers as chips, and
+    /// the plan states what it assumed.
+    func testClarifyingQuestionIsTappableAndThePlanStatesItsAssumptions() {
+        let app = openAssistant("askDuration")
+        ask(app, "park me near the MFA")
+        let twoHours = element(app, "assistant.suggestion.1")
+        XCTAssertTrue(twoHours.waitForExistence(timeout: 10))
+        XCTAssertEqual(twoHours.label, "2 hours")
+        XCTAssertFalse(element(app, "assistant.assumptions").exists, "No plan yet")
+
+        twoHours.tap()
+        let sent = app.descendants(matching: .any).matching(NSPredicate(
+            format: "identifier == 'assistant.userMessage' AND label == %@", "For 2 hours"
+        )).firstMatch
+        XCTAssertTrue(sent.waitForExistence(timeout: 5))
+        let assumptions = element(app, "assistant.assumptions")
+        XCTAssertTrue(assumptions.waitForExistence(timeout: 10))
+        XCTAssertEqual(assumptions.label, "Assuming Now–3:30 PM, near Museum of Fine Arts")
     }
 
     /// Sending puts the keyboard away and keeps the newest reply on screen.

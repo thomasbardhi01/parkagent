@@ -426,6 +426,11 @@ model Conversation {
   userId    String   @map("user_id")
   // [{role, content}] — Anthropic Messages shape, trimmed to 20 turns.
   turns     Json
+  // The first request, set once — the history list's title.
+  title     String?
+  // The readable transcript: [{role, text, at, planId?, suggestions?}].
+  // Never trimmed with `turns`; deleted with the row (90-day retention).
+  display   Json     @default("[]")
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -445,8 +450,12 @@ model AssistantPlan {
   // The structured plan exactly as proposed (options / stops / totals).
   plan      Json
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  // The user's tap: when, and which option (null for an itinerary).
+  confirmedAt       DateTime? @map("confirmed_at") @db.Timestamptz(6)
+  confirmedOptionId String?   @map("confirmed_option_id")
 
   @@index([userId, createdAt])
+  @@index([conversationId])
   @@map("assistant_plans")
 }
 

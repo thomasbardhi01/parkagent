@@ -10,11 +10,21 @@
  */
 
 import type { AppDb } from "../../db.js";
-import { coveredCitiesSentence } from "../../providers/registry.js";
+import { coveredCitiesSentence, providerForCity } from "../../providers/registry.js";
 import { nycStartOfDay } from "../hours.js";
+import { homeMetroForPoint } from "./geocoder.js";
+import { suggestionsForQuestion } from "./clarify.js";
+import {
+  appendDisplay,
+  displayFromTurns,
+  titleFrom,
+  titleFromTurns,
+  trimTurns,
+} from "./history.js";
 import type { AssistantPlanBody } from "./plans.js";
 import { TOOL_DEFINITIONS } from "./tools.js";
-import type { AssistantTools, StreetQuote, ToolContext } from "./tools.js";
+import type { StreetOption } from "./streetOptions.js";
+import type { AssistantTools, StreetQuote, Suggestion, ToolContext } from "./tools.js";
 
 /** Overridden by ASSISTANT_MODEL (legacy fallback: ANTHROPIC_MODEL). */
 export const DEFAULT_ASSISTANT_MODEL = "claude-sonnet-5";
@@ -26,7 +36,7 @@ const MAX_TOKENS = 1024;
 
 export const SYSTEM_PROMPT = `You are ParkAgent's parking assistant. You do exactly two jobs: find the user one parking spot, or plan the parking for a multi-stop day. Nothing else — for any other topic, reply with one short, friendly sentence that you only help with parking.
 
-ParkAgent pays meters in ${coveredCitiesSentence()}. Never assume which of them the user is in — the coordinates on their message say where they are, and a place outside them is one we can't help with yet.
+ParkAgent pays meters in ${coveredCitiesSentence()}. The phone location line on a message names the covered city the phone is in or near — that is the user's city unless they name another, so never ask which city then. Without that line, don't assume a city. A place outside the covered cities is one we can't help with yet.
 
 Style: terse. One or two sentences between tool calls, no filler, and never repeat a sentence you already said this turn. Use dollars with two decimals.
 
@@ -35,7 +45,10 @@ Rules you cannot break (the tools enforce them too):
 - How the tap works, so you phrase cards correctly: a garage option and a street option for RIGHT NOW get a Confirm button. A street option for a FUTURE time gets no button at all — set startsAt on the option and the card says "We'll pay automatically when you park here" (the detector pays at the curb) — that line is the card's own, so keep it out of the option's detail, which describes the spot. Don't promise to start future meters now; meters run from the moment they're paid.
 - book_garage and start_session work only with a confirmation_token from a card tap. You normally never have one; if a call is refused, propose a plan instead.
 - Quote street prices with quote_street and garages with search_garages — never invent a price, address, or availability.
-- When the user names a PLACE or area rather than "here" (a street, a neighborhood, or a landmark), call geocode_place FIRST to get that place's coordinates, then quote_street / search_garages at those coordinates — never silently use the phone's location for a named place. For garages at a named place, pass within_m: 600 so every option is walkable from it. When you geocoded a place, put it on the plan as destination {lat, lng, label} so the card can show it on a map. If geocode_place finds nothing, the place isn't in a city we cover — say so, don't substitute the current location.
+- quote_street searches every metered block within a walk of the point and says what each is doing during the stay ("Free after 6 PM on Seaport Blvd — 4 min walk", "Metered until 8 PM, then free", "$3.75/hr, 2 hr max"). Offer the best street option (or two) using its summary. Say there's no street parking ONLY when quote_street returns found:false, and then say the radius it searched.
+- When the user names a PLACE rather than "here" — a restaurant, bar, venue, business, hotel, landmark, street, or neighborhood — call geocode_place FIRST with their words (keep the area they named: "Lola 42 Seaport"), then quote_street / search_garages at the place's coordinates — never silently use the phone's location for a named place. For garages at a named place, pass within_m: 600 so every option is walkable from it. When you geocoded a place, put it on the plan as destination {lat, lng, label} so the card can show it on a map. If geocode_place returns choices, ask which one with ask_user. If its match is "closest", the name wasn't found: say so and say what you're searching instead. If it finds nothing, say you couldn't find it and ask for the address — never substitute the current location or a neighborhood center.
+- To ask the user anything, call ask_user (one short question, 2–4 tappable suggestions) — never ask in prose. Ask only when you truly can't proceed: for time or duration, assume the sensible reading (now; 2 hours) instead of asking. When you do ask, offer the common answers ("1 hour", "2 hours", "3 hours"; "Now", "Tonight at 7").
+- Always state your assumptions in one short line when you propose — the window and the place, e.g. "7:00–10:00 PM, near Lola 42, Seaport". The card shows the same line.
 - If search_garages returns garage_search_unavailable, the search FAILED — say "I couldn't check garages right now", never "no garages available", and still propose the street option. Only an empty options list means none were found. If every garage was dropped for distance, the result's nearestBeyondM says how far the closest one is — tell the user that distance ("the nearest garage is about 900 m away") rather than "none found".
 - A follow-up message edits the CURRENT plan: "cheaper?", "closer", "make it 5 instead", "add a stop at 3" refer to what you just proposed. Re-run only the tools whose inputs changed and propose the revised plan. Ask a clarifying question only when you truly cannot proceed; otherwise assume the sensible reading and say what you assumed in a few words.
 - An itinerary's total must fit the user's remaining daily budget (build_itinerary shows it). If it doesn't fit, say what to cut.
@@ -150,6 +163,10 @@ export interface AssistantResult {
   conversationId: string;
   reply: string;
   plan: { planId: string; plan: AssistantPlanBody } | null;
+  /** Tappable answers to the question the reply asks (ask_user, or the
+   * ambiguous-place choices when the model asked in prose); null when the
+   * reply asks nothing. */
+  suggestions: Suggestion[] | null;
 }
 
 export interface RunArgs {
@@ -190,6 +207,8 @@ interface QuoteContext {
   street: {
     zoneId: string;
     zoneNumber: string | null;
+    street: string | null;
+    summary: string | null;
     costUsd: number;
     minutes: number;
     startsAt: string;
@@ -253,9 +272,7 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
 
   const at = args.now?.() ?? new Date();
   const envelope = [
-    args.location
-      ? `[phone location: ${args.location.lat.toFixed(5)}, ${args.location.lng.toFixed(5)}]`
-      : null,
+    args.location ? phoneLocationLine(args.location) : null,
     // The prod bug this cures: without a clock, "tonight" became a
     // hallucinated 2024 date and SpotHero 400ed the past window.
     currentTimeLine(at),
@@ -279,6 +296,7 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
 
   const segments: string[] = [];
   let plan: AssistantResult["plan"] = null;
+  let asked: { question: string; suggestions: Suggestion[] } | null = null;
   const quotes: QuoteContext = { street: null, garages: [], minutes: null };
   let reminded = false;
   // Per-turn accounting, logged on the assistant_turn decision row.
@@ -333,16 +351,18 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
           content: JSON.stringify(outcome.result),
         });
         if (outcome.endTurn) plan = outcome.endTurn;
+        if (outcome.ask) asked = outcome.ask;
       }
       messages.push({ role: "user", content: results });
       // propose_plan ends the turn: the card carries the plan; anything
       // more the model wanted to say waits for the user's next message.
-      if (plan) break;
+      // ask_user ends it the same way — the question waits for a tap.
+      if (plan || asked) break;
     }
 
     // The model was reminded and still didn't propose: build the plan from
     // its own quotes, through the same validated/audited tool.
-    if (plan === null && (quotes.street !== null || quotes.garages.length > 0)) {
+    if (plan === null && asked === null && (quotes.street !== null || quotes.garages.length > 0)) {
       const synthesized = synthesizePlan(quotes);
       if (synthesized) {
         const outcome = await args.tools.execute(ctx, "propose_plan", { plan: synthesized });
@@ -384,23 +404,83 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
   }
 
   // Models often propose with tool calls alone (Sonnet 5 did on every
-  // live run): an empty reply left the card under a bare "…" bubble.
-  const said = scrubVerbalConfirm(joinReplySegments(segments), plan !== null);
+  // live run): an empty reply left the card under a bare "…" bubble — the
+  // one-liner states what the plan assumed. An ask_user question is part
+  // of the reply, said once.
+  const said = scrubVerbalConfirm(
+    joinReplySegments(asked ? [...segments, asked.question] : segments),
+    plan !== null,
+  );
+  const assumed = plan?.plan.assumptions;
   const reply =
     said.length > 0 || plan === null
       ? said
       : plan.plan.kind === "itinerary"
-        ? "Here's a plan for your day — review it, then Sign off."
-        : "Here are your options — tap one to go ahead.";
+        ? `Here's a plan for your day${assumed ? ` (${assumed})` : ""} — review it, then Sign off.`
+        : `Here are your options${assumed ? ` (${assumed})` : ""} — tap one to go ahead.`;
 
-  const trimmed = messages.slice(-MAX_STORED_TURNS);
+  // The tappable answers: ask_user's own, else — when a place search this
+  // turn came back ambiguous and the model asked in prose anyway — those
+  // places, so the question is still one tap to answer.
+  // Else, a question asked in prose about the city, the time, or the
+  // stay gets its usual answers (clarify.ts).
+  const suggestions =
+    asked?.suggestions ??
+    (plan === null && (ctx.placeChoices?.length ?? 0) >= 2 ? ctx.placeChoices! : null) ??
+    (plan === null ? suggestionsForQuestion(reply) : null);
+
+  // The model's context, cut only where a user message starts; and the
+  // readable transcript the history list shows, which is never trimmed
+  // with it (history.ts).
+  const trimmed = trimTurns(messages, MAX_STORED_TURNS);
+  const owned = stored && stored.userId === args.userId ? stored : null;
+  // A conversation saved before the transcript existed starts it from
+  // what its model context still holds.
+  const prior =
+    Array.isArray(owned?.display) && (owned.display as unknown[]).length > 0
+      ? owned.display
+      : displayFromTurns(history);
+  const display = appendDisplay(prior, [
+    { role: "user", text: args.text, at: at.toISOString() },
+    {
+      role: "assistant",
+      text: reply,
+      at: at.toISOString(),
+      ...(plan ? { planId: plan.planId } : {}),
+      ...(suggestions ? { suggestions } : {}),
+    },
+  ]);
   await args.db.conversation.upsert({
     where: { id: args.conversationId },
-    create: { id: args.conversationId, userId: args.userId, turns: trimmed },
-    update: { turns: trimmed },
+    create: {
+      id: args.conversationId,
+      userId: args.userId,
+      turns: trimmed,
+      title: titleFrom(args.text),
+      display,
+    },
+    // A conversation saved before titles existed gets one now, from the
+    // first request its context still holds.
+    update: {
+      turns: trimmed,
+      display,
+      ...(owned && !owned.title ? { title: titleFromTurns(history) ?? titleFrom(args.text) } : {}),
+    },
   });
 
-  return { conversationId: args.conversationId, reply, plan };
+  return { conversationId: args.conversationId, reply, plan, suggestions };
+}
+
+/** "[phone location: 42.22060, -71.00410 — in or near Boston]" — the city
+ * spelled out, so the model never has to ask which one: a phone just
+ * outside the metro box (Braintree) is still in that city for a driver. */
+export function phoneLocationLine(location: { lat: number; lng: number }): string {
+  const coords = `${location.lat.toFixed(5)}, ${location.lng.toFixed(5)}`;
+  const metro = homeMetroForPoint(location.lat, location.lng);
+  const city = metro ? providerForCity(metro)?.cityDisplayName : undefined;
+  return city
+    ? `[phone location: ${coords} — in or near ${city}]`
+    : `[phone location: ${coords} — outside the cities we cover]`;
 }
 
 /** What a stored transcript already grounded: every quote_street result
@@ -436,15 +516,37 @@ export function groundingIn(
       } catch {
         continue; // Not JSON — nothing grounded.
       }
-      if (call.name === "quote_street" && r["found"] === true && typeof r["zoneId"] === "string") {
+      if (call.name === "quote_street" && r["found"] === true && Array.isArray(r["options"])) {
+        const window = r["window"] as { startsAt?: string } | undefined;
+        const stay = call.input["duration_minutes"];
+        for (const option of r["options"] as StreetOption[]) {
+          if (typeof option.zoneId !== "string") continue;
+          streetQuotes.push({
+            zoneId: option.zoneId,
+            costUsd: Number(option.costUsd ?? 0),
+            lat: option.lat,
+            lng: option.lng,
+            option,
+            ...(typeof window?.startsAt === "string" ? { startsAt: window.startsAt } : {}),
+            ...(typeof stay === "number" ? { stayMinutes: stay } : {}),
+          });
+        }
+      } else if (
+        call.name === "quote_street" &&
+        r["found"] === true &&
+        typeof r["zoneId"] === "string"
+      ) {
+        // A quote stored before street search: one zone at the quoted point.
         const { lat, lng } = call.input;
         streetQuotes.push({
           zoneId: r["zoneId"],
           costUsd: Number(r["costUsd"] ?? 0),
           ...(typeof lat === "number" && typeof lng === "number" ? { lat, lng } : {}),
         });
-      } else if (call.name === "geocode_place" && r["found"] === true) {
-        const top = (r["results"] as Record<string, unknown>[] | undefined)?.[0];
+      } else if (call.name === "geocode_place" && r["found"] === true && r["ambiguous"] !== true) {
+        const top =
+          (r["place"] as Record<string, unknown> | undefined) ??
+          (r["results"] as Record<string, unknown>[] | undefined)?.[0];
         if (
           top &&
           typeof top["lat"] === "number" &&
@@ -473,15 +575,18 @@ export function streetQuotesIn(turns: ModelTurn[]): StreetQuote[] {
 function captureQuotes(quotes: QuoteContext, tool: string, input: unknown, result: unknown): void {
   const r = result as Record<string, unknown>;
   const args = input as Record<string, unknown>;
-  if (tool === "quote_street" && r["found"] === true) {
+  const best = Array.isArray(r["options"]) ? (r["options"] as StreetOption[])[0] : undefined;
+  if (tool === "quote_street" && r["found"] === true && best) {
     quotes.street = {
-      zoneId: String(r["zoneId"]),
-      zoneNumber: typeof r["zoneNumber"] === "string" ? r["zoneNumber"] : null,
-      costUsd: Number(r["costUsd"] ?? 0),
-      minutes: Number(r["clampedMinutes"] ?? args["duration_minutes"] ?? 60),
+      zoneId: best.zoneId,
+      zoneNumber: best.zoneNumber,
+      street: best.street,
+      summary: best.summary,
+      costUsd: best.costUsd,
+      minutes: best.clampedMinutes,
       startsAt: String(args["when"] ?? ""),
     };
-    quotes.minutes = quotes.street.minutes;
+    quotes.minutes = Number(args["duration_minutes"] ?? best.clampedMinutes);
   }
   if (tool === "search_garages" && Array.isArray(r["options"])) {
     quotes.garages = (r["options"] as Record<string, unknown>[]).slice(0, 2).map((o) => ({
@@ -507,10 +612,12 @@ function synthesizePlan(quotes: QuoteContext): Record<string, unknown> | null {
       type: "street",
       // The zone id is an internal slug ("bos-…") and never shown; a
       // block with no known number says so on the meter instead.
-      label: quotes.street.zoneNumber
-        ? `Street — Zone ${quotes.street.zoneNumber}`
-        : "Street — zone number on the meter",
-      detail: "Metered street parking",
+      label: quotes.street.street
+        ? `Street — ${quotes.street.street}`
+        : quotes.street.zoneNumber
+          ? `Street — Zone ${quotes.street.zoneNumber}`
+          : "Street — zone number on the meter",
+      detail: quotes.street.summary ?? "Metered street parking",
       priceUsd: quotes.street.costUsd,
       durationMinutes: quotes.street.minutes,
       zoneId: quotes.street.zoneId,

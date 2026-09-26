@@ -183,10 +183,20 @@ describe.skipIf(!throwaway)("FR-32 session lifecycle (throwaway account)", () =>
     expect((me.body["user"] as Record<string, unknown>)["id"]).toBe(minted.userId);
   });
 
-  it("FR-32 replaying a rotated token is reuse: refused, and the whole family dies", async () => {
+  it("FR-32 FR-41 the same phone re-asking right after a rotation (its answer was lost) gets a session", async () => {
+    expect(fresh).not.toBeNull();
+    const again = await sessionFetch("POST", "/auth/refresh", {
+      payload: { refreshToken: minted.refreshToken, deviceId: minted.deviceId },
+    });
+    expect(again.status).toBe(200);
+    expect(typeof again.body["refreshToken"]).toBe("string");
+    expect(again.body["refreshToken"]).not.toBe(fresh!.refreshToken);
+  });
+
+  it("FR-32 replaying a rotated token from anywhere else is reuse: refused, and the whole family dies", async () => {
     expect(fresh).not.toBeNull();
     const replay = await sessionFetch("POST", "/auth/refresh", {
-      payload: { refreshToken: minted.refreshToken, deviceId: minted.deviceId },
+      payload: { refreshToken: minted.refreshToken, deviceId: `${minted.deviceId}-elsewhere` },
     });
     expect(replay.status).toBe(401);
     expect(replay.body["error"]).toBe("token_reused");

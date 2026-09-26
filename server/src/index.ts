@@ -7,6 +7,8 @@ import { makeCardJanitor } from "./jobs/cardJanitor.js";
 import { makeLinkJobJanitor } from "./jobs/linkJobJanitor.js";
 import { makeConversationRetention } from "./jobs/conversationRetentionTick.js";
 import { makeLinkWorker } from "./jobs/linkWorker.js";
+import { makeIdempotencyJanitor } from "./services/idempotency.js";
+import { makeShutdown } from "./services/shutdown.js";
 import { makeExtender } from "./jobs/extendTick.js";
 import { makeAppleRevocationJob } from "./jobs/appleRevocationTick.js";
 import { makeProviderHealth } from "./jobs/providerHealthTick.js";
@@ -283,6 +285,8 @@ if (!appleTokens) log.info("APPLE_SIGNIN_* not set; Apple tokens are not stored 
 // Provider links run as durable jobs (POST …/link answers at once with a
 // job id); the worker verifies, reads the card, retries with backoff, and
 // resumes whatever a previous process left mid-attempt.
+const idempotencyJanitor = makeIdempotencyJanitor({ db, log });
+
 const linkWorker = makeLinkWorker({
   db,
   policy,
@@ -297,6 +301,7 @@ const linkWorker = makeLinkWorker({
 buildApp(
   {
     db,
+    dbPing: () => prisma.$queryRaw`SELECT 1`,
     policy,
     findCandidates,
     findNearbyZones,
@@ -351,7 +356,13 @@ const providerHealth = makeProviderHealth({ db, sendPush, stateCrypto, providerO
 // Deleted accounts whose Apple revoke didn't go through: retried hourly.
 const appleRevocations = makeAppleRevocationJob({ db, appleTokens, stateCrypto, log });
 
-app.listen({ port: env.PORT, host: "0.0.0.0" });
+app.listen({ port: env.PORT, host: "0.0.0.0" }).catch((err: unknown) => {
+  // A port that can't be bound is fatal: say so and let Fly restart us,
+  // rather than run jobs with no server in front of them.
+  app.log.error({ err }, "could not listen");
+  process.exit(1);
+});
+idempotencyJanitor.start();
 extender.start();
 linkWorker.start();
 // Chromium up front, off the request path: the first link or payment after
@@ -372,12 +383,13 @@ providerHealth.start();
 walletTick.start();
 appleRevocations.start();
 
-// Graceful shutdown: stop the jobs and close the executor's warm Chromium
-// (otherwise every Fly restart leaks the browser process to container
-// teardown). The executor package is loaded lazily, so import it the same
-// way — never at boot.
-for (const signal of ["SIGTERM", "SIGINT"] as const) {
-  process.once(signal, () => {
+// Graceful shutdown (services/shutdown.ts): stop the jobs, let requests
+// and job passes in flight finish, then close the executor's warm Chromium
+// (it used to go first, killing a payment mid-flight) and the database —
+// inside fly.toml's kill_timeout. The executor package is loaded lazily,
+// so it's closed the same way, never imported at boot.
+const shutdown = makeShutdown({
+  stopJobs: () => {
     extender.stop();
     linkWorker.stop();
     cardJanitor.stop();
@@ -387,10 +399,16 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
     providerHealth.stop();
     walletTick.stop();
     appleRevocations.stop();
-    void closeExecutorBrowser()
-      .catch(() => {})
-      .finally(() => {
-        void app.close().finally(() => process.exit(0));
-      });
-  });
+    idempotencyJanitor.stop();
+  },
+  closeServer: () => app.close(),
+  drains: [() => extender.drain(), () => linkWorker.drain()],
+  closeBrowser: () => closeExecutorBrowser(),
+  disconnectDb: () => prisma.$disconnect(),
+  log: { info: (msg) => app.log.info(msg), warn: (msg) => app.log.warn(msg) },
+  exit: (code) => process.exit(code),
+  deadlineMs: 25_000,
+});
+for (const signal of ["SIGTERM", "SIGINT"] as const) {
+  process.once(signal, () => void shutdown(signal));
 }

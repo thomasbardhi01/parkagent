@@ -29,6 +29,7 @@ import type {
   SessionRow,
   SessionWhere,
   UserIdentityRow,
+  IdempotencyKeyRow,
   UserLimitsRow,
   VehicleRow,
   ZoneNumberImportRow,
@@ -296,6 +297,7 @@ export interface FakeDbState {
   zoneTermsObserved: ZoneTermsObservedRow[];
   vehicles: VehicleRow[];
   userLimits: UserLimitsRow[];
+  idempotencyKeys: IdempotencyKeyRow[];
   processedTopups: { paymentIntentId: string; amountUsd: number; userId: string | null }[];
   conversations: ConversationRow[];
   assistantPlans: AssistantPlanRow[];
@@ -470,6 +472,7 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
     zoneTermsObserved: [],
     vehicles: [],
     userLimits: [],
+    idempotencyKeys: [],
     processedTopups: [],
     linkJobs: [],
     conversations: [],
@@ -699,6 +702,10 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
       },
       findUnique: async ({ where }) =>
         state.refreshTokens.find((t) => t.tokenHash === where.tokenHash) ?? null,
+      findMany: async ({ where }) =>
+        state.refreshTokens.filter(
+          (t) => t.familyId === where.familyId && t.revokedAt === null && t.rotatedAt === null,
+        ),
       update: async ({ where, data }) => {
         const row = state.refreshTokens.find((t) => t.id === where.id);
         if (row) Object.assign(row, data);
@@ -726,7 +733,15 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
         return { count: before - state.refreshTokens.length };
       },
       count: async ({ where }) =>
-        state.refreshTokens.filter((t) => t.userId === where.userId).length,
+        "userId" in where
+          ? state.refreshTokens.filter((t) => t.userId === where.userId).length
+          : state.refreshTokens.filter(
+              (t) =>
+                t.familyId === where.familyId &&
+                t.id !== where.id.not &&
+                t.rotatedAt !== null &&
+                t.rotatedAt.getTime() >= where.rotatedAt.gte.getTime(),
+            ).length,
     },
     emailLoginCode: {
       create: async ({ data }) => {
@@ -832,6 +847,57 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
         } as ZoneTermsObservedRow;
         state.zoneTermsObserved.push(row);
         return row;
+      },
+    },
+    idempotencyKey: {
+      create: async ({ data }) => {
+        if (state.idempotencyKeys.some((r) => r.userId === data.userId && r.key === data.key)) {
+          throw Object.assign(new Error("Unique constraint failed: idempotency_keys_user_id_key"), {
+            code: "P2002",
+          });
+        }
+        const row: IdempotencyKeyRow = {
+          id: `idem${state.idempotencyKeys.length + 1}`,
+          statusCode: null,
+          response: null,
+          completedAt: null,
+          ...data,
+        };
+        state.idempotencyKeys.push(row);
+        return { ...row };
+      },
+      findUnique: async ({ where }) => {
+        const { userId, key } = where.userId_key;
+        const row = state.idempotencyKeys.find((r) => r.userId === userId && r.key === key);
+        return row ? { ...row } : null;
+      },
+      update: async ({ where, data }) => {
+        const row = state.idempotencyKeys.find((r) => r.id === where.id);
+        if (!row) throw new Error(`fake idempotencyKey.update: no row ${where.id}`);
+        Object.assign(row, data);
+        return { ...row };
+      },
+      updateMany: async ({ where, data }) => {
+        const row = state.idempotencyKeys.find(
+          (r) =>
+            r.id === where.id &&
+            r.state === where.state &&
+            r.createdAt.getTime() === where.createdAt.getTime(),
+        );
+        if (!row) return { count: 0 };
+        Object.assign(row, data);
+        return { count: 1 };
+      },
+      delete: async ({ where }) => {
+        state.idempotencyKeys = state.idempotencyKeys.filter((r) => r.id !== where.id);
+        return {};
+      },
+      deleteMany: async ({ where }) => {
+        const before = state.idempotencyKeys.length;
+        state.idempotencyKeys = state.idempotencyKeys.filter(
+          (r) => !(r.createdAt < where.createdAt.lt),
+        );
+        return { count: before - state.idempotencyKeys.length };
       },
     },
     userLimits: {

@@ -251,6 +251,10 @@ struct MockAPI: APIClient {
         await profileStore.removeVehicle(id: id)
     }
 
+    func parked(_ request: ParkedRequest, idempotencyKey: String) async throws -> ParkedResponse {
+        try await parked(request)
+    }
+
     func parked(_ request: ParkedRequest) async throws -> ParkedResponse {
         try await pause()
         await MockDetectorProbe.shared.parked(request)

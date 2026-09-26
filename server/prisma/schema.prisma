@@ -188,6 +188,31 @@ model User {
   @@map("users")
 }
 
+// One unsafe request's answer, by the key the app sent with it
+// (Idempotency-Key). A retry after a lost response — a tunnel, a phone
+// that gave up at its timeout while the server went on to pay — gets the
+// stored answer instead of running the work again. Kept 24 hours.
+model IdempotencyKey {
+  id          String    @id @default(cuid())
+  userId      String    @map("user_id")
+  key         String
+  method      String
+  path        String
+  // sha256 of method, path, and the canonical JSON body: the same key with
+  // a different request is refused, never answered with another's result.
+  requestHash String    @map("request_hash")
+  // in_progress | done
+  state       String
+  statusCode  Int?      @map("status_code")
+  response    String?
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  completedAt DateTime? @map("completed_at") @db.Timestamptz(6)
+
+  @@unique([userId, key])
+  @@index([createdAt])
+  @@map("idempotency_keys")
+}
+
 // This user's own spending limits (GET/PUT /me/limits). Null = the
 // operator's default from policy.json. policy.json's caps are CEILINGS:
 // the effective cap is min(this, policy), so the operator lowering a cap

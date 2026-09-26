@@ -38,6 +38,8 @@ let assistantCalls = 0;
 export interface FrResponse {
   status: number;
   body: Record<string, unknown>;
+  /** Response headers, lowercased. */
+  headers: Record<string, string>;
 }
 
 /** fetch failures from before a connection existed: nothing reached the
@@ -59,6 +61,7 @@ export async function frFetch(
   method: Method,
   path: string,
   payload?: unknown,
+  extraHeaders: Record<string, string> = {},
 ): Promise<FrResponse> {
   if (method === "DELETE" && path.split("?")[0] === "/me") {
     throw new Error(
@@ -82,6 +85,7 @@ export async function frFetch(
         headers: {
           "x-api-key": KEY,
           ...(payload !== undefined ? { "content-type": "application/json" } : {}),
+          ...extraHeaders,
         },
         ...(payload !== undefined ? { body: JSON.stringify(payload) } : {}),
       });
@@ -106,8 +110,16 @@ export async function frFetch(
       await new Promise((resolve) => setTimeout(resolve, (retryAfter + 1) * 1000));
       continue;
     }
-    return { status: res.status, body: await readBody(res) };
+    return { status: res.status, body: await readBody(res), headers: headersOf(res) };
   }
+}
+
+function headersOf(res: Response): Record<string, string> {
+  const out: Record<string, string> = {};
+  res.headers.forEach((value, key) => {
+    out[key.toLowerCase()] = value;
+  });
+  return out;
 }
 
 async function readBody(res: Response): Promise<Record<string, unknown>> {
@@ -142,7 +154,7 @@ export async function sessionFetch(
     },
     ...(payload !== undefined ? { body: JSON.stringify(payload) } : {}),
   });
-  return { status: res.status, body: await readBody(res) };
+  return { status: res.status, body: await readBody(res), headers: headersOf(res) };
 }
 
 /** A session minted by `pnpm -C server create:fr-throwaway` (an admin

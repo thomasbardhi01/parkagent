@@ -4,6 +4,8 @@
  * instead of hitting the network. The code is never logged.
  */
 
+import { fetchWithTimeout } from "./http.js";
+
 export interface EmailSender {
   sendLoginCode(to: string, code: string): Promise<{ ok: boolean }>;
 }
@@ -34,7 +36,7 @@ export function makeResendSender(apiKey: string, from: string): EmailSender {
     async sendLoginCode(to, code) {
       const { subject, html, text } = loginCodeEmail(code);
       try {
-        const response = await fetch("https://api.resend.com/emails", {
+        const response = await fetchWithTimeout("https://api.resend.com/emails", {
           method: "POST",
           headers: {
             Authorization: `Bearer ${apiKey}`,

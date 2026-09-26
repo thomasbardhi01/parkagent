@@ -104,8 +104,11 @@ struct ActiveSessionView: View {
                 .disabled(!session.canExtend || model.isExtending)
                 .accessibilityIdentifier("session.extendButton")
 
-                Button("Stop session") { confirmingStop = true }
+                Button(model.isStopping ? "Stopping…" : "Stop session") { confirmingStop = true }
                     .buttonStyle(.destructive)
+                    // One stop at a time: a second tap used to send a second
+                    // stop to the provider while the first was running.
+                    .disabled(model.isStopping)
                     .accessibilityIdentifier("session.stopButton")
             }
             .padding(Spacing.unit)

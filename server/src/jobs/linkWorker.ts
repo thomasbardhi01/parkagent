@@ -85,6 +85,8 @@ export interface LinkWorker {
   tick(): Promise<void>;
   start(intervalMs?: number): void;
   stop(): void;
+  /** Resolves when the pass in progress (if any) is done. */
+  drain(): Promise<void>;
 }
 
 export function makeLinkWorker(deps: LinkWorkerDeps): LinkWorker {
@@ -417,6 +419,9 @@ export function makeLinkWorker(deps: LinkWorkerDeps): LinkWorker {
     stop() {
       if (timer) clearInterval(timer);
       timer = null;
+    },
+    drain: async () => {
+      await ticking;
     },
   };
 }

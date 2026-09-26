@@ -129,6 +129,104 @@ final class LiveAPIRequestTests: XCTestCase {
         XCTAssertEqual(query(request), ["jobId": "job 1&2"])
     }
 
+    // MARK: - Timeouts, retries, idempotency keys
+
+    private static let extendBody = #"{"sessionId": "s1", "expiresAt": "2026-09-26T16:00:00.000Z", "amountUsd": 1.65}"#
+
+    /// The regression: a payment waited out URLSession's 60 s idle default,
+    /// then said "Could not reach the server" while the server finished it.
+    func testPaymentsGetRoomReadsFailFast() async throws {
+        StubURLProtocol.respond(json: Self.extendBody)
+        _ = try await api.extendSession(sessionId: "s1", minutes: 30)
+        _ = try? await api.policy()
+        let sent = sentRequests()
+        XCTAssertEqual(sent.first?.timeoutInterval, LiveAPI.CallPolicy.payment.attemptTimeout)
+        XCTAssertEqual(sent.last?.timeoutInterval, LiveAPI.CallPolicy.read.attemptTimeout)
+    }
+
+    /// The answer to an extension was lost; the retry carries the same key,
+    /// so the server answers it with the first result instead of extending
+    /// again.
+    func testALostAnswerIsAskedForAgainUnderTheSameKey() async throws {
+        StubURLProtocol.respond(sequence: [(StubURLProtocol.timedOut, ""), (200, Self.extendBody)])
+        let response = try await api.extendSession(sessionId: "s1", minutes: 30)
+        XCTAssertEqual(response.amountUsd, 1.65)
+
+        let sent = sentRequests()
+        XCTAssertEqual(sent.count, 2)
+        let keys = sent.map { $0.value(forHTTPHeaderField: "Idempotency-Key") }
+        XCTAssertNotNil(keys[0])
+        XCTAssertEqual(keys[0], keys[1], "a retry must reuse its key, or the server runs it again")
+    }
+
+    /// Still running server-side (the first attempt outlived the phone's
+    /// wait): ask again until it's done, never run it twice.
+    func testAPaymentStillRunningIsWaitedFor() async throws {
+        StubURLProtocol.respond(sequence: [
+            (409, #"{"error": "request_in_progress", "retryAfterSeconds": 2}"#),
+            (200, Self.extendBody),
+        ])
+        let response = try await api.extendSession(sessionId: "s1", minutes: 30)
+        XCTAssertEqual(response.amountUsd, 1.65)
+        XCTAssertEqual(sentRequests().count, 2)
+    }
+
+    /// Two separate taps are two actions: two keys.
+    func testEachCallHasItsOwnKey() async throws {
+        StubURLProtocol.respond(json: Self.extendBody)
+        _ = try await api.extendSession(sessionId: "s1", minutes: 30)
+        _ = try await api.extendSession(sessionId: "s1", minutes: 30)
+        let keys = sentRequests().compactMap { $0.value(forHTTPHeaderField: "Idempotency-Key") }
+        XCTAssertEqual(Set(keys).count, 2)
+    }
+
+    /// Reads retry a gateway error; a verdict is never retried.
+    func testReadsRetryGatewayErrorsButNotVerdicts() async throws {
+        StubURLProtocol.respond(sequence: [(503, "<html>upstream</html>"), (200, Self.limitsBody)])
+        _ = try await api.limits()
+        XCTAssertEqual(sentRequests().count, 2)
+
+        StubURLProtocol.respond(sequence: [(400, #"{"error": "invalid_limits", "issues": []}"#), (200, Self.limitsBody)])
+        _ = try? await api.updateLimits(SpendingLimits(sessionCapUsd: 1, dailyCapUsd: 1, defaultStayMinutes: 15))
+        XCTAssertEqual(sentRequests().count, 1, "a 400 is an answer, not a network problem")
+    }
+
+    /// Sign-in isn't keyed (there's no user yet for the server to hold a
+    /// key against, and Apple's and email codes are single-use), so it
+    /// never retries — nor does a card reveal, whose answer isn't stored.
+    func testSignInAndCardRevealAreNeverRetried() async throws {
+        StubURLProtocol.respond(sequence: [(StubURLProtocol.connectionLost, ""), (200, Self.sessionBody)])
+        await XCTAssertThrowsAsync(try await api.verifyEmailSignIn(email: "a@b.co", code: "123456", deviceId: "device-1"))
+        XCTAssertEqual(sentRequests().count, 1)
+        XCTAssertNil(sentRequests()[0].value(forHTTPHeaderField: "Idempotency-Key"))
+
+        StubURLProtocol.respond(sequence: [(StubURLProtocol.connectionLost, ""), (200, "{}")])
+        await XCTAssertThrowsAsync(try await api.revealLinkCard(spendRequestId: "lsrq_1"))
+        XCTAssertEqual(sentRequests().count, 1)
+        XCTAssertNil(sentRequests()[0].value(forHTTPHeaderField: "Idempotency-Key"))
+    }
+
+    /// A cancelled task stops at once and says it was cancelled — not
+    /// "Could not reach the server".
+    func testCancellationIsNotAFailure() async throws {
+        StubURLProtocol.respond(json: Self.limitsBody)
+        let api = self.api
+        let task = Task { () -> String in
+            withUnsafeCurrentTask { $0?.cancel() }
+            do {
+                _ = try await api.limits()
+                return "succeeded"
+            } catch APIError.cancelled {
+                return "cancelled"
+            } catch {
+                return "failed: \(error)"
+            }
+        }
+        let outcome = await task.value
+        XCTAssertEqual(outcome, "cancelled")
+        XCTAssertTrue(sentRequests().isEmpty)
+    }
+
     // MARK: - Limits
 
     /// The server's own shape (routes/limits.ts, pinned in limits.test.ts).
@@ -733,6 +831,10 @@ final class StubURLProtocol: URLProtocol {
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
+    /// A scripted status below zero is a network failure, not an answer.
+    static let timedOut = -1
+    static let connectionLost = -2
+
     override func startLoading() {
         let next = Self.lock.withLock { () -> (status: Int, body: Data) in
             // Only api.test consumes the script; the host app's own calls
@@ -742,6 +844,11 @@ final class StubURLProtocol: URLProtocol {
             Self.requests.append(request)
             if Self.responses.count > 1 { Self.responses.removeFirst() }
             return head
+        }
+        if next.status < 0 {
+            let code: URLError.Code = next.status == Self.timedOut ? .timedOut : .networkConnectionLost
+            client?.urlProtocol(self, didFailWithError: URLError(code))
+            return
         }
         let response = HTTPURLResponse(
             url: request.url!,
@@ -755,4 +862,16 @@ final class StubURLProtocol: URLProtocol {
     }
 
     override func stopLoading() {}
+}
+
+/// XCTAssertThrowsError for async expressions.
+func XCTAssertThrowsAsync<T>(
+    _ expression: @autoclosure () async throws -> T,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) async {
+    do {
+        _ = try await expression()
+        XCTFail("expected an error", file: file, line: line)
+    } catch {}
 }

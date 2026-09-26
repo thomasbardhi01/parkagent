@@ -12,7 +12,7 @@
 
 import { randomUUID, createHash, randomInt } from "node:crypto";
 
-import type { AppDb, UserIdentityRow } from "../db.js";
+import type { AppDb, RefreshTokenRow, UserIdentityRow } from "../db.js";
 import {
   REFRESH_TOKEN_TTL_MS,
   generateRefreshToken,
@@ -110,6 +110,8 @@ export async function rotateRefreshToken(
   });
   if (!row || row.revokedAt) return { ok: false, code: "invalid_token" };
   if (row.rotatedAt) {
+    const regranted = await reissueLostRotation(deps, row, deviceId, now);
+    if (regranted) return regranted;
     await deps.db.refreshToken.updateMany({
       where: { familyId: row.familyId, revokedAt: null },
       data: { revokedAt: now },
@@ -137,6 +139,77 @@ export async function rotateRefreshToken(
     });
     return { ok: false, code: "token_reused" };
   }
+
+  const next = generateRefreshToken();
+  await deps.db.refreshToken.create({
+    data: {
+      userId: row.userId,
+      familyId: row.familyId,
+      tokenHash: hashRefreshToken(deps.jwtSecret, next),
+      deviceId,
+      expiresAt: new Date(now.getTime() + REFRESH_TOKEN_TTL_MS),
+    },
+  });
+  const access = signAccessToken(deps.jwtSecret, user, now);
+  return {
+    ok: true,
+    session: {
+      accessToken: access.token,
+      accessExpiresAt: access.expiresAt,
+      refreshToken: next,
+      user: publicUser(user),
+    },
+  };
+}
+
+/** How long after a rotation the same phone may present the token it just
+ * rotated, because the answer carrying its successor never arrived. */
+export const REFRESH_REUSE_GRACE_MS = 60_000;
+
+/**
+ * A lost rotation, not a replay: the phone sent its refresh token, the
+ * server rotated it, and the answer died in a tunnel — so the phone asks
+ * again with the token it still holds. Without this, that honest retry
+ * read as theft and signed the user out (the whole family revoked).
+ *
+ * Granted only when all hold: the same device, within
+ * REFRESH_REUSE_GRACE_MS of the rotation, and the successor was never used
+ * (the phone can't have received it). The undelivered successor is retired
+ * and a new one issued. Anything else is still reuse.
+ */
+async function reissueLostRotation(
+  deps: AuthDeps,
+  row: RefreshTokenRow,
+  deviceId: string,
+  now: Date,
+): Promise<RefreshResult | null> {
+  if (row.deviceId !== deviceId || !row.rotatedAt) return null;
+  if (now.getTime() - row.rotatedAt.getTime() > REFRESH_REUSE_GRACE_MS) return null;
+  // The successor was used if anything else in the family rotated at or
+  // after `row` (both stamps are this server's clock): then the phone did
+  // get it, and presenting `row` again is reuse.
+  const usedSince = await deps.db.refreshToken.count({
+    where: { familyId: row.familyId, id: { not: row.id }, rotatedAt: { gte: row.rotatedAt } },
+  });
+  if (usedSince > 0) return null;
+  // The one live, never-rotated token is the undelivered successor (or an
+  // earlier re-grant of it).
+  const live = await deps.db.refreshToken.findMany({
+    where: { familyId: row.familyId, revokedAt: null, rotatedAt: null },
+  });
+  const successor = live.length === 1 ? live[0]! : null;
+  if (!successor) return null;
+  if (successor.expiresAt.getTime() <= now.getTime()) return null;
+  const user = await deps.db.user.findUnique({ where: { id: row.userId } });
+  if (!user || user.deletedAt) return null;
+  // Retire the undelivered successor (compare-and-set, so two lost-answer
+  // retries racing can't both be re-granted). Revoked, not rotated:
+  // presenting it later is simply invalid, never another grace.
+  const claimed = await deps.db.refreshToken.updateMany({
+    where: { id: successor.id, rotatedAt: null, revokedAt: null },
+    data: { revokedAt: now },
+  });
+  if (claimed.count !== 1) return null;
 
   const next = generateRefreshToken();
   await deps.db.refreshToken.create({

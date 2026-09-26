@@ -246,6 +246,22 @@ grants only after an application through Stripe (support-issuing@stripe.com)
 — add it to `project.yml` when approved, flip the constant, and add `STPPushProvisioningContext`
 (see AddToWalletButton.swift).
 
+## Reliability
+docs/reliability.md is the one place that says how the app stays correct
+when the phone, the network, a provider, or the server fails:
+
+- Every unsafe request carries an `Idempotency-Key` and is answered once
+  (server `services/idempotency.ts`, app `LiveAPI.send`).
+- Retries only happen under a key; sign-in and secret-bearing calls are
+  never retried.
+- Every outbound call has a deadline (a bare `fetch` fails
+  `outboundScan.test.ts`).
+- Offline parks wait in `ParkOutbox`.
+- Shutdown drains in-flight work before closing the browser.
+- Fly routes by `/health/ready`.
+
+Keep new code on those rules.
+
 ## Pinned versions
 Two server deps are deliberately held below `latest`. Don't bump them casually.
 - `prisma` / `@prisma/client` pinned to `^7`. The `latest` npm tag currently

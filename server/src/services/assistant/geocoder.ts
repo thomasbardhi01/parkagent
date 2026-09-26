@@ -21,6 +21,7 @@
  */
 
 import { coveredCities } from "../../providers/registry.js";
+import { fetchWithin } from "../http.js";
 
 /** WGS84 bounding boxes for the metros we cover: [minLng, minLat, maxLng, maxLat]. */
 export const METRO_BBOX = {
@@ -176,7 +177,7 @@ const NOMINATIM_AREA_CATEGORIES = new Set([
 ]);
 
 export interface NominatimGeocoderOptions {
-  /** Injectable for tests; defaults to global fetch against the public API. */
+  /** Injectable for tests; defaults to fetch with an 8 s deadline against the public API. */
   fetchFn?: typeof fetch;
   /** Identify the client per Nominatim's usage policy. */
   userAgent?: string;
@@ -201,7 +202,7 @@ export class NominatimGeocoder implements GeocoderProvider {
   private static readonly TTL_MS = 10 * 60_000;
 
   constructor(opts: NominatimGeocoderOptions = {}) {
-    this.fetchFn = opts.fetchFn ?? fetch;
+    this.fetchFn = opts.fetchFn ?? fetchWithin(8_000);
     this.userAgent = opts.userAgent ?? "ParkAgent/1.0 (parking assistant; personal prototype)";
     this.baseUrl = opts.baseUrl ?? "https://nominatim.openstreetmap.org";
     this.now = opts.now ?? (() => new Date());

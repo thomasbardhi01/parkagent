@@ -175,6 +175,10 @@ done
 [[ -n "$health" ]] || fail "/health did not answer within 60s"
 [[ "$health" == *'"ok":true'* ]] || fail "/health answered without ok:true: $health"
 
+# Readiness: the server reaches its (migrated) database.
+ready="$(get /health/ready)" || fail "/health/ready did not answer 200"
+[[ "$ready" == *'"db":"ok"'* ]] || fail "/health/ready answered without db ok: $ready"
+
 methods="$(get /auth/methods)" || fail "/auth/methods did not answer"
 [[ "$methods" == "$EXPECTED_METHODS" ]] ||
   fail "/auth/methods is $methods, expected $EXPECTED_METHODS"
@@ -183,6 +187,21 @@ sleep "$SETTLE_SECONDS"
 kill -0 "$PID" 2>/dev/null || fail "server exited within ${SETTLE_SECONDS}s of answering /health"
 get /health >/dev/null || fail "/health stopped answering after ${SETTLE_SECONDS}s"
 
-stop_server
-echo "boot-check ($MODE): OK — /health $health; /auth/methods $methods"
+# Graceful shutdown: SIGTERM must end in a clean exit 0 well inside
+# fly.toml's kill_timeout (30 s) — not a hang, not a crash.
+kill -TERM "$PID"
+exited=""
+for _ in $(seq 1 50); do
+  if ! kill -0 "$PID" 2>/dev/null; then exited=1; break; fi
+  sleep 0.5
+done
+[[ -n "$exited" ]] || fail "server still running 25s after SIGTERM"
+set +e
+wait "$PID"
+code=$?
+set -e
+[[ "$code" == "0" ]] || fail "server exited $code after SIGTERM, expected 0"
+grep -q "shutdown complete" "$LOG" || fail "no 'shutdown complete' in the log after SIGTERM"
+
+echo "boot-check ($MODE): OK — /health $health; /health/ready $ready; /auth/methods $methods; SIGTERM → exit 0"
 rm -f "$LOG"

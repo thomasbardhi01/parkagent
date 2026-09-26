@@ -26,6 +26,8 @@
  * LINK_API_BASE and must be confirmed with `--test` mode before real use.
  */
 
+import { fetchWithin } from "../http.js";
+
 export interface LinkTokens {
   accessToken: string;
   refreshToken: string;
@@ -134,7 +136,10 @@ interface HttpJson {
   }>;
 }
 
-export function makeLinkHttpClient(config: LinkConfig, http: HttpJson = fetch): LinkClient {
+export function makeLinkHttpClient(
+  config: LinkConfig,
+  http: HttpJson = fetchWithin(15_000),
+): LinkClient {
   const authBase = config.authBase ?? "https://login.link.com";
   const apiBase = config.apiBase ?? "https://api.link.com";
 

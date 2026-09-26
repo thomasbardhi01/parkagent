@@ -475,6 +475,21 @@ export interface EmailLoginCodeRow {
   createdAt: Date;
 }
 
+/** One unsafe request's stored answer (services/idempotency.ts). */
+export interface IdempotencyKeyRow {
+  id: string;
+  userId: string;
+  key: string;
+  method: string;
+  path: string;
+  requestHash: string;
+  state: string;
+  statusCode: number | null;
+  response: string | null;
+  createdAt: Date;
+  completedAt: Date | null;
+}
+
 /** A user's own limits; null = the operator's default (policy.json). The
  * caps are Postgres DECIMAL (a Prisma Decimal at runtime): read with
  * Number(). */
@@ -596,6 +611,10 @@ export interface AppDb {
       };
     }): Promise<{ id: string }>;
     findUnique(args: { where: { tokenHash: string } }): Promise<RefreshTokenRow | null>;
+    /** A family's live, unrotated tokens (the lost-rotation grace). */
+    findMany(args: {
+      where: { familyId: string; revokedAt: null; rotatedAt: null };
+    }): Promise<RefreshTokenRow[]>;
     update(args: {
       where: { id: string };
       data: { rotatedAt?: Date; revokedAt?: Date };
@@ -606,11 +625,17 @@ export interface AppDb {
     updateMany(
       args:
         | { where: { familyId: string; revokedAt: null }; data: { revokedAt: Date } }
-        | { where: { id: string; rotatedAt: null; revokedAt: null }; data: { rotatedAt: Date } },
+        | { where: { id: string; rotatedAt: null; revokedAt: null }; data: { rotatedAt: Date } }
+        | { where: { id: string; rotatedAt: null; revokedAt: null }; data: { revokedAt: Date } },
     ): Promise<{ count: number }>;
     deleteMany(args: { where: { userId: string } }): Promise<{ count: number }>;
     /** The FR throwaway purge: does a tombstoned account still hold rows? */
-    count(args: { where: { userId: string } }): Promise<number>;
+    count(
+      args:
+        | { where: { userId: string } }
+        // The lost-rotation grace: did anything in the family rotate later?
+        | { where: { familyId: string; id: { not: string }; rotatedAt: { gte: Date } } },
+    ): Promise<number>;
   };
   emailLoginCode: {
     create(args: {
@@ -682,6 +707,33 @@ export interface AppDb {
         lastSeenAt: Date;
       };
     }): Promise<ZoneTermsObservedRow>;
+  };
+  idempotencyKey: {
+    create(args: {
+      data: {
+        userId: string;
+        key: string;
+        method: string;
+        path: string;
+        requestHash: string;
+        state: "in_progress";
+        createdAt: Date;
+      };
+    }): Promise<IdempotencyKeyRow>;
+    findUnique(args: {
+      where: { userId_key: { userId: string; key: string } };
+    }): Promise<IdempotencyKeyRow | null>;
+    update(args: {
+      where: { id: string };
+      data: { state: "done"; statusCode: number; response: string; completedAt: Date };
+    }): Promise<unknown>;
+    /** Take over an abandoned attempt (compare-and-set on its createdAt). */
+    updateMany(args: {
+      where: { id: string; state: "in_progress"; createdAt: Date };
+      data: { createdAt: Date; requestHash: string };
+    }): Promise<{ count: number }>;
+    delete(args: { where: { id: string } }): Promise<unknown>;
+    deleteMany(args: { where: { createdAt: { lt: Date } } }): Promise<{ count: number }>;
   };
   userLimits: {
     findUnique(args: { where: { userId: string } }): Promise<UserLimitsRow | null>;
@@ -1303,7 +1355,9 @@ export interface AppDb {
 export type AppTx = Omit<AppDb, "$transaction">;
 
 export function createPrisma(databaseUrl: string): PrismaClient {
-  const adapter = new PrismaPg({ connectionString: databaseUrl });
+  // Give up on a pool connection after 10 s instead of waiting forever
+  // (pg's default): a stuck database fails requests, it doesn't hang them.
+  const adapter = new PrismaPg({ connectionString: databaseUrl, connectionTimeoutMillis: 10_000 });
   return new PrismaClient({ adapter });
 }
 

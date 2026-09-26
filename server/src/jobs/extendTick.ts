@@ -137,6 +137,9 @@ export interface Extender {
   tick(): Promise<void>;
   start(intervalMs?: number): void;
   stop(): void;
+  /** Resolves when the pass in progress (if any) is done — shutdown waits
+   * for it rather than cutting an extension off mid-payment. */
+  drain(): Promise<void>;
 }
 
 export function makeExtender(deps: ExtenderDeps): Extender {
@@ -406,9 +409,16 @@ export function makeExtender(deps: ExtenderDeps): Extender {
   let timer: NodeJS.Timeout | null = null;
   let running = false;
 
-  async function tick(): Promise<void> {
-    if (running) return; // a slow tick must not overlap the next
+  let inFlight: Promise<void> = Promise.resolve();
+
+  function tick(): Promise<void> {
+    if (running) return inFlight; // a slow tick must not overlap the next
     running = true;
+    inFlight = pass();
+    return inFlight;
+  }
+
+  async function pass(): Promise<void> {
     try {
       const at = now();
       const active = await deps.db.session.findMany({ where: { status: "active" } });
@@ -435,5 +445,6 @@ export function makeExtender(deps: ExtenderDeps): Extender {
       if (timer) clearInterval(timer);
       timer = null;
     },
+    drain: () => inFlight,
   };
 }

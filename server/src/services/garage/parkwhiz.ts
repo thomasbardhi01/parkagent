@@ -30,6 +30,7 @@ import type {
   GarageProvider,
   GarageSearchQuery,
 } from "./garageProvider.js";
+import { fetchWithTimeout } from "../http.js";
 
 const SEARCH_BASE = "https://api.parkwhiz.com/v4/quotes/";
 const SITE_BASE = "https://www.parkwhiz.com";
@@ -181,7 +182,7 @@ function cacheKey(query: GarageSearchQuery): string {
 }
 
 export function makeParkWhizProvider(options: ParkWhizOptions = {}): GarageProvider {
-  const fetcher: Fetcher = options.fetcher ?? ((url, init) => fetch(url, init));
+  const fetcher: Fetcher = options.fetcher ?? ((url, init) => fetchWithTimeout(url, init, 8_000));
   const now = options.now ?? Date.now;
   const base = options.baseUrl ?? SEARCH_BASE;
   const cache = new Map<string, { at: number; options: GarageOption[] }>();

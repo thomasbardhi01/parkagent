@@ -22,6 +22,7 @@ import type {
   GarageProvider,
   GarageSearchQuery,
 } from "./garageProvider.js";
+import { fetchWithTimeout } from "../http.js";
 
 const SEARCH_BASE = "https://api.spothero.com/v2/search/transient";
 const CACHE_TTL_MS = 10 * 60_000;
@@ -244,7 +245,7 @@ export function extractResults(body: unknown): unknown[] | null {
 }
 
 export function makeSpotHeroProvider(options: SpotHeroOptions = {}): GarageProvider {
-  const fetcher: Fetcher = options.fetcher ?? ((url, init) => fetch(url, init));
+  const fetcher: Fetcher = options.fetcher ?? ((url, init) => fetchWithTimeout(url, init, 8_000));
   const now = options.now ?? Date.now;
   const cache = new Map<string, { at: number; options: GarageOption[] }>();
 

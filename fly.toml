@@ -4,6 +4,13 @@
 app = 'parkagent-api'
 primary_region = 'ewr'
 
+# Graceful shutdown (server/src/services/shutdown.ts): on SIGTERM the server
+# stops taking requests, lets payments in flight finish, then closes the
+# browser and the database within 25 s. Fly's default (SIGINT, 5 s) would
+# SIGKILL a payment mid-flight.
+kill_signal = 'SIGTERM'
+kill_timeout = '30s'
+
 [build]
   dockerfile = 'Dockerfile'
 
@@ -27,12 +34,15 @@ primary_region = 'ewr'
   min_machines_running = 1
   processes = ['app']
 
+  # Readiness, not just liveness: /health/ready pings the database, so a
+  # machine that can't reach it stops getting traffic (and a deploy that
+  # can't isn't marked healthy). /health stays for build identity.
   [[http_service.checks]]
-    interval = '30s'
+    interval = '15s'
     timeout = '5s'
-    grace_period = '10s'
+    grace_period = '20s'
     method = 'GET'
-    path = '/health'
+    path = '/health/ready'
 
 # Machine size lives here, not in `fly scale`: every `fly deploy` (rollbacks
 # included) re-applies this block and undoes `fly scale memory`/`fly scale vm`.

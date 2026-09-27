@@ -15,16 +15,20 @@ import {
   easternDaysAgoAt,
   easternHourWithin,
   easternWeekday,
-  frFetch,
   gate,
   ladderMeterUsd,
   mostRecentEasternAt,
   NOWHERE,
   NYC_AUTOPAY,
   NYC_PRICEY,
+  ownUser,
   parkedBody,
   policyFeeUsd,
+  userFetch,
 } from "./client.js";
+
+/** This file's own throwaway user (client.ts `ownUser`). */
+const me = ownUser(import.meta.url);
 
 const AFTERNOON = mostRecentEasternAt(14, 0);
 const SUNDAY = easternWeekday(AFTERNOON) === "Sun";
@@ -37,7 +41,7 @@ beforeAll(async () => {
 
 describe("FR-1 park event → /parked", () => {
   it("FR-1 a detected park writes a parked event and an audited decision, and answers a plan", async () => {
-    const res = await frFetch("POST", "/parked", parkedBody(NYC_AUTOPAY, { ts: AFTERNOON }));
+    const res = await userFetch(me, "POST", "/parked", parkedBody(NYC_AUTOPAY, { ts: AFTERNOON }));
     expect(res.status).toBe(200);
     expect(typeof res.body["parkedEventId"]).toBe("string");
     expect(typeof res.body["decisionId"]).toBe("string");
@@ -48,7 +52,7 @@ describe("FR-1 park event → /parked", () => {
 
 describe("FR-2 NYC zone resolution", () => {
   it("FR-2 FR-7 a park at 30th Ave & Steinway resolves the ParkNYC zone and prices the ladder", async () => {
-    const res = await frFetch("POST", "/parked", parkedBody(NYC_AUTOPAY, { ts: AFTERNOON }));
+    const res = await userFetch(me, "POST", "/parked", parkedBody(NYC_AUTOPAY, { ts: AFTERNOON }));
     expect(res.status).toBe(200);
     const candidates = res.body["candidates"] as Record<string, unknown>[];
     expect(candidates.length).toBeGreaterThan(0);
@@ -90,7 +94,7 @@ describe("FR-2 NYC zone resolution", () => {
   });
 
   it("FR-2 GET /city places the same point in NYC with the ParkNYC provider", async () => {
-    const res = await frFetch("GET", `/city?lat=${NYC_AUTOPAY.lat}&lng=${NYC_AUTOPAY.lng}`);
+    const res = await userFetch(me, "GET", `/city?lat=${NYC_AUTOPAY.lat}&lng=${NYC_AUTOPAY.lng}`);
     expect(res.status).toBe(200);
     expect(res.body["city"]).toBe("nyc");
     const provider = res.body["provider"] as Record<string, unknown>;
@@ -101,7 +105,7 @@ describe("FR-2 NYC zone resolution", () => {
 
 describe("FR-6 unknown zone", () => {
   it("FR-6 a park nowhere near a meter answers unknown_zone with no quote and no candidates", async () => {
-    const res = await frFetch("POST", "/parked", parkedBody(NOWHERE));
+    const res = await userFetch(me, "POST", "/parked", parkedBody(NOWHERE));
     expect(res.status).toBe(200);
     expect(res.body["action"]).toBe("unknown_zone");
     expect(res.body["rule"]).toBe("unknown_zone");
@@ -111,7 +115,7 @@ describe("FR-6 unknown zone", () => {
   });
 
   it('FR-6 GET /city off the coast answers all-null ("we\'re not there yet")', async () => {
-    const res = await frFetch("GET", `/city?lat=${NOWHERE.lat}&lng=${NOWHERE.lng}`);
+    const res = await userFetch(me, "GET", `/city?lat=${NOWHERE.lat}&lng=${NOWHERE.lng}`);
     expect(res.status).toBe(200);
     expect(res.body["city"]).toBeNull();
     expect(res.body["cityDisplayName"]).toBeNull();
@@ -121,7 +125,7 @@ describe("FR-6 unknown zone", () => {
 
 describe("FR-12 auto-pay rate ceiling", () => {
   it("FR-12 a zone whose ladder tops auto_pay_max_rate_per_hour is never auto-paid", async () => {
-    const res = await frFetch("POST", "/parked", parkedBody(NYC_PRICEY, { ts: AFTERNOON }));
+    const res = await userFetch(me, "POST", "/parked", parkedBody(NYC_PRICEY, { ts: AFTERNOON }));
     expect(res.status).toBe(200);
     const candidates = res.body["candidates"] as Record<string, unknown>[];
     expect(candidates.length).toBeGreaterThan(0);
@@ -150,7 +154,7 @@ describe("FR-9 timestamp clamping", () => {
     "FR-9 a ts three days stale is clamped to server time before pricing",
     async () => {
       const stale = easternDaysAgoAt(3, 14, 0);
-      const res = await frFetch("POST", "/parked", parkedBody(NYC_AUTOPAY, { ts: stale }));
+      const res = await userFetch(me, "POST", "/parked", parkedBody(NYC_AUTOPAY, { ts: stale }));
       expect(res.status).toBe(200);
       expect(res.body["action"]).toBe("ignore");
       expect(res.body["rule"]).toBe("free_period");

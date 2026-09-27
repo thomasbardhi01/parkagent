@@ -1,29 +1,37 @@
 /**
  * Harness for the live functional-requirements suite
  * (docs/functional-requirements.md). Every test in fr/ talks to a REAL
- * deployed API (prod by default) as a DEDICATED test user, in dry run.
+ * deployed API (prod by default), in dry run.
+ *
+ * Isolation: every fr/ file runs as its OWN throwaway user, claimed by the
+ * file's label from FR_THROWAWAY_POOL (`ownUser`; the labels are in
+ * pool.mjs, minted by `create-fr-throwaway --pool`). The file deletes its
+ * conversations and then the account when its last test ends, so no file
+ * reads state another left, and the suite runs shuffled (vitest.fr.config.ts).
  *
  * Guard rails, in order of importance:
  *  - `gate()` refuses to run anything until GET /policy reports effective
  *    dryRun true. The suite never runs against a server that can move money.
- *  - FR_API_KEY must belong to the dedicated FR user (create it with
- *    `pnpm -C server create:fr-user`), never a person's key: the suite
- *    writes parked_events/decisions rows and registers device tokens under
- *    whoever the key identifies.
+ *  - FR_API_KEY belongs to the dedicated FR user (`pnpm -C server
+ *    create:fr-user`), never a person's key. It is used for the gate, the
+ *    admin routes, and as a read-only observer — no test changes its state.
  *  - Assistant turns are paid model calls; `assistantMessage()` counts them
  *    and fails the run past FR_ASSISTANT_MAX_CALLS (default 12) so a retry
  *    loop can never run up a bill.
  *  - The suite never calls PUT /policy, /session/extend|stop, any /card
  *    route, or a real provider link — nothing here can change the spending
  *    contract or touch a provider account. PUT /wallet/source is called
- *    only with values the FR user can't make ready (and always restored to
- *    provider_card); nothing creates a Stripe Customer, SetupIntent, hold,
- *    or Link spend request.
+ *    only with values a throwaway can't make ready; nothing creates a
+ *    Stripe Customer, SetupIntent, hold, or Link spend request.
  *  - DELETE /me is never sent with the FR key (frFetch refuses it): only a
- *    throwaway session's bearer, through sessionFetch, may delete — and
- *    sessionFetch never carries the key, so a lost bearer can't fall back
- *    to deleting the FR user every later nightly depends on.
+ *    throwaway's bearer may delete, and a bearer request never falls back
+ *    to the key, so a lost bearer can't delete the FR user every later
+ *    nightly depends on.
  */
+
+import { afterAll, beforeAll } from "vitest";
+
+import { EXTRA_USERS, fileLabel } from "./pool.mjs";
 
 export const BASE = (process.env["FR_API_BASE"] ?? "https://parkagent-api.fly.dev").replace(
   /\/$/,
@@ -74,6 +82,17 @@ export async function frFetch(
         "`pnpm -C server create:fr-user` and export its key — never a personal key.",
     );
   }
+  return send(method, path, payload, { "x-api-key": KEY, ...extraHeaders });
+}
+
+/** One request with the suite's two retries: a connect-phase failure and
+ * one 429 Retry-After. Carries exactly the auth header it's given. */
+async function send(
+  method: Method,
+  path: string,
+  payload: unknown,
+  headers: Record<string, string>,
+): Promise<FrResponse> {
   // The abuse limits are per user (e.g. /parked 30/min); a second run
   // minutes after the first can trip them. Waiting out one Retry-After is
   // signal-preserving — the retry answers the real question.
@@ -83,9 +102,8 @@ export async function frFetch(
       res = await fetch(`${BASE}${path}`, {
         method,
         headers: {
-          "x-api-key": KEY,
           ...(payload !== undefined ? { "content-type": "application/json" } : {}),
-          ...extraHeaders,
+          ...headers,
         },
         ...(payload !== undefined ? { body: JSON.stringify(payload) } : {}),
       });
@@ -157,28 +175,162 @@ export async function sessionFetch(
   return { status: res.status, body: await readBody(res), headers: headersOf(res) };
 }
 
-/** A session minted by `pnpm -C server create:fr-throwaway` (an admin
- * script run where the target's secrets live — never an API route). */
-export interface ThrowawaySession {
+/** A throwaway user from FR_THROWAWAY_POOL (minted by `pnpm -C server
+ * create:fr-throwaway --pool`, an admin script run where the target's
+ * secrets live — never an API route). Its tokens are updated in place
+ * whenever the harness refreshes them. */
+export interface FrUser {
+  label: string;
   userId: string;
   deviceId: string;
-  refreshToken: string;
   accessToken: string;
+  refreshToken: string;
+  /** Set by a test that deleted the account itself and proved it gone. */
+  deleted: boolean;
 }
 
-/** FR_THROWAWAY_SESSION, parsed; null when the run didn't mint one. */
-export function throwawaySession(): ThrowawaySession | null {
-  const raw = process.env["FR_THROWAWAY_SESSION"]?.trim();
-  if (!raw) return null;
-  const parsed = JSON.parse(raw) as Partial<ThrowawaySession>;
-  for (const key of ["userId", "deviceId", "refreshToken", "accessToken"] as const) {
-    if (typeof parsed[key] !== "string" || parsed[key] === "") {
+let pool: Record<string, Record<string, unknown>> | null = null;
+
+function poolEntry(label: string): Omit<FrUser, "label" | "deleted"> {
+  if (!pool) {
+    const raw = process.env["FR_THROWAWAY_POOL"]?.trim();
+    if (!raw) {
       throw new Error(
-        `FR_THROWAWAY_SESSION is missing ${key} — paste the script's JSON line whole`,
+        "FR_THROWAWAY_POOL is not set. Every FR file runs as its own throwaway user: " +
+          'mint them with `pnpm -C server create:fr-throwaway --pool "$(node server/fr/pool.mjs)"` ' +
+          "against the target's database and export the JSON line it prints.",
       );
     }
+    pool = JSON.parse(raw) as Record<string, Record<string, unknown>>;
   }
-  return parsed as ThrowawaySession;
+  const entry = pool[label];
+  if (!entry) {
+    throw new Error(
+      `FR_THROWAWAY_POOL has no user labelled "${label}" — was the pool minted from this ` +
+        "checkout's pool.mjs?",
+    );
+  }
+  for (const key of ["userId", "deviceId", "refreshToken", "accessToken"] as const) {
+    if (typeof entry[key] !== "string" || entry[key] === "") {
+      throw new Error(`FR_THROWAWAY_POOL.${label} is missing ${key}`);
+    }
+  }
+  return entry as unknown as Omit<FrUser, "label" | "deleted">;
+}
+
+/**
+ * This file's own throwaway user (or, with `extra`, one of the extra users
+ * pool.mjs declares for it). Registers the file's hooks: before its first
+ * test, the gate runs and the user must authenticate as itself; after its
+ * last, the user's conversations and then the account are deleted, and the
+ * account is proven gone. Call at the top level of an fr/ file.
+ */
+export function ownUser(fileUrl: string, extra?: string): FrUser {
+  const file = fileLabel(fileUrl);
+  if (extra !== undefined && !(EXTRA_USERS as Record<string, string[]>)[file]?.includes(extra)) {
+    throw new Error(
+      `FR: ${file} asked for an extra user "${extra}" — declare it in fr/pool.mjs so it's minted`,
+    );
+  }
+  const label = extra === undefined ? file : `${file}.${extra}`;
+  const user: FrUser = { label, ...poolEntry(label), deleted: false };
+
+  beforeAll(async () => {
+    await gate();
+    const me = await userFetch(user, "GET", "/me");
+    if (me.status !== 200) {
+      throw new Error(`FR: ${label}'s throwaway doesn't authenticate (GET /me ${me.status})`);
+    }
+    const id = (me.body["user"] as Record<string, unknown> | undefined)?.["id"];
+    if (id !== user.userId) {
+      throw new Error(`FR: ${label}'s bearer is user ${String(id)}, not ${user.userId}`);
+    }
+  });
+  afterAll(async () => {
+    await releaseUser(user);
+  });
+  return user;
+}
+
+/** Delete a throwaway's conversations, then the account; prove it gone.
+ * Throws when any step answers wrong, so a leak fails its file (the
+ * nightly's purge still removes what a dead run leaves). */
+async function releaseUser(user: FrUser): Promise<void> {
+  if (user.deleted) return;
+  for (;;) {
+    const list = await userFetch(user, "GET", "/assistant/conversations?limit=50");
+    if (list.status !== 200) {
+      throw new Error(`FR: listing ${user.label}'s conversations answered ${list.status}`);
+    }
+    const conversations = list.body["conversations"] as { id: string }[];
+    if (conversations.length === 0) break;
+    for (const c of conversations) {
+      const deleted = await userFetch(
+        user,
+        "DELETE",
+        `/assistant/conversations/${encodeURIComponent(c.id)}`,
+      );
+      if (deleted.status !== 200) {
+        throw new Error(
+          `FR: deleting ${user.label}'s conversation ${c.id} answered ${deleted.status}`,
+        );
+      }
+    }
+  }
+  const bearer = await freshBearer(user);
+  const res = await sessionFetch("DELETE", "/me", { bearer });
+  if (res.status !== 200) {
+    throw new Error(`FR: DELETE /me for ${user.label} answered ${res.status}`);
+  }
+  user.deleted = true;
+  const after = await sessionFetch("GET", "/me", { bearer });
+  if (after.status !== 401) {
+    throw new Error(`FR: ${user.label} still authenticates after DELETE /me (${after.status})`);
+  }
+}
+
+/** Seconds left on an access JWT (its `exp`), or 0 when unreadable. */
+function secondsLeft(accessToken: string): number {
+  try {
+    const claims = JSON.parse(
+      Buffer.from(accessToken.split(".")[1] ?? "", "base64url").toString("utf8"),
+    ) as { exp?: unknown };
+    return typeof claims.exp === "number" ? claims.exp - Date.now() / 1000 : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** The user's access token, refreshed first when it has under 90 s left
+ * (the pool is minted before the suite; a file late in a shuffled run
+ * starts past the 15-minute lifetime). A refresh carries a secret, so it
+ * is never retried: a failure fails the test that needed it. */
+export async function freshBearer(user: FrUser): Promise<string> {
+  if (secondsLeft(user.accessToken) >= 90) return user.accessToken;
+  const res = await sessionFetch("POST", "/auth/refresh", {
+    payload: { refreshToken: user.refreshToken, deviceId: user.deviceId },
+  });
+  if (res.status !== 200) {
+    throw new Error(
+      `FR: refreshing ${user.label}'s session answered ${res.status} ${JSON.stringify(res.body)}`,
+    );
+  }
+  user.accessToken = res.body["accessToken"] as string;
+  user.refreshToken = res.body["refreshToken"] as string;
+  return user.accessToken;
+}
+
+/** A request as a throwaway user: its bearer (refreshed ahead of expiry)
+ * and the suite's retries — never the FR key. */
+export async function userFetch(
+  user: FrUser,
+  method: Method,
+  path: string,
+  payload?: unknown,
+  extraHeaders: Record<string, string> = {},
+): Promise<FrResponse> {
+  const bearer = await freshBearer(user);
+  return send(method, path, payload, { authorization: `Bearer ${bearer}`, ...extraHeaders });
 }
 
 let gatePromise: Promise<Record<string, unknown>> | null = null;
@@ -211,8 +363,10 @@ export function gate(): Promise<Record<string, unknown>> {
   return gatePromise;
 }
 
-/** One assistant turn, counted against the per-run model-call budget. */
+/** One assistant turn as `user`, counted against the per-run model-call
+ * budget. */
 export async function assistantMessage(
+  user: FrUser,
   text: string,
   options: { conversationId?: string; location?: { lat: number; lng: number } } = {},
 ): Promise<FrResponse> {
@@ -223,7 +377,7 @@ export async function assistantMessage(
         "(FR_ASSISTANT_MAX_CALLS). Refusing to spend more.",
     );
   }
-  return frFetch("POST", "/assistant/message", {
+  return userFetch(user, "POST", "/assistant/message", {
     text,
     ...(options.conversationId ? { conversation_id: options.conversationId } : {}),
     ...(options.location ? { location: options.location } : {}),

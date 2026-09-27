@@ -4,8 +4,14 @@ What the system must do, numbered, each with an acceptance statement and
 the evidence that proves it. Three kinds of evidence back an FR:
 
 - **Live FR suite** (`server/fr/`, `pnpm -C server test:fr`) — runs
-  against a deployed API **in dry run** as the dedicated FR user
-  (`pnpm -C server create:fr-user`; never a person's key). Test names
+  against a deployed API **in dry run**. Every file runs as its own
+  throwaway user (`server/fr/pool.mjs` names them; `create-fr-throwaway
+  --pool` mints them; the file deletes them when its tests end), so no
+  file reads state another left, and every run is shuffled — files and
+  the tests in them — with the seed in the report (`FR_SEED` replays an
+  order). The dedicated FR user (`pnpm -C server create:fr-user`; never a
+  person's key) holds the gate, the admin routes, and a read-only
+  observer's view; no test changes it. Test names
   carry their FR ids; a nightly GitHub Action
   (`.github/workflows/nightly-fr.yml`) runs it against prod, uploads the
   report, and manages the "Nightly FR failures" issue. Assistant tests
@@ -458,7 +464,7 @@ Evidence: `assistantItinerary.test.ts` (the real Boston six-stop day);
 price, sign-off, or PATCH; search-down estimates; decision rows — each
 mutation-checked);
 live FR-22 test (itineraries surface). Sign-off is not exercised live —
-it would store recurring state for the FR user.
+it would store recurring state on the account that signed off.
 
 ### FR-23 — Named-place search within 600 m
 
@@ -632,25 +638,27 @@ match the routes, profile read/write, refresh refusal, device binding,
 rotation, reuse detection, and deletion against the deployed API, and the unit suites pin the verification, throttles,
 merge rules, and teardown.
 
-The live session-lifecycle tests need a real refresh session, minted by
-`pnpm -C server create:fr-throwaway` — an admin script that needs the
-target's own `DATABASE_URL` and `AUTH_JWT_SECRET`, run inside the prod
-machine by the nightly (`fly ssh console`). It is deliberately not an API
-route: nothing on the public surface can mint a session without a
-verified identity. Without one (`FR_THROWAWAY_SESSION` unset) those four
-tests skip. The suite deletes the throwaway it is given however its tests
-end — a file-level `afterAll` sends `DELETE /me` with the throwaway's own
-access token even when the dry-run gate fails and every test skips — and
-the nightly then runs `purge-fr-throwaways --apply` in the prod machine,
-which catches what the suite couldn't (a run that died first, a token
-already dead) with the same teardown `DELETE /me` runs
+Every live file runs as its own throwaway user, and the session-lifecycle
+tests need one whose refresh family they can burn. Both come from
+`pnpm -C server create:fr-throwaway --pool <labels>` — an admin script
+that needs the target's own `DATABASE_URL` and `AUTH_JWT_SECRET`, run
+inside the prod machine by the nightly (`fly ssh console`), which mints
+one user per label in `server/fr/pool.mjs` (one per file, plus the extras
+a file declares: FR-32's lifecycle user, FR-10/11's second user). It is
+deliberately not an API route: nothing on the public surface can mint a
+session without a verified identity. Without a pool
+(`FR_THROWAWAY_POOL` unset) every file fails, naming it. Each file deletes
+its users however its tests end — `ownUser`'s `afterAll` deletes their
+conversations, then sends `DELETE /me` with the user's own bearer and
+proves the account gone (the lifecycle test deletes its own and proves it
+itself) — and the nightly then runs `purge-fr-throwaways --apply` in the
+prod machine, which catches what a file couldn't (a run that died first,
+a token already dead) with the same teardown `DELETE /me` runs
 (`services/accountDeletion.ts`). The purge only ever touches rows
 `create-fr-throwaway` minted — its marker decision, its exact name, no
 sign-in identity, no api key, not admin — and a live one only once it is
 30 minutes old (or named by `--include`); `pnpm -C server
-purge:fr-throwaways` dry-runs it against any database. Other per-run
-state is put back in `afterAll` too: the FR user's name and phone, its
-payment source, and the fake device token.
+purge:fr-throwaways` dry-runs it against any database.
 
 **Device-manual**: Sign in with Apple on a phone (the system sheet can't
 be automated, and a real identity token only comes from Apple). Email-code

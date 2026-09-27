@@ -6,31 +6,21 @@
  * (create the user with `pnpm -C server create:fr-user` to get admin).
  */
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { randomBytes } from "node:crypto";
 
-import { frFetch, gate } from "./client.js";
+import { describe, expect, it } from "vitest";
 
-// A syntactically plausible, deliberately fake APNs token. Stable across
-// runs so re-registration exercises idempotency; bound to the FR user
-// only. APNs will reject it if anything ever pushes at it — by design.
-const FR_TOKEN = "f".repeat(63) + "0";
+import { frFetch, ownUser, userFetch } from "./client.js";
 
-/** Set once the token test has registered FR_TOKEN. */
-let registered = false;
+/** This file's own throwaway user (client.ts `ownUser`): the device token
+ * is bound to it, and goes with it however the token test ends. The
+ * admin routes run as the FR user, read-only. */
+const me = ownUser(import.meta.url);
 
-beforeAll(async () => {
-  await gate();
-});
-
-// A token test that fails between register and release must not leave
-// the fake token bound to the FR user (every push-test would target it).
-afterAll(async () => {
-  if (!registered) return;
-  const res = await frFetch("DELETE", "/device", { token: FR_TOKEN }).catch(() => null);
-  if (res && res.status !== 200 && res.status !== 404) {
-    console.warn(`FR: couldn't release the FR device token (${res.status})`);
-  }
-});
+// A syntactically plausible, deliberately fake APNs token, new every run,
+// so nothing is left bound from an earlier one. APNs will reject it if
+// anything ever pushes at it — by design.
+const FR_TOKEN = randomBytes(32).toString("hex");
 
 describe("FR-29 admin summary", () => {
   it("FR-29 GET /admin/summary aggregates today's activity per city", async (ctx) => {
@@ -103,8 +93,7 @@ describe("FR-28 pushes", () => {
   });
 
   it("FR-28 a device token registers idempotently and releases on delete", async () => {
-    registered = true;
-    const register = await frFetch("POST", "/device", {
+    const register = await userFetch(me, "POST", "/device", {
       token: FR_TOKEN,
       platform: "ios",
       environment: "development",
@@ -114,19 +103,19 @@ describe("FR-28 pushes", () => {
 
     // Re-registering the same token for the same user is a no-op success
     // (the app re-sends on every launch).
-    const again = await frFetch("POST", "/device", {
+    const again = await userFetch(me, "POST", "/device", {
       token: FR_TOKEN,
       platform: "ios",
       environment: "development",
     });
     expect(again.status).toBe(200);
 
-    const release = await frFetch("DELETE", "/device", { token: FR_TOKEN });
+    const release = await userFetch(me, "DELETE", "/device", { token: FR_TOKEN });
     expect(release.status).toBe(200);
     expect(release.body["ok"]).toBe(true);
 
     // Released means gone: deleting again finds nothing bound to us.
-    const gone = await frFetch("DELETE", "/device", { token: FR_TOKEN });
+    const gone = await userFetch(me, "DELETE", "/device", { token: FR_TOKEN });
     expect(gone.status).toBe(404);
     expect(gone.body["error"]).toBe("token_not_found");
   });

@@ -61,10 +61,16 @@ RUN pnpm -C executor exec playwright install --with-deps chromium \
 COPY server/prisma7.config.ts server/prisma7.config.ts
 COPY server/prisma server/prisma
 
-# Read at boot from /app/policy.json (see server/src/index.ts). chown so PUT
-# /policy can rewrite it; on Fly that edit lasts until the next deploy, and
-# every accepted policy is recorded in policy_snapshots regardless.
-COPY --chown=node:node policy.json policy.json
+# Read at boot from /app/policy.json (see server/src/index.ts), a link into
+# the node-owned /app/var. PUT /policy writes policy.json.tmp next to the
+# real file and renames it over, so the DIRECTORY must be writable, not just
+# the file: chowning only the file left the temp file uncreatable in
+# root-owned /app (EACCES, #154). /app itself stays root-owned. On Fly the
+# edit lasts until the next deploy; every accepted policy is recorded in
+# policy_snapshots regardless.
+RUN mkdir -p var && chown node:node var
+COPY --chown=node:node policy.json var/policy.json
+RUN ln -s var/policy.json policy.json
 
 # Build metadata surfaced by /health. The CI deploy step passes these;
 # local `fly deploy` / `docker build` without args falls back to "dev".

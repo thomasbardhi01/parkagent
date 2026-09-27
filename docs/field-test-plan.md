@@ -135,7 +135,11 @@ blocks whose zone numbers are known (day 1's).
    restart reloads `policy.json` from the image, so anything you set in
    the policy before it is lost:
 
+       pnpm -C server check-secrets DRY_RUN=false   # shows live_payments off → on
        fly secrets set DRY_RUN=false -a parkagent-api
+
+   Exactly `false`: any other value (`False`, `0`) runs dry, and `/health`
+   lists `live_payments` under `degraded`.
 
 3. Keep the caps small: Account → Spending limits, **$10 per stop, $20 per
    day**, and **Default stay 15 min**. There's no per-park duration in the

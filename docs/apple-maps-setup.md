@@ -31,8 +31,21 @@ has thinner POI coverage.
 3. **Download the key** (`AuthKey_XXXXXXXXXX.p8`). Apple lets you download
    it **once**. Note the **Key ID** (10 characters, shown on the key's
    page) and your **Team ID** (Membership details, 10 characters).
-4. **Set the three secrets on Fly** (all three or none — the server refuses
-   to boot half-configured):
+4. **Check, then set, the three secrets on Fly.** All three or none: with
+   one missing or malformed, Maps is off and `/health` lists `apple_maps`
+   under `degraded`. The server still boots; until 2026-09-27 it refused
+   to, which is the outage in docs/incidents.md. Check first. It catches a misspelled
+   name, a `.p8` that isn't a key, and a `.p8` whose file name says a
+   different key id. `--live` also asks Apple whether the key works:
+
+   ```sh
+   pnpm -C server check-secrets --live \
+     APPLE_MAPS_KEY=@~/Downloads/AuthKey_XXXXXXXXXX.p8 \
+     APPLE_MAPS_KEY_ID=XXXXXXXXXX \
+     APPLE_MAPS_TEAM_ID=YYYYYYYYYY
+   ```
+
+   It prints the `fly secrets set` command when everything passes:
 
    ```sh
    fly secrets set -a parkagent-api \
@@ -43,7 +56,13 @@ has thinner POI coverage.
 
    `fly secrets set` restarts the machines. Per CLAUDE.md, a restart
    reloads `policy.json` from the image, so check the dry-run and caps
-   state afterwards.
+   state afterwards, and that `curl -s https://parkagent-api.fly.dev/health`
+   shows `"degraded":[]`.
+
+   One Apple key can carry several services. Prod's Maps slot holds the
+   APNs key, which has Maps enabled too. The server logs a warning when two
+   slots hold the same key; that's fine when the key has both services, and
+   wrong when the two key ids differ.
 5. **For local runs**, add the same three lines to the repo-root `.env`.
    Literal newlines or `\n` escapes both work for the key.
 6. **Check it:** `pnpm -C server verify:places` (see below) should resolve

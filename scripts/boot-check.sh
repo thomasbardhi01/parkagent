@@ -2,9 +2,12 @@
 # Boots the real server (node server/dist/index.js) and fails unless it comes
 # up and stays up.
 #
-#   scripts/boot-check.sh off   # every optional feature off (required env only)
-#   scripts/boot-check.sh on    # every optional feature on, dummy but
-#                               # well-formed values
+#   scripts/boot-check.sh off     # every optional feature off (core env only)
+#   scripts/boot-check.sh on      # every optional feature on, dummy but
+#                                 # well-formed values
+#   scripts/boot-check.sh broken  # every optional feature misconfigured:
+#                                 # partial sets, wrong formats, a misspelled
+#                                 # name. The server must still come up.
 #
 # Needs: a built server (pnpm -C executor run build && pnpm -C server build),
 # DATABASE_URL pointing at a migrated database (prisma migrate deploy), curl,
@@ -15,10 +18,15 @@
 # reached `app` before it existed, which only `node dist/index.js` shows.
 #
 # Every optional env var in server/src/env.ts belongs in both lists below:
-# unset in "off", set in "on". A new optional feature gets a line in each.
+# unset in "off", set in "on". A new optional feature gets a line in each,
+# and a broken value in "broken".
 #
 # Asserts, per mode:
-#   1. /health answers 200 with ok:true (the process got to listen)
+#   1. /health answers 200 with ok:true (the process got to listen), and
+#      lists exactly this mode's degraded features: none for off and on,
+#      every optional feature for broken. On 2026-09-26 a misnamed Maps
+#      secret refused boot and took prod down for four hours
+#      (docs/incidents.md); "broken" is that, and every mistake like it.
 #   2. /auth/methods reports exactly this mode's sign-in methods, so the "on"
 #      boot really had the features on and isn't the "off" boot twice
 #   3. the process is still alive and /health still answers a few seconds
@@ -27,8 +35,8 @@
 set -euo pipefail
 
 MODE="${1:-}"
-if [[ "$MODE" != "off" && "$MODE" != "on" ]]; then
-  echo "usage: $0 off|on" >&2
+if [[ "$MODE" != "off" && "$MODE" != "on" && "$MODE" != "broken" ]]; then
+  echo "usage: $0 off|on|broken" >&2
   exit 2
 fi
 
@@ -53,6 +61,7 @@ if [[ -f "$ROOT/.env" ]]; then
 fi
 
 OPTIONAL_VARS=(
+  SOCRATA_APP_TOKEN
   STRIPE_SECRET_KEY STRIPE_WEBHOOK_SECRET STRIPE_FINANCIAL_ACCOUNT STRIPE_PAYOUT_RECIPIENT
   APNS_KEY APNS_KEY_ID APNS_TEAM_ID APNS_BUNDLE_ID
   ISSUING_LIVE
@@ -68,10 +77,11 @@ OPTIONAL_VARS=(
   LINK_CLIENT_ID LINK_CLIENT_SECRET LINK_PUBLISHABLE_KEY LINK_REDIRECT_URI LINK_TEST_MODE
 )
 for var in "${OPTIONAL_VARS[@]}"; do unset "$var"; done
+# The misspelling "broken" sets, in case the caller's shell has it.
+unset APPLE_MAPS_PRIVATE_KEY
 
-# Required in both modes.
+# The core, in every mode.
 export API_KEY_PEPPER="boot-check-pepper-0123456789"
-export SOCRATA_APP_TOKEN="boot-check-socrata"
 export AUTH_JWT_SECRET="boot-check-jwt-secret-0123456789abcdef"
 export PORT
 
@@ -88,10 +98,43 @@ if [[ "$MODE" == "off" ]]; then
   export PARKWHIZ_ENABLED=false
   export EXECUTOR_WARM_AT_BOOT=false
   EXPECTED_METHODS='{"apple":true,"email":false,"google":false}'
+  EXPECTED_DEGRADED='[]'
+elif [[ "$MODE" == "broken" ]]; then
+  # One mistake per optional feature. None of them may stop the boot; each
+  # switches its feature off and shows in /health's degraded list.
+  export DRY_RUN="True"                                     # unreadable → dry run
+  PROVIDER_STATE_KEY="$(openssl rand -base64 32)"
+  export PROVIDER_STATE_KEY
+  export EXECUTOR_WARM_AT_BOOT=false
+  export EXECUTOR_CONCURRENCY=99                            # falls back to 2
+  export APNS_KEY="AuthKey_BOOTCHECK1.p8"                   # a file name, not its contents
+  export APNS_KEY_ID="BOOTCHECK1"
+  export APNS_TEAM_ID="BOOTCHECK2"
+  export APNS_BUNDLE_ID="com.thomasbardhi.parkagent"
+  export STRIPE_SECRET_KEY="sk_test_bootcheck0000000000000000" # no webhook secret
+  export ISSUING_LIVE="yes"
+  export LINK_CLIENT_ID="link_bootcheck"                    # one of four
+  APPLE_SIGNIN_KEY="$(openssl genrsa 2048 2>/dev/null | openssl pkcs8 -topk8 -nocrypt)" # RSA, not EC
+  export APPLE_SIGNIN_KEY
+  export APPLE_SIGNIN_KEY_ID="BOOTCHECK3"
+  export APPLE_SIGNIN_TEAM_ID="BOOTCHECK2"
+  # 2026-09-26: the Maps key under a name the server doesn't read.
+  APPLE_MAPS_PRIVATE_KEY="$(p8_key)"
+  export APPLE_MAPS_PRIVATE_KEY
+  export APPLE_MAPS_KEY_ID="BOOTCHECK4"
+  export APPLE_MAPS_TEAM_ID="BOOTCHECK2"
+  export EMAIL_SIGNIN_ENABLED=true                          # no RESEND_API_KEY
+  export GOOGLE_SIGNIN_ENABLED=true
+  export GOOGLE_CLIENT_ID="12345"                           # not a client id
+  export PARKWHIZ_ENABLED="nope"
+  export ANTHROPIC_API_KEY="sk-proj-bootcheck0000"          # not an Anthropic key
+  EXPECTED_METHODS='{"apple":true,"email":false,"google":false}'
+  EXPECTED_DEGRADED='["live_payments","push","stripe","issuing","link_wallet","apple_signin_revoke","apple_maps","email_signin","google_signin","parkwhiz","assistant"]'
 else
   # Live mode against an empty database: no users, sessions, or linked
   # accounts, and keys no real service accepts, so nothing can pay.
   export DRY_RUN=false
+  export SOCRATA_APP_TOKEN="boot-check-socrata"
   export STRIPE_SECRET_KEY="sk_test_bootcheck0000000000000000"
   export STRIPE_WEBHOOK_SECRET="whsec_bootcheck0000000000000000"
   export STRIPE_FINANCIAL_ACCOUNT="fa_bootcheck0000000000"
@@ -136,6 +179,7 @@ else
   export LINK_REDIRECT_URI="https://example.com/link/callback"
   export LINK_TEST_MODE=true
   EXPECTED_METHODS='{"apple":true,"email":true,"google":true}'
+  EXPECTED_DEGRADED='[]'
 fi
 
 LOG="$(mktemp -t boot-check.XXXXXX)"
@@ -174,6 +218,13 @@ for _ in $(seq 1 60); do
 done
 [[ -n "$health" ]] || fail "/health did not answer within 60s"
 [[ "$health" == *'"ok":true'* ]] || fail "/health answered without ok:true: $health"
+[[ "$health" == *"\"degraded\":$EXPECTED_DEGRADED"* ]] ||
+  fail "/health's degraded list isn't $EXPECTED_DEGRADED: $health"
+if [[ "$MODE" == "broken" ]]; then
+  # The log names what went wrong, including the misspelling's fix.
+  grep -q "did you mean APPLE_MAPS_KEY?" "$LOG" || fail "no 'did you mean APPLE_MAPS_KEY?' in the log"
+  grep -q "config: apple_maps is off" "$LOG" || fail "no 'config: apple_maps is off' line in the log"
+fi
 
 # Readiness: the server reaches its (migrated) database.
 ready="$(get /health/ready)" || fail "/health/ready did not answer 200"
@@ -204,4 +255,6 @@ set -e
 grep -q "shutdown complete" "$LOG" || fail "no 'shutdown complete' in the log after SIGTERM"
 
 echo "boot-check ($MODE): OK — /health $health; /health/ready $ready; /auth/methods $methods; SIGTERM → exit 0"
+# What the server said about its settings (env.ts), for the CI log.
+grep -oE '"msg":"config: ([^"\\]|\\.)*' "$LOG" | sed -e 's/^"msg":"/  /' -e 's/\\"/"/g' || true
 rm -f "$LOG"

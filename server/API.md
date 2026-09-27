@@ -1398,7 +1398,8 @@ Returns the active policy plus bookkeeping:
   "policy": { …policy.json… },
   "hash": "sha256:…",        // canonical-JSON hash, matches policy_snapshots
   "dryRun": true,            // effective: env DRY_RUN || policy.dry_run
-  "editable": false          // may THIS caller PUT it (admin only)
+  "editable": false          // may THIS caller PUT it: admin, and the server
+                             // can rewrite policy.json
 }
 ```
 
@@ -1462,7 +1463,15 @@ Full replacement of the policy document. Body is the entire policy object
 (same schema as `policy.json`; unknown keys rejected). On success the file
 is rewritten, a `policy_snapshots` row is recorded (`source: "put"`), and
 the new `GET /policy` payload is returned. `400` on validation failure with
-zod details.
+zod details. `503 {error: "policy_not_saved", reason}` when the file can't
+be written: nothing changed, and the old policy is still in force (the new
+one takes effect only once it's on disk).
+
+The file is written as `policy.json.tmp` next to it, then renamed over, so
+its **directory** must be writable. In the image, `/app/policy.json` links
+to `/app/var/policy.json` in a node-owned directory, and `/app` stays
+root-owned (#154). A server that can't write it lists `policy_edit` in
+`/health`'s `degraded`, and `GET /policy` reports `editable: false`.
 
 Note: on Fly the filesystem is ephemeral — a `PUT` there lasts until the
 next deploy. The repo's `policy.json` stays the source of truth; snapshots
@@ -1533,11 +1542,73 @@ to start on an invalid file.
 ## GET /health · GET /health/ready
 
 No auth. `/health` is liveness plus build identity: `{ok, dryRun, commit,
-builtAt}` (deploys wait on its `commit`). `/health/ready` is readiness:
+builtAt, degraded}` (deploys wait on its `commit`). `dryRun` is the
+`DRY_RUN` switch as the server read it (anything but `false` runs dry).
+`degraded` lists the optional features a setting mistake switched off:
+`live_payments`, `provider_accounts`, `push`, `stripe`, `issuing`,
+`link_wallet`, `apple_signin_revoke`, `apple_maps`, `email_signin`,
+`google_signin`, `parkwhiz`, `assistant` (`server/src/env.ts` FEATURES),
+plus `policy_edit` when `policy.json` can't be rewritten. It's `[]` when all
+is well. A feature that's simply not configured is off, not degraded. The
+log says why, one line each: `config: apple_maps is off — APPLE_MAPS_KEY is
+not set, but …`. Only core settings refuse boot. See "Settings" below. `/health/ready` is readiness:
 one `SELECT 1` bounded at 3 s → `{ok: true, db: "ok"}`, or `503 {ok:
 false, db: "down" | "timeout"}`. Fly's http check uses `/health/ready`
 (fly.toml), so a machine that can't reach its database stops getting
 traffic, and a deploy that can't isn't marked healthy.
+
+## Settings (env) and check-secrets
+
+`server/src/env.ts` reads every setting once at boot.
+
+- **Core** (refuses boot, "Refusing to start: invalid core settings"):
+  `DATABASE_URL` (a `postgres://` URL), `AUTH_JWT_SECRET` (≥ 32 chars),
+  `API_KEY_PEPPER` (≥ 16 chars), and `PROVIDER_STATE_KEY` when set (32
+  bytes of base64; unset just switches provider linking off).
+- **Optional features** (never refuse boot): none of a feature's settings →
+  off. Some of them, or one malformed → off, **degraded**, one log line
+  naming the variable. A degraded feature's settings are dropped before
+  wiring, so nothing can switch it on behind the report's back.
+- **Contents are checked:**
+  - an Apple `.p8` (`APNS_KEY`, `APPLE_SIGNIN_KEY`, `APPLE_MAPS_KEY`) must
+    parse as an EC P-256 private key, not a file name or a public key;
+  - Apple key and team ids are 10 characters, bundle ids look like one;
+  - vendor keys carry their prefix (`sk_`/`rk_`, `whsec_`, `re_`,
+    `sk-ant-`, `pk_`, `….apps.googleusercontent.com`), and URLs are https.
+- **Warnings** (logged, never fatal):
+  - the same Apple key in two slots, which is fine only if that key has
+    both services enabled, and wrong when the two key ids differ;
+  - two secrets with one value;
+  - a variable with one of our prefixes (`APPLE_`, `APNS_`, `STRIPE_`,
+    `RESEND_`, `GOOGLE_`, `LINK_`, …) that the server doesn't read, with
+    "did you mean X?";
+  - a tuning value (`PORT`, `EXECUTOR_CONCURRENCY`, the assistant's cap
+    and models) that falls back to its default.
+
+**Before every `fly secrets set`**, run the same checks on the values you're
+about to set:
+
+```sh
+pnpm -C server check-secrets APPLE_MAPS_KEY=@~/Downloads/AuthKey_XXXXXXXXXX.p8 \
+  APPLE_MAPS_KEY_ID=XXXXXXXXXX APPLE_MAPS_TEAM_ID=YYYYYYYYYY
+```
+
+It reads the names already set on `parkagent-api` (names only; values never
+leave Fly) and prints three things:
+- each proposed setting as ok or REJECTED (with "did you mean …?" for a name
+  the server doesn't read, and a `.p8` whose `AuthKey_<id>` file name
+  disagrees with the proposed key id);
+- every feature it would switch on, off, or leave degraded;
+- the `fly secrets set` command to run.
+
+It exits non-zero unless everything is accepted. Other options:
+- `NAME=@file` reads a value from a file, and a bare `AuthKey_….p8` just
+  inspects the file;
+- `--unset NAME` previews a removal;
+- `--no-app` judges the proposal alone;
+- `--env-file ../.env` checks a local file;
+- `--live` asks Apple whether a proposed Maps or Sign in with Apple key
+  works. That's a token request only: nothing is created or charged.
 
 ## Idempotency keys (every unsafe request)
 

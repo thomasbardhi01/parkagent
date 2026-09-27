@@ -18,14 +18,42 @@ test("GET /health reports ok and reflects DRY_RUN", async () => {
   const res = await app.inject({ method: "GET", url: "/health" });
 
   expect(res.statusCode).toBe(200);
-  expect(res.json()).toEqual({ ok: true, dryRun: true, commit: "dev", builtAt: "dev" });
+  expect(res.json()).toEqual({
+    ok: true,
+    dryRun: true,
+    commit: "dev",
+    builtAt: "dev",
+    degraded: [],
+  });
 });
 
 test("GET /health reports dryRun false when DRY_RUN is not 'true'", async () => {
   process.env["DRY_RUN"] = "false";
   const res = await app.inject({ method: "GET", url: "/health" });
 
-  expect(res.json()).toEqual({ ok: true, dryRun: false, commit: "dev", builtAt: "dev" });
+  expect(res.json()).toEqual({
+    ok: true,
+    dryRun: false,
+    commit: "dev",
+    builtAt: "dev",
+    degraded: [],
+  });
+});
+
+test("GET /health lists what a settings problem switched off, and the resolved dry run", async () => {
+  // DRY_RUN=False isn't "true", but env.ts reads anything unreadable as dry
+  // run, and /health must say what the server does, not what the env says.
+  process.env["DRY_RUN"] = "False";
+  const t = makeTestApp({});
+  t.deps.health = { dryRun: true, degraded: ["apple_maps", "policy_edit"] };
+  const res = await t.app.inject({ method: "GET", url: "/health" });
+
+  expect(res.statusCode).toBe(200);
+  expect(res.json()).toMatchObject({
+    ok: true,
+    dryRun: true,
+    degraded: ["apple_maps", "policy_edit"],
+  });
 });
 
 test("GET /health surfaces the build-injected commit and build time", async () => {

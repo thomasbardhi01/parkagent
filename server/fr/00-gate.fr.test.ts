@@ -1,12 +1,16 @@
 /**
  * FR-31 / FR-10 / FR-11 — the run gate. Everything else in fr/ shares
  * gate(); this file makes the gate's guarantees themselves assertions, so
- * a run against a misconfigured server fails loudly on the first file.
+ * a run against a misconfigured server fails loudly — and the isolation
+ * every file relies on (its own throwaway user, never the FR user).
  */
 
 import { beforeAll, describe, expect, it } from "vitest";
 
-import { frFetch, gate } from "./client.js";
+import { frFetch, gate, ownUser, userFetch } from "./client.js";
+
+/** This file's own throwaway user (client.ts `ownUser`). */
+const me = ownUser(import.meta.url);
 
 let policyPayload: Record<string, unknown>;
 
@@ -37,5 +41,17 @@ describe("FR-10 / FR-11 budget caps are configured", () => {
     expect(policy["session_cap_usd"] as number).toBeGreaterThan(0);
     expect(policy["daily_cap_usd"] as number).toBeGreaterThan(0);
     expect(typeof policyPayload["hash"]).toBe("string");
+  });
+});
+
+describe("FR-31 isolation", () => {
+  it("FR-31 a file's own user is a separate account from the FR user", async () => {
+    const mine = await userFetch(me, "GET", "/me");
+    const fr = await frFetch("GET", "/me");
+    expect(mine.status).toBe(200);
+    expect(fr.status).toBe(200);
+    const mineId = (mine.body["user"] as Record<string, unknown>)["id"];
+    expect(mineId).toBe(me.userId);
+    expect(mineId).not.toBe((fr.body["user"] as Record<string, unknown>)["id"]);
   });
 });

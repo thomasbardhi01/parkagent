@@ -28,6 +28,11 @@ function buildLine(deployed = "", tests = "") {
 }
 const build = buildLine(process.env.FR_DEPLOYED_COMMIT, process.env.FR_TESTS_COMMIT);
 const warning = build.startsWith("⚠️") ? build : "";
+// The order the suite ran in (vitest.fr.config.ts shuffles every run): a
+// failure that only shows in one order replays with this seed.
+const seed = process.env.FR_SEED
+  ? `Shuffled with seed \`${process.env.FR_SEED}\` — replay with \`FR_SEED=${process.env.FR_SEED} pnpm -C server test:fr\`.`
+  : "";
 
 let raw;
 try {
@@ -90,6 +95,7 @@ const skipped = rows.filter((r) => r.status !== "passed" && r.status !== "failed
 
 let md = `# Nightly FR report\n\n`;
 if (build) md += `${build}\n\n`;
+if (seed) md += `${seed}\n\n`;
 md += `**${rows.length}** tests — **${rows.length - failed.length - skipped.length}** passed, `;
 md += `**${failed.length}** failed, **${skipped.length}** skipped.\n\n`;
 md += `| FR | Result | Tests |\n|---|---|---|\n`;
@@ -115,6 +121,7 @@ writeFileSync(outputPath, md);
 
 // stdout: the failed-FR digest the workflow drops into the issue body.
 if (warning) console.log(warning);
+if (seed) console.log(seed);
 if (failed.length === 0) {
   console.log("All FR tests passed.");
 } else {

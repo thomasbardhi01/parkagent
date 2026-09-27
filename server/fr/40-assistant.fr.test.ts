@@ -13,16 +13,21 @@
  * model reachable, tools grounded, plans validated, gates closed.
  */
 
-import { beforeAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import {
   assistantMessage,
-  frFetch,
-  gate,
   mostRecentEasternAt,
   NYC_AUTOPAY,
+  ownUser,
   parkedBody,
+  userFetch,
 } from "./client.js";
+
+/** This file's own throwaway user (client.ts `ownUser`): its conversations
+ * are deleted with it however the tests end, so none carries into another
+ * file — or another test here — as history. */
+const me = ownUser(import.meta.url);
 
 const BOSTON_CENTER = { lat: 42.3554, lng: -71.0605 };
 /** The 2026-09-25 device test was sent from Braintree: outside the Boston
@@ -91,13 +96,13 @@ function asksWhichCity(body: Record<string, unknown>): boolean {
  * the way a person would, so the test judges the grounding, not whether
  * the model asked. */
 async function planFor(text: string, location: { lat: number; lng: number }) {
-  let res = await assistantMessage(text, { location });
+  let res = await assistantMessage(me, text, { location });
   expect(res.status).toBe(200);
   expect(asksWhichCity(res.body), `asked which city: ${JSON.stringify(res.body["reply"])}`).toBe(
     false,
   );
   if (res.body["plan"] === null) {
-    res = await assistantMessage("Go ahead — propose the options now.", {
+    res = await assistantMessage(me, "Go ahead — propose the options now.", {
       conversationId: res.body["conversationId"] as string,
       location,
     });
@@ -107,16 +112,10 @@ async function planFor(text: string, location: { lat: number; lng: number }) {
   return res;
 }
 
-/** Conversations this run made, for the history test to open and delete. */
-const madeConversations: string[] = [];
-
-beforeAll(async () => {
-  await gate();
-});
-
 describe("FR-21 / FR-23 single spot for a named place", () => {
   it("FR-21 FR-23 'parking near Newbury Street' yields a validated single_spot plan with grounded options", async () => {
     let res = await assistantMessage(
+      me,
       "Find me street or garage parking near Newbury Street in Boston tomorrow at 2pm, for about 2 hours. Propose the options as a plan.",
       { location: BOSTON_CENTER },
     );
@@ -126,7 +125,7 @@ describe("FR-21 / FR-23 single spot for a named place", () => {
 
     if (res.body["plan"] === null) {
       // The model asked a clarifying question; answer once and insist.
-      res = await assistantMessage("Yes — go ahead and propose the plan now.", {
+      res = await assistantMessage(me, "Yes — go ahead and propose the plan now.", {
         conversationId: res.body["conversationId"] as string,
       });
       expect(res.status).toBe(200);
@@ -173,6 +172,7 @@ describe("FR-21 / FR-23 single spot for a named place", () => {
 describe("FR-24 past-date guard", () => {
   it("FR-24 a request to plan parking for yesterday mints no plan", async () => {
     const res = await assistantMessage(
+      me,
       "Plan parking near Fenway in Boston for yesterday at 2pm for 2 hours.",
       { location: BOSTON_CENTER },
     );
@@ -184,7 +184,9 @@ describe("FR-24 past-date guard", () => {
 
 describe("FR-25 confirm gate", () => {
   it("FR-25 confirming a plan that was never proposed is refused", async () => {
-    const res = await frFetch("POST", "/assistant/confirm", { planId: "fr-nonexistent-plan" });
+    const res = await userFetch(me, "POST", "/assistant/confirm", {
+      planId: "fr-nonexistent-plan",
+    });
     expect(res.status).toBe(404);
     expect(res.body["error"]).toBe("plan_not_found");
   });
@@ -192,7 +194,8 @@ describe("FR-25 confirm gate", () => {
 
 describe("FR-27 explanations", () => {
   it("FR-27 the assistant renders a fresh decisions row in plain language", async () => {
-    const parked = await frFetch(
+    const parked = await userFetch(
+      me,
       "POST",
       "/parked",
       parkedBody(NYC_AUTOPAY, { ts: mostRecentEasternAt(14, 0) }),
@@ -201,6 +204,7 @@ describe("FR-27 explanations", () => {
     const decisionId = parked.body["decisionId"] as string;
 
     const res = await assistantMessage(
+      me,
       `Explain decision ${decisionId} to me — what did the system decide and why?`,
     );
     expect(res.status).toBe(200);
@@ -212,7 +216,7 @@ describe("FR-27 explanations", () => {
 
 describe("FR-22 itineraries surface", () => {
   it("FR-22 GET /assistant/itineraries answers the signed-off-days list", async () => {
-    const res = await frFetch("GET", "/assistant/itineraries");
+    const res = await userFetch(me, "GET", "/assistant/itineraries");
     expect(res.status).toBe(200);
     expect(Array.isArray(res.body["itineraries"])).toBe(true);
   });
@@ -224,7 +228,6 @@ describe("FR-35 / FR-36 / FR-40 the device-test phrases", () => {
       "Find me a parking spot at Seaport at 7 PM near Lola 42 for three hours",
       BRAINTREE,
     );
-    madeConversations.push(res.body["conversationId"] as string);
     const envelope = res.body["plan"] as Record<string, unknown> | null;
     expect(
       envelope,
@@ -256,7 +259,8 @@ describe("FR-35 / FR-36 / FR-40 the device-test phrases", () => {
       const sent = `street option: ${JSON.stringify(option)}`;
       expect(typeof option["streetSummary"], sent).toBe("string");
       expect(typeof option["startsAt"], sent).toBe("string");
-      const near = await frFetch(
+      const near = await userFetch(
+        me,
         "GET",
         `/zones/near?lat=${option["lat"]}&lng=${option["lng"]}&radius=60`,
       );
@@ -290,7 +294,6 @@ describe("FR-35 / FR-36 / FR-40 the device-test phrases", () => {
       "Find me parking near Moo steakhouse in Seaport Boston tomorrow at 6 PM for two hours",
       BRAINTREE,
     );
-    madeConversations.push(res.body["conversationId"] as string);
     const envelope = res.body["plan"] as Record<string, unknown> | null;
     expect(
       envelope,
@@ -308,42 +311,51 @@ describe("FR-35 / FR-36 / FR-40 the device-test phrases", () => {
 });
 
 describe("FR-38 saved conversations", () => {
-  it("FR-38 lists, opens, and deletes the FR user's conversations; others' are 404", async () => {
-    const list = await frFetch("GET", "/assistant/conversations?limit=50");
-    expect(list.status).toBe(200);
-    expect(Array.isArray(list.body["conversations"])).toBe(true);
-    expect(list.body["retentionDays"]).toBe(90);
-
-    const missing = await frFetch("GET", "/assistant/conversations/fr-no-such-conversation");
+  it("FR-38 lists, opens, and deletes the caller's conversations by their first request; unknown ones are 404", async () => {
+    const missing = await userFetch(me, "GET", "/assistant/conversations/fr-no-such-conversation");
     expect(missing.status).toBe(404);
-    const missingDelete = await frFetch(
+    const missingDelete = await userFetch(
+      me,
       "DELETE",
       "/assistant/conversations/fr-no-such-conversation",
     );
     expect(missingDelete.status).toBe(404);
 
-    // A conversation this run made (when the model tests ran): titled by
-    // its first request, readable, deletable — and gone after.
-    const id = madeConversations[0];
-    if (!id) return;
+    // Its own conversation, two requests long: nightly 36339460721 listed a
+    // conversation under a later request's words. Titles are the FIRST
+    // request, for good — the second must not retitle it.
+    const first = "Find me a parking spot at Seaport at 7 PM near Lola 42 for three hours";
+    const opened1 = await assistantMessage(me, first, { location: BRAINTREE });
+    expect(opened1.status).toBe(200);
+    const id = opened1.body["conversationId"] as string;
+    const second = await assistantMessage(me, "Find me parking near Moo steakhouse instead", {
+      conversationId: id,
+      location: BRAINTREE,
+    });
+    expect(second.status).toBe(200);
+    expect(second.body["conversationId"]).toBe(id);
+
+    const list = await userFetch(me, "GET", "/assistant/conversations?limit=50");
+    expect(list.status).toBe(200);
+    expect(list.body["retentionDays"]).toBe(90);
     const listed = (list.body["conversations"] as { id: string; title: string }[]).find(
       (c) => c.id === id,
     );
-    expect(listed?.title).toBe(
-      "Find me a parking spot at Seaport at 7 PM near Lola 42 for three hours",
-    );
-    const opened = await frFetch("GET", `/assistant/conversations/${id}`);
+    expect(listed?.title).toBe(first);
+
+    const opened = await userFetch(me, "GET", `/assistant/conversations/${id}`);
     expect(opened.status).toBe(200);
+    expect(opened.body["title"]).toBe(first);
     const messages = opened.body["messages"] as { role: string; text: string }[];
-    expect(messages[0]).toMatchObject({
-      role: "user",
-      text: "Find me a parking spot at Seaport at 7 PM near Lola 42 for three hours",
-    });
-    for (const made of madeConversations) {
-      const deleted = await frFetch("DELETE", `/assistant/conversations/${made}`);
-      expect(deleted.status).toBe(200);
-    }
-    const gone = await frFetch("GET", `/assistant/conversations/${id}`);
+    expect(messages[0]).toMatchObject({ role: "user", text: first });
+    expect(messages.filter((m) => m.role === "user").map((m) => m.text)).toEqual([
+      first,
+      "Find me parking near Moo steakhouse instead",
+    ]);
+
+    const deleted = await userFetch(me, "DELETE", `/assistant/conversations/${id}`);
+    expect(deleted.status).toBe(200);
+    const gone = await userFetch(me, "GET", `/assistant/conversations/${id}`);
     expect(gone.status).toBe(404);
-  });
+  }, 240_000);
 });

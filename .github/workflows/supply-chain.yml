@@ -1,0 +1,40 @@
+# Supply-chain checks, on every PR and push to main, and daily: an advisory
+# can land against the lockfile without any change of ours.
+#
+#   audit        pnpm audit over the workspace lockfile (scripts/audit.mjs):
+#                fails on a high or critical advisory in a production
+#                dependency unless scripts/audit-allowlist.json accepts it
+#                (with a reason and an expiry); reports the rest.
+#   action-pins  every third-party action is pinned to a commit SHA
+#                (scripts/check-action-pins.sh).
+
+name: supply-chain
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "41 10 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+      - uses: actions/setup-node@v7
+        with: { node-version: 24 }
+      # The gate's own rules first: a broken gate must not pass silently.
+      - run: node --test scripts/audit.test.mjs
+      - run: node scripts/audit.mjs
+
+  action-pins:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: scripts/check-action-pins.sh

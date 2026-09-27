@@ -224,8 +224,18 @@ function fakeApple(searchBodies: (url: URL, call: number) => { status: number; b
         },
       );
     }
-    const { status, body } = searchBodies(url, searches);
     searches += 1;
+    // Apple's own refusal (#152): every search sent both, and every
+    // search failed on prod while this fake answered 200.
+    if (url.searchParams.has("searchLocation") && url.searchParams.has("searchRegion")) {
+      return new Response(
+        JSON.stringify({
+          error: { message: "Cannot specify both searchRegion and searchLocation", details: [] },
+        }),
+        { status: 400 },
+      );
+    }
+    const { status, body } = searchBodies(url, searches - 1);
     return new Response(JSON.stringify(body), { status });
   }) as typeof fetch;
   return { fetchFn, calls };
@@ -284,10 +294,34 @@ describe("Apple Maps Server API adapter", () => {
     expect(search.url.searchParams.get("q")).toBe("Lola 42 Seaport");
     expect(search.url.searchParams.get("limitToCountries")).toBe("US");
     expect(search.url.searchParams.get("resultTypeFilter")).toBe("Poi,Address");
-    // A Braintree phone searches around the city, with the phone as a hint.
-    expect(search.url.searchParams.get("searchLocation")).toBe("42.3555,-71.0655");
+    // A Braintree phone searches within the city's box, with the phone as
+    // a hint — and no searchLocation beside the region (#152).
     expect(search.url.searchParams.get("searchRegion")).toBe("42.43,-70.98,42.29,-71.19");
+    expect(search.url.searchParams.has("searchLocation")).toBe(false);
     expect(search.url.searchParams.get("userLocation")).toBe("42.2206,-71.0041");
+  });
+
+  test("a search is biased by a point or by a region, never both (#152)", async () => {
+    const { fetchFn, calls } = fakeApple(() => ({ status: 200, body: { results: [] } }));
+    const apple = new AppleMapsGeocoder(CONFIG, { fetchFn });
+    const seaport = { lat: 42.3519, lng: -71.0446 };
+    // Near a point: the point, first pass only; nothing found there, so
+    // the other metro is searched within its box.
+    const nearPoint = await apple.geocode({ query: "Lola 42", city: "bos", near: seaport });
+    // No point: every pass by its metro's box.
+    const noPoint = await apple.geocode({ query: "Mooo" });
+    expect(nearPoint.ok && noPoint.ok).toBe(true);
+    const searches = calls.filter((c) => c.url.pathname === "/v1/search").map((c) => c.url);
+    expect(searches.length).toBeGreaterThanOrEqual(3);
+    for (const url of searches) {
+      const both = url.searchParams.has("searchLocation") && url.searchParams.has("searchRegion");
+      expect(both, url.search).toBe(false);
+      expect(url.searchParams.has("searchLocation") || url.searchParams.has("searchRegion")).toBe(
+        true,
+      );
+    }
+    expect(searches[0]!.searchParams.get("searchLocation")).toBe("42.3519,-71.0446");
+    expect(searches.slice(1).every((u) => u.searchParams.has("searchRegion"))).toBe(true);
   });
 
   test("drops results outside the covered metros", async () => {

@@ -132,6 +132,38 @@ describe("what a turn records", () => {
     ]);
   });
 
+  test("the title never changes after the first request, even once the model context is trimmed", async () => {
+    // FR-38: a conversation is listed by its first request for good. Each
+    // turn stores at least two messages, so twelve turns overflow the
+    // 20-message context and drop the first request from `turns`.
+    const t = makeTestApp({ assistantModel: scripted([text("Noted.")]) });
+    const first = "Find me a parking spot at Seaport at 7 PM near Lola 42 for three hours";
+    const one = await say(t.app, first);
+    for (let i = 1; i < 12; i += 1) {
+      await say(t.app, `Find me parking near Moo steakhouse, take ${i}`, one.conversationId);
+    }
+    const row = t.state.conversations[0]!;
+    const turns = row.turns as ModelTurn[];
+    expect(turns.some((m) => typeof m.content === "string" && m.content.startsWith(first))).toBe(
+      false,
+    );
+    expect(row.title).toBe(first);
+    const list = (
+      await t.app.inject({ method: "GET", url: "/assistant/conversations", headers: HEADERS })
+    ).json();
+    expect(list.conversations).toHaveLength(1);
+    expect(list.conversations[0].title).toBe(first);
+    const opened = (
+      await t.app.inject({
+        method: "GET",
+        url: `/assistant/conversations/${one.conversationId}`,
+        headers: HEADERS,
+      })
+    ).json();
+    expect(opened.title).toBe(first);
+    expect(opened.messages[0]).toMatchObject({ role: "user", text: first });
+  });
+
   test("a proposed plan and a question's chips are on the assistant's entry", async () => {
     const t = makeTestApp({ assistantModel: scripted(PROPOSE_GARAGE), garage: garage() });
     const one = await say(t.app, "garage near the museum");

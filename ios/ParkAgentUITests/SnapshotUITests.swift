@@ -16,7 +16,7 @@ final class SnapshotUITests: ParkAgentUITestCase {
         XCTAssertTrue(element(app, "home.statusChip").waitForExistence(timeout: 5))
         attachScreenshot(of: app, named: "home-\(appearance)")
 
-        app.tabBars.buttons["Activity"].tap()
+        selectTab(app, "Activity")
         XCTAssertTrue(element(app, "activity.view").waitForExistence(timeout: 5))
         attachScreenshot(of: app, named: "activity-\(appearance)")
 

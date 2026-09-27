@@ -16,12 +16,16 @@ import {
   BOS_UNNUMBERED,
   BOS_ZONE_456,
   easternWeekday,
-  frFetch,
   gate,
   mostRecentEasternAt,
+  ownUser,
   parkedBody,
   policyFeeUsd,
+  userFetch,
 } from "./client.js";
+
+/** This file's own throwaway user (client.ts `ownUser`). */
+const me = ownUser(import.meta.url);
 
 const AFTERNOON = mostRecentEasternAt(14, 0);
 const SUNDAY = easternWeekday(AFTERNOON) === "Sun";
@@ -38,7 +42,7 @@ beforeAll(async () => {
 });
 
 async function parkAt456(): Promise<Record<string, unknown>> {
-  const res = await frFetch("POST", "/parked", parkedBody(BOS_ZONE_456, { ts: AFTERNOON }));
+  const res = await userFetch(me, "POST", "/parked", parkedBody(BOS_ZONE_456, { ts: AFTERNOON }));
   expect(res.status).toBe(200);
   const candidates = res.body["candidates"] as Record<string, unknown>[];
   expect(candidates.length).toBeGreaterThan(0);
@@ -54,7 +58,8 @@ describe("FR-3 / FR-20 Boston resolution with a provider number", () => {
     if ((nearest["providerZoneNumber"] as string) === "") {
       // Unreported here: exercise the report flow with the true posted
       // number, then park again — every later park must be automatic.
-      const report = await frFetch(
+      const report = await userFetch(
+        me,
         "POST",
         `/zones/${encodeURIComponent(nearest["zoneId"] as string)}/provider-number`,
         { number: BOS_ZONE_456.postedNumber, source: "user" },
@@ -94,7 +99,12 @@ describe("FR-3 / FR-20 Boston resolution with a provider number", () => {
 
 describe("FR-4 Boston resolution without a provider number", () => {
   it("FR-4 an unreported block is never auto-paid: needsZoneNumber rides the response and pay downgrades to confirm", async (ctx) => {
-    const res = await frFetch("POST", "/parked", parkedBody(BOS_UNNUMBERED, { ts: AFTERNOON }));
+    const res = await userFetch(
+      me,
+      "POST",
+      "/parked",
+      parkedBody(BOS_UNNUMBERED, { ts: AFTERNOON }),
+    );
     expect(res.status).toBe(200);
     const candidates = res.body["candidates"] as Record<string, unknown>[];
     expect(candidates.length).toBeGreaterThan(0);
@@ -123,7 +133,7 @@ describe("FR-4 Boston resolution without a provider number", () => {
 describe("FR-8 free periods and the 8 pm boundary", () => {
   it("FR-8 a park after 8 pm on Boylston is a free period: ignore, $0, no fee", async () => {
     const evening = mostRecentEasternAt(21, 15);
-    const res = await frFetch("POST", "/parked", parkedBody(BOS_ZONE_456, { ts: evening }));
+    const res = await userFetch(me, "POST", "/parked", parkedBody(BOS_ZONE_456, { ts: evening }));
     expect(res.status).toBe(200);
     expect(res.body["action"]).toBe("ignore");
     expect(res.body["rule"]).toBe("free_period");
@@ -135,7 +145,12 @@ describe("FR-8 free periods and the 8 pm boundary", () => {
   it.skipIf(BOUNDARY_SUNDAY)(
     "FR-8 a stay straddling 8 pm is charged only for the enforced minutes",
     async () => {
-      const res = await frFetch("POST", "/parked", parkedBody(BOS_ZONE_456, { ts: BOUNDARY }));
+      const res = await userFetch(
+        me,
+        "POST",
+        "/parked",
+        parkedBody(BOS_ZONE_456, { ts: BOUNDARY }),
+      );
       expect(res.status).toBe(200);
       const quote = res.body["quote"] as Record<string, unknown>;
       const stay = quote["stayMinutes"] as number;

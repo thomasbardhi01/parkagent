@@ -4,23 +4,29 @@
  *
  *  - GET /auth/methods agrees with the routes (Apple on; a method reported
  *    off answers "<method>_signin_disabled");
- *  - GET / PATCH /me as the FR user, restored afterwards;
+ *  - GET / PATCH /me as this file's own throwaway user;
  *  - the refresh surface refuses a token it never issued;
- *  - with a THROWAWAY session minted by `pnpm -C server create:fr-throwaway`
- *    (an admin script that needs the target's own DB and JWT secret —
- *    never an API route, so there is no sign-in backdoor to test through):
- *    device binding, rotation, reuse detection revoking the whole family,
- *    and DELETE /me tombstoning the account so its still-valid access
- *    token stops working at once.
+ *  - with a second throwaway (minted by `pnpm -C server create:fr-throwaway
+ *    --pool` — an admin script that needs the target's own DB and JWT
+ *    secret, never an API route, so there is no sign-in backdoor to test
+ *    through): device binding, rotation, reuse detection revoking the whole
+ *    family, and DELETE /me tombstoning the account so its still-valid
+ *    access token stops working at once.
  *
- * The throwaway half self-skips when FR_THROWAWAY_SESSION isn't set. Its
- * requests go through sessionFetch, which never carries the FR key, and
- * the throwaway is deleted however the tests end (the afterAll below).
+ * The lifecycle's requests go through sessionFetch, which never carries
+ * the FR key. Both users are deleted however the tests end (client.ts
+ * `ownUser`); the lifecycle test deletes its own and proves it gone.
  */
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 
-import { frFetch, gate, sessionFetch, throwawaySession } from "./client.js";
+import { freshBearer, ownUser, sessionFetch, userFetch } from "./client.js";
+
+/** This file's own throwaway user, for the profile tests. */
+const me = ownUser(import.meta.url);
+/** A second one whose session the lifecycle burns and whose account it
+ * deletes (pool.mjs declares it). */
+const life = ownUser(import.meta.url, "lifecycle");
 
 /** Exactly what the app may learn about a user — no credential, hash, or
  * provider subject rides along. */
@@ -35,20 +41,9 @@ const PUBLIC_USER_KEYS = [
   "phoneVerified",
 ].sort();
 
-beforeAll(async () => {
-  await gate();
-});
-
 describe("FR-32 profile", () => {
-  let original: { name: string; phone: string | null } | null = null;
-
-  afterAll(async () => {
-    // Put the FR user back however the test ended.
-    if (original) await frFetch("PATCH", "/me", original);
-  });
-
   it("FR-32 GET /me returns the caller's profile and nothing secret", async () => {
-    const res = await frFetch("GET", "/me");
+    const res = await userFetch(me, "GET", "/me");
     expect(res.status).toBe(200);
     const user = res.body["user"] as Record<string, unknown>;
     expect(Object.keys(user).sort()).toEqual(PUBLIC_USER_KEYS);
@@ -58,12 +53,12 @@ describe("FR-32 profile", () => {
   });
 
   it("FR-32 PATCH /me round-trips a name and a phone; a new phone is unverified", async () => {
-    const before = await frFetch("GET", "/me");
+    const before = await userFetch(me, "GET", "/me");
     const user = before.body["user"] as { name: string; phone: string | null };
-    original = { name: user.name, phone: user.phone };
+    const original = { name: user.name, phone: user.phone };
 
-    const name = `${user.name.replace(/ \(FR check .*\)$/, "")} (FR check ${Date.now()})`;
-    const patched = await frFetch("PATCH", "/me", { name, phone: "+1 617 555 0100" });
+    const name = `${user.name} (FR check ${Date.now()})`;
+    const patched = await userFetch(me, "PATCH", "/me", { name, phone: "+1 617 555 0100" });
     expect(patched.status).toBe(200);
     const after = patched.body["user"] as Record<string, unknown>;
     expect(after["name"]).toBe(name);
@@ -72,18 +67,17 @@ describe("FR-32 profile", () => {
     expect(after["phoneVerified"]).toBe(false);
 
     // The write stuck — a fresh read sees it.
-    const reread = await frFetch("GET", "/me");
+    const reread = await userFetch(me, "GET", "/me");
     expect((reread.body["user"] as Record<string, unknown>)["name"]).toBe(name);
 
-    const restored = await frFetch("PATCH", "/me", original);
+    const restored = await userFetch(me, "PATCH", "/me", original);
     expect(restored.status).toBe(200);
     expect((restored.body["user"] as Record<string, unknown>)["name"]).toBe(original.name);
-    original = null;
   });
 
   it("FR-32 PATCH /me refuses an empty name or a malformed phone", async () => {
-    expect((await frFetch("PATCH", "/me", { name: "" })).status).toBe(400);
-    expect((await frFetch("PATCH", "/me", { phone: "call me" })).status).toBe(400);
+    expect((await userFetch(me, "PATCH", "/me", { name: "" })).status).toBe(400);
+    expect((await userFetch(me, "PATCH", "/me", { phone: "call me" })).status).toBe(400);
   });
 });
 
@@ -126,37 +120,22 @@ describe("FR-32 refresh surface", () => {
   });
 });
 
-const throwaway = throwawaySession();
-/** Set the moment a DELETE /me for the throwaway answers 200 — by its test
- * or by the teardown below. */
-let throwawayDeleted = false;
-let fresh: { accessToken: string; refreshToken: string } | null = null;
+// One story, told in order: each step spends what the one before issued.
+describe("FR-32 session lifecycle (throwaway account)", { shuffle: false }, () => {
+  /** The session as this story starts: whatever the harness last held (it
+   * refreshes one about to expire), so the pair is unspent either way. */
+  let minted: { userId: string; deviceId: string; refreshToken: string; accessToken: string };
+  let fresh: { accessToken: string; refreshToken: string } | null = null;
 
-// The throwaway is deleted however the tests end. File level on purpose:
-// when this file's gate() beforeAll fails, vitest skips a describe's own
-// afterAll but still runs this one — and a failed gate is exactly when the
-// throwaway would otherwise be left behind. Either access token works for
-// 15 minutes whatever happened to its refresh family; past that, or on a
-// run that dies outright, the nightly's purge-fr-throwaways step takes it.
-afterAll(async () => {
-  if (!throwaway || throwawayDeleted) return;
-  for (const bearer of [fresh?.accessToken, throwaway.accessToken]) {
-    if (!bearer) continue;
-    const res = await sessionFetch("DELETE", "/me", { bearer }).catch(() => null);
-    if (res?.status === 200) {
-      throwawayDeleted = true;
-      return;
-    }
-  }
-  console.warn(
-    `FR: couldn't delete throwaway ${throwaway.userId} (its access tokens are dead); ` +
-      "purge-fr-throwaways removes it.",
-  );
-});
-
-describe.skipIf(!throwaway)("FR-32 session lifecycle (throwaway account)", () => {
-  // Non-null inside: the block is skipped without it.
-  const minted = throwaway!;
+  beforeAll(async () => {
+    await freshBearer(life);
+    minted = {
+      userId: life.userId,
+      deviceId: life.deviceId,
+      refreshToken: life.refreshToken,
+      accessToken: life.accessToken,
+    };
+  });
 
   it("FR-32 a refresh token only works from the device it was issued to", async () => {
     const res = await sessionFetch("POST", "/auth/refresh", {
@@ -177,6 +156,10 @@ describe.skipIf(!throwaway)("FR-32 session lifecycle (throwaway account)", () =>
       refreshToken: res.body["refreshToken"] as string,
     };
     expect(fresh.refreshToken).not.toBe(minted.refreshToken);
+    // The harness cleans up with the newest access token if a later step
+    // fails before the delete.
+    life.accessToken = fresh.accessToken;
+    life.refreshToken = fresh.refreshToken;
 
     const me = await sessionFetch("GET", "/me", { bearer: fresh.accessToken });
     expect(me.status).toBe(200);
@@ -216,11 +199,12 @@ describe.skipIf(!throwaway)("FR-32 session lifecycle (throwaway account)", () =>
     expect(before.status).toBe(200);
 
     const deleted = await sessionFetch("DELETE", "/me", { bearer });
-    if (deleted.status === 200) throwawayDeleted = true;
     expect(deleted.status).toBe(200);
     expect(deleted.body).toEqual({ ok: true, deleted: true });
 
     const after = await sessionFetch("GET", "/me", { bearer });
     expect(after.status).toBe(401);
+    // Deleted and proven gone: the harness has nothing left to clean up.
+    life.deleted = true;
   });
 });

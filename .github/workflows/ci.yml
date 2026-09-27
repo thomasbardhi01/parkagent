@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
       - uses: actions/setup-node@v7
         with: { node-version: lts/*, cache: pnpm }
       - run: pnpm install --frozen-lockfile
@@ -59,7 +59,7 @@ jobs:
       DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
       # The image runs node:24-slim; boot on the same major.
       - uses: actions/setup-node@v7
         with: { node-version: 24, cache: pnpm }
@@ -76,7 +76,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
       - uses: actions/setup-node@v7
         with: { node-version: lts/*, cache: pnpm }
       - run: pnpm install --frozen-lockfile
@@ -146,6 +146,10 @@ jobs:
     # roster shifts with the Xcode image), so a red run here doesn't block the
     # PR yet. Revisit once a few weeks of runs look stable.
     continue-on-error: true
+    # issues: the flaky-test issues below.
+    permissions:
+      contents: read
+      issues: write
     steps:
       - uses: actions/checkout@v7
       - uses: actions/cache@v6
@@ -192,19 +196,73 @@ jobs:
           xcrun simctl launch "$UDID" com.thomasbardhi.parkagent -uiTesting YES -useMockAPI YES -resetState YES
           sleep 20
           xcrun simctl terminate "$UDID" com.thomasbardhi.parkagent || true
+      # A failed test runs once more; one that passes on that retry passes
+      # the run, and is reported as flaky below — a retry is never silent.
       - run: >
           xcodebuild -project ios/ParkAgent.xcodeproj -scheme ParkAgent
           -destination "id=${{ steps.sim.outputs.udid }}"
           -derivedDataPath build
           -resultBundlePath TestResults.xcresult
+          -retry-tests-on-failure -test-iterations 2
           test-without-building CODE_SIGNING_ALLOWED=NO
       # The xcresult bundle carries the XCTAttachment screenshots from the
-      # snapshot tests.
+      # snapshot tests, and each failed attempt's screenshot and hierarchy.
       - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: ui-test-results
           path: TestResults.xcresult
+      - name: Tests that needed a retry
+        id: flaky
+        if: always()
+        run: |
+          node --test ios/Tools/flaky-tests.test.mjs
+          if [ ! -d TestResults.xcresult ]; then
+            echo "count=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          xcrun xcresulttool get test-results tests --path TestResults.xcresult --compact > xcresult-tests.json
+          node ios/Tools/flaky-tests.mjs xcresult-tests.json > flaky.jsonl
+          count=$(wc -l < flaky.jsonl | tr -d ' ')
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          {
+            echo "## UI tests that passed only on a retry: $count"
+            # shellcheck disable=SC2016 # JS template literals, not shell
+            node -e 'for (const l of require("fs").readFileSync("flaky.jsonl", "utf8").split("\n").filter(Boolean)) { const f = JSON.parse(l); console.log(`- \`${f.id}\` — first attempt: ${f.failure}`); }'
+          } >> "$GITHUB_STEP_SUMMARY"
+      # One "Flaky UI test: <id>" issue per test: opened the first time,
+      # commented (and reopened if closed) every time it needs a retry again.
+      # Dependabot's runs get a read-only token; their flakes stay in the
+      # summary above.
+      - name: Open or update flaky-test issues
+        if: always() && steps.flaky.outputs.count != '' && steps.flaky.outputs.count != '0' && github.actor != 'dependabot[bot]'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REF: ${{ github.head_ref || github.ref_name }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          gh label create flaky-test --color FBCA04 \
+            --description "A test that passed only on a retry" 2>/dev/null || true
+          while IFS= read -r line; do
+            id=$(node -pe 'JSON.parse(process.argv[1]).id' "$line")
+            failure=$(node -pe 'JSON.parse(process.argv[1]).failure' "$line")
+            export TITLE="Flaky UI test: $id"
+            seen="Needed a retry in $RUN_URL ($REF @ ${SHA:0:7}). First attempt: \`$failure\`"
+            found=$(gh issue list --state all --label flaky-test --limit 200 --json number,title,state \
+              --jq '[.[] | select(.title == env.TITLE)][0] | select(. != null) | "\(.number) \(.state)"')
+            if [ -z "$found" ]; then
+              gh issue create --title "$TITLE" --label flaky-test --body "$seen
+
+          \`$id\` failed and then passed on CI's one retry (\`-retry-tests-on-failure -test-iterations 2\` in ci.yml's ui-tests job). The run's \`ui-test-results\` artifact holds the failed attempt's screenshot and UI hierarchy (\`xcrun xcresulttool export attachments --test-id '$id'\`). This issue is updated each time the test needs a retry again; close it once it's fixed."
+            else
+              number=${found%% *}
+              state=${found#* }
+              if [ "$state" = "CLOSED" ]; then gh issue reopen "$number"; fi
+              gh issue comment "$number" --body "$seen"
+            fi
+          done < flaky.jsonl
 
   deploy:
     # Merging to main deploys; nobody needs the Fly token locally.
@@ -231,7 +289,7 @@ jobs:
           fi
       - uses: actions/checkout@v7
         if: steps.token.outputs.present == 'true'
-      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # master 2026-04-08: node24 (its last release, 1.5, is node20)
         if: steps.token.outputs.present == 'true'
       - run: >
           flyctl deploy --remote-only

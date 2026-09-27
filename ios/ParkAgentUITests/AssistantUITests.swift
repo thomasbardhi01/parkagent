@@ -596,7 +596,7 @@ final class AssistantUITests: ParkAgentUITestCase {
             "-skipOnboarding", "YES", "-signedIn", "YES", "-fixedNow", Self.fixedNow,
         ]
         app.launch()
-        app.tabBars.buttons["Activity"].tap()
+        selectTab(app, "Activity")
         let row = scrollTo(app, "activity.row.plan:mock-plan-single")
         XCTAssertTrue(row.label.contains("Boylston St"), "got: \(row.label)")
         row.tap()

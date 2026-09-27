@@ -305,7 +305,7 @@ jobs:
           if [ -d "$LOG_DIR" ]; then cp -R "$LOG_DIR" "$out/logs"; fi
           if [ -d "$EXPORT_PATH" ]; then cp -R "$EXPORT_PATH" "$out/export"; fi
 
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         if: always() && steps.archive.outcome != 'skipped'
         with:
           name: testflight-${{ steps.app.outputs.version || 'unarchived' }}-${{ env.BUILD_NUMBER }}

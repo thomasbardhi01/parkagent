@@ -131,6 +131,13 @@ jobs:
           SEED: ${{ inputs.seed }}
         run: |
           if [ -z "$SEED" ]; then SEED=$(node -p 'Math.floor(Math.random() * 2 ** 31)'); fi
+          # The whole value, digits only: it lands in $GITHUB_OUTPUT.
+          case "$SEED" in
+            "" | *[!0-9]*)
+              echo "::error::seed must be a whole number"
+              exit 1
+              ;;
+          esac
           echo "seed=$SEED" >> "$GITHUB_OUTPUT"
 
       - name: FR suite against the live API (dry run)

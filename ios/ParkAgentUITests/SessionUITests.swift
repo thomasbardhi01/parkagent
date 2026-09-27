@@ -62,7 +62,7 @@ final class SessionUITests: ParkAgentUITestCase {
         stopSession(app)
         XCTAssertTrue(element(app, "home.simulateParkButton").waitForExistence(timeout: 10))
 
-        app.tabBars.buttons["Activity"].tap()
+        selectTab(app, "Activity")
         // Only this run's session is in zone 110436 (the fixtures aren't).
         let row = app.descendants(matching: .any)
             .matching(NSPredicate(format: "identifier BEGINSWITH 'activity.row.session:mock-' AND label CONTAINS 'Zone 110436'"))
@@ -92,7 +92,7 @@ final class SessionUITests: ParkAgentUITestCase {
         )
         XCTAssertTrue(element(app, "home.activeSessionRow").waitForExistence(timeout: 5))
 
-        app.tabBars.buttons["Activity"].tap()
+        selectTab(app, "Activity")
         let running = element(app, "activity.activeSession")
         XCTAssertTrue(running.waitForExistence(timeout: 5), "Running session missing from Activity")
         waitForLabelContaining(running, "Zone 110436")

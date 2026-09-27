@@ -92,7 +92,7 @@ class ParkAgentUITestCase: XCTestCase {
     /// Settings tab is gone; everything it held lives here now).
     @discardableResult
     func openAccountSheet(_ app: XCUIApplication) -> XCUIElement {
-        app.tabBars.buttons["Park"].tap()
+        selectTab(app, "Park")
         let avatar = element(app, "home.accountButton")
         XCTAssertTrue(avatar.waitForExistence(timeout: 5), "Account button missing on Home")
         avatar.tap()
@@ -103,11 +103,40 @@ class ParkAgentUITestCase: XCTestCase {
 
     /// The Wallet tab, loaded (its hero is on screen).
     func openWallet(_ app: XCUIApplication) {
-        app.tabBars.buttons["Wallet"].tap()
+        selectTab(app, "Wallet")
         XCTAssertTrue(
             app.navigationBars["Wallet"].waitForExistence(timeout: 5),
             "Wallet tab missing"
         )
+    }
+
+    /// Taps a tab, and makes sure the tap took. On iOS 26 the tab bar can
+    /// drop a tap outright: CI run 36325468638's recording shows the
+    /// selection lens start from Park toward Wallet, stop halfway, and
+    /// slide back while the map's first tiles were rendering — Park stayed
+    /// selected, the Wallet screen never showed, and the test failed
+    /// "Wallet tab missing". So a tap the tab bar dropped is tapped once
+    /// more, and the retry is recorded in the result bundle. (A tap on the
+    /// tab already selected still goes through: it returns that tab to its
+    /// root, which callers rely on.)
+    @discardableResult
+    func selectTab(_ app: XCUIApplication, _ name: String) -> Bool {
+        let tab = app.tabBars.buttons[name]
+        guard tab.waitForExistence(timeout: 5) else { return false }
+        let wasSelected = tab.isSelected
+        tab.tap()
+        if wasSelected || waitForSelection(of: tab, timeout: 3) { return true }
+        XCTContext.runActivity(named: "The \(name) tab dropped the tap; tapping it once more") { _ in }
+        tab.tap()
+        return waitForSelection(of: tab, timeout: 3)
+    }
+
+    private func waitForSelection(of element: XCUIElement, timeout: TimeInterval) -> Bool {
+        let selected = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "selected == true"),
+            object: element
+        )
+        return XCTWaiter().wait(for: [selected], timeout: timeout) == .completed
     }
 
     /// Swipes up until the identifier is in the hierarchy AND tappable —
@@ -170,7 +199,7 @@ class ParkAgentUITestCase: XCTestCase {
     /// It is the only way a test parks: nothing a person can reach
     /// simulates one, Diagnostics included.
     func simulateParkFromHome(_ app: XCUIApplication) {
-        app.tabBars.buttons["Park"].tap()
+        selectTab(app, "Park")
         let simulate = element(app, "home.simulateParkButton")
         XCTAssertTrue(simulate.waitForExistence(timeout: 5), "Simulate park button missing")
         simulate.tap()

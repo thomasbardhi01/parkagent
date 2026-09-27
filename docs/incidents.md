@@ -5,6 +5,75 @@ Newest first. Times are UTC.
 
 ---
 
+## 2026-09-26: prod API down ~4.5 h on a misnamed Maps secret (Fly v82)
+
+**Impact.** `parkagent-api` served nothing from about 17:31 to 21:59, and
+again for about 6 minutes from 23:20. Prod was in dry run, so no money was
+affected. Parks detected in those windows got no answer from `/parked`.
+
+**Cause.** Setting up the assistant's Apple Maps search, the Maps key was
+set as `APPLE_MAPS_PRIVATE_KEY`, a name the server doesn't read, with
+`APPLE_MAPS_KEY_ID` and `APPLE_MAPS_TEAM_ID` under their right names (and,
+on the first try, from the wrong .p8). `server/src/env.ts` treated the three
+as a set: "APPLE_MAPS_KEY, APPLE_MAPS_KEY_ID, and APPLE_MAPS_TEAM_ID are a
+set — set all three or none". Two of three was a refusal to boot:
+`loadEnv` printed "Refusing to start" and exited. `fly secrets set` rolls
+the machine onto the new settings, the machine crash-looped, and Fly
+doesn't roll a failed secrets release back.
+
+The rule existed so a half-configured feature couldn't fail its first
+user. It made an optional search feature able to take down the whole API.
+Every other optional group (Link, Sign in with Apple, email, Google,
+Stripe) had the same kind of rule.
+
+**Timeline.**
+
+| Time | Event |
+|---|---|
+| 15:12:33 | **v81**: healthy. |
+| 17:31:25 | **v82**: a secrets release on v81's image, with the Maps settings above. Crash loop. |
+| 21:59:02 | **v83**: #150's deploy, on consistent Maps settings. Healthy. |
+| 23:20:26 | **v84**: another secrets release on v83's image. Fails. |
+| 23:26:05 | **v85**: a secrets release on the same image. Healthy. |
+| 23:52:31 | **v86**: #151's deploy (`44f677e`). Healthy. |
+| 2026-09-27 00:59 | Nightly FR against `44f677e`: red on FR-35/36/40 (Maps search, #152, unrelated to the key) and FR-10/11 (suite order, #153). |
+
+Read-only checks afterwards: prod's `APPLE_MAPS_KEY` is the same .p8 as
+`APNS_KEY`, under the same key id, and Apple issues Maps tokens for it: one
+key with both services enabled, which works. Maps search itself still fails
+on a request bug, #152.
+
+**Fix (fix/config-resilience).**
+- **Only core settings refuse boot.** That's `DATABASE_URL`,
+  `AUTH_JWT_SECRET`, `API_KEY_PEPPER`, and a malformed
+  `PROVIDER_STATE_KEY`. An optional feature with a missing, partial, or
+  malformed setting is switched off, and one `config: <feature> is off — …`
+  line names the variable. `/health` lists it under `degraded`. An
+  unreadable `DRY_RUN` runs dry.
+- **Contents are checked, not just presence.** A .p8 must parse as an EC
+  P-256 private key. The same key in two slots, and a name with one of our
+  prefixes that the server doesn't read, are logged by name, the latter with
+  "did you mean APPLE_MAPS_KEY?".
+- **`pnpm -C server check-secrets NAME=value …`** runs the same checks
+  before `fly secrets set`, against the names already on the app. It
+  rejects this incident's settings with the right name, and a .p8 whose
+  `AuthKey_<id>` file name disagrees with the proposed key id. `--live`
+  asks Apple whether the key works.
+- **CI** adds `scripts/boot-check.sh broken`: every optional feature
+  misconfigured, this incident included. The server must boot and list them
+  all as degraded. Against the old `env.ts` that run fails with "Refusing to
+  start".
+- The new `env.ts` was run against prod's own settings before merging
+  (read-only, verdict only): nothing fatal, nothing degraded.
+
+**Still open.**
+- A core-setting mistake still takes prod down. `check-secrets` is the
+  guard: run it before every `fly secrets set` (CLAUDE.md).
+- The #130 items below: `boot` isn't a required status check, and nothing
+  rolls a failed release back automatically.
+
+---
+
 ## 2026-09-25: prod API down ~31 min after the 1.0.0-rc1 deploy (Fly v70)
 
 **Impact.** `parkagent-api` served nothing from about 16:15 to 16:47. There

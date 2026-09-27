@@ -36,8 +36,10 @@ jobs:
   # The server tests build the app through buildApp() with fakes and never
   # run index.ts, so a boot that throws before listen (#130's crash loop)
   # passes them. This boots the real `node dist/index.js` against a migrated
-  # PostGIS twice — every optional feature off, then every one on with dummy
-  # but well-formed values — and deploy waits on it. See scripts/boot-check.sh.
+  # PostGIS three times — every optional feature off, every one on with
+  # dummy but well-formed values, and every one misconfigured (which must
+  # still boot: the 2026-09-26 outage) — and deploy waits on it. See
+  # scripts/boot-check.sh.
   boot:
     runs-on: ubuntu-latest
     services:
@@ -68,6 +70,7 @@ jobs:
       - run: pnpm -C server exec prisma migrate deploy
       - run: scripts/boot-check.sh off
       - run: scripts/boot-check.sh on
+      - run: scripts/boot-check.sh broken
 
   executor:
     runs-on: ubuntu-latest

@@ -10,7 +10,16 @@
  */
 
 import { createHash } from "node:crypto";
-import { readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  accessSync,
+  constants,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname } from "node:path";
 
 import { z } from "zod";
 
@@ -113,14 +122,27 @@ export function policyHash(policy: Policy): string {
   return "sha256:" + createHash("sha256").update(canonicalize(policy)).digest("hex");
 }
 
+/** PUT /policy validated, but the file couldn't be written: nothing changed. */
+export class PolicyNotSavedError extends Error {
+  constructor(readonly reason: string) {
+    super(`policy not saved: ${reason}`);
+    this.name = "PolicyNotSavedError";
+  }
+}
+
 export class PolicyService {
   private current: Policy;
+  /** The file itself, symlinks resolved: the image links /app/policy.json
+   * into a node-owned directory, and the temp file has to be written next
+   * to the real file for the rename to be allowed (and atomic). */
+  private readonly filePath: string;
 
   constructor(
-    private readonly filePath: string,
+    filePath: string,
     private readonly envDryRun: boolean,
   ) {
-    this.current = this.parse(readFileSync(filePath, "utf-8"));
+    this.filePath = realpathSync(filePath);
+    this.current = this.parse(readFileSync(this.filePath, "utf-8"));
   }
 
   private parse(text: string): Policy {
@@ -151,13 +173,50 @@ export class PolicyService {
     return this.current.shadow_mode === true;
   }
 
-  /** Validate and persist a full replacement (PUT /policy). Throws ZodError. */
+  /** Whether update() can write the file: its directory must take the
+   * temp file. Checked at boot; /health lists policy_edit when it can't. */
+  writable(): { ok: true } | { ok: false; reason: string } {
+    for (const [path, what] of [
+      [dirname(this.filePath), "its directory"],
+      [this.filePath, "the file"],
+    ] as const) {
+      try {
+        accessSync(path, constants.W_OK);
+      } catch {
+        return {
+          ok: false,
+          reason: `${this.filePath} can't be rewritten: ${what} (${path}) isn't writable by this process`,
+        };
+      }
+    }
+    return { ok: true };
+  }
+
+  /**
+   * Validate and persist a full replacement (PUT /policy). Throws ZodError
+   * on an invalid policy and PolicyNotSavedError when the file can't be
+   * written. The new policy takes effect only once it's on disk: before,
+   * a failed write left it live in memory while PUT answered 500 (#154).
+   */
   update(next: unknown): Policy {
-    this.current = policySchema.parse(next);
+    const parsed = policySchema.parse(next);
     // Write-then-rename so a crash can't leave a torn policy.json.
     const tmp = this.filePath + ".tmp";
-    writeFileSync(tmp, JSON.stringify(this.current, null, 2) + "\n");
-    renameSync(tmp, this.filePath);
+    try {
+      writeFileSync(tmp, JSON.stringify(parsed, null, 2) + "\n");
+      renameSync(tmp, this.filePath);
+    } catch (err) {
+      try {
+        rmSync(tmp, { force: true });
+      } catch {
+        // Couldn't have been created, or can't be removed: nothing to add.
+      }
+      const code = (err as NodeJS.ErrnoException).code;
+      throw new PolicyNotSavedError(
+        `${code ?? "write failed"} writing ${tmp}: ${String(err).split("\n")[0]}`,
+      );
+    }
+    this.current = parsed;
     return this.current;
   }
 }

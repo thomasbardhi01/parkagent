@@ -404,7 +404,8 @@ Accept the generated `fly.toml` and `Dockerfile`, but check that the Dockerfile 
 fly postgres create --org parkagent --name parkagent-db --region ewr
 fly postgres attach parkagent-db --app parkagent-api
 fly ssh console -a parkagent-api -C "psql \$DATABASE_URL -c 'CREATE EXTENSION IF NOT EXISTS postgis;'"
-fly secrets set -a parkagent-api STRIPE_SECRET_KEY=sk_test_... SOCRATA_APP_TOKEN=... DRY_RUN=true
+pnpm -C server check-secrets STRIPE_SECRET_KEY=sk_test_... STRIPE_WEBHOOK_SECRET=whsec_... DRY_RUN=true
+fly secrets set -a parkagent-api STRIPE_SECRET_KEY=sk_test_... STRIPE_WEBHOOK_SECRET=whsec_... DRY_RUN=true
 fly deploy
 curl https://parkagent-api.fly.dev/health
 ```

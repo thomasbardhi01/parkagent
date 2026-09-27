@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { config } from "dotenv";
-import { loadEnv } from "./env.js";
+import { bootLog, loadEnv } from "./env.js";
 import { buildApp, createFastify, makeAuthenticate } from "./app.js";
 import { asAppDb, createPrisma } from "./db.js";
 import { makeCardJanitor } from "./jobs/cardJanitor.js";
@@ -57,7 +57,10 @@ import { makeCandidateFetcher, makeNearbyZoneFetcher } from "./services/zoneLook
 // Resolved from this module, so it works from src/ under tsx and from dist/ under node.
 config({ path: fileURLToPath(new URL("../../.env", import.meta.url)) });
 
-const env = loadEnv();
+// Only core settings stop the boot here; an optional feature with a
+// missing, partial, or malformed setting comes back switched off (env.ts).
+const envReport = loadEnv();
+const env = envReport.env;
 
 // The Fastify instance (and so app.log) comes first: everything below may
 // log while it is built — the decision-log wrapper, the job loggers, the
@@ -66,12 +69,25 @@ const env = loadEnv();
 // buildApp further down.
 const app = createFastify();
 
+// One line per feature a setting switched off, per unknown name, and per
+// key configured twice; then which features are on.
+const configLog = bootLog(envReport);
+for (const line of configLog.warn) app.log.warn(line);
+app.log.info(configLog.info);
+
 // policy.json lives at the repo root next to .env; an invalid file is a
-// refusal to boot, not a warning.
+// refusal to boot, not a warning. A file the server can't rewrite (a
+// read-only image) only switches PUT /policy off.
 const policy = new PolicyService(
   fileURLToPath(new URL("../../policy.json", import.meta.url)),
   env.DRY_RUN === "true",
 );
+const degraded: string[] = [...envReport.degraded];
+const policyWrite = policy.writable();
+if (!policyWrite.ok) {
+  degraded.push("policy_edit");
+  app.log.warn(`config: policy_edit is off — ${policyWrite.reason}`);
+}
 
 const prisma = createPrisma(env.DATABASE_URL);
 // Every decisions row also emits one structured log line (kind, rule, ids
@@ -154,7 +170,7 @@ const executorFor = makeUserExecutorProvider({
 });
 const providerOps = makeProviderOpsFactory(executorOptions, executorRuntime);
 
-// env.ts guarantees the webhook secret is present whenever the key is.
+// env.ts keeps Stripe off unless the key and the webhook secret are both set.
 const stripe =
   env.STRIPE_SECRET_KEY && env.STRIPE_WEBHOOK_SECRET
     ? makeStripeGateway(env.STRIPE_SECRET_KEY, env.STRIPE_WEBHOOK_SECRET, {
@@ -280,7 +296,6 @@ const appleTokens =
         clientId: env.APPLE_AUDIENCE,
       })
     : undefined;
-if (!appleTokens) log.info("APPLE_SIGNIN_* not set; Apple tokens are not stored or revoked");
 
 // Provider links run as durable jobs (POST …/link answers at once with a
 // job id); the worker verifies, reads the card, retries with backoff, and
@@ -326,6 +341,7 @@ buildApp(
     // A test-mode Stripe key can't move real money, so a Debug build may
     // choose the ParkAgent card against it before ISSUING_LIVE.
     issuingSandbox: isTestModeKey(env.STRIPE_SECRET_KEY),
+    health: { dryRun: env.DRY_RUN === "true", degraded },
   },
   app,
 );

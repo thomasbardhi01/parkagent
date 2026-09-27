@@ -98,12 +98,24 @@ Each rule below names the code that keeps it and the test that pins it.
     - `policy.json` caps are ceilings.
     - Every cap check reads `policyFor(user)`
       (`test/limitsScan.test.ts`; PR 4).
+11. **A settings mistake switches a feature off, never the server.**
+    - Only the core refuses boot: `DATABASE_URL`, `AUTH_JWT_SECRET`,
+      `API_KEY_PEPPER`, and a malformed `PROVIDER_STATE_KEY`
+      (`server/src/env.ts`).
+    - An optional feature with a missing, partial, or malformed setting is
+      off, gets one `config: <feature> is off — …` log line naming the
+      variable, and is listed in `/health`'s `degraded`. An unreadable
+      `DRY_RUN` runs dry.
+    - Check values with `pnpm -C server check-secrets` before `fly secrets
+      set`. CI boots the server with every feature misconfigured
+      (`scripts/boot-check.sh broken`).
 
 ## When something goes wrong in production
 
 | Symptom | Look at | Likely cause |
 |---|---|---|
-| Machine crash-loops, `/health` dead | `fly logs`, "Refusing to start" | An env var set out of shape (e.g. an `APPLE_MAPS_*` set incomplete: all three or none) |
+| Machine crash-loops, `/health` dead | `fly logs`, "Refusing to start: invalid core settings" | A core setting missing or malformed: `DATABASE_URL`, `AUTH_JWT_SECRET`, `API_KEY_PEPPER`, `PROVIDER_STATE_KEY` |
+| `/health` lists `degraded` | `fly logs`, `config: <feature> is off —` | That feature's setting is missing, partial, or malformed (the line names it). Fix it with `check-secrets` first |
 | `/health` fine, `/health/ready` 503 | Database status | Neon suspended or unreachable; Fly stops routing until it answers |
 | Links pile up retrying | `/admin/summary` `providers.passport` | The provider is slow or down; the breaker state and the p95s say which |
 | "Still finishing that on the server" | `idempotency_keys` for the user | The first attempt is still running (a slow provider); it answers when done |

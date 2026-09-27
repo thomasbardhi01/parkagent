@@ -120,6 +120,10 @@ export interface AppDeps {
    * build may still choose the ParkAgent card (sandbox: true) — test-mode
    * keys can't move real money. */
   issuingSandbox?: boolean;
+  /** What GET /health reports beyond ok and the build: the DRY_RUN switch
+   * as env.ts resolved it (an unreadable value runs dry), and the features
+   * a settings problem switched off. Absent → read from process.env. */
+  health?: { dryRun: boolean; degraded: readonly string[] };
   /** Injectable clock for tests; routes fall back to `new Date()`. */
   now?: () => Date;
 }
@@ -294,10 +298,14 @@ export function buildApp(deps?: AppDeps, app: FastifyInstance = createFastify())
 
   app.get("/health", async () => ({
     ok: true,
-    dryRun: process.env["DRY_RUN"] === "true",
+    dryRun: deps?.health?.dryRun ?? process.env["DRY_RUN"] === "true",
     // Injected at image build (Dockerfile ARG -> ENV); "dev" under tsx/vitest.
     commit: process.env["GIT_SHA"] ?? "dev",
     builtAt: process.env["BUILD_TIME"] ?? "dev",
+    // Features a missing, partial, or malformed setting switched off
+    // (env.ts), plus policy_edit when policy.json can't be rewritten. The
+    // server still answers: nothing optional refuses boot.
+    degraded: deps?.health?.degraded ?? [],
   }));
   if (deps) {
     registerAuth(app, deps);

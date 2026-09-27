@@ -117,10 +117,12 @@ garages approved in Link.
   `ISSUING_LIVE`, setup-card never runs against a real provider.
 
 Dry run is effective when env `DRY_RUN` is true OR `policy.json`'s
-`dry_run` is. It is server-wide, for every account. `PUT /policy` is
-admin-only (`GET /policy` reports `editable`) and rewrites `policy.json`
-inside the container, so any restart or deploy, including `fly secrets
-set`, reloads the image's copy (dry run on, caps 45/60). To go real: flip
+`dry_run` is. Any `DRY_RUN` other than exactly `false` runs dry. It is
+server-wide, for every account. `PUT /policy` is admin-only (`GET /policy`
+reports `editable`) and rewrites `policy.json` inside the container
+(`/app/policy.json` links into the node-owned `/app/var`, #154), so any
+restart or deploy, including `fly secrets set`, reloads the image's copy
+(dry run on, caps 45/60). To go real: flip
 the `DRY_RUN` secret first, then the caps, then the policy.
 
 ## Working style
@@ -137,13 +139,19 @@ the `DRY_RUN` secret first, then the caps, then the policy.
     `CityCatalog` / the provider registry.
   - `server`, `executor`, `ios` (unit tests, the `ParkAgentRelease` scheme,
     and the Release-binary `strings` check).
-  - `boot` runs `scripts/boot-check.sh off` and `on` against a migrated
-    PostGIS.
+  - `boot` runs `scripts/boot-check.sh off`, `on`, and `broken` against a
+    migrated PostGIS. `broken` misconfigures every optional feature, and the
+    server must still boot.
   - `ui-tests` (`continue-on-error`).
-  - `deploy` needs `server`, `boot`, and `ios`. A new optional env var gets
-    a line in **both** of `boot-check.sh`'s lists, and anything that logs at
-    boot goes through the `app` from `createFastify()`
-    (`docs/incidents.md`).
+  - `deploy` needs `server`, `boot`, and `ios`. A new optional env var needs
+    three things:
+    - its check in `server/src/env.ts`, as part of a FEATURES entry if it
+      turns something on;
+    - a line in **both** of `boot-check.sh`'s lists;
+    - a broken value in its `broken` mode.
+
+    Anything that logs at boot goes through the `app` from
+    `createFastify()` (`docs/incidents.md`).
 - pnpm 12 passes a literal `--` through to scripts, and a script using
   strict `parseArgs` rejects it. So call `pnpm -C server decisions:recent
   --city bos`, not `… -- --city bos`. Only `attach-identity`,
@@ -321,6 +329,26 @@ So after merging PR N: `waitdeploy N && nightly`. Don't dispatch the
 nightly before the deploy lands, or it tests the old build (its report
 prints the commit it tested).
 
+**Secrets: check before every `fly secrets set`.** Run
+
+    pnpm -C server check-secrets NAME=value …   # NAME=@file for a .p8
+
+first, and set only what it calls OK. It runs the server's own checks
+(`server/src/env.ts`) on your values, on top of the names already on
+`parkagent-api`. It also prints the `fly secrets set` command.
+- **Core settings stop the server:** `DATABASE_URL`, `AUTH_JWT_SECRET`,
+  `API_KEY_PEPPER`, and a malformed `PROVIDER_STATE_KEY`. With one of these
+  wrong, the release crash-loops and prod is down until it's fixed. Fly
+  doesn't roll back a failed secrets release.
+- **Any other setting that's missing, partial, or malformed** switches only
+  its feature off. The server logs `config: <feature> is off — <the
+  variable and why>` and lists the feature in `/health`'s `degraded`.
+- **Afterwards:** `curl -s https://parkagent-api.fly.dev/health` should show
+  `"degraded":[]`.
+
+The 2026-09-26 outage was `APPLE_MAPS_PRIVATE_KEY` set where the server
+reads `APPLE_MAPS_KEY` (`docs/incidents.md`).
+
 **Rollback.** For a crash-looping or broken release:
 
     fly releases -a parkagent-api --image     # the last good release's image
@@ -341,9 +369,12 @@ check it with `fly scale show -a parkagent-api`.
 - `pnpm -C server prisma migrate dev`   apply migrations
 - `pnpm -C server migrate:policy-fee`   move parknyc_fee_usd into city_overrides
 - `./scripts/check-city-neutral.sh`     fail on hardcoded city/provider names
-- `scripts/boot-check.sh off|on`       boot the built server with every optional feature off / on and
-  assert /health (CI gates deploy on both; needs a migrated DATABASE_URL and no repo-root .env —
-  run it from a scratch worktree). A new optional env var gets a line in both of its lists.
+- `pnpm -C server check-secrets NAME=value … [--live]`  check secrets before `fly secrets set`
+  (see "Deploy, verify, roll back"; `--unset NAME`, `--no-app`, `--env-file`, a bare `AuthKey_….p8`)
+- `scripts/boot-check.sh off|on|broken`   boot the built server with every optional feature off / on /
+  misconfigured and assert /health, including its `degraded` list (CI gates deploy on all three;
+  needs a migrated DATABASE_URL and no repo-root .env — run it from a scratch worktree). A new
+  optional env var gets a line in both of its lists and a broken value in `broken`.
 - `pnpm -C server attach-identity -- --user <id> --email <e>`  give an existing user a sign-in identity
   (or `--api-key-prefix <8 chars>` in place of `--user`; on prod:
   `fly ssh console -a parkagent-api -C "node dist/scripts/attach-identity.js …"`)

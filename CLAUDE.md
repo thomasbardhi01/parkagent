@@ -156,6 +156,12 @@ the `DRY_RUN` secret first, then the caps, then the policy.
   strict `parseArgs` rejects it. So call `pnpm -C server decisions:recent
   --city bos`, not `… -- --city bos`. Only `attach-identity`,
   `create:fr-user`, and `purge:fr-throwaways` strip the `--`.
+- Dependabot never proposes an npm major. Take one on deliberately, in its
+  own PR, against its breaking changes. Its npm PRs arrive with a stale
+  root `pnpm-lock.yaml`; `.github/workflows/dependabot-lockfile.yml` pushes
+  the regenerated one, and the PR's CI then waits for "Approve workflows
+  to run" in the merge box. After that commit Dependabot won't rebase the
+  PR; `@dependabot recreate` starts it over.
 - Run `pnpm -r lint && pnpm -r test` before proposing a change.
 - `pnpm install` registers a lefthook pre-commit hook (see lefthook.yml):
   lint-staged runs prettier and eslint --fix on staged files, then the server

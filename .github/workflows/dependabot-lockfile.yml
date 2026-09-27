@@ -1,0 +1,56 @@
+name: dependabot-lockfile
+
+# Dependabot's npm jobs run per package directory (/server, /executor). From
+# there they never see the root package.json's pnpm pin (the job log says
+# `Guessed version info "pnpm" : "10"`), and they commit only files under that
+# directory. So every npm PR arrives with package.json bumped and the root
+# pnpm-lock.yaml stale, and CI's `pnpm install --frozen-lockfile` fails
+# (ERR_PNPM_OUTDATED_LOCKFILE, #159).
+#
+# This regenerates the lockfile with the repo's own pnpm (packageManager in
+# the root package.json) and pushes it to the PR. It resolves metadata only:
+# --lockfile-only installs nothing, so no package code runs here.
+#
+# The push is made with GITHUB_TOKEN, so GitHub holds the PR's CI run until
+# someone with write access clicks "Approve workflows to run" in the merge
+# box. Dependabot also stops rebasing a PR once another author has committed
+# to it; `@dependabot recreate` starts it over, and this runs again.
+
+on:
+  pull_request:
+    paths: ["**/package.json"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dependabot-lockfile-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  lockfile:
+    if: >-
+      github.event.pull_request.user.login == 'dependabot[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.head_ref }}
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with: { node-version: 24 }
+      # CI=true makes pnpm default to a frozen lockfile; unfreeze it here.
+      - run: pnpm install --lockfile-only --no-frozen-lockfile --ignore-scripts
+      - name: Commit pnpm-lock.yaml to the PR
+        run: |
+          if git diff --quiet -- pnpm-lock.yaml; then
+            echo "pnpm-lock.yaml already matches the manifests"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add pnpm-lock.yaml
+          git commit -m "Update pnpm-lock.yaml for the Dependabot bump"
+          git push

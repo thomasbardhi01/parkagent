@@ -5,6 +5,14 @@ updates:
     schedule:
       interval: weekly
 
+  # npm: minors and patches only. A major gets handled deliberately, in its own
+  # PR, after reading its breaking changes against our code (as dotenv 18 was
+  # in #159). This covers the deliberate pins too; see "Pinned versions" in
+  # CLAUDE.md (prisma 7, typescript 6). `ignore` applies to version updates
+  # only, so a security update that needs a major still comes through.
+  #
+  # These jobs run per package directory and leave the root pnpm-lock.yaml
+  # stale; .github/workflows/dependabot-lockfile.yml regenerates it on the PR.
   - package-ecosystem: npm
     directory: /server
     schedule:
@@ -13,12 +21,7 @@ updates:
       server-deps:
         patterns: ["*"]
     ignore:
-      # Deliberately pinned; see "Pinned versions" in CLAUDE.md.
-      - dependency-name: prisma
-        update-types: ["version-update:semver-major"]
-      - dependency-name: "@prisma/client"
-        update-types: ["version-update:semver-major"]
-      - dependency-name: typescript
+      - dependency-name: "*"
         update-types: ["version-update:semver-major"]
 
   - package-ecosystem: npm
@@ -28,3 +31,6 @@ updates:
     groups:
       executor-deps:
         patterns: ["*"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]

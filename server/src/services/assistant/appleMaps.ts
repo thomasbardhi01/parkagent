@@ -25,7 +25,7 @@
 import { createPrivateKey, sign } from "node:crypto";
 
 import type { GeocodeQuery, GeocodeResult, GeocoderProvider, MetroCity } from "./geocoder.js";
-import { METRO_BBOX, METRO_CENTER, coveredMetros, metroForPoint } from "./geocoder.js";
+import { METRO_BBOX, coveredMetros, metroForPoint } from "./geocoder.js";
 
 export interface AppleMapsConfig {
   /** 10-character Apple Developer team id (the JWT's iss). */
@@ -101,16 +101,15 @@ export class AppleMapsGeocoder implements GeocoderProvider {
     if (cached && this.now().getTime() - cached.at < CACHE_TTL_MS) {
       return { ok: true, results: cached.results.slice(0, limit) };
     }
-    // The biased metro first, around the given point (the phone) or its
-    // center; the other metros only when that found nothing in a box.
+    // The biased metro first, around the given point (the phone) or
+    // within its box; the other metros only when that found nothing.
     const passes: MetroCity[] = q.city
       ? [q.city, ...coveredMetros().filter((c) => c !== q.city)]
       : coveredMetros();
     let results: GeocodeResult[] = [];
     try {
       for (const [index, city] of passes.entries()) {
-        const anchor = index === 0 && q.near ? q.near : METRO_CENTER[city];
-        const rows = await this.search(q, city, anchor);
+        const rows = await this.search(q, city, index === 0 ? q.near : undefined);
         results = [...results, ...rows];
         if (q.city && results.length > 0) break;
       }
@@ -137,11 +136,14 @@ export class AppleMapsGeocoder implements GeocoderProvider {
     this.cache.set(key, { at: nowMs, results });
   }
 
-  /** One /v1/search around a metro, keeping only in-box results. */
+  /** One /v1/search around a metro, keeping only in-box results. Biased
+   * by ONE of `searchLocation` (the given point) or `searchRegion` (the
+   * metro's box): Apple answers 400 "Cannot specify both searchRegion and
+   * searchLocation", and every search failed that way until #152. */
   private async search(
     q: GeocodeQuery,
     city: MetroCity,
-    anchor: { lat: number; lng: number },
+    near: { lat: number; lng: number } | undefined,
   ): Promise<GeocodeResult[]> {
     const box = METRO_BBOX[city];
     const params = new URLSearchParams({
@@ -149,10 +151,13 @@ export class AppleMapsGeocoder implements GeocoderProvider {
       limitToCountries: "US",
       lang: "en-US",
       resultTypeFilter: "Poi,Address",
-      searchLocation: `${anchor.lat},${anchor.lng}`,
-      // north-latitude,east-longitude,south-latitude,west-longitude
-      searchRegion: `${box[3]},${box[2]},${box[1]},${box[0]}`,
     });
+    if (near) {
+      params.set("searchLocation", `${near.lat},${near.lng}`);
+    } else {
+      // north-latitude,east-longitude,south-latitude,west-longitude
+      params.set("searchRegion", `${box[3]},${box[2]},${box[1]},${box[0]}`);
+    }
     if (q.userLocation) {
       params.set("userLocation", `${q.userLocation.lat},${q.userLocation.lng}`);
     }

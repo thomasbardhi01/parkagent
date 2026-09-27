@@ -142,7 +142,15 @@ the `DRY_RUN` secret first, then the caps, then the policy.
   - `boot` runs `scripts/boot-check.sh off`, `on`, and `broken` against a
     migrated PostGIS. `broken` misconfigures every optional feature, and the
     server must still boot.
-  - `ui-tests` (`continue-on-error`).
+  - `ui-tests` (`continue-on-error`). A failed UI test runs once more; one
+    that passes only on that retry is listed in the job summary and gets a
+    "Flaky UI test: <id>" issue (label `flaky-test`), opened or commented
+    on every time it needs the retry again.
+  - `supply-chain.yml` (PRs, main, and daily): `audit` fails on a high or
+    critical advisory in a production dependency (`scripts/audit.mjs`)
+    unless `scripts/audit-allowlist.json` accepts it with a reason and an
+    expiry, and reports dev-only ones; `action-pins` fails on a
+    third-party action not pinned to a commit SHA with a version comment.
   - `deploy` needs `server`, `boot`, and `ios`. A new optional env var needs
     three things:
     - its check in `server/src/env.ts`, as part of a FEATURES entry if it
@@ -155,7 +163,11 @@ the `DRY_RUN` secret first, then the caps, then the policy.
 - pnpm 12 passes a literal `--` through to scripts, and a script using
   strict `parseArgs` rejects it. So call `pnpm -C server decisions:recent
   --city bos`, not `… -- --city bos`. Only `attach-identity`,
-  `create:fr-user`, and `purge:fr-throwaways` strip the `--`.
+  `create:fr-user`, `create:fr-throwaway`, and `purge:fr-throwaways`
+  strip the `--`.
+- Third-party GitHub Actions are pinned by commit SHA with a version
+  comment (`uses: owner/repo@<sha> # v1.2.3`); Dependabot's weekly
+  github-actions PR moves the SHA and the comment together.
 - Dependabot never proposes an npm major. Take one on deliberately, in its
   own PR, against its breaking changes. Its npm PRs arrive with a stale
   root `pnpm-lock.yaml`; `.github/workflows/dependabot-lockfile.yml` pushes
@@ -285,6 +297,10 @@ Two server deps are deliberately held below `latest`. Don't bump them casually.
   but no typescript-eslint release supports it yet, so lint hard-errors.
   Revisit when typescript-eslint ships TS 7 support (their issue #10940).
 
+Prisma's own transitive lodash, deepmerge-ts, and mysql2 are held at
+patched versions by `overrides` in `pnpm-workspace.yaml`, each scoped to
+the vulnerable range so it goes quiet once Prisma ships the fix.
+
 Note that Prisma 7 reads `DATABASE_URL` from `prisma7.config.ts`, not from
 `schema.prisma`. That config and `server/src/index.ts` both load the repo-root
 `.env` by explicit path, because `pnpm -C server dev` runs with cwd `server/`
@@ -384,7 +400,9 @@ check it with `fly scale show -a parkagent-api`.
 - `pnpm -C server attach-identity -- --user <id> --email <e>`  give an existing user a sign-in identity
   (or `--api-key-prefix <8 chars>` in place of `--user`; on prod:
   `fly ssh console -a parkagent-api -C "node dist/scripts/attach-identity.js …"`)
-- `pnpm -C server create:fr-throwaway`  mint a throwaway session for FR-32's live tests (needs the target's DB + AUTH_JWT_SECRET)
+- `pnpm -C server create:fr-throwaway --pool "$(node server/fr/pool.mjs)"`  mint the FR suite's throwaway users, one per
+  `server/fr/` file, as one JSON line to export as `FR_THROWAWAY_POOL` (needs the target's DB + AUTH_JWT_SECRET). The suite
+  runs shuffled; `FR_SEED=<n>` replays the order a report names
 - `pnpm -C server purge:fr-throwaways [-- --apply]`  tear down throwaways a run left behind (dry run by default; the nightly applies it on prod)
 - `pnpm -C executor run login`     headed browser; sign in to ParkNYC once, save auth state
 - `pnpm -C executor run record`    record a real ParkNYC flow (HAR/trace/screens) to fixtures/

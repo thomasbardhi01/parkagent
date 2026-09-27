@@ -1,0 +1,4 @@
+{
+  "$comment": "Accepted audit advisories (scripts/audit.mjs). Each entry: id (GHSA), package, reason (why it can't reach us, or why it waits), expires (YYYY-MM-DD). An expired entry fails the audit until it's re-decided; one that matches nothing any more is flagged for removal.",
+  "accepted": []
+}

@@ -1,9 +1,17 @@
 version: 2
 updates:
+  # Third-party actions are pinned to a commit SHA with a version comment
+  # (scripts/check-action-pins.sh enforces it). Dependabot moves a pin to
+  # the newest release's SHA and rewrites the comment with it; a pin with no
+  # release (setup-flyctl on master) follows its branch's head commit. One
+  # weekly PR for all of them.
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
 
   # npm: minors and patches only. A major gets handled deliberately, in its own
   # PR, after reading its breaking changes against our code (as dotenv 18 was

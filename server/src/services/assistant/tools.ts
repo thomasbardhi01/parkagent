@@ -18,6 +18,7 @@ import type { GarageProvider } from "../garage/garageProvider.js";
 import type { GeocodeResult, GeocoderProvider } from "./geocoder.js";
 import { homeMetroForPoint, metersBetween, metroForPoint } from "./geocoder.js";
 import { assumptionsFor } from "./clarify.js";
+import { requestedTimeProblem, type TimeRequest } from "./requestedTime.js";
 import { choiceLabel, choiceReply, classifyPlaceMatches, nameTokens } from "./placeMatch.js";
 import type { ModelClient, ModelUsage } from "./loop.js";
 import { easternIso, parseEasternTime } from "../hours.js";
@@ -119,6 +120,9 @@ export interface ToolContext {
    * report here, so the turn's accounting row — and the daily spend cap
    * that reads it — counts them too. */
   onModelUsage?: ((usage: ModelUsage) => void) | undefined;
+  /** The clock time this turn's message asked for (requestedTime.ts):
+   * quotes and single-spot plans must honor it, never move it to now. */
+  timeRequest?: TimeRequest | undefined;
 }
 
 /** One tappable answer to a clarifying question: the chip's text and the
@@ -559,14 +563,28 @@ export class AssistantTools {
         },
       }));
     }
+    // A time the user named is theirs: a quote starting before it — "now",
+    // or a 7 PM that has passed today — is refused with the time they
+    // asked for (requestedTime.ts). Later windows can be a day's other
+    // stops, so only earlier ones are refused here.
+    const moved = requestedTimeProblem(ctx.timeRequest, starts, at, { earlierOnly: true });
+    if (moved) {
+      return this.audit(ctx, tool, input, "requested_time_moved", { startsAt }).then(() => ({
+        result: { error: "requested_time_moved", startsAt, instruction: moved },
+      }));
+    }
     if (at.getTime() - starts.getTime() <= 60 * 60_000) return null;
     return this.audit(ctx, tool, input, "past_window", { startsAt }).then(() => ({
       result: {
         error: "window_in_the_past",
         startsAt,
+        // Not "recompute from the current time": that turned a requested
+        // 7 PM that had passed into "now" (nightly 36361125345).
         instruction:
           `That start time is in the past — you guessed the date. ${currentTimeLine(at)} ` +
-          "Recompute the window from the current time and call this tool again.",
+          "Recompute the DATE from the current time and keep the clock time the user asked for; " +
+          "if it has already passed today, use tomorrow and say so, or ask with ask_user " +
+          '("Tomorrow at …" / "Now"). Never move a requested time to now.',
       },
     }));
   }
@@ -1053,12 +1071,17 @@ export class AssistantTools {
       }
       const arrival = easternIso(arrivalAt);
       const minutes = num(stop["duration_minutes"]);
-      const street = await this.quoteStreet(ctx, {
-        lat: stop["lat"],
-        lng: stop["lng"],
-        duration_minutes: minutes,
-        when: arrival,
-      });
+      // A day's stops each have their own time: the message's one
+      // requested time (if any) isn't theirs to honor.
+      const street = await this.quoteStreet(
+        { ...ctx, timeRequest: undefined },
+        {
+          lat: stop["lat"],
+          lng: stop["lng"],
+          duration_minutes: minutes,
+          when: arrival,
+        },
+      );
       const garages = await this.searchGarageWindow(
         num(stop["lat"]),
         num(stop["lng"]),
@@ -1335,10 +1358,34 @@ export class AssistantTools {
         };
       }
     }
+    // The time the user named is the plan's (requestedTime.ts): a single
+    // spot starting anywhere else — "now" for a 7 PM that has passed
+    // today, as nightly 36361125345 got — goes back to the model with the
+    // time they asked for. A plan with no startsAt starts now, which is
+    // what its card would say. A day plan's stops keep their own times.
+    if (plan.kind === "single_spot" && ctx.timeRequest) {
+      const now = this.now();
+      const starts = plan.options.map((o) => (o.startsAt ? parseEasternTime(o.startsAt) : null));
+      const checked = starts.some((s) => s !== null) ? starts.filter((s) => s !== null) : [now];
+      const moved = checked
+        .map((start) => requestedTimeProblem(ctx.timeRequest, start, now))
+        .find((problem) => problem !== null);
+      if (moved) {
+        await this.audit(ctx, "propose_plan", input, "requested_time_moved", {
+          startsAt: plan.options.map((o) => o.startsAt ?? null),
+        });
+        return {
+          result: {
+            error: "requested_time_moved",
+            instruction: `${moved} Set startsAt on each option to the time you propose.`,
+          },
+        };
+      }
+    }
     // What the plan assumed — server truth from the plan itself, stated
     // on every card however the model phrased its reply.
     delete plan.assumptions;
-    const assumptions = assumptionsFor(plan, this.now());
+    const assumptions = assumptionsFor(plan, this.now(), ctx.timeRequest);
     if (assumptions) plan = { ...plan, assumptions };
     const planId = randomUUID();
     await this.deps.db.assistantPlan.create({

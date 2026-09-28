@@ -4,7 +4,7 @@
  * deployed API (prod by default), in dry run.
  *
  * Isolation: every fr/ file runs as its OWN throwaway user, claimed by the
- * file's label from FR_THROWAWAY_POOL (`ownUser`; the labels are in
+ * file's label from the minted pool (`ownUser`; the labels are in
  * pool.mjs, minted by `create-fr-throwaway --pool`). The file deletes its
  * conversations and then the account when its last test ends, so no file
  * reads state another left, and the suite runs shuffled (vitest.fr.config.ts).
@@ -28,6 +28,8 @@
  *    to the key, so a lost bearer can't delete the FR user every later
  *    nightly depends on.
  */
+
+import { readFileSync } from "node:fs";
 
 import { afterAll, beforeAll } from "vitest";
 
@@ -191,14 +193,24 @@ export interface FrUser {
 
 let pool: Record<string, Record<string, unknown>> | null = null;
 
+/** The minted pool: from the file FR_THROWAWAY_POOL_FILE names (the
+ * nightly — an env var's value is printed in every later step's log
+ * header, and user and device ids needn't be public), else the JSON in
+ * FR_THROWAWAY_POOL (a local run). */
+function readPool(): string | undefined {
+  const file = process.env["FR_THROWAWAY_POOL_FILE"]?.trim();
+  if (file) return readFileSync(file, "utf8").trim();
+  return process.env["FR_THROWAWAY_POOL"]?.trim();
+}
+
 function poolEntry(label: string): Omit<FrUser, "label" | "deleted"> {
   if (!pool) {
-    const raw = process.env["FR_THROWAWAY_POOL"]?.trim();
+    const raw = readPool();
     if (!raw) {
       throw new Error(
-        "FR_THROWAWAY_POOL is not set. Every FR file runs as its own throwaway user: " +
-          'mint them with `pnpm -C server create:fr-throwaway --pool "$(node server/fr/pool.mjs)"` ' +
-          "against the target's database and export the JSON line it prints.",
+        "No throwaway pool: set FR_THROWAWAY_POOL_FILE or FR_THROWAWAY_POOL. Every FR file runs as its " +
+          'own throwaway user: mint them with `pnpm -C server create:fr-throwaway --pool "$(node ' +
+          "server/fr/pool.mjs)\"` against the target's database, and save or export the JSON line it prints.",
       );
     }
     pool = JSON.parse(raw) as Record<string, Record<string, unknown>>;
@@ -434,6 +446,70 @@ export function mostRecentEasternAt(hh: number, mm: number): string {
   const today = easternDaysAgoAt(0, hh, mm);
   if (Date.parse(today) <= Date.now() - 60_000) return today;
   return easternDaysAgoAt(1, hh, mm);
+}
+
+/** "2026-10-06": the Eastern calendar date `daysAhead` after `now`'s. */
+function easternDate(now: Date, daysAhead: number): string {
+  const p = etParts(now);
+  return new Date(Date.UTC(p.y, p.m - 1, p.d + daysAhead, 12)).toISOString().slice(0, 10);
+}
+
+/** hh:mm Eastern on a calendar date, as ISO with that day's offset. */
+function easternIsoOn(date: string, hh: number, mm: number): string {
+  // Noon Eastern that day (16:00Z is noon EDT, 11 AM EST): its offset.
+  const { offset } = etParts(new Date(`${date}T16:00:00Z`));
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date}T${pad(hh)}:${pad(mm)}:00${offset}`;
+}
+
+/**
+ * The day the assistant tests ask about, pinned so a run's scenario never
+ * depends on the hour it runs at: the next Tuesday at least two days out
+ * — never today or tomorrow, so no "has 7 PM passed yet?" reading, and
+ * always a weekday both cities enforce. Nightly 36361125345 asked "at 7
+ * PM" at 8:11 PM and tested a different scenario from the 5 AM runs.
+ * `phrase` is how a person says it: "on Tuesday, October 6".
+ */
+export function pinnedDay(now = new Date()): { phrase: string; date: string } {
+  for (let ahead = 2; ahead <= 8; ahead += 1) {
+    const date = easternDate(now, ahead);
+    const day = new Date(`${date}T16:00:00Z`);
+    if (easternWeekday(day.toISOString()) !== "Tue") continue;
+    const month = new Intl.DateTimeFormat("en-US", { timeZone: ET, month: "long" }).format(day);
+    return { phrase: `on Tuesday, ${month} ${Number(date.slice(8))}`, date };
+  }
+  throw new Error("FR: no Tuesday within 8 days"); // unreachable
+}
+
+/**
+ * A clock time that has already passed today by 90 minutes or more, on
+ * the half hour ("6:30 PM"), with its next occurrence tomorrow — the "ask
+ * after the time" scenario, pinned relative to the run. Null within 90
+ * minutes of midnight Eastern, when nothing today has passed that long.
+ */
+export function passedClockTime(
+  now = new Date(),
+): { label: string; clock: string; tomorrowIso: string } | null {
+  const earlier = new Date(now.getTime() - 90 * 60_000);
+  if (easternDate(earlier, 0) !== easternDate(now, 0)) return null;
+  const [hh, mm] = new Intl.DateTimeFormat("en-US", {
+    timeZone: ET,
+    hour: "numeric",
+    minute: "2-digit",
+    hourCycle: "h23",
+  })
+    .format(earlier)
+    .split(":")
+    .map(Number) as [number, number];
+  const minute = mm >= 30 ? 30 : 0;
+  const h12 = hh % 12 === 0 ? 12 : hh % 12;
+  const suffix = hh < 12 ? "AM" : "PM";
+  return {
+    label: minute === 0 ? `${h12} ${suffix}` : `${h12}:30 ${suffix}`,
+    // How the card's window writes it: "6:30–8:30 PM", "6:00–8:00 PM".
+    clock: `${h12}:${minute === 0 ? "00" : "30"}`,
+    tomorrowIso: easternIsoOn(easternDate(now, 1), hh, minute),
+  };
 }
 
 /** Weekday ("Sun".."Sat") of an ISO timestamp, in Eastern time. */

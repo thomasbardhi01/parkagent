@@ -387,7 +387,11 @@ describe("FR-38 saved conversations", () => {
     // Its own conversation, two requests long: nightly 36339460721 listed a
     // conversation under a later request's words. Titles are the FIRST
     // request, for good — the second must not retitle it.
-    const first = `Find me a parking spot at Seaport ${DAY.phrase} at 7 PM near Lola 42 for three hours`;
+    // Short enough to be its own title: a title is the first request cut
+    // at 80 characters with "…" (history.ts titleFrom), and the pinned day
+    // made the device-test phrase 95 (nightly 36367998113).
+    const first = `Parking near Lola 42 ${DAY.phrase} at 7 PM for three hours`;
+    expect(first.length).toBeLessThanOrEqual(80);
     const opened1 = await assistantMessage(me, first, { location: BRAINTREE });
     expect(opened1.status).toBe(200);
     const id = opened1.body["conversationId"] as string;

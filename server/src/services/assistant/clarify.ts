@@ -17,6 +17,7 @@
 import { coveredCities } from "../../providers/registry.js";
 import { parseEasternTime } from "../hours.js";
 import type { AssistantPlanBody } from "./plans.js";
+import { assumedDay, type TimeRequest } from "./requestedTime.js";
 import type { Suggestion } from "./tools.js";
 
 /** The usual answers to the three questions a parking request needs. */
@@ -96,9 +97,16 @@ function dayPrefix(at: Date, now: Date): string {
  * What the plan assumed, in one line: the window and the place.
  * Single spot: "Sat 7:00–10:00 PM, near LoLa 42, Seaport" (the start the
  * options were priced for — now when none is set — and the recommended
- * option's stay). Itinerary: "Mon 3 stops, 10:00 AM–4:30 PM".
+ * option's stay). A day the user didn't say is said out loud: a 7 PM that
+ * had passed today reads "Assuming tomorrow, 7:00–10:00 PM", and
+ * "tonight" asked after midnight "Assuming this evening, …"
+ * (requestedTime.ts). Itinerary: "Mon 3 stops, 10:00 AM–4:30 PM".
  */
-export function assumptionsFor(plan: AssistantPlanBody, now: Date): string | null {
+export function assumptionsFor(
+  plan: AssistantPlanBody,
+  now: Date,
+  request?: TimeRequest,
+): string | null {
   if (plan.kind === "itinerary") {
     const arrivals = plan.stops
       .map((s) => ({ at: parseEasternTime(s.arrival), minutes: s.durationMinutes }))
@@ -116,9 +124,12 @@ export function assumptionsFor(plan: AssistantPlanBody, now: Date): string | nul
   const startsAt = plan.options.map((o) => o.startsAt).find((s): s is string => !!s);
   const start = (startsAt ? parseEasternTime(startsAt) : null) ?? now;
   const end = new Date(start.getTime() + rec.durationMinutes * 60_000);
-  const window = startsAt
-    ? `${dayPrefix(start, now)}${windowText(start, end)}`
-    : `Now–${clockParts(end).join(" ")}`;
+  const assumed = startsAt ? assumedDay(request, start) : null;
+  const window = !startsAt
+    ? `Now–${clockParts(end).join(" ")}`
+    : assumed
+      ? `${assumed}, ${windowText(start, end)}`
+      : `${dayPrefix(start, now)}${windowText(start, end)}`;
   const place = plan.destination?.label;
   return place ? `${window}, near ${place}` : window;
 }

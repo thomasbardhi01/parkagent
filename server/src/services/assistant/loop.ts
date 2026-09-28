@@ -25,6 +25,7 @@ import type { AssistantPlanBody } from "./plans.js";
 import { TOOL_DEFINITIONS } from "./tools.js";
 import type { StreetOption } from "./streetOptions.js";
 import type { AssistantTools, StreetQuote, Suggestion, ToolContext } from "./tools.js";
+import { requestedTimeChoices, requestedTimeIn, requestedTimeLine } from "./requestedTime.js";
 
 /** Overridden by ASSISTANT_MODEL (legacy fallback: ANTHROPIC_MODEL). */
 export const DEFAULT_ASSISTANT_MODEL = "claude-sonnet-5";
@@ -47,12 +48,13 @@ Rules you cannot break (the tools enforce them too):
 - Quote street prices with quote_street and garages with search_garages — never invent a price, address, or availability.
 - quote_street searches every metered block within a walk of the point and says what each is doing during the stay ("Free after 6 PM on Seaport Blvd — 4 min walk", "Metered until 8 PM, then free", "$3.75/hr, 2 hr max"). Offer the best street option (or two) using its summary. Say there's no street parking ONLY when quote_street returns found:false, and then say the radius it searched.
 - When the user names a PLACE rather than "here" — a restaurant, bar, venue, business, hotel, landmark, street, or neighborhood — call geocode_place FIRST with their words (keep the area they named: "Lola 42 Seaport"), then quote_street / search_garages at the place's coordinates — never silently use the phone's location for a named place. For garages at a named place, pass within_m: 600 so every option is walkable from it. When you geocoded a place, put it on the plan as destination {lat, lng, label} so the card can show it on a map. If geocode_place returns choices, ask which one with ask_user. If its match is "closest", the name wasn't found: say so and say what you're searching instead. If it finds nothing, say you couldn't find it and ask for the address — never substitute the current location or a neighborhood center.
-- To ask the user anything, call ask_user (one short question, 2–4 tappable suggestions) — never ask in prose. Ask only when you truly can't proceed: for time or duration, assume the sensible reading (now; 2 hours) instead of asking. When you do ask, offer the common answers ("1 hour", "2 hours", "3 hours"; "Now", "Tonight at 7").
+- To ask the user anything, call ask_user (one short question, 2–4 tappable suggestions) — never ask in prose. Ask only when you truly can't proceed: when the user gave no time, assume now; no duration, 2 hours — instead of asking. When you do ask, offer the common answers ("1 hour", "2 hours", "3 hours"; "Now", "Tonight at 7").
 - Always state your assumptions in one short line when you propose — the window and the place, e.g. "7:00–10:00 PM, near Lola 42, Seaport". The card shows the same line.
 - If search_garages returns garage_search_unavailable, the search FAILED — say "I couldn't check garages right now", never "no garages available", and still propose the street option. Only an empty options list means none were found. If every garage was dropped for distance, the result's nearestBeyondM says how far the closest one is — tell the user that distance ("the nearest garage is about 900 m away") rather than "none found".
 - A follow-up message edits the CURRENT plan: "cheaper?", "closer", "make it 5 instead", "add a stop at 3" refer to what you just proposed. Re-run only the tools whose inputs changed and propose the revised plan. Ask a clarifying question only when you truly cannot proceed; otherwise assume the sensible reading and say what you assumed in a few words.
 - An itinerary's total must fit the user's remaining daily budget (build_itinerary shows it). If it doesn't fit, say what to cut.
 - Garage checkout is a deep link to the site the option came from (each search_garages option names its provider — SpotHero or ParkWhiz): the user finishes the purchase there and the pass lives in that site's account. Say so when it matters, in a few words, naming the right site.
+- A clock time the user names is theirs: never move it to now or to any other time. When they name one with no day, their message carries a [requested time] line saying whether it is later today or has already passed; a time that has passed means its next occurrence — plan for that (the card says "Assuming tomorrow") or ask with ask_user ("Tomorrow at 7 PM" / "Now"). "Tonight" asked after midnight means this coming evening. The tools refuse a quote or plan that moves a requested time.
 - Every user message ends with the CURRENT date and time in brackets. Compute every date from it — "tonight", "tomorrow", "at 2pm" are relative to that timestamp. NEVER guess or recall a date; a window in the past is always a mistake, and the tools will bounce it back to you with the current time so you can retry.`;
 
 /** The one-shot correction when a turn quoted prices but never proposed. */
@@ -271,11 +273,16 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
     stored && stored.userId === args.userId ? (stored.turns as ModelTurn[]) : [];
 
   const at = args.now?.() ?? new Date();
+  // The clock time the message names, read here rather than left to the
+  // model: a 7 PM that has passed today means tomorrow, never "now"
+  // (requestedTime.ts). The tools hold the plan to it.
+  const timeRequest = requestedTimeIn(args.text, at) ?? undefined;
   const envelope = [
     args.location ? phoneLocationLine(args.location) : null,
     // The prod bug this cures: without a clock, "tonight" became a
     // hallucinated 2024 date and SpotHero 400ed the past window.
     currentTimeLine(at),
+    timeRequest ? requestedTimeLine(timeRequest, at) : null,
   ].filter((line): line is string => line !== null);
   const userText = `${args.text}\n\n${envelope.join("\n")}`;
   const messages: ModelTurn[] = [...history, { role: "user", content: userText }];
@@ -292,6 +299,7 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
     // "make it 5 instead" plan keeps the place it was about.
     ...groundingIn(history),
     onModelUsage: (usage) => sideCalls.push(usage),
+    timeRequest,
   };
 
   const segments: string[] = [];
@@ -424,9 +432,12 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
   // places, so the question is still one tap to answer.
   // Else, a question asked in prose about the city, the time, or the
   // stay gets its usual answers (clarify.ts).
+  // A question about a requested time that has passed ("tomorrow at 7, or
+  // now?") gets exactly those two answers.
   const suggestions =
     asked?.suggestions ??
     (plan === null && (ctx.placeChoices?.length ?? 0) >= 2 ? ctx.placeChoices! : null) ??
+    (plan === null && reply.trim().endsWith("?") ? requestedTimeChoices(timeRequest) : null) ??
     (plan === null ? suggestionsForQuestion(reply) : null);
 
   // The model's context, cut only where a user message starts; and the

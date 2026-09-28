@@ -885,12 +885,31 @@ A clarifying question comes with tappable answers wherever possible:
 `ask_user` suggestions, ambiguous places, or, when the model asks in
 prose, the usual answers for city, time, and duration. Every plan states
 its assumptions in one server-computed line ("7:00–10:00 PM, near Lola
-42, Seaport"). **Accepted when** a duration question is answered with one
-tap and the plan that follows shows its window and place.
+42, Seaport").
 
-Evidence: `assistantClarify.test.ts`; iOS
+A clock time the user names is never silently changed. With no day named,
+one that has already passed today (by more than 15 minutes) means its next
+occurrence: the plan is for tomorrow at that time and says so ("Assuming
+tomorrow, 7:00–10:00 PM"), or the assistant asks, with "Tomorrow at 7 PM" /
+"Now" to tap. "Tonight" asked between midnight and 5 AM means this coming
+evening ("Assuming this evening, …"). The server reads the time from the
+message (`services/assistant/requestedTime.ts`), tells the model, and the
+quote tools and `propose_plan` refuse a window that moves it; "now" is the
+user's to choose.
+
+**Accepted when** a duration question is answered with one tap and the
+plan that follows shows its window and place, and a clock time asked after
+it has passed today is planned for tomorrow and said so, or asked about —
+never moved to now.
+
+Evidence: `assistantClarify.test.ts`, `assistantRequestedTime.test.ts`
+(a time already passed, a time later today, "tonight" after midnight, and
+a day's stops keeping their own times), `requestedTime.test.ts`; iOS
 `AssistantUITests.testClarifyingQuestionIsTappableAndThePlanStatesItsAssumptions`;
-live FR-35 (no city question after a known location).
+live FR-35 (no city question after a known location) and FR-40 (asked 90
+minutes after the time it names). The live assistant tests pin their
+requests to a named day (`fr/client.ts` `pinnedDay`), so a run tests the
+same scenario whatever hour it runs at.
 
 ---
 

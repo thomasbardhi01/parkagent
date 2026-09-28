@@ -401,8 +401,9 @@ check it with `fly scale show -a parkagent-api`.
   (or `--api-key-prefix <8 chars>` in place of `--user`; on prod:
   `fly ssh console -a parkagent-api -C "node dist/scripts/attach-identity.js …"`)
 - `pnpm -C server create:fr-throwaway --pool "$(node server/fr/pool.mjs)"`  mint the FR suite's throwaway users, one per
-  `server/fr/` file, as one JSON line to export as `FR_THROWAWAY_POOL` (needs the target's DB + AUTH_JWT_SECRET). The suite
-  runs shuffled; `FR_SEED=<n>` replays the order a report names
+  `server/fr/` file, as one JSON line: save it to a file named by `FR_THROWAWAY_POOL_FILE` (what the nightly does — never
+  an env var's value, which Actions prints in every later step's log) or export it as `FR_THROWAWAY_POOL` locally (needs
+  the target's DB + AUTH_JWT_SECRET). The suite runs shuffled; `FR_SEED=<n>` replays the order a report names
 - `pnpm -C server purge:fr-throwaways [-- --apply]`  tear down throwaways a run left behind (dry run by default; the nightly applies it on prod)
 - `pnpm -C executor run login`     headed browser; sign in to ParkNYC once, save auth state
 - `pnpm -C executor run record`    record a real ParkNYC flow (HAR/trace/screens) to fixtures/

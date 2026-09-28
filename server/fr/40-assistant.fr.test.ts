@@ -21,6 +21,8 @@ import {
   NYC_AUTOPAY,
   ownUser,
   parkedBody,
+  passedClockTime,
+  pinnedDay,
   userFetch,
 } from "./client.js";
 
@@ -28,6 +30,12 @@ import {
  * are deleted with it however the tests end, so none carries into another
  * file — or another test here — as history. */
 const me = ownUser(import.meta.url);
+
+/** Every request below names this day and a clock time, so a run's
+ * scenario is the same at 5 AM as at 8 PM — never "has 7 PM passed yet?"
+ * (fr/client.ts pinnedDay). The one test about an hour that has already
+ * passed pins that on purpose (passedClockTime). */
+const DAY = pinnedDay();
 
 const BOSTON_CENTER = { lat: 42.3554, lng: -71.0605 };
 /** The 2026-09-25 device test was sent from Braintree: outside the Boston
@@ -102,7 +110,7 @@ async function planFor(text: string, location: { lat: number; lng: number }) {
     false,
   );
   if (res.body["plan"] === null) {
-    res = await assistantMessage(me, "Go ahead — propose the options now.", {
+    res = await assistantMessage(me, "Go ahead — propose the options.", {
       conversationId: res.body["conversationId"] as string,
       location,
     });
@@ -116,7 +124,7 @@ describe("FR-21 / FR-23 single spot for a named place", () => {
   it("FR-21 FR-23 'parking near Newbury Street' yields a validated single_spot plan with grounded options", async () => {
     let res = await assistantMessage(
       me,
-      "Find me street or garage parking near Newbury Street in Boston tomorrow at 2pm, for about 2 hours. Propose the options as a plan.",
+      `Find me street or garage parking near Newbury Street in Boston ${DAY.phrase} at 2 PM, for about 2 hours. Propose the options as a plan.`,
       { location: BOSTON_CENTER },
     );
     expect(res.status).toBe(200);
@@ -125,7 +133,7 @@ describe("FR-21 / FR-23 single spot for a named place", () => {
 
     if (res.body["plan"] === null) {
       // The model asked a clarifying question; answer once and insist.
-      res = await assistantMessage(me, "Yes — go ahead and propose the plan now.", {
+      res = await assistantMessage(me, "Yes — go ahead and propose the plan.", {
         conversationId: res.body["conversationId"] as string,
       });
       expect(res.status).toBe(200);
@@ -162,8 +170,8 @@ describe("FR-21 / FR-23 single spot for a named place", () => {
         expect(option["walkMinutes"] as number).toBeLessThanOrEqual(15);
       }
       if (typeof option["startsAt"] === "string") {
-        // "tomorrow" must land in the future — dates relative to now.
-        expect(Date.parse(option["startsAt"] as string)).toBeGreaterThan(Date.now());
+        // The pinned day, at the time asked — dates relative to now.
+        expect(option["startsAt"] as string).toMatch(new RegExp(`^${DAY.date}T14:00`));
       }
     }
   }, 180_000);
@@ -225,7 +233,7 @@ describe("FR-22 itineraries surface", () => {
 describe("FR-35 / FR-36 / FR-40 the device-test phrases", () => {
   it("FR-35 FR-36 FR-40 'at Seaport at 7 PM near Lola 42 for three hours' from Braintree", async () => {
     const res = await planFor(
-      "Find me a parking spot at Seaport at 7 PM near Lola 42 for three hours",
+      `Find me a parking spot at Seaport ${DAY.phrase} at 7 PM near Lola 42 for three hours`,
       BRAINTREE,
     );
     const envelope = res.body["plan"] as Record<string, unknown> | null;
@@ -246,9 +254,16 @@ describe("FR-35 / FR-36 / FR-40 the device-test phrases", () => {
       `destination "${destination!.label}" is ${off} m from LoLa 42 (22 Liberty Dr) — is APPLE_MAPS_* set on the target? (docs/apple-maps-setup.md)`,
     ).toBeLessThanOrEqual(300);
 
-    // FR-40: what it assumed, in one line.
+    // FR-40: what it assumed, in one line — the window asked for, on the
+    // day asked for, never moved.
     expect(typeof plan["assumptions"]).toBe("string");
-    expect(plan["assumptions"] as string).toMatch(/7:00/);
+    expect(plan["assumptions"] as string).toMatch(/7:00–10:00 PM/);
+    for (const option of plan["options"] as Record<string, unknown>[]) {
+      if (typeof option["startsAt"] !== "string") continue;
+      expect(option["startsAt"] as string, JSON.stringify(option)).toMatch(
+        new RegExp(`^${DAY.date}T19:00`),
+      );
+    }
 
     // FR-36: street options, each in the right state for ITS window,
     // checked against the zone's posted hours from /zones/near.
@@ -291,7 +306,7 @@ describe("FR-35 / FR-36 / FR-40 the device-test phrases", () => {
 
   it("FR-35 'near Moo steakhouse in Seaport Boston' is the Seaport Mooo, within 300 m", async () => {
     const res = await planFor(
-      "Find me parking near Moo steakhouse in Seaport Boston tomorrow at 6 PM for two hours",
+      `Find me parking near Moo steakhouse in Seaport Boston ${DAY.phrase} at 6 PM for two hours`,
       BRAINTREE,
     );
     const envelope = res.body["plan"] as Record<string, unknown> | null;
@@ -310,6 +325,54 @@ describe("FR-35 / FR-36 / FR-40 the device-test phrases", () => {
   }, 240_000);
 });
 
+describe("FR-40 a requested time that has already passed", () => {
+  // Deliberately asked AFTER the time (nightly 36361125345 asked "at 7 PM"
+  // at 8:11 PM and got "8:11–11:11 PM"): the plan must be for its next
+  // occurrence and say so, or the assistant must ask — tomorrow, or now.
+  // Never a plan quietly moved to now.
+  it("FR-40 a clock time that passed today is planned for tomorrow and said so, or asked about — never moved to now", async (ctx) => {
+    const passed = passedClockTime();
+    if (!passed) {
+      ctx.skip(); // within 90 minutes of midnight Eastern: nothing has passed that long today
+      return;
+    }
+    const res = await assistantMessage(
+      me,
+      `Find me a parking spot at Seaport at ${passed.label} near Lola 42 for two hours`,
+      { location: BRAINTREE },
+    );
+    expect(res.status).toBe(200);
+    const envelope = res.body["plan"] as Record<string, unknown> | null;
+    if (envelope === null) {
+      // It asked instead: with the two answers, one tap each.
+      const chips = ((res.body["suggestions"] as { label: string }[] | null) ?? []).map(
+        (s) => s.label,
+      );
+      const said = `asked ${JSON.stringify(res.body["reply"])} with ${JSON.stringify(chips)}`;
+      expect(
+        chips.some((label) => /^tomorrow\b/i.test(label)),
+        said,
+      ).toBe(true);
+      expect(
+        chips.some((label) => /^(right )?now\b/i.test(label)),
+        said,
+      ).toBe(true);
+      return;
+    }
+    const plan = envelope["plan"] as Record<string, unknown>;
+    const options = plan["options"] as Record<string, unknown>[];
+    const starts = options.map((o) => o["startsAt"]).filter((s): s is string => !!s);
+    const sent = `plan: ${JSON.stringify(plan)}`;
+    // A plan for later carries its start — tomorrow at the time asked.
+    expect(starts.length, sent).toBeGreaterThan(0);
+    for (const start of starts) {
+      expect(Date.parse(start), sent).toBe(Date.parse(passed.tomorrowIso));
+    }
+    expect(plan["assumptions"] as string, sent).toMatch(/^Assuming tomorrow, /);
+    expect(plan["assumptions"] as string, sent).toContain(passed.clock);
+  }, 240_000);
+});
+
 describe("FR-38 saved conversations", () => {
   it("FR-38 lists, opens, and deletes the caller's conversations by their first request; unknown ones are 404", async () => {
     const missing = await userFetch(me, "GET", "/assistant/conversations/fr-no-such-conversation");
@@ -324,7 +387,7 @@ describe("FR-38 saved conversations", () => {
     // Its own conversation, two requests long: nightly 36339460721 listed a
     // conversation under a later request's words. Titles are the FIRST
     // request, for good — the second must not retitle it.
-    const first = "Find me a parking spot at Seaport at 7 PM near Lola 42 for three hours";
+    const first = `Find me a parking spot at Seaport ${DAY.phrase} at 7 PM near Lola 42 for three hours`;
     const opened1 = await assistantMessage(me, first, { location: BRAINTREE });
     expect(opened1.status).toBe(200);
     const id = opened1.body["conversationId"] as string;

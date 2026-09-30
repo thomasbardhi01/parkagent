@@ -524,6 +524,9 @@ export interface ConversationRow {
   title: string | null;
   /** [{role, text, at, planId?, suggestions?}] — see services/assistant/history.ts. */
   display: unknown;
+  /** The request so far (services/assistant/requestState.ts); null on a
+   * row saved before request state existed. */
+  requestState?: unknown;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -794,8 +797,9 @@ export interface AppDb {
         turns: unknown;
         title?: string | null;
         display?: unknown;
+        requestState?: unknown;
       };
-      update: { turns: unknown; display?: unknown; title?: string | null };
+      update: { turns: unknown; display?: unknown; title?: string | null; requestState?: unknown };
     }): Promise<unknown>;
     /** The history list: one user's conversations, newest first. */
     findMany(args: {

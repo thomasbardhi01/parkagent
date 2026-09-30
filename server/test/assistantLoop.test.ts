@@ -10,20 +10,32 @@ import { describe, expect, test } from "vitest";
 import type { ModelClient, ModelResponse, ModelTurn } from "../src/services/assistant/loop.js";
 import { SYSTEM_PROMPT } from "../src/services/assistant/loop.js";
 import { planSchema } from "../src/services/assistant/plans.js";
+import {
+  CLEARABLE_FIELDS,
+  currentRequestBlock,
+  emptyState,
+} from "../src/services/assistant/requestState.js";
+import type { RequestState } from "../src/services/assistant/requestState.js";
 import { TOOL_DEFINITIONS } from "../src/services/assistant/tools.js";
+import type { ToolContext } from "../src/services/assistant/tools.js";
 import type { GarageOption, GarageProvider } from "../src/services/garage/garageProvider.js";
 import { API_KEY, STEINWAY_A, makeTestApp } from "./helpers.js";
 
 const HEADERS = { "x-api-key": API_KEY, "content-type": "application/json" };
 
 /** Feed the loop a fixed sequence of assistant messages. */
-function scriptedModel(responses: ModelResponse[]): ModelClient & { seen: ModelTurn[][] } {
+function scriptedModel(
+  responses: ModelResponse[],
+): ModelClient & { seen: ModelTurn[][]; systems: string[] } {
   let call = 0;
   const seen: ModelTurn[][] = [];
+  const systems: string[] = [];
   return {
     seen,
+    systems,
     async create(args, onText) {
       seen.push(args.messages);
+      systems.push(args.system);
       const response = responses[Math.min(call, responses.length - 1)]!;
       call += 1;
       for (const block of response.content) {
@@ -87,9 +99,10 @@ const SINGLE_SPOT_PLAN = {
 };
 
 describe("tool schemas", () => {
-  test("all ten tools are declared with object schemas and no extras allowed", () => {
+  test("all eleven tools are declared with object schemas and no extras allowed", () => {
     const names = TOOL_DEFINITIONS.map((t) => t.name);
     expect(names).toEqual([
+      "update_request",
       "geocode_place",
       "search_garages",
       "quote_street",
@@ -734,5 +747,419 @@ describe("garage deepLink delivery", () => {
     });
     expect(res.statusCode).toBe(409);
     expect(res.json().error).toBe("book_failed");
+  });
+});
+
+describe("request state (FR-42)", () => {
+  /** The stored state of a conversation row. */
+  const stored = (t: ReturnType<typeof makeTestApp>, id: string) =>
+    t.state.conversations.find((c) => c.id === id)!.requestState as RequestState;
+
+  const edit = (id: string, input: Record<string, unknown>) =>
+    ({ type: "tool_use", id, name: "update_request", input }) as const;
+
+  test("update_request edits the conversation's state; it round-trips across turns, and a new conversation starts empty", async () => {
+    const model = scriptedModel([
+      // Turn 1: two constraints in one patch.
+      {
+        content: [
+          edit("u1", { placeQuery: "Fenway", maxPriceUsd: 30, reason: "near Fenway, under $30" }),
+        ],
+        stopReason: "tool_use",
+      },
+      { content: [{ type: "text", text: "How long will you stay?" }], stopReason: "end_turn" },
+      // Turn 2: one supersede.
+      {
+        content: [edit("u2", { maxPriceUsd: 20, reason: "now under $20" })],
+        stopReason: "tool_use",
+      },
+      { content: [{ type: "text", text: "Under $20 it is." }], stopReason: "end_turn" },
+      // Turn 3, a new conversation: nothing edited.
+      { content: [{ type: "text", text: "Where to?" }], stopReason: "end_turn" },
+    ]);
+    const t = makeTestApp({ assistantModel: model });
+
+    const first = await t.app.inject({
+      method: "POST",
+      url: "/assistant/message",
+      headers: HEADERS,
+      payload: { text: "parking near Fenway under $30" },
+    });
+    expect(first.statusCode).toBe(200);
+    const id = first.json().conversationId as string;
+    const afterFirst = stored(t, id);
+    expect(afterFirst.version).toBe(1);
+    expect(afterFirst.place.query).toBe("Fenway");
+    expect(afterFirst.hard.maxPriceUsd).toBe(30);
+    expect(afterFirst.log.map((e) => [e.field, e.from, e.to, e.utterance])).toEqual([
+      ["place.query", null, "Fenway", "parking near Fenway under $30"],
+      ["hard.maxPriceUsd", null, 30, "parking near Fenway under $30"],
+    ]);
+    // The first call saw the empty state; the call after the edit saw the edit.
+    expect(model.systems[0]).toContain(currentRequestBlock(emptyState()));
+    expect(model.systems[1]).toContain('"maxPriceUsd":30');
+
+    const second = await t.app.inject({
+      method: "POST",
+      url: "/assistant/message",
+      headers: HEADERS,
+      payload: { text: "actually under $20", conversation_id: id },
+    });
+    expect(second.statusCode).toBe(200);
+    // Loaded from the row BEFORE the turn's first model call.
+    expect(model.systems[2]).toContain('"query":"Fenway"');
+    expect(model.systems[2]).toContain('"maxPriceUsd":30');
+    expect(model.systems[3]).toContain('"maxPriceUsd":20');
+    const afterSecond = stored(t, id);
+    expect(afterSecond.version).toBe(2);
+    expect(afterSecond.hard.maxPriceUsd).toBe(20);
+    // Unmentioned fields inherit.
+    expect(afterSecond.place.query).toBe("Fenway");
+    expect(afterSecond.log).toHaveLength(3);
+    expect(afterSecond.log.at(-1)).toMatchObject({
+      version: 2,
+      field: "hard.maxPriceUsd",
+      from: 30,
+      to: 20,
+      utterance: "actually under $20",
+    });
+
+    const fresh = await t.app.inject({
+      method: "POST",
+      url: "/assistant/message",
+      headers: HEADERS,
+      payload: { text: "park me" },
+    });
+    expect(fresh.statusCode).toBe(200);
+    const freshId = fresh.json().conversationId as string;
+    expect(freshId).not.toBe(id);
+    expect(model.systems[4]).toContain(currentRequestBlock(emptyState()));
+    expect(model.systems[4]).not.toContain("Fenway");
+    expect(stored(t, freshId)).toEqual(emptyState());
+
+    // Every call is on the record: the patch in, the version and changes out.
+    const rows = t.state.decisions.filter(
+      (d) =>
+        d.kind === "assistant_tool" && (d.inputs as { tool?: string }).tool === "update_request",
+    );
+    expect(rows.map((r) => [r.rule, r.inputs, r.outcome])).toEqual([
+      [
+        "request_updated",
+        {
+          tool: "update_request",
+          patch: { placeQuery: "Fenway", maxPriceUsd: 30, reason: "near Fenway, under $30" },
+          conversationId: id,
+        },
+        { version: 1, changed: ["place.query", "hard.maxPriceUsd"], overrides: [] },
+      ],
+      [
+        "request_updated",
+        {
+          tool: "update_request",
+          patch: { maxPriceUsd: 20, reason: "now under $20" },
+          conversationId: id,
+        },
+        { version: 2, changed: ["hard.maxPriceUsd"], overrides: [] },
+      ],
+    ]);
+  });
+
+  test("a third update_request in one turn is refused as too_many_edits and audited; the next turn gets two again", async () => {
+    const model = scriptedModel([
+      {
+        content: [
+          edit("u1", { maxPriceUsd: 30, reason: "a" }),
+          edit("u2", { maxPriceUsd: 20, reason: "b" }),
+        ],
+        stopReason: "tool_use",
+      },
+      // Across loop iterations the count carries on.
+      { content: [edit("u3", { maxPriceUsd: 10, reason: "c" })], stopReason: "tool_use" },
+      { content: [{ type: "text", text: "Searching." }], stopReason: "end_turn" },
+      // Next turn: two more are fine.
+      {
+        content: [
+          edit("u4", { maxPriceUsd: 12, reason: "d" }),
+          edit("u5", { maxWalkMinutes: 5, reason: "e" }),
+        ],
+        stopReason: "tool_use",
+      },
+      { content: [{ type: "text", text: "Done." }], stopReason: "end_turn" },
+    ]);
+    const t = makeTestApp({ assistantModel: model });
+    const first = await t.app.inject({
+      method: "POST",
+      url: "/assistant/message",
+      headers: HEADERS,
+      payload: { text: "under $30, no $20, no $10" },
+    });
+    const id = first.json().conversationId as string;
+    // The refusal is what the model read for the third call.
+    const turns = JSON.stringify(t.state.conversations[0]!.turns);
+    expect(turns).toContain("too_many_edits");
+    const refused = t.state.decisions.find((d) => d.rule === "too_many_edits");
+    expect(refused).toMatchObject({
+      kind: "assistant_tool",
+      inputs: { tool: "update_request", patch: { maxPriceUsd: 10, reason: "c" } },
+      outcome: { error: "too_many_edits", version: 2 },
+    });
+    // The first two applied; the third changed nothing.
+    expect(stored(t, id)).toMatchObject({ version: 2, hard: { maxPriceUsd: 20 } });
+    const turnRow = t.state.decisions.find((d) => d.kind === "assistant_turn");
+    expect(turnRow?.outcome).toMatchObject({ stateEdits: 3, requestVersion: 2 });
+
+    await t.app.inject({
+      method: "POST",
+      url: "/assistant/message",
+      headers: HEADERS,
+      payload: { text: "12 dollars, 5 minute walk", conversation_id: id },
+    });
+    expect(stored(t, id)).toMatchObject({
+      version: 4,
+      hard: { maxPriceUsd: 12, maxWalkMinutes: 5 },
+    });
+    expect(t.state.decisions.filter((d) => d.rule === "too_many_edits")).toHaveLength(1);
+  });
+
+  test("a turn that fails mid-flight leaves the stored state as it was", async () => {
+    let call = 0;
+    const model: ModelClient = {
+      async create() {
+        call += 1;
+        if (call === 1) {
+          return {
+            content: [edit("u1", { maxPriceUsd: 30, reason: "a" })],
+            stopReason: "tool_use",
+          };
+        }
+        if (call === 2) return { content: [{ type: "text", text: "Ok." }], stopReason: "end_turn" };
+        if (call === 3) {
+          return { content: [edit("u2", { maxPriceUsd: 5, reason: "b" })], stopReason: "tool_use" };
+        }
+        throw new Error("upstream 529");
+      },
+    };
+    const t = makeTestApp({ assistantModel: model });
+    const first = await t.app.inject({
+      method: "POST",
+      url: "/assistant/message",
+      headers: HEADERS,
+      payload: { text: "under $30" },
+    });
+    const id = first.json().conversationId as string;
+    const failed = await t.app.inject({
+      method: "POST",
+      url: "/assistant/message",
+      headers: HEADERS,
+      payload: { text: "under $5", conversation_id: id },
+    });
+    expect(failed.statusCode).toBe(500);
+    // The transcript didn't take the failed turn, and neither did the state.
+    expect(stored(t, id)).toMatchObject({ version: 1, hard: { maxPriceUsd: 30 } });
+  });
+
+  test("the system prompt carries the rule and, every call, the Current request block", async () => {
+    expect(SYSTEM_PROMPT).toContain(
+      "When the user changes anything about the request, call update_request with only what changed before searching.",
+    );
+    const model = scriptedModel([
+      { content: [{ type: "text", text: "Where to?" }], stopReason: "end_turn" },
+    ]);
+    const t = makeTestApp({ assistantModel: model });
+    await t.app.inject({
+      method: "POST",
+      url: "/assistant/message",
+      headers: HEADERS,
+      payload: { text: "park me" },
+    });
+    expect(model.systems[0]!.startsWith(SYSTEM_PROMPT)).toBe(true);
+    expect(model.systems[0]).toContain("Current request");
+    expect(model.systems[0]!.endsWith(currentRequestBlock(emptyState()))).toBe(true);
+  });
+
+  test("a stored row from before request state existed loads as the empty state and saves one", async () => {
+    const model = scriptedModel([
+      { content: [edit("u1", { rank: "closest", reason: "closest" })], stopReason: "tool_use" },
+      { content: [{ type: "text", text: "Closest it is." }], stopReason: "end_turn" },
+    ]);
+    const t = makeTestApp({ assistantModel: model });
+    t.state.conversations.push({
+      id: "conv_legacy",
+      userId: "u1",
+      turns: [
+        { role: "user", content: "park near the museum" },
+        { role: "assistant", content: [{ type: "text", text: "For how long?" }] },
+      ],
+      title: "park near the museum",
+      display: [],
+      createdAt: new Date("2026-01-05T13:00:00Z"),
+      updatedAt: new Date("2026-01-05T13:00:00Z"),
+    });
+    const res = await t.app.inject({
+      method: "POST",
+      url: "/assistant/message",
+      headers: HEADERS,
+      payload: { text: "the closest one", conversation_id: "conv_legacy" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(model.systems[0]).toContain(currentRequestBlock(emptyState()));
+    expect(stored(t, "conv_legacy")).toMatchObject({ version: 1, soft: { rank: "closest" } });
+  });
+});
+
+describe("update_request, the tool (FR-42)", () => {
+  const ctx = (): ToolContext => ({ userId: "u1", conversationId: "c1" });
+
+  test("strict, flat, and inside what the API compiles for strict tools", () => {
+    const tool = TOOL_DEFINITIONS.find((t) => t.name === "update_request")!;
+    expect(tool.strict).toBe(true);
+    const schema = tool.input_schema as {
+      type: string;
+      additionalProperties: boolean;
+      required: string[];
+      properties: Record<string, Record<string, unknown>>;
+    };
+    expect(schema.additionalProperties).toBe(false);
+    expect(schema.required).toEqual(["reason"]);
+    // Flat: every field is a scalar or an array of scalars — no nested
+    // object for the model to fill with the whole state.
+    for (const [name, prop] of Object.entries(schema.properties)) {
+      expect(["string", "number", "integer", "boolean", "array"], name).toContain(prop["type"]);
+      if (prop["type"] === "array") {
+        expect((prop["items"] as { type: string }).type, name).toBe("string");
+      }
+    }
+    expect((schema.properties["clear"]!["items"] as { enum: string[] }).enum).toEqual([
+      ...CLEARABLE_FIELDS,
+    ]);
+    // Strict tool use rejects (400s) these keywords, and every turn would
+    // fail with it: https://platform.claude.com/docs/en/build-with-claude/structured-outputs
+    const unsupported = [
+      "minimum",
+      "maximum",
+      "exclusiveMinimum",
+      "exclusiveMaximum",
+      "multipleOf",
+      "minLength",
+      "maxLength",
+      "maxItems",
+      "pattern",
+      "oneOf",
+      "anyOf",
+      "not",
+    ];
+    const walk = (node: unknown, path: string) => {
+      if (Array.isArray(node)) {
+        node.forEach((n, i) => walk(n, `${path}[${i}]`));
+        return;
+      }
+      if (typeof node !== "object" || node === null) return;
+      const record = node as Record<string, unknown>;
+      for (const key of unsupported) expect(key in record, `${path}.${key}`).toBe(false);
+      if ("minItems" in record) expect([0, 1], `${path}.minItems`).toContain(record["minItems"]);
+      // A type array is a union: the API budgets 16 across strict tools.
+      if ("type" in record) expect(typeof record["type"], `${path}.type`).toBe("string");
+      if (record["type"] === "object") expect(record["additionalProperties"], path).toBe(false);
+      for (const [key, value] of Object.entries(record)) walk(value, `${path}.${key}`);
+    };
+    walk(schema, "update_request");
+    // The API's budgets across all strict tools: 20 tools, 24 optional
+    // parameters.
+    const strictTools = TOOL_DEFINITIONS.filter((t) => t.strict === true);
+    expect(strictTools.length).toBeLessThanOrEqual(20);
+    const optional = strictTools.reduce((sum, t) => {
+      const s = t.input_schema as { properties: object; required?: string[] };
+      return sum + Object.keys(s.properties).length - (s.required?.length ?? 0);
+    }, 0);
+    expect(optional).toBeLessThanOrEqual(24);
+    // The other tools are unchanged by this PR: strict is update_request's alone.
+    expect(strictTools.map((t) => t.name)).toEqual(["update_request"]);
+  });
+
+  test("an unreadable time bounces with the time format and the current time", async () => {
+    const t = makeTestApp({});
+    const out = await t.deps.assistantTools!.execute(ctx(), "update_request", {
+      startsAt: "tonight",
+      reason: "tonight",
+    });
+    const result = out.result as { error: string; value: string; instruction: string };
+    expect(result.error).toBe("unreadable_time");
+    expect(result.value).toBe("tonight");
+    expect(result.instruction).toContain("2026-09-26T18:00:00-04:00");
+    expect(result.instruction).toContain("[current time: Mon 2026-01-05 14:00 ET]");
+    expect(t.state.decisions.at(-1)).toMatchObject({
+      kind: "assistant_tool",
+      rule: "unreadable_time",
+      inputs: { tool: "update_request", patch: { startsAt: "tonight", reason: "tonight" } },
+    });
+  });
+
+  test("the whole state instead of a patch is refused, audited, and changes nothing", async () => {
+    const t = makeTestApp({});
+    const c = ctx();
+    const out = await t.deps.assistantTools!.execute(c, "update_request", {
+      version: 0,
+      intent: "park_now",
+      place: { query: "Fenway" },
+      window: { source: "default" },
+      reason: "everything",
+    });
+    const result = out.result as { error: string; issues: string[]; instruction: string };
+    expect(result.error).toBe("invalid_patch");
+    expect(result.issues.join(" ")).toMatch(/only the fields that changed/);
+    expect(result.instruction).toContain("maxPriceUsd");
+    expect(t.state.decisions.at(-1)).toMatchObject({ rule: "invalid_patch" });
+    expect(c.requestState ?? emptyState()).toEqual(emptyState());
+  });
+
+  test("a clear naming a field that doesn't exist is refused with the real names", async () => {
+    const t = makeTestApp({});
+    const out = await t.deps.assistantTools!.execute(ctx(), "update_request", {
+      clear: ["budget"],
+      reason: "forget the budget",
+    });
+    const result = out.result as { error: string; issues: string[] };
+    expect(result.error).toBe("invalid_patch");
+    expect(result.issues.join(" ")).toContain("hard.maxPriceUsd");
+  });
+
+  test("a patch that changes nothing says so, keeps the version, and is audited as unchanged", async () => {
+    const t = makeTestApp({});
+    const c = ctx();
+    const tools = t.deps.assistantTools!;
+    await tools.execute(c, "update_request", { maxPriceUsd: 20, reason: "a" });
+    const again = await tools.execute(c, "update_request", {
+      maxPriceUsd: 20,
+      reason: "again",
+    });
+    const result = again.result as { version: number; changed: string[]; instruction: string };
+    expect(result.version).toBe(1);
+    expect(result.changed).toEqual([]);
+    expect(result.instruction).toMatch(/Nothing changed/);
+    expect(t.state.decisions.at(-1)).toMatchObject({
+      rule: "request_unchanged",
+      outcome: { version: 1, changed: [], overrides: [] },
+    });
+  });
+
+  test("the model's contradicting intent is overridden in the result and on the record", async () => {
+    const t = makeTestApp({});
+    const out = await t.deps.assistantTools!.execute(ctx(), "update_request", {
+      intent: "park_now",
+      startsAt: "2026-01-05T17:00:00-05:00",
+      reason: "at 5",
+    });
+    const result = out.result as {
+      state: RequestState;
+      overrides: { requested: string; applied: string }[];
+    };
+    expect(result.state.intent).toBe("park_later");
+    expect(result.overrides).toMatchObject([{ requested: "park_now", applied: "park_later" }]);
+    // The model is handed the state without its audit log.
+    expect("log" in result.state).toBe(false);
+    expect(t.state.decisions.at(-1)!.outcome).toMatchObject({
+      version: 1,
+      overrides: [{ field: "intent", requested: "park_now", applied: "park_later" }],
+    });
   });
 });

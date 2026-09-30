@@ -506,6 +506,9 @@ model Conversation {
   // The readable transcript: [{role, text, at, planId?, suggestions?}].
   // Never trimmed with `turns`; deleted with the row (90-day retention).
   display   Json     @default("[]")
+  // The request so far, server-owned and versioned
+  // (services/assistant/requestState.ts). Null on rows saved before it.
+  requestState Json? @map("request_state")
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 

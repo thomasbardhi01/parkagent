@@ -1786,7 +1786,9 @@ fails a turn. Every turn writes an `assistant_turn` decisions row with
 the model, summed input/output tokens, model-call count, wall-clock
 latency, and an estimated cost from published per-model list prices —
 including any call a tool made on its own model (`explain_decision`'s
-phrasing lands in `otherModelCalls` and in the cost).
+phrasing lands in `otherModelCalls` and in the cost) — plus
+`stateEdits` (the turn's `update_request` calls) and `requestVersion`
+(the request's version when the turn ended; see "The request" below).
 `ASSISTANT_DAILY_SPEND_CAP_USD` (default `5`) caps each user's estimated
 daily model spend against those rows (midnight ET, the same boundary as
 the parking caps); a user over it gets `429 assistant_budget_exhausted`
@@ -1842,7 +1844,9 @@ unreadable time bounces back to the model (`unreadable_time`), and times
 are forwarded and stored in one canonical form with NYC's offset
 (`2026-09-26T18:00:00-04:00`).
 
-The model's tools: `geocode_place(query, city?)` resolves a NAMED place
+The model's tools: `update_request(patch)` records what the user asked
+for in the conversation's request (see "The request" below).
+`geocode_place(query, city?)` resolves a NAMED place
 to coordinates. That covers a restaurant, bar, venue, business, hotel,
 landmark, street, or neighborhood. The search is biased to the phone's
 city (see "Place search" below). The model calls it FIRST for any named
@@ -2025,6 +2029,97 @@ choice, cost) with `totalUsd` recomputed server-side and refused when it
 busts the remaining daily budget. Every proposed stop has an arrival
 (pricing needs one), and the stops are stored in arrival order whatever
 order the model listed them in.
+
+### The request (server-owned state)
+
+Each conversation holds the user's parking request as one versioned
+object, `RequestState` (`services/assistant/requestState.ts`), stored in
+`conversations.request_state` (JSONB). The loop loads it before the
+turn's first model call and saves it with the turn; a turn that fails
+mid-flight saves neither its transcript nor its state. A new
+conversation, a row from before request state (null), or a stored value
+that isn't a state starts from the empty request. It is deleted with its
+conversation (retention, `DELETE /assistant/conversations/…`, `DELETE
+/me`).
+
+```json
+{
+  "version": 3,
+  "intent": "park_later",
+  "place": { "query": "Fenway", "resolved": null, "candidates": null },
+  "window": { "startsAt": "2026-09-26T19:00:00-04:00", "durationMinutes": 120, "source": "user" },
+  "hard": { "maxPriceUsd": 20, "maxWalkMinutes": null, "kinds": null, "entryType": null, "covered": null },
+  "soft": { "rank": null, "prefer": null },
+  "log": [ { "version": 3, "field": "hard.maxPriceUsd", "from": 30, "to": 20,
+             "utterance": "actually under $20", "at": "2026-09-26T18:02:11.000Z" } ]
+}
+```
+
+- `hard` holds the limits an option must meet; `soft` only ranks. A null
+  `soft.rank` means the user asked for no ranking, so a search offers
+  both the cheapest and the closest (decision 8).
+- `window.startsAt` is canonical ET with its offset (an offset-less
+  `2026-09-26T19:00` is ET wall-clock time); null means now.
+  `window.source` is `user` once the user has set or cleared a window
+  field, `default` until then.
+- `place.resolved` and `place.candidates` are server-written (the model
+  can't set them). A new `placeQuery`, or clearing it, resets both.
+- `intent` is **derived** after every patch: `hard.kinds` exactly
+  `["garage"]` → `garage_or_lot` at any time; else a start more than 15
+  minutes ahead → `park_later`; else `park_now`. The empty request is
+  `park_now`.
+- `log` gets one entry per changed field, derived ones included, with the
+  user's words that turn (capped at 200 characters); it keeps the latest
+  100 entries.
+
+Nothing reads the request to search or plan yet: `quote_street`,
+`search_garages`, and `propose_plan` take and accept exactly what they
+did before (#168 moves the searches onto it).
+
+**The model's view.** The system prompt ends with a "Current request"
+block, re-rendered for every model call so it is never behind an edit:
+the state as compact JSON with nulls and the log left out. User words
+stay inside their JSON strings, so they can't open a line of their own
+in the system prompt. One rule goes with it: "When the user changes
+anything about the request, call update_request with only what changed
+before searching."
+
+**`update_request`** is the only way the model changes the request. It
+is a strict tool (`strict: true`, so the API holds the model's input to
+its schema) with a flat schema. Every field is optional except `reason`:
+`intent`, `placeQuery`, `startsAt`, `durationMinutes` (1–720),
+`maxPriceUsd` (≥ 0, kept to cents), `maxWalkMinutes` (1–120), `kinds`
+(`street`/`garage`), `entryType` (`self`/`valet`), `covered`, `rank`
+(`cheapest`/`closest`/`balanced`), `prefer` (`valet`, `covered`,
+`garage`, `street`), and `clear`, an array of dotted names:
+`place.query`, `window.startsAt`, `window.durationMinutes`,
+`hard.maxPriceUsd`, `hard.maxWalkMinutes`, `hard.kinds`, `hard.entryType`,
+`hard.covered`, `soft.rank`, `soft.prefer`. The strict schema can't carry
+ranges (the API rejects `minimum`/`maximum` on strict tools), so the
+server checks them. A value replaces the old one (a supersede, never a
+range merge). Unmentioned fields keep their values. An equal value (the
+same instant in another spelling, a list in another order, a place in
+other casing) is no change. Lists are kept in canonical order, and an
+empty list clears.
+
+It answers `{version, changed, overrides, state}`: `state` is the full
+new request without its log, `changed` the dotted fields that changed,
+and `overrides` any intent the model sent that the derivation replaced
+(`{field: "intent", requested, applied, why}`). A patch that changes
+nothing keeps the version and says "Nothing changed". Refusals leave the
+request as it was:
+
+| Refusal | When |
+|---|---|
+| `invalid_patch` | Not the flat shape: the whole state, an unknown field, a `clear` name not in the list, a value out of range, no `reason`, or one field both set and cleared. The `issues` name the fix. |
+| `unreadable_time` | `startsAt` can't be read; the instruction carries the time format and the current time. |
+| `too_many_edits` | The turn's third call (at most 2 per turn), so a model can't thrash the request. |
+
+Every call, refusals included, writes an `assistant_tool` decision with
+inputs `{tool: "update_request", patch, conversationId}` and outcome
+`{version, changed, overrides}` (rule `request_updated` or
+`request_unchanged`), or the refusal's error (rule `invalid_patch`,
+`conflicting_patch`, `unreadable_time`, or `too_many_edits`).
 
 ### Saved conversations
 

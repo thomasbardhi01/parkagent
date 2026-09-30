@@ -31,6 +31,7 @@ below. What's left for V1 is three workstreams
 Sixteen merges after `v1.0.0-rc3` (`79413c4`, #134), all on prod as
 `c0f64cb`. The nightly FR suite has been green on it since 2026-09-28.
 
+- **Project sync (#143).** Status, milestones, and the v70 postmortem were brought up to date after rc3.
 - **Reliability series** (after the 2026-09-25 device feedback):
   - **1/4, location (#145).** Detection works with the app closed: significant-change and visit relaunches re-arm the detector, CoreMotion history replays what happened while suspended, and a red light never fires a park.
   - **3/4, providers (#146).** `POST /providers/:provider/link` answers `202` at once, and a durable link worker verifies under a 45 s budget with retries and a dead letter. All provider calls go through one `ExecutorGate` and a per-provider circuit breaker.
@@ -57,7 +58,7 @@ file ownership, and the working agreement are in
 
 By-hand and partner work stays in the three earlier milestones: **Field
 test** (#67, #71, #135, #149, #155), **TestFlight 1.0** (#32, #45, #72,
-#101, #136–#140), and **App Store 1.0** (key rotation, the private repo,
+#101, #136–#140), and **App Store 1.0** (the Sign in with Apple device check #142, key rotation, the private repo,
 ParkNYC real money, the assisted and autonomous weeks, Stripe Issuing and
 Link, partner APIs, and code follow-ups #22, #70, #110, #125, #128, #132).
 
@@ -252,7 +253,7 @@ Run on your own phone via Xcode with your developer account. Walk around your bl
 >   - stop is unsupported in Boston, since meter time isn't refundable;
 >   - an operator lockout is typed `parking_denied`.
 > - **CI:** executor tests with Chromium (#93).
-> - **Since rc3 (#146):** linking is a durable background job (`202` plus a link worker with retries and a dead letter), and all provider calls go through one `ExecutorGate` and a per-provider circuit breaker. A daily job verifies each linked session and pushes "Reconnect …".
+> - **Since rc3 (#146):** linking is a durable background job (`202` plus a link worker with retries and a dead letter), and all provider calls go through one `ExecutorGate` and a per-provider circuit breaker. (The daily job that verifies each linked session and pushes "Reconnect …" came earlier, with #118.)
 > - **Outstanding:**
 >   - ParkNYC's paid `record` run (#24).
 >   - ParkNYC's signed-out Guest redirect reads as `ui_changed`, never `auth_expired` (#149).

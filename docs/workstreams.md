@@ -15,6 +15,9 @@ started in that PR's worktree.
 | **WS-2** Boston data and garage inventory | Nate (@nbtolva-dot) | Garage and lot footprints, garage sources behind modes and a daily budget, Boston zones from the City's CDS feed with a coverage gate, and garage price freshness. | `ws-2` | 4 |
 | **WS-3** Park now: detection, place outcomes, session lifecycle | Tom (@thomasbardhi01) | The phone classifies where it parked, `/parked` answers garage and no-pay outcomes, and a street session runs from walk-away to return with the tap-to-confirm and the YOLO beta. | `ws-3` | 3 |
 
+The V1 milestone also holds #163, a flaky `AssistantUITests` test in
+WS-1's files. It's upkeep, not one of the PRs below.
+
 ## WS-1: assistant brain and plan UX (Tom)
 
 Order matters: each PR builds on the one before it.
@@ -37,9 +40,9 @@ Order matters: each PR builds on the one before it.
 - `server/src/jobs/itineraryTick.ts`, `server/src/jobs/conversationRetentionTick.ts`
 - `server/src/scripts/verify-places.ts`, and a new `server/src/scripts/assistant-metrics.ts`
 - `server/src/services/explanations.ts`
-- `server/test/assistant*.test.ts`, `server/test/requestState*.test.ts`,
-  `server/test/placeScore.test.ts`, `server/test/ranking.test.ts`,
-  `server/test/golden/**`, `server/test/golden.test.ts`
+- `server/test/assistant*.test.ts`, and the new `server/test/requestState*.test.ts`,
+  `placeScore.test.ts`, `ranking.test.ts`, `server/test/golden/**`, and
+  `server/test/golden.test.ts`
 - `server/fr/40-assistant.fr.test.ts`, and a new `server/fr/assistantGolden.fr.test.ts`
 - `server/fr/report.mjs` (the pass^k column in PR 7)
 - `ios/ParkAgent/Views/Assistant/**`
@@ -81,8 +84,8 @@ in WS-3's list below, `executor/**`, wallet and Stripe code
 - `server/src/scripts/load-zones.ts`, `load-zone-numbers.ts`,
   `verify-garages.ts`, and the new `load-garages.ts`
 - `server/test/zone*.test.ts`, `server/test/garage*.test.ts`,
-  `server/test/parkwhizAdapter.test.ts`, `server/test/loadZones.test.ts`,
-  `server/test/garageProviderContract.ts`
+  `server/test/parkwhizAdapter.test.ts`, and the new `server/test/loadZones.test.ts`
+  and `server/test/garageProviderContract.ts`
 - `server/fr/20-parked-boston.fr.test.ts`, and a new `server/fr/80-garages.fr.test.ts`
 - `docs/research/2-place-resolution-and-data.md` (as its maintainer)
 
@@ -105,10 +108,11 @@ garage seam there), `ios/**` (no WS-2 PR has an iOS change),
   `LocationReporter.swift`, `PermissionsManager.swift`, `AppServices.swift`,
   `PushManager.swift`, `LimitsDraft.swift`, and a new `PlaceMemory.swift`
 - `ios/ParkAgent/Views/Home/**`, `Views/Session/**`,
-  `Views/Account/SpendingLimitsView.swift`, `Views/Settings/**`
+  `Views/Account/SpendingLimitsView.swift`, a new `Views/Account/YoloModeView.swift`
+  (the YOLO consent and switch), `Views/Onboarding/**`, `Views/Settings/**`
   (Diagnostics and the detector self-test)
 - `ios/ParkAgent/Networking/MockDetectorProbe.swift`
-- `ios/Fixtures/**` (the GPX route, and the new `Traces/`)
+- `ios/Fixtures/**` (the GPX route and `Traces/`)
 - `ios/ParkAgentTests/` files for the above (`ParkFusionEngineTests`,
   `ParkDetectorTests`, `FixGateTests`, `SignalTraceTests`,
   `DetectionCapabilitiesTests`, `DetectionPersistenceTests`,
@@ -148,6 +152,9 @@ merges.
 | `policy.json`, `server/src/services/policy.ts`, `server/src/routes/policy.ts` | New fields only, with validation and a default; name the owning stream in the PR. |
 | `server/src/routes/admin.ts` | A new `/admin/summary` section only; new admin routes go in your own file. |
 | `server/src/routes/me.ts` | No new routes; use your own route file. |
+| `ios/ParkAgent/Views/Account/AccountSheetView.swift` | One new row that links to your own view. |
+| `.github/workflows/nightly-fr.yml` | Only WS-1's #173 (its per-file `FR_ASSISTANT_MAX_CALLS` and the pass^3 issue rule), read by the other founder. |
+| `.github/workflows/ci.yml` | Only WS-2's #176 (a new advisory `data` job), read by the other founder. Making a job required is the repo owner's call. |
 | `ios/project.yml`, `ios/Tools/release-denylist.txt` | Your own entries only; run `xcodegen generate` after pulling. |
 | `ios/ParkAgent/Networking/APIClient.swift`, `LiveAPI.swift`, `MockAPI.swift`, `ios/ParkAgent/Models/**`, `ios/ParkAgentTests/LiveAPIRequestTests.swift` | New endpoints and types only. |
 | `server/test/helpers.ts` (the fake DB) | New tables and helpers only. |

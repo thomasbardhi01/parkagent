@@ -22,7 +22,8 @@ merges; `v1.0.0-rc4` is proposed there) in dry run. The README has the
 status and the release tags. What's left for V1 is three workstreams
 (`docs/workstreams.md`, scoped by `docs/decisions/2026-09-29-v1-scope.md`):
 one issue per PR under the **V1** milestone, labeled `ws-1` / `ws-2` /
-`ws-3`, on project board 3. By-hand and partner work stays in the Field
+`ws-3`, on project board 3 (the milestone also holds the flaky-test issue
+#163). By-hand and partner work stays in the Field
 test, TestFlight 1.0, and App Store 1.0 milestones; deferred work is V2.
 
 ## Locations
@@ -399,8 +400,10 @@ JS enabled, is set in all three groups under the same key id and team:
 `_KEY_ID` / `_TEAM_ID` (`fly secrets list` shows equal digests). The
 server logs "… is the same key as …" at boot. That's expected with one
 key, and wrong only if the key ids differ. To rotate it, enable all three
-services on the new key, check it with `check-secrets --live` in all
-three groups, set them together, then revoke the old key. The key must be
+services on the new key, check all three groups with `check-secrets --live`
+(it asks Apple about Maps and Sign in with Apple; push can't be checked
+live), set them together, confirm push with `POST /admin/push-test`, then
+revoke the old key. The key must be
 allowed to send to APNs **Production** for TestFlight (#67).
 
 **Rollback.** For a crash-looping or broken release:

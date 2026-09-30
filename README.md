@@ -103,7 +103,7 @@ Outages are in [docs/incidents.md](docs/incidents.md).
 | 1.0.0-rc1 (**known bad**, never tagged) | `45d4f37` (#130) | Release builds without debug code, TestFlight pipeline, field-test plan. Its deploy crash-looped prod (Fly v70); see `docs/incidents.md`. |
 | `v1.0.0-rc2` | `2a930c4` (#133) | The rc1 boot fix, plus the CI `boot` job that gates deploy |
 | `v1.0.0-rc3` (**latest tag**) | `79413c4` (#134) | Wallet review fixes: per-stop Link gate, webhook reserves once, one extension at a time, removed-card re-add, one-time Link card reveal |
-| `v1.0.0-rc4` (**proposed, not tagged yet**) | `c0f64cb` (#164) | What prod runs now. The reliability series (#145, #146, #150, #151), config resilience (#156), the Apple Maps fix, FR isolation, and the supply-chain gate (#162), the requested-time fix (#165), and the Dependabot process (#160). The nightly has been green on it since 2026-09-28. |
+| `v1.0.0-rc4` (**proposed, not tagged yet**) | `c0f64cb` (#164) | What prod runs now. The assistant experience (#144), the reliability series (#145, #146, #150, #151), config resilience (#156), the Apple Maps fix, FR isolation, and the supply-chain gate (#162), the requested-time fix (#165), and the Dependabot process (#160). The nightly has been green on it since 2026-09-28. |
 
 ## Account ownership
 

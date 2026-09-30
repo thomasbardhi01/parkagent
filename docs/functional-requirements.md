@@ -84,7 +84,7 @@ started at 11:55 ET). "—" means the FR has no live test.
 | FR-37 | Choosing an option | unit | — | `server/test/assistantRecommendation.test.ts`; iOS `PlanSelectionTests`, `AssistantUITests` (selection sync) |
 | FR-38 | Saved conversations | nightly + unit | ✅ passed | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantHistory.test.ts`; iOS `AssistantUITests` (history, Activity link) |
 | FR-39 | Continuous dictation | unit + device-manual | — | iOS `DictationTranscriptTests`, `SpeechRecognizerTests`, `SpeechUITests` (scripted recognizer); the real recognizers need a phone |
-| FR-40 | Tappable questions, stated assumptions | nightly + unit | ✅ passed | `server/test/assistantClarify.test.ts`; iOS `AssistantUITests` (duration chips, assumptions line) |
+| FR-40 | Tappable questions, stated assumptions | nightly + unit | ✅ passed | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantClarify.test.ts`, `server/test/assistantRequestedTime.test.ts`; iOS `AssistantUITests` (duration chips, assumptions line) |
 | FR-41 | Requests that survive the network | nightly + unit | ✅ passed | `server/fr/55-reliability.fr.test.ts`, `server/test/idempotency.test.ts`, `server/test/outbound.test.ts`, `server/test/shutdown.test.ts`, `server/test/auth.test.ts`; iOS `LiveAPIRequestTests`, `ParkOutboxTests`; `scripts/boot-check.sh` (SIGTERM → exit 0) |
 | FR-42 | The request is server-owned, versioned state | pending | — | #167 |
 | FR-43 | Options from the latest search; the assistant says no | pending | — | #168 |
@@ -1110,9 +1110,15 @@ handoff. Deferred by the V1 scope decisions.
 # once, against the TARGET environment's database (prod for the nightly):
 pnpm -C server create:fr-user            # prints the key once → FR_API_KEY
 
+# every run: mint the throwaway users (one per FR file), against the same
+# database and AUTH_JWT_SECRET, and hand the suite their one JSON line
+pnpm -C server create:fr-throwaway --pool "$(node server/fr/pool.mjs)" \
+  | grep '^{' | tail -1 > /tmp/fr-pool.json
+
 # then:
-FR_API_KEY=… pnpm -C server test:fr                       # against prod
-FR_API_BASE=http://localhost:3000 FR_API_KEY=… pnpm -C server test:fr
+FR_API_BASE=http://localhost:3000 FR_API_KEY=… FR_THROWAWAY_POOL_FILE=/tmp/fr-pool.json \
+  pnpm -C server test:fr
+# (against prod, the nightly mints and purges the pool inside the machine)
 ```
 
 The suite hard-refuses when the target's effective dry run is off, makes

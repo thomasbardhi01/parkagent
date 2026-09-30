@@ -34,7 +34,10 @@ has thinner POI coverage.
    Save. Continue, then Register.
 3. **Download the key** (`AuthKey_XXXXXXXXXX.p8`). Apple lets you download
    it **once**. Note the **Key ID** (10 characters, shown on the key's
-   page) and your **Team ID** (Membership details, 10 characters).
+   page) and your **Team ID** (Membership details, 10 characters). If you
+   added Maps to the existing key in step 2, there's nothing to download:
+   use the `.p8` you already keep for `APNS_KEY` (password manager), since
+   Apple won't let you download it again.
 4. **Check, then set, the three secrets on Fly.** All three or none: with
    one missing or malformed, Maps is off and `/health` lists `apple_maps`
    under `degraded`. The server still boots; until 2026-09-27 it refused
@@ -63,10 +66,11 @@ has thinner POI coverage.
    state afterwards, and that `curl -s https://parkagent-api.fly.dev/health`
    shows `"degraded":[]`.
 
-   One Apple key can carry several services. Prod's Maps slot holds the
-   APNs key, which has Maps enabled too. The server logs a warning when two
-   slots hold the same key; that's fine when the key has both services, and
-   wrong when the two key ids differ.
+   One Apple key can carry several services. On prod, one key with push,
+   Sign in with Apple, and MapKit JS enabled fills the `APNS_*`,
+   `APPLE_SIGNIN_*`, and `APPLE_MAPS_*` slots. The server logs a warning
+   when two slots hold the same key; that's fine when the key has every
+   service those slots need, and wrong when the key ids differ.
 5. **For local runs**, add the same three lines to the repo-root `.env`.
    Literal newlines or `\n` escapes both work for the key.
 6. **Check it:** `pnpm -C server verify:places` (see below) should resolve

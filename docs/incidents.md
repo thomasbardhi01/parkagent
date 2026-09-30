@@ -38,12 +38,17 @@ Stripe) had the same kind of rule.
 | 23:52:31 | **v86**: #151's deploy (`44f677e`). Healthy. |
 | 2026-09-27 00:59 | Nightly FR against `44f677e`: red on FR-35/36/40 (Maps search, #152, unrelated to the key) and FR-10/11 (suite order, #153). |
 
+**Recovery.** Prod came back when the three settings were set under the
+names the server reads, from the right .p8 (v83, #150's deploy, 21:59).
+
 Read-only checks afterwards: prod's `APPLE_MAPS_KEY` is the same .p8 as
 `APNS_KEY`, under the same key id, and Apple issues Maps tokens for it: one
-key with both services enabled, which works. Maps search itself still fails
-on a request bug, #152.
+key with both services enabled, which works. (As of 2026-09-30,
+`APPLE_SIGNIN_KEY` holds the same key too: one key serves push, sign-in,
+and Maps.) Maps search itself still failed on a request bug, #152, which
+#162 fixed on 2026-09-27.
 
-**Fix (fix/config-resilience).**
+**Fix (#156, fix/config-resilience, merged 2026-09-27).**
 - **Only core settings refuse boot.** That's `DATABASE_URL`,
   `AUTH_JWT_SECRET`, `API_KEY_PEPPER`, and a malformed
   `PROVIDER_STATE_KEY`. An optional feature with a missing, partial, or
@@ -65,6 +70,10 @@ on a request bug, #152.
   start".
 - The new `env.ts` was run against prod's own settings before merging
   (read-only, verdict only): nothing fatal, nothing degraded.
+
+**Follow-ups, all closed.** #152 (Maps search 400) and #153 (nightly file
+order) were fixed by #162, and #154 (`PUT /policy` on Fly) by #156. The
+nightly has been green since 2026-09-28.
 
 **Still open.**
 - A core-setting mistake still takes prod down. `check-secrets` is the

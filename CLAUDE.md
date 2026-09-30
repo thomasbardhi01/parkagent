@@ -17,9 +17,14 @@ Boston has no early stop). Its Vehicles chooser also yields
 provider-observed zone terms, and `zone_terms_observed` beats the dataset
 when quoting. ParkNYC's paid run is still to do (#24). iOS only.
 
-Current release: `v1.0.0-rc3` (79413c4), with prod in dry run. The README
-has the status and the release tags. What's left is in three GitHub
-milestones (Field test, TestFlight 1.0, App Store 1.0) on project board 3.
+Latest tag: `v1.0.0-rc3` (79413c4). Prod runs `c0f64cb` (rc3 plus 16
+merges; `v1.0.0-rc4` is proposed there) in dry run. The README has the
+status and the release tags. What's left for V1 is three workstreams
+(`docs/workstreams.md`, scoped by `docs/decisions/2026-09-29-v1-scope.md`):
+one issue per PR under the **V1** milestone, labeled `ws-1` / `ws-2` /
+`ws-3`, on project board 3 (the milestone also holds the flaky-test issue
+#163). By-hand and partner work stays in the Field
+test, TestFlight 1.0, and App Store 1.0 milestones; deferred work is V2.
 
 ## Locations
 The checkout lives at `~/Documents/parkagent`. There is no repo at
@@ -35,6 +40,9 @@ under `.claude/worktrees/`, which is gitignored. Remove them, and any
 - ios/       SwiftUI app: park detection, location reporting, session UI;
              the Xcode project is generated, see "iOS project" below
 - policy.json  Spending and extension rules; server reads it at boot
+- docs/decisions/  dated decision records (V1 scope); docs/research/  the
+             three research reports the V1 issues come from;
+             docs/workstreams.md  who owns which files in V1
 
 ## Prerequisites
     brew install git gh nvm pnpm xcodegen flyctl stripe/stripe-cli/stripe
@@ -127,12 +135,21 @@ the `DRY_RUN` secret first, then the caps, then the policy.
 
 ## Working style
 - Small PRs on feat/* branches, squash-merged into main.
+- **V1 workstreams** (`docs/workstreams.md`): one PR per issue; a session
+  works in a worktree per PR and never edits files outside its stream
+  (shared files only additively, per the table there). The author merges
+  their own PR after CI is green and a self-review, except a PR touching
+  money or provider access, which the other founder reads first. One
+  merge in flight at a time across both people, announced in chat; after
+  every merge `waitdeploy <n> && nightly` (or `shipit <n>`); rebase after
+  the other person merges.
 - All changes land through a PR — no direct pushes to main, no exceptions.
   Before any commit, check `git branch --show-current`; if it says main,
   branch first (the checkout can land on main after a PR merge). Branch
   protection (admins included) requires the `server`, `ios`, and `executor`
   checks. Only squash merges are allowed, and merged branches are deleted
-  on GitHub automatically. The user merges. Auto mode can't.
+  on GitHub automatically. A human merges; a Claude session never does
+  (auto mode can't).
 - CI (`.github/workflows/ci.yml`):
   - `city-neutral` runs `scripts/check-city-neutral.sh`. No city or provider
     names in app/server sources outside the registries. Take names from
@@ -339,17 +356,21 @@ private, or moving `executor/` out, before anything beyond friends. Details: `ex
 ## Deploy, verify, roll back
 A merge to main deploys through CI's `deploy` job, about 10–25 minutes
 after the merge because it waits on `ios`. The release command runs
-`prisma migrate deploy` first. Two shell helpers (in `~/.zshrc`, not the
+`prisma migrate deploy` first. Three shell helpers (in `~/.zshrc`, not the
 repo) wrap the checks:
 
-    # block until prod's /health reports PR <n>'s merge commit
-    waitdeploy(){ SHA=$(gh pr view "$1" --repo thomasbardhi01/parkagent --json mergeCommit -q .mergeCommit.oid); until curl -s https://parkagent-api.fly.dev/health | grep -q "$SHA"; do sleep 20; done; echo "deployed $SHA"; }
+    # block until prod's /health runs PR <n>'s merge commit or a later one
+    waitdeploy(){ SHA=$(gh pr view "$1" --repo thomasbardhi01/parkagent --json mergeCommit -q '.mergeCommit.oid // empty'); [ -z "$SHA" ] && { echo "PR #$1 isn't merged yet"; return 1; }; while :; do D=$(curl -s https://parkagent-api.fly.dev/health | sed -n 's/.*"commit":"\([0-9a-f]*\)".*/\1/p'); if [ -n "$D" ]; then case "$(gh api "repos/thomasbardhi01/parkagent/compare/$SHA...$D" -q .status 2>/dev/null)" in identical|ahead) echo "deployed $D (includes #$1)"; return 0;; esac; fi; sleep 20; done; }
     # dispatch the nightly FR suite against prod and watch it
     nightly(){ gh workflow run nightly-fr.yml --repo thomasbardhi01/parkagent && sleep 8 && gh run watch "$(gh run list --repo thomasbardhi01/parkagent --workflow=nightly-fr.yml --limit 1 --json databaseId -q '.[0].databaseId')" --repo thomasbardhi01/parkagent; }
+    # squash-merge PR <n>, then wait for its deploy and run the nightly
+    shipit(){ gh pr merge "$1" --repo thomasbardhi01/parkagent --squash --delete-branch && waitdeploy "$1" && nightly; }
 
-So after merging PR N: `waitdeploy N && nightly`. Don't dispatch the
-nightly before the deploy lands, or it tests the old build (its report
-prints the commit it tested).
+So after merging PR N: `waitdeploy N && nightly`, or `shipit N` to merge
+too. `waitdeploy` also returns when a later merge has already deployed
+over N (the compare says prod is ahead). Don't dispatch the nightly before
+the deploy lands, or it tests the old build (its report prints the commit
+it tested).
 
 **Secrets: check before every `fly secrets set`.** Run
 
@@ -370,6 +391,20 @@ first, and set only what it calls OK. It runs the server's own checks
 
 The 2026-09-26 outage was `APPLE_MAPS_PRIVATE_KEY` set where the server
 reads `APPLE_MAPS_KEY` (`docs/incidents.md`).
+
+**Apple key: one key serves push, sign-in, and Maps.** A single `.p8`
+from Keys, with Apple Push Notifications, Sign in with Apple, and MapKit
+JS enabled, is set in all three groups under the same key id and team:
+`APNS_KEY` / `APNS_KEY_ID` / `APNS_TEAM_ID` (+ `APNS_BUNDLE_ID`),
+`APPLE_SIGNIN_KEY` / `_KEY_ID` / `_TEAM_ID`, and `APPLE_MAPS_KEY` /
+`_KEY_ID` / `_TEAM_ID` (`fly secrets list` shows equal digests). The
+server logs "… is the same key as …" at boot. That's expected with one
+key, and wrong only if the key ids differ. To rotate it, enable all three
+services on the new key, check all three groups with `check-secrets --live`
+(it asks Apple about Maps and Sign in with Apple; push can't be checked
+live), set them together, confirm push with `POST /admin/push-test`, then
+revoke the old key. The key must be
+allowed to send to APNs **Production** for TestFlight (#67).
 
 **Rollback.** For a crash-looping or broken release:
 

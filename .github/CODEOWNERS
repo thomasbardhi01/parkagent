@@ -1,3 +1,19 @@
-# Review routing. Everything to Thomas for now.
-# ios/ gets its own owner once the second developer takes the ios area.
+# Review routing (the last matching line wins). Code-owner review isn't
+# required by branch protection; this only requests the review.
+# Everything to Thomas, except WS-2's data, zone, and garage code
+# (docs/workstreams.md).
 * @thomasbardhi01
+/data/ @nbtolva-dot
+/server/src/services/garage/ @nbtolva-dot
+/server/src/services/zoneLookup.ts @nbtolva-dot
+/server/src/services/zoneTermsObserved.ts @nbtolva-dot
+/server/src/services/zoneNumberReverts.ts @nbtolva-dot
+/server/src/services/zoneNumber.ts @nbtolva-dot
+/server/src/services/garageLookup.ts @nbtolva-dot
+/server/src/routes/zones.ts @nbtolva-dot
+/server/src/routes/garages.ts @nbtolva-dot
+/server/src/routes/adminGarages.ts @nbtolva-dot
+/server/src/scripts/load-zones.ts @nbtolva-dot
+/server/src/scripts/load-zone-numbers.ts @nbtolva-dot
+/server/src/scripts/load-garages.ts @nbtolva-dot
+/server/src/scripts/verify-garages.ts @nbtolva-dot

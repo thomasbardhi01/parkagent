@@ -23,14 +23,21 @@ has thinner POI coverage.
    Certificates, Identifiers & Profiles → **Identifiers** → **+** → choose
    **Maps IDs** → Continue. Description: `ParkAgent server`. Identifier:
    `maps.com.thomasbardhi.parkagent`. Continue, then Register.
-2. **Create a Maps key.** Certificates, Identifiers & Profiles → **Keys** →
-   **+**. Key name: `ParkAgent Maps Server`. Tick **MapKit JS**. The box
+2. **Create a Maps key, or add Maps to the existing key.** Prod uses one
+   key for push, Sign in with Apple, and Maps (CLAUDE.md, "Apple key"): open
+   that key under **Keys**, tick **MapKit JS**, configure it with the Maps
+   ID from step 1, and save; then the three `APPLE_MAPS_*` values are the
+   same `.p8`, key id, and team as `APNS_*`. For a separate key instead:
+   Certificates, Identifiers & Profiles → **Keys** → **+**. Key name: `ParkAgent Maps Server`. Tick **MapKit JS**. The box
    stays greyed out until step 1 exists; the same key signs Maps Server API
    tokens. Click **Configure** next to it, pick the Maps ID from step 1, and
    Save. Continue, then Register.
 3. **Download the key** (`AuthKey_XXXXXXXXXX.p8`). Apple lets you download
    it **once**. Note the **Key ID** (10 characters, shown on the key's
-   page) and your **Team ID** (Membership details, 10 characters).
+   page) and your **Team ID** (Membership details, 10 characters). If you
+   added Maps to the existing key in step 2, there's nothing to download:
+   use the `.p8` you already keep for `APNS_KEY` (password manager), since
+   Apple won't let you download it again.
 4. **Check, then set, the three secrets on Fly.** All three or none: with
    one missing or malformed, Maps is off and `/health` lists `apple_maps`
    under `degraded`. The server still boots; until 2026-09-27 it refused
@@ -59,10 +66,11 @@ has thinner POI coverage.
    state afterwards, and that `curl -s https://parkagent-api.fly.dev/health`
    shows `"degraded":[]`.
 
-   One Apple key can carry several services. Prod's Maps slot holds the
-   APNs key, which has Maps enabled too. The server logs a warning when two
-   slots hold the same key; that's fine when the key has both services, and
-   wrong when the two key ids differ.
+   One Apple key can carry several services. On prod, one key with push,
+   Sign in with Apple, and MapKit JS enabled fills the `APNS_*`,
+   `APPLE_SIGNIN_*`, and `APPLE_MAPS_*` slots. The server logs a warning
+   when two slots hold the same key; that's fine when the key has every
+   service those slots need, and wrong when the key ids differ.
 5. **For local runs**, add the same three lines to the repo-root `.env`.
    Literal newlines or `\n` escapes both work for the key.
 6. **Check it:** `pnpm -C server verify:places` (see below) should resolve
@@ -76,9 +84,10 @@ has thinner POI coverage.
   iat, exp, scope: "server_api"}`). It trades that token at `GET /v1/token`
   for a 30-minute access token, caches it, and refreshes once on a 401. It
   then calls `GET /v1/search` with `limitToCountries=US`,
-  `resultTypeFilter=Poi,Address`, a `searchLocation` (the phone when it's
-  in the city, else the city's center), the city's `searchRegion`, and the
-  phone as `userLocation`.
+  `resultTypeFilter=Poi,Address`, ONE of `searchLocation` (the phone when
+  it's in the city) or the city's `searchRegion` (Apple answers 400 when
+  both are sent, which broke every search until #152), and the phone as
+  `userLocation`.
 - Results outside the covered metros are dropped. A biased search that
   finds nothing in its city tries the other cities, so the bias orders the
   search but never blinds it.

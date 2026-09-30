@@ -1084,18 +1084,23 @@ flow in V1), a no-pay place answers `nopay` silently, the user can correct
 the class, and street outcomes are unchanged. Unit and nightly.
 
 ### FR-55 — A street session runs from walk-away to return (#180, WS-3)
-**Accepted when** the driver confirms the quoted amount with one tap, the
-paid session starts once at walk-away (or five minutes after the tap),
-extends while the phone is away up to the max stay, and ends when the
-phone returns: stopped where early stop exists, no more extensions where
-it doesn't. The daily cap binds every path, and individuals have no
-per-stop cap. Unit and nightly (dry run).
+**Accepted when** nothing prompts, pays, or extends while the phone is at
+the car. The session becomes active when the phone leaves the car, after
+one tap on the quoted amount (or automatically under FR-56). It extends
+while the phone is away, up to the max stay, and ends when the phone
+returns: stopped where early stop exists, no more extensions where it
+doesn't. An early departure and a re-park start a fresh detection. The
+daily cap binds every path, and individuals have no per-stop cap. Unit and
+nightly (dry run).
 
 ### FR-56 — YOLO beta mode (#180, WS-3)
-**Accepted when** only admin-allowlisted users who accepted the consent
-copy skip the tap, every such payment writes a `yolo_payment` decision
-with the consent version, beta caps and the daily cap bind, and removal
-from the allowlist turns it off at once. Unit and nightly.
+**Accepted when** YOLO is off by default. Only admin-allowlisted users who
+accepted the beta consent copy (payments may happen without a tap and may
+occasionally be wrong) skip the tap. They can turn it off with one tap.
+Every automatic payment fits the hard caps, the user's limits, and the
+beta caps; one that doesn't falls back to tap-to-confirm. Every automatic
+payment writes a decisions row recording YOLO mode. Removal from the
+allowlist turns it off at once. Unit and nightly.
 
 ### FR-57 to FR-59 — V2 (#181, #182, #183)
 Ticket capture and parsing; garage stays with rate cards, estimates, and

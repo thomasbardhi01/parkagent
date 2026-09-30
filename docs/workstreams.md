@@ -109,7 +109,10 @@ garage seam there), `ios/**` (no WS-2 PR has an iOS change),
   `PushManager.swift`, `LimitsDraft.swift`, and a new `PlaceMemory.swift`
 - `ios/ParkAgent/Views/Home/**`, `Views/Session/**`,
   `Views/Account/SpendingLimitsView.swift`, a new `Views/Account/YoloModeView.swift`
-  (the YOLO consent and switch), `Views/Onboarding/**`, `Views/Settings/**`
+  (the YOLO consent and switch), `Views/Settings/**`; and `Views/Onboarding/` and
+  `Views/Account/` **only** for the YOLO toggle, the consent screen, and the
+  session-lifecycle settings (default stay, daily cap). WS-1 keeps everything
+  under `Views/Assistant/`.
   (Diagnostics and the detector self-test)
 - `ios/ParkAgent/Networking/MockDetectorProbe.swift`
 - `ios/Fixtures/**` (the GPX route and `Traces/`)

@@ -61,6 +61,11 @@ struct DiagnosticsView: View {
                 LabeledContent("Last fix", value: String(format: "±%.0f m, %@", fix.accuracy, Format.clockTime(fix.at)))
             }
             LabeledContent("Pending stop", value: detector.engine.hasPendingStop ? "Yes" : "No")
+            // What the place classifier made of the last park (FR-53).
+            if let place = detector.lastPlace {
+                LabeledContent("Last place", value: "\(ParkDetector.describe(place.classification)), \(Format.clockTime(place.at))")
+                    .accessibilityIdentifier("diagnostics.lastPlaceClassification")
+            }
             let issues = permissions.capabilities.issues
             if issues.isEmpty {
                 Label("Fully armed", systemImage: "checkmark.circle.fill")

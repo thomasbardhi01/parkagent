@@ -6,8 +6,9 @@ import Foundation
 /// values are the log's vocabulary; the replay parser reads them back.
 enum RawDetectorSignal: String, CaseIterable, Sendable {
     // Engine inputs. `motion`, `audio_disconnect[_ignored]`,
-    // `location_fix`/`fix_rejected`, and `visit_arrival` lines are what a
-    // replay feeds back in (SignalTrace); the rest are what was decided.
+    // `location_fix`/`fix_rejected`, `visit_arrival`, and `altitude` lines
+    // are what a replay feeds back in (SignalTrace); the rest are what was
+    // decided.
     case motionSample = "motion"
     case motionDriving = "motion_driving"
     case motionStop = "motion_stop"
@@ -19,6 +20,8 @@ enum RawDetectorSignal: String, CaseIterable, Sendable {
     case fixRejected = "fix_rejected"
     case visitArrival = "visit_arrival"
     case visitDeparture = "visit_departure"
+    /// A barometer reading during a stop (`AltitudeSample`).
+    case altitude = "altitude"
     // Engine decisions.
     case locationSettled = "location_settled"
     case parkFired = "park_fired"
@@ -27,6 +30,12 @@ enum RawDetectorSignal: String, CaseIterable, Sendable {
     case debounced = "debounced"
     case drivingResumedCleared = "driving_resumed_cleared"
     case pendingExpired = "pending_expired"
+    /// The stop's entry fix: the last good fix of the car still moving.
+    case entryFix = "entry_fix"
+    /// GPS went bad on the way in (a garage), at this line's time.
+    case gpsLost = "gps_lost"
+    /// What the place classifier made of a park (ParkDetector).
+    case placeClassified = "place_classified"
     // The detector's own lifecycle, so a field log shows what was running.
     case armed = "armed"
     case wake = "wake"
@@ -34,6 +43,8 @@ enum RawDetectorSignal: String, CaseIterable, Sendable {
     case trackingStopped = "tracking_stopped"
     case burstStarted = "burst_started"
     case burstStopped = "burst_stopped"
+    case altimeterStarted = "altimeter_started"
+    case altimeterStopped = "altimeter_stopped"
     case historyReplayed = "history_replayed"
     case preciseRequested = "precise_requested"
 }
@@ -56,6 +67,26 @@ struct MotionSample: Codable, Equatable, Sendable {
     var isDriving: Bool { automotive && confidence != .low }
     var isOnFoot: Bool { (walking || running) && confidence != .low }
     var isStill: Bool { stationary && !automotive }
+}
+
+/// A park as the engine saw it, with what the place classifier needs to
+/// say what kind of place it is (FR-53).
+struct ParkOutcome: Codable, Equatable, Sendable {
+    /// Where the car is; nil for a park with no fix good enough to say
+    /// (GPS gone in a garage, or Precise Location off).
+    var fix: ParkFix?
+    var signals: [String]
+    /// When the car stopped.
+    var stopAt: Date
+    /// The last good fix of the car still moving in: which garage it
+    /// entered when the spot itself has no fix.
+    var entryFix: ParkFix?
+    /// When GPS went bad on the way in, if it did and didn't come back.
+    var gpsLossAt: Date?
+    /// Net climb (negative: descent) over the stop window, meters.
+    var baroDeltaM: Double?
+    /// Seconds of parking-lot crawl just before the stop.
+    var crawlS: TimeInterval?
 }
 
 /// The park fusion, free of every system framework so it runs under
@@ -101,6 +132,24 @@ final class ParkFusionEngine {
         /// A fix this fast is a drive, for phones without motion data.
         var drivingSpeedMps: Double = 6
         var fixGate = FixGate.Config()
+        // The place classifier's evidence (docs/research/3-park-now.md §2).
+        /// An entry fix is at least this good…
+        var entryFixMaxAccuracyM: Double = 30
+        /// …taken moving at least this fast (the car, not a still spot)…
+        var entryFixMinSpeedMps: Double = 1
+        /// …no longer than this before the stop.
+        var entryFixMaxAge: TimeInterval = 120
+        /// After a good fix, one worse than this is GPS lost (a garage).
+        var gpsLossAccuracyM: Double = 65
+        /// After a good fix, this long with no fix at all is GPS lost.
+        var gpsLossWindow: TimeInterval = 45
+        /// A barometer jump bigger than this (hPa) in under
+        /// `baroSpikeWindow` is a door or a window, not a ramp.
+        var baroSpikeHPa: Double = 0.5
+        var baroSpikeWindow: TimeInterval = 2
+        /// Moving no faster than this (and faster than the entry fix's
+        /// minimum) is a parking-lot crawl.
+        var crawlMaxSpeedMps: Double = 4.5
     }
 
     enum AudioPort: String, Codable, Sendable {
@@ -125,6 +174,30 @@ final class ParkFusionEngine {
             /// history after a suspension), which is not "no GPS".
             var fixesSeen = 0
             var unlocatedReported = false
+            // The place classifier's evidence. All optional, so a state
+            // saved by an older build still restores.
+            /// The last good fix of the car still moving in (accuracy ≤
+            /// `entryFixMaxAccuracyM`, faster than `entryFixMinSpeedMps`,
+            /// at most `entryFixMaxAge` before the stop).
+            var entryFix: ParkFix?
+            /// When GPS went bad on the way in: the first fix worse than
+            /// `gpsLossAccuracyM`, or the last fix before `gpsLossWindow`
+            /// of silence. Only after a good fix (Precise off never loses
+            /// what it never had); a good fix while still driving (a
+            /// tunnel) takes it back.
+            var gpsLossAt: Date?
+            /// Net climb over the stop window from the barometer, meters;
+            /// nil when it never ran.
+            var baroDeltaM: Double?
+            /// Seconds of parking-lot crawl up to the stop.
+            var crawlS: TimeInterval?
+            /// The newest fix of any quality that could describe the car
+            /// (not the walk), for judging silence.
+            var lastCarFixAt: Date?
+            /// A good fix was seen on the way in: only then can GPS be lost.
+            var gpsWasGood: Bool?
+            /// The last barometer reading counted; nil at each altimeter start.
+            var baroBaseline: AltitudeSample?
         }
 
         var wasDriving = false
@@ -144,13 +217,39 @@ final class ParkFusionEngine {
     /// so the burst starts late; the near-still fixes from just before it
     /// are the car's spot too.
     private var recentFixes: [ParkFix] = []
+    /// What the fixes said on the way to the next stop; handed to the stop
+    /// when it begins. Like `recentFixes`, not persisted: a relaunch
+    /// mid-drive just starts it over.
+    private var approach = Approach()
     /// Motion arrives many times a minute; the log keeps the changes.
     private var lastLoggedMotion: (kinds: String, at: Date)?
+
+    private struct Approach {
+        var entryFix: ParkFix?
+        var gpsWasGood = false
+        var lossAt: Date?
+        var lastFixAt: Date?
+        var crawlSince: Date?
+        var crawlLastAt: Date?
+
+        init() {}
+
+        /// A stop that driving cleared, back into the way in it interrupted.
+        init(resuming stop: State.Stop) {
+            entryFix = stop.entryFix
+            gpsWasGood = stop.gpsWasGood == true
+            lossAt = stop.gpsLossAt
+            lastFixAt = stop.lastCarFixAt
+        }
+    }
 
     /// The resting fix and the agreeing signal names, for /parked.
     var onPark: ((ParkFix, [String]) -> Void)?
     /// A confirmed park with no usable fix (Precise off, no GPS).
     var onUnlocatedPark: (([String]) -> Void)?
+    /// Every park, located or not, with the place classifier's evidence;
+    /// called just before `onPark` / `onUnlocatedPark`.
+    var onOutcome: ((ParkOutcome) -> Void)?
     var onStartBurst: (() -> Void)?
     var onStopBurst: (() -> Void)?
     /// Every raw observation, timestamped — the signal log.
@@ -204,12 +303,17 @@ final class ParkFusionEngine {
             let resumed = !state.wasDriving
             if resumed {
                 state.wasDriving = true
+                // A new drive: what the last one's fixes said is done.
+                approach = Approach()
                 emit(.motionDriving, at)
             }
             // Back on the road: a light, a drive-through, a pickup lane. A
             // stop started by audio alone (no motion stop yet) is cleared by
             // any driving after it too: the car's Bluetooth dropped mid-drive.
             if let stop = state.stop, resumed || (stop.stopAt == nil && at > stop.startedAt) {
+                // Still the same way in (a garage's ticket gate): the entry
+                // fix and the GPS it saw carry on to the real stop.
+                approach = Approach(resuming: stop)
                 clearStop()
                 emit(.drivingResumedCleared, at)
             }
@@ -251,6 +355,7 @@ final class ParkFusionEngine {
             state.lastDrivingAt = fix.at
         }
         let described = Self.describe(fix) + Self.age(of: fix.at, at: receivedAt)
+        if state.stop == nil { observeApproach(fix) }
         guard state.burstActive, var stop = state.stop else {
             emit(.fix, receivedAt, described)
             recentFixes.append(fix)
@@ -275,6 +380,7 @@ final class ParkFusionEngine {
             return
         }
         stop.fixesSeen += 1
+        observeStopWindow(fix, in: &stop)
         state.stop = stop
         switch gate.evaluate(fix, receivedAt: receivedAt) {
         case .reject(let reason):
@@ -306,6 +412,28 @@ final class ParkFusionEngine {
         stop.visit = fix
         state.stop = stop
         evaluate(at: now())
+    }
+
+    /// A barometer reading. Only readings in a stop's window count, and the
+    /// net change ignores a door or a window: a jump of more than
+    /// `baroSpikeHPa` within `baroSpikeWindow` of the last reading counted
+    /// is skipped, and the next reading is measured from before it.
+    func altitude(_ sample: AltitudeSample) {
+        emit(.altitude, now(), Self.describe(sample) + Self.age(of: sample.at, at: now()))
+        guard state.burstActive, var stop = state.stop, sample.at >= stop.startedAt else { return }
+        guard let base = stop.baroBaseline else {
+            stop.baroBaseline = sample
+            stop.baroDeltaM = stop.baroDeltaM ?? 0
+            state.stop = stop
+            return
+        }
+        let jumpHPa = abs(sample.pressureKPa - base.pressureKPa) * 10
+        if jumpHPa > config.baroSpikeHPa, sample.at.timeIntervalSince(base.at) < config.baroSpikeWindow { return }
+        stop.baroDeltaM = (stop.baroDeltaM ?? 0) + (sample.relativeAltitudeM - base.relativeAltitudeM)
+        stop.baroBaseline = sample
+        // Not persisted per reading (one a second): the next change
+        // writes it, and a relaunch losing a few seconds of climb is fine.
+        state.stop = stop
     }
 
     /// Time passing matters on its own (a sustained stop, a TTL, a burst
@@ -356,6 +484,7 @@ final class ParkFusionEngine {
     private func beginStop(at: Date) {
         guard state.stop == nil else { return }
         var stop = State.Stop(startedAt: at)
+        takeApproach(into: &stop, at: at)
         // Seed with the near-still fixes from just before the stop was
         // noticed (see `recentFixes`); each still has to pass the gate.
         var seedGate = FixGate(config: config.fixGate)
@@ -385,6 +514,8 @@ final class ParkFusionEngine {
         guard !state.burstActive else { return }
         state.burstActive = true
         state.burstStartedAt = at
+        // The altimeter starts with the burst, from zero: a new baseline.
+        state.stop?.baroBaseline = nil
         gate.reset()
         emit(.burstStarted, at)
         onStartBurst?()
@@ -431,6 +562,7 @@ final class ParkFusionEngine {
 
     private func evaluate(at: Date) {
         defer { changed() }
+        noteSilence(at: at)
         guard var stop = state.stop else { return }
 
         let audio = audioAgrees(stop)
@@ -457,13 +589,17 @@ final class ParkFusionEngine {
             // walking away is park enough to say so, once, when the burst
             // has had its chance. A burst that saw no fixes at all means
             // the stop was rebuilt from history after a suspension: stay
-            // quiet and let a visit (or the TTL) settle it.
+            // quiet and let a visit (or the TTL) settle it — unless the car
+            // was seen driving in with good GPS just before (an entry fix):
+            // then silence is a garage with no signal, not a suspension.
             let parkLike = (kinds >= 2 && confirmed) || (stop.stopAt != nil && stop.walkAt != nil)
             let burstDone = !state.burstActive || at.timeIntervalSince(newestStopSignal(stop)) >= config.burstTimeout
-            if located == nil, parkLike, burstDone, stop.fixesSeen > 0, !stop.unlocatedReported {
+            let burstHeardSomething = stop.fixesSeen > 0 || stop.entryFix != nil
+            if located == nil, parkLike, burstDone, burstHeardSomething, !stop.unlocatedReported {
                 stop.unlocatedReported = true
                 state.stop = stop
                 emit(.parkUnlocated, at, signals.joined(separator: "+"))
+                onOutcome?(outcome(of: stop, fix: nil, signals: signals))
                 onUnlocatedPark?(signals)
             }
             stopBurstIfDone(stop, at: at)
@@ -476,9 +612,111 @@ final class ParkFusionEngine {
             return
         }
         state.lastFired = at
+        let fired = outcome(of: stop, fix: fix, signals: signals)
         clearStop()
         emit(.parkFired, at, signals.joined(separator: "+"))
+        onOutcome?(fired)
         onPark?(fix, signals)
+    }
+
+    private func outcome(of stop: State.Stop, fix: ParkFix?, signals: [String]) -> ParkOutcome {
+        ParkOutcome(
+            fix: fix,
+            signals: signals,
+            stopAt: stop.stopAt ?? stop.startedAt,
+            entryFix: stop.entryFix,
+            gpsLossAt: stop.gpsLossAt,
+            baroDeltaM: stop.baroDeltaM,
+            crawlS: stop.crawlS
+        )
+    }
+
+    // MARK: - Place evidence
+
+    private func isEntryCandidate(_ fix: ParkFix) -> Bool {
+        fix.accuracy > 0 && fix.accuracy <= config.entryFixMaxAccuracyM
+            && (fix.speed ?? 0) > config.entryFixMinSpeedMps
+    }
+
+    private func isGood(_ fix: ParkFix) -> Bool {
+        fix.accuracy > 0 && fix.accuracy <= config.entryFixMaxAccuracyM
+    }
+
+    /// A fix on the way to a stop: the entry fix, a GPS loss (or, while
+    /// still driving, its recovery: a tunnel), and a parking-lot crawl.
+    private func observeApproach(_ fix: ParkFix) {
+        guard fix.accuracy > 0 else { return }
+        let driving = state.wasDriving || recentlyDriving(at: fix.at)
+        approach.lastFixAt = max(approach.lastFixAt ?? fix.at, fix.at)
+        if isGood(fix) {
+            approach.gpsWasGood = true
+            if driving, approach.lossAt != nil { approach.lossAt = nil }
+        } else if fix.accuracy > config.gpsLossAccuracyM, approach.gpsWasGood, approach.lossAt == nil, driving {
+            approach.lossAt = fix.at
+            emit(.gpsLost, fix.at, String(format: "accuracy ±%.0fm", fix.accuracy))
+        }
+        if isEntryCandidate(fix), fix.at >= (approach.entryFix?.at ?? .distantPast) {
+            approach.entryFix = fix
+        }
+        if let speed = fix.speed {
+            if speed > config.crawlMaxSpeedMps {
+                approach.crawlSince = nil
+                approach.crawlLastAt = nil
+            } else if speed > config.entryFixMinSpeedMps {
+                approach.crawlSince = approach.crawlSince ?? fix.at
+                approach.crawlLastAt = fix.at
+            }
+        }
+    }
+
+    /// The approach becomes the stop's evidence, and a new one starts.
+    private func takeApproach(into stop: inout State.Stop, at: Date) {
+        if let entry = approach.entryFix, at.timeIntervalSince(entry.at) <= config.entryFixMaxAge {
+            stop.entryFix = entry
+            emit(.entryFix, entry.at, Self.describe(entry))
+        }
+        stop.gpsWasGood = approach.gpsWasGood ? true : nil
+        stop.gpsLossAt = approach.lossAt
+        stop.lastCarFixAt = approach.lastFixAt
+        if let since = approach.crawlSince, let last = approach.crawlLastAt,
+           at.timeIntervalSince(last) <= config.entryFixMaxAge {
+            stop.crawlS = last.timeIntervalSince(since)
+        }
+        approach = Approach()
+    }
+
+    /// A fix in the stop's window that could still be the car (before the
+    /// walk): a late entry fix (motion reports a stop some seconds after
+    /// the car stopped), or GPS going bad at a spot with no good fix yet.
+    /// Nothing here takes a loss back: a good fix now means the spot is
+    /// known, and the classifier judges a located park by where it is.
+    private func observeStopWindow(_ fix: ParkFix, in stop: inout State.Stop) {
+        guard fix.accuracy > 0 else { return }
+        stop.lastCarFixAt = max(stop.lastCarFixAt ?? fix.at, fix.at)
+        let stoppedAt = stop.stopAt ?? stop.startedAt
+        if isEntryCandidate(fix), fix.at <= stoppedAt, fix.at >= (stop.entryFix?.at ?? .distantPast) {
+            stop.entryFix = fix
+            emit(.entryFix, fix.at, Self.describe(fix))
+        }
+        if isGood(fix) { stop.gpsWasGood = true }
+        if fix.accuracy > config.gpsLossAccuracyM, stop.gpsWasGood == true, stop.gpsLossAt == nil,
+           stop.settled == nil, stop.burstFixes.isEmpty {
+            stop.gpsLossAt = fix.at
+            emit(.gpsLost, fix.at, String(format: "accuracy ±%.0fm", fix.accuracy))
+        }
+    }
+
+    /// Fixes stopping altogether after good GPS on the way in — a ramp
+    /// down, no sky — is a loss, dated from the last fix. Not once the
+    /// spot has a good fix: then the burst has simply rested.
+    private func noteSilence(at: Date) {
+        guard var stop = state.stop, stop.gpsLossAt == nil, stop.gpsWasGood == true,
+              stop.settled == nil, stop.burstFixes.isEmpty,
+              let last = stop.lastCarFixAt, at.timeIntervalSince(last) >= config.gpsLossWindow
+        else { return }
+        stop.gpsLossAt = last
+        state.stop = stop
+        emit(.gpsLost, last, String(format: "silence %.0fs", at.timeIntervalSince(last)))
     }
 
     /// The radio can rest once the car's spot is known, or when the burst
@@ -504,6 +742,11 @@ final class ParkFusionEngine {
         var text = String(format: "%.6f,%.6f ±%.0fm", fix.latitude, fix.longitude, fix.accuracy)
         if let speed = fix.speed { text += String(format: " %.1fm/s", speed) }
         return text
+    }
+
+    /// "relm pressurekPa" — the signal log's barometer format.
+    static func describe(_ sample: AltitudeSample) -> String {
+        String(format: "%.2fm %.4fkPa", sample.relativeAltitudeM, sample.pressureKPa)
     }
 
     /// " age=Ns" when the event happened a noticeable time before it was

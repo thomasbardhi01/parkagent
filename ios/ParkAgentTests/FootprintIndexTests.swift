@@ -37,7 +37,8 @@ struct FootprintIndexTests {
         )
         let index = LinearFootprintIndex(footprints: [Self.garage, far])
         #expect(index.footprints(near: Geo.at(n: 0, e: 0), radiusM: 100).map(\.id) == ["test-garage"])
-        #expect(index.footprints(near: Geo.at(n: 0, e: 300), radiusM: 200).map(\.id).sorted() == ["far", "test-garage"])
+        // 230 m from the garage's east wall, 210 m from the far lot.
+        #expect(index.footprints(near: Geo.at(n: 0, e: 270), radiusM: 250).map(\.id).sorted() == ["far", "test-garage"])
     }
 
     /// The traces' shared fixture decodes, with every kind the server sends.

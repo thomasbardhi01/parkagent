@@ -34,7 +34,7 @@ struct PlaceClassifierTests {
         }
 
         static func fix(n: Double, e: Double, accuracy: Double = 8, speed: Double? = nil, at: Date = .init(timeIntervalSince1970: 1_800_000_000)) -> ParkFix {
-            ParkFix(coordinate: at(n: n, e: e), accuracy: accuracy, at: at, speed: speed)
+            ParkFix(coordinate: Geo.at(n: n, e: e), accuracy: accuracy, at: at, speed: speed)
         }
     }
 

@@ -594,6 +594,49 @@ struct ParkFusionEngineTests {
         #expect(outcome.gpsLossAt == entry)
     }
 
+    /// A garage's ticket gate: CoreMotion calls the pause a stop, driving
+    /// clears it, and the car goes down the ramp with no GPS. The entry
+    /// fix from before the gate, and the silence after it, reach the
+    /// real stop.
+    @Test func aTicketGateOnTheWayInKeepsTheEntryFix() {
+        let h = Harness()
+        h.driving()
+        h.fix(accuracy: 7, offsetM: -40, speed: 3)
+        let entry = h.now
+        h.advance(3)
+        h.still()
+        h.advance(1)
+        h.fix(accuracy: 9, offsetM: -38, speed: 0)
+        h.advance(12)
+        h.driving()
+        #expect(h.engine.state.stop == nil, "The gate lifted: driving cleared the stop")
+        for _ in 0..<4 {
+            h.advance(10)
+            h.driving()
+        }
+        h.still()
+        #expect(h.engine.state.stop?.entryFix?.at == entry)
+        #expect(h.engine.state.stop?.gpsLossAt != nil, "Silence since the gate")
+    }
+
+    /// Stuck in traffic in a tunnel: GPS gone, the car still for minutes,
+    /// nobody walks away and the audio stays on. That is not a park, and
+    /// the no-fix report an underground garage now gets must not fire.
+    @Test func aTunnelJamIsNotAnUnlocatedPark() {
+        let h = Harness()
+        h.driving()
+        h.fix(accuracy: 6, offsetM: -100, speed: 12)
+        h.advance(20)
+        h.driving()
+        h.advance(20)
+        h.still()
+        h.advance(240)
+        #expect(h.unlocated == 0)
+        #expect(h.parks.isEmpty)
+        h.driving()
+        #expect(h.engine.state.stop == nil)
+    }
+
     /// A parking-lot crawl (2–4 m/s for half a minute) before the stop.
     @Test func aParkingLotCrawlIsMeasured() {
         let h = Harness()

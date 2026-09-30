@@ -250,7 +250,12 @@ detection can use (`Detection/DetectionCapabilities.swift` holds the
 rules and the words); Home's banner, onboarding, Account → Privacy, and
 Diagnostics all read it. The engine (`ParkFusionEngine`) is pure and
 replays signal logs (`SignalTrace`); `ios/Fixtures/drive-park-walk.gpx`
-(from `ios/Tools/make-route.py`) is the shared test route.
+(from `ios/Tools/make-route.py`) is the shared test route. Each park is
+then classified on the phone (`Detection/PlaceClassifier.swift`, FR-53:
+the driver's saved places in `State/PlaceMemory.swift`, garage outlines,
+the entry fix, GPS loss, and the barometer, which runs only in the stop
+window) and sent as `/parked`'s `placeHint`, which the server ignores
+until #179.
 
 **Release builds carry no debug code (FR-34).** Everything mock, scenario,
 launch-argument, UI-test-hook, preview, and Diagnostics is inside `#if

@@ -4,35 +4,62 @@ Goal: an iOS app + small server that detects you've parked in a NYC metered zone
 
 Design principle for the prototype: **every automated action has a dry-run mode first.** You'll run the whole loop for a week with "would have paid $X for zone Y" notifications before any money moves.
 
-## Status (2026-09-25, `v1.0.0-rc3` = `79413c4`)
+## Status (2026-09-30: prod runs `c0f64cb` in dry run; last tag `v1.0.0-rc3` = `79413c4`)
 
 This is the original plan, with each phase's real status added in a quote
 block. The prototype outgrew it: two cities, sign-up for anyone, a Wallet
 with three ways to pay, and a parking assistant. Those are under "Beyond
-the plan" at the end.
+the plan" at the end. What shipped after rc3 is in "Shipped since rc3"
+below. What's left for V1 is three workstreams
+([docs/workstreams.md](workstreams.md)), decided in
+[docs/decisions/2026-09-29-v1-scope.md](decisions/2026-09-29-v1-scope.md).
 
 | Phase | Status | Delivered by |
 |---|---|---|
 | 0 Accounts and tools | done; Apple portal setup for TestFlight remains | — (#67) |
-| 1 Repo and dev env | complete | #1, #3, #4, #35, #39, #40 |
-| 2 Zone data | complete for NYC and Boston; ground truth pending | #42, #60, #64, #87, #105, #111 |
-| 3 Server | complete, hardened, gated by a CI boot check | #43, #46, #49, #65, #79, #116, #133 |
-| 4 iOS app | complete; Release builds proven free of debug code | #3, #47, #50, #51, #54, #63, #104, #119, #123, #118, #124, #130 |
-| 5 Session executor | ParkBoston verified paid; ParkNYC awaits its paid run | #56, #61, #62, #87–#94, #106, #109, #112, #113 (#24) |
+| 1 Repo and dev env | complete; supply-chain gate, SHA-pinned actions, and a Dependabot process for pnpm 12 | #1, #3, #4, #35, #39, #40, #93, #119, #130, #133, #160, #162 |
+| 2 Zone data | complete for NYC and Boston; ground truth pending; next is the City's CDS feed (#176) | #42, #60, #64, #87, #105, #111 |
+| 3 Server | complete and hardened: requests that survive the network, per-user limits, settings that can't take prod down | #43, #46, #49, #65, #79, #116, #118, #133, #150, #151, #156, #162 |
+| 4 iOS app | complete; detection works with the app closed; offline parks wait in an outbox | #3, #47, #50, #51, #54, #63, #104, #118, #119, #123, #124, #130, #145, #150, #151 |
+| 5 Session executor | ParkBoston verified paid; links are durable jobs behind a gate and a breaker; ParkNYC awaits its paid run | #56, #61, #62, #87–#94, #106, #109, #112, #113, #146 (#24, #149) |
 | 6 Stripe Issuing | complete in test mode, reshaped into the Wallet; live needs Stripe | #52, #55, #57, #61, #112, #124, #134 (#66) |
-| 7 Extension worker | complete; one extension at a time per session | #53, #62, #65, #124, #134 |
+| 7 Extension worker | complete; one extension at a time per session; V1 changes when it runs (#180) | #53, #62, #65, #124, #134 |
 | 8 Test on yourself | **next**: the Boston field days | #130 (plan); #71, #135 |
 
-What's left lives in three milestones:
-- **Field test**: Apple developer setup (#67), the Boston dry-run day (#71), and the Boston real-money day (#135).
-- **TestFlight 1.0**: the App Store Connect record and API key (#136), TestFlight secrets and App Privacy (#137), the first upload (#138), the final accounts-server review (#140), the Anthropic spend limit (#101), the NYC dry-run day (#72, #45), and inviting friends in dry run (#139, #32).
-- **App Store 1.0**:
-  - the Sign in with Apple device check (#142);
-  - key rotation (#48) and a private repo (#37);
-  - real money in NYC (#24, #44);
-  - the assisted and autonomous weeks (#33, #34);
-  - everything waiting on a partner: Stripe Issuing (#66, #126, #125, #68), Link (#100, #127, #128), SpotHero/ParkWhiz/Passport (#102, #141, #103, #36);
-  - code follow-ups (#22, #70, #110, #132).
+## Shipped since rc3
+
+Sixteen merges after `v1.0.0-rc3` (`79413c4`, #134), all on prod as
+`c0f64cb`. The nightly FR suite has been green on it since 2026-09-28.
+
+- **Reliability series** (after the 2026-09-25 device feedback):
+  - **1/4, location (#145).** Detection works with the app closed: significant-change and visit relaunches re-arm the detector, CoreMotion history replays what happened while suspended, and a red light never fires a park.
+  - **3/4, providers (#146).** `POST /providers/:provider/link` answers `202` at once, and a durable link worker verifies under a 45 s budget with retries and a dead letter. All provider calls go through one `ExecutorGate` and a per-provider circuit breaker.
+  - **4/4, limits (#150).** Each user has their own per-stop and per-day caps and default stay (`GET/PUT /me/limits`), never above `policy.json`'s ceilings, and every cap check reads `policyFor(user)`.
+  - **2/4, network (#151).** Idempotency keys on every unsafe call, a deadline on every outbound call, an on-disk `ParkOutbox` for offline parks, and a graceful shutdown that drains work in flight.
+- **Config resilience (#156).** Only core settings refuse boot. Every optional feature degrades into `/health`'s `degraded` list instead. `pnpm -C server check-secrets` runs the server's own checks before `fly secrets set`, and CI's `boot` job gained a `broken` mode. `PUT /policy` works on Fly (#154). This closed out the 2026-09-26 Maps-secret outage (`docs/incidents.md`).
+- **Apple Maps fix (#162, closing #152).** Every Maps search had answered 400 because it sent `searchRegion` and `searchLocation` together. Place search (FR-35) now works on prod with one Apple key serving push, sign-in, and Maps.
+- **Nightly hardening (#162, #165, #166).** Each FR file runs as its own throwaway user, and the suite runs shuffled with a replayable seed. The live assistant tests pin their day. The throwaway pool travels through a file, never an env value. FR-38 got a short first request.
+- **Supply chain (#162).** An `audit` gate on high and critical production advisories, with an expiring allowlist, and an `action-pins` check for third-party actions pinned by SHA. A failed UI test retries once and files a "Flaky UI test" issue (#163).
+- **Dependabot process (#160).** npm majors are held back; a workflow regenerates the root `pnpm-lock.yaml` on Dependabot's PRs. Bumps: #157, #159, #161, #164.
+- **Assistant (#144, #147, #165).** Places people name (Apple Maps with a Nominatim fallback), street options that say what the block is doing, option selection synced between rows and pins, saved conversations, continuous dictation, and tappable clarifying questions. A requested clock time is never moved to now (#165).
+
+## What's left: the V1 workstreams
+
+Decided 2026-09-29 ([decision record](decisions/2026-09-29-v1-scope.md)).
+Every PR is one issue under the **V1** milestone on project 3. Order,
+file ownership, and the working agreement are in
+[docs/workstreams.md](workstreams.md).
+
+- **WS-1: assistant brain and plan UX (Tom).** Server-owned request state (#167). Say-no and option validators (#168). Place resolution with confidence (#169). The intent router and near-miss cards (#170). One ranking with map/list sync and directions (#171). Budget-aware search and preferences (#172). Golden evals (#173).
+- **WS-2: Boston data and garage inventory (Nate).** Garage and lot footprints (#174). Garage source modes, budget, and capabilities (#175). The City CDS ingest and a coverage gate (#176). Garage price freshness (#177).
+- **WS-3: park now (Tom).** The place classifier (#178). `/parked` place outcomes (#179). The street session lifecycle and the YOLO beta (#180).
+- **V2 (deferred):** ticket capture (#181), garage stays (#182), the stay budget (#183), valet, B2B, rental cars, and per-trip caps.
+
+By-hand and partner work stays in the three earlier milestones: **Field
+test** (#67, #71, #135, #149, #155), **TestFlight 1.0** (#32, #45, #72,
+#101, #136–#140), and **App Store 1.0** (key rotation, the private repo,
+ParkNYC real money, the assisted and autonomous weeks, Stripe Issuing and
+Link, partner APIs, and code follow-ups #22, #70, #110, #125, #128, #132).
 
 ---
 
@@ -59,6 +86,9 @@ What's left lives in three milestones:
 > CI has since grown `city-neutral` (#119), `executor` with Chromium (#93),
 > the iOS unit and Release-binary gate (#130), and `boot` (#133). Deploy
 > needs `server`, `boot`, and `ios`.
+> Since rc3: a Dependabot process that works with pnpm 12 (#160) and the
+> supply-chain workflow, which gates high/critical production advisories
+> and checks that third-party actions are SHA-pinned (#162).
 
 Monorepo, one language per layer:
 
@@ -109,7 +139,8 @@ Use Claude Code for: scaffolding each package, writing the GeoJSON builder, the 
 > - **NYC:** 10,576 passenger zones fetched, built, and loaded into PostGIS on dev and prod (#42).
 > - **Boston:** zones built from meter data with a `city` column and per-city fees (#60).
 > - **ParkBoston zone numbers** aren't in the open data. They come from the Passport Find Parking import (#87, #105, #111) plus driver reports, verified when two users agree (#64).
-> - **Outstanding:** ground truth against posted signs (#45); Boston max stay from observed terms instead of the blanket 2 hours (#110); an optional Street View bootstrap (#70).
+> - **Outstanding:** ground truth against posted signs (#45); Boston max stay from observed terms instead of the blanket 2 hours (#110).
+> - **V1 (WS-2):** Boston zones, numbers, and restrictions from the City's CDS Curbs API with a coverage gate (#176). It supersedes #110 where CDS covers the curb and makes the Street View bootstrap (#70) unlikely to be needed. Garage and lot footprints (#174).
 
 NYC publishes exactly what you need.
 
@@ -139,6 +170,9 @@ Refresh monthly; rates change.
 > - **Identity:** Sign in with Apple, rotating refresh tokens, `DELETE /me` tombstones (#118).
 > - **Proof:** a live FR suite runs nightly against prod in dry run (#116, #121, #122).
 > - **Boot check:** since the v70 outage (`docs/incidents.md`), CI boots the real server before every deploy (#133).
+> - **Reliability:** per-user limits (#150); idempotency keys, outbound deadlines, and graceful shutdown (#151).
+> - **Config resilience:** only core settings refuse boot, and `check-secrets` runs before `fly secrets set` (#156, after the 2026-09-26 outage).
+> - **Nightly:** per-file throwaway users, a shuffled order, and pinned assistant days (#162, #165).
 
 Fastify + TypeScript + Prisma + Postgres on Fly.io.
 
@@ -182,7 +216,8 @@ Every decision writes a `decisions` row: inputs, rule fired, outcome. You'll rea
 > - **Sign-up and the Account sheet** (#118).
 > - **Tabs** Park · Activity · Wallet (#124).
 > - **1.0.0-rc1 (#130):** Release builds carry no debug code (FR-34, proven in CI); a time-sensitive "Parked in zone …" notification; App Store readiness (privacy manifest, opaque icon, account deletion).
-> - **Outstanding:** a fuller policy editor (#22). Only the per-stop cap, daily cap, and default stay are editable, and only by an admin. TestFlight is #136–#139.
+> - **Since rc3:** detection with the app closed (#145); the offline park outbox and idempotent requests (#151); each user edits their own limits (#150); the assistant's places, street truth, history, and dictation (#144).
+> - **Outstanding:** admin-only editing of the rate ceiling and auto-extend knobs (#22). TestFlight is #136–#139.
 
 SwiftUI, minimum iOS 17. Three jobs: detect parking, report location, show/approve sessions.
 
@@ -217,8 +252,10 @@ Run on your own phone via Xcode with your developer account. Walk around your bl
 >   - stop is unsupported in Boston, since meter time isn't refundable;
 >   - an operator lockout is typed `parking_denied`.
 > - **CI:** executor tests with Chromium (#93).
+> - **Since rc3 (#146):** linking is a durable background job (`202` plus a link worker with retries and a dead letter), and all provider calls go through one `ExecutorGate` and a per-provider circuit breaker. A daily job verifies each linked session and pushes "Reconnect …".
 > - **Outstanding:**
 >   - ParkNYC's paid `record` run (#24).
+>   - ParkNYC's signed-out Guest redirect reads as `ui_changed`, never `auth_expired` (#149).
 >   - Passport card management, used only by the ParkAgent card (#126).
 >   - A few extend-path checks on the Boston real-money day (#135).
 
@@ -265,6 +302,7 @@ Note: automating a consumer app against its terms is fine as a personal experime
 > - Since #124, each extension leg gets its own hold on the ParkAgent card.
 > - Since #134, one extension at a time per session: an advisory lock, and `409 extension_in_progress` for the loser.
 > - The app's auto-extend toggle became a read-only row, because the worker follows the policy (#130).
+> - **V1 (#180):** the session starts at walk-away and ends at return, and auto-extend runs while the phone is away, up to the zone's max stay (decisions 2 and 3).
 
 `server/src/jobs/extendTick.ts`, run every 60 s for each active session:
 
@@ -293,7 +331,7 @@ Hysteresis: once a decision is made for a session, don't reverse it for 5 minute
 > **Status: next.**
 > - `docs/field-test-plan.md` (#130) is the runbook: the night before, day 1 in dry run in Boston (#71), day 2 with real money on your own card through ParkBoston (#135), and the go/no-go for inviting friends.
 > - `docs/field-test-checklist.md` has the per-stop routine and how to read the signal log.
-> - The two weeks below map to #32 (dry-run week, with friends in dry run), #33 (assisted), and #34 (autonomous).
+> - The two weeks below map to #32 (dry-run week, with friends in dry run), #33 (assisted), and #34 (autonomous). Autonomous becomes the YOLO beta in V1 (decision 4, #180).
 
 Week 1, **dry run**: `dry_run: true`. Drive normally. The app detects parks, the server quotes, you get "would have paid $X for zone Y, Z min" notifications, and you pay manually as usual. Each evening, read the `decisions` table. Track:
 - Detection precision (false parks per day) and recall (missed parks).
@@ -339,6 +377,7 @@ The prototype grew well past one user, one city.
   - Finds a spot or plans a day (#81–#86).
   - v2 (#117): grounded results, SpotHero plus ParkWhiz garages, per-turn cost accounting, and a per-user daily model-spend cap.
   - Itinerary stops are re-priced on the server (#130). The model's first per-stop prices are next (#132).
+  - The assistant experience (#144): Apple Maps place search, street state, synced selection, saved conversations, dictation. A requested time is never moved to now (#165).
 - **Accounts** (#118).
   - Sign in with Apple for anyone; email codes and Google are built and switched off.
   - Rotating refresh tokens and link-or-create for the provider account.
@@ -348,9 +387,11 @@ The prototype grew well past one user, one city.
   - The functional-requirements doc and a nightly FR suite against prod in dry run (#116, #121, #122).
   - An acceptance pass with a real Boston payment (#112, #113).
   - Release builds proven free of debug code (#130).
-  - A CI boot check after the v70 outage (#133, `docs/incidents.md`).
+  - A CI boot check after the v70 outage (#133, `docs/incidents.md`), with a `broken` mode after the Maps-secret outage (#156).
+  - Per-file throwaway users and a shuffled nightly (#162).
 - **Releases.**
   - `v0.9-prototype` (`0ae01ad`).
   - 1.0.0-rc1 (#130, `45d4f37`): never tagged; it crash-looped prod.
   - `v1.0.0-rc2` (#133, `2a930c4`).
   - `v1.0.0-rc3` (#134, `79413c4`).
+  - Proposed: `v1.0.0-rc4` at `c0f64cb` (#164), everything in "Shipped since rc3".

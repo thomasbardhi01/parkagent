@@ -29,49 +29,81 @@ the evidence that proves it. Three kinds of evidence back an FR:
 
 ## Coverage
 
-| FR | Requirement | Coverage | Test file(s) |
-|---|---|---|---|
-| FR-1 | Park detection → `/parked` | automated + device-manual | `server/fr/10-parked-nyc.fr.test.ts`, `server/test/parked.test.ts`, `server/test/walkAwayRoute.test.ts`; detector: iOS `ParkFusionEngineTests` (red light, headphones, relaunch, visits, a whole drive), `FixGateTests`, `SignalTraceTests` (replayed signal logs), `DetectionCapabilitiesTests`, `DetectionPersistenceTests`, `LocationReporterTests`, `ParkedNoticeTests`; UI `DetectorUITests` (real permission prompts; the GPX route through the real detector), `PermissionUITests`; field test |
-| FR-2 | NYC zone resolution | automated | `server/fr/10-parked-nyc.fr.test.ts`, `server/test/zoneLookup.test.ts`, `server/test/city.test.ts` |
-| FR-3 | Boston resolution with a provider number | automated | `server/fr/20-parked-boston.fr.test.ts`, `server/test/zoneNumber.test.ts` |
-| FR-4 | Boston resolution without a number | automated | `server/fr/20-parked-boston.fr.test.ts`, `server/test/parked.test.ts`, `server/test/session.test.ts` |
-| FR-5 | Ambiguous fixes require confirmation | automated | `server/test/parked.test.ts`, `server/test/adversarial.test.ts` |
-| FR-6 | Unknown zone answers unknown_zone | automated | `server/fr/10-parked-nyc.fr.test.ts`, `server/test/parked.test.ts` |
-| FR-7 | Quote correctness (ladder, observed terms, receipts) | automated | `server/fr/10-parked-nyc.fr.test.ts`, `server/test/quote.test.ts`, `server/test/bostonQuote.test.ts`, `server/test/bostonBilling.test.ts`, `server/test/observedTerms.test.ts` |
-| FR-8 | Free periods and the 8 pm boundary | automated | `server/fr/20-parked-boston.fr.test.ts`, `server/test/parked.test.ts`, `server/test/bostonSession.test.ts`, `executor/test/passportParse.test.ts` |
-| FR-9 | Timestamp clamping | automated | `server/fr/10-parked-nyc.fr.test.ts`, `server/test/adversarial.test.ts` |
-| FR-10 | Session cap on every payment source | automated | `server/fr/00-gate.fr.test.ts`, `server/fr/30-session-providers.fr.test.ts`, `server/test/session.test.ts`, `server/test/paymentSource.test.ts`, `server/test/walletHolds.test.ts`, `server/test/linkWallet.test.ts`, `server/test/issuing.test.ts`, `server/test/authorization.test.ts`; `server/test/limits.test.ts`, `server/test/limitsScan.test.ts`, `server/fr/35-limits.fr.test.ts`; iOS `OnboardingUITests`, `AccountUITests` (each user's own limits), `LimitsDraftTests` |
-| FR-11 | Daily cap on every payment source | automated | `server/fr/00-gate.fr.test.ts`, `server/fr/35-limits.fr.test.ts`, `server/test/limits.test.ts`, `server/test/webhookStripe.test.ts`, `server/test/session.test.ts`, `server/test/paymentSource.test.ts`, `server/test/walletHolds.test.ts`, `server/test/issuing.test.ts`, `server/test/card.test.ts`, `server/test/assistantItinerary.test.ts` |
-| FR-12 | Auto-pay rate ceiling | automated | `server/fr/10-parked-nyc.fr.test.ts`, `server/test/parked.test.ts` |
-| FR-13 | Start through the executor | automated + acceptance | `server/fr/30-session-providers.fr.test.ts`, `server/test/session.test.ts`, `server/test/bostonSession.test.ts`, `executor/test/fixtures.test.ts`, `executor/test/parse.test.ts`, `executor/test/passportParse.test.ts`; paid: acceptance report Part B (txn 831908580) |
-| FR-14 | Extend continues the ladder | automated + acceptance | `server/test/session.test.ts`, `executor/test/passportParse.test.ts`; paid: acceptance report (txn 831997285) |
-| FR-15 | Stop (incl. no-early-stop zones) | automated + acceptance | `server/test/session.test.ts`, `executor/test/passportParse.test.ts`, `executor/test/sessionScreen.dom.test.ts`; walked live 2026-09-23 |
-| FR-16 | Auto-extend decisions | automated | `server/test/extendTick.test.ts`, `server/test/adversarial.test.ts` |
-| FR-17 | Provider link (per-user, sealed, background job) | automated | `server/fr/30-session-providers.fr.test.ts`, `server/test/providers.test.ts`, `server/test/linkJobs.test.ts`, `server/test/linkWorker.test.ts`, `server/test/registry.test.ts` |
-| FR-18 | Link expiry → relink push | automated | `server/test/executorProvider.test.ts`, `server/test/providers.test.ts` |
-| FR-19 | Relink restores the account | automated | `server/test/providers.test.ts` |
-| FR-20 | Zone-number reporting & precedence | automated | `server/fr/20-parked-boston.fr.test.ts`, `server/test/zoneNumber.test.ts`, `server/test/zoneNumberReverts.test.ts`, `data/test_import_parkboston_zones.py` |
-| FR-21 | Assistant: single spot | automated | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantLoop.test.ts`, `server/test/assistantAccuracy.test.ts` |
-| FR-22 | Assistant: itinerary | automated | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantItinerary.test.ts`, `server/test/itineraryOrder.test.ts`, `server/test/itineraryReprice.test.ts`, `server/test/linkWallet.test.ts` (Link at re-priced amounts); iOS `ItineraryOrderTests`, `LiveAPIRequestTests` (the price call on the wire), `AssistantUITests` (arrival order on the card and Home; re-pricing and the over-cap Sign off) |
-| FR-23 | Named-place search within 600 m | automated | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantGeocode.test.ts`, `server/test/assistantAccuracy.test.ts` |
-| FR-24 | Past-date guard | automated | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantAccuracy.test.ts` |
-| FR-25 | Confirm-token gate | automated | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantPlanEnforcement.test.ts` |
-| FR-26 | No plan without a quote | automated | `server/test/assistantPlanEnforcement.test.ts`, `server/test/assistantAccuracy.test.ts` |
-| FR-27 | Explanations | automated | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantLoop.test.ts` |
-| FR-28 | Pushes | automated + device-manual | `server/fr/50-ops.fr.test.ts`, `server/test/device.test.ts`, `server/test/apnsPush.test.ts`, `server/test/admin.test.ts`, `server/test/session.test.ts` (copy); live delivery needs a registered phone |
-| FR-29 | Admin summary | automated | `server/fr/50-ops.fr.test.ts`, `server/test/admin.test.ts`, `server/test/providerMetrics.test.ts`, `server/test/authorization.test.ts` |
-| FR-30 | Decision audit | automated | `server/fr/10-parked-nyc.fr.test.ts` (decisionId on every response), `server/test/parked.test.ts`, `server/test/adversarial.test.ts`, `server/test/security.test.ts` |
-| FR-31 | Dry-run discipline | automated | `server/fr/00-gate.fr.test.ts`, `server/test/policy.test.ts`, `server/test/session.test.ts` |
-| FR-32 | Accounts | automated + device-manual | `server/fr/60-accounts.fr.test.ts`, `server/test/auth.test.ts`, `server/test/appleTokens.test.ts`, `server/test/frThrowawayPurge.test.ts`, `server/test/authTokens.test.ts`, `server/test/security.test.ts`, `server/test/vehicles.test.ts`; iOS `AuthStoreTests`, `LiveAPIRequestTests`, `OnboardingGateTests`, `AuthUITests`, `AccountUITests`; Apple sign-in and email-code delivery need a phone and a mailbox |
-| FR-33 | Wallet | automated + device-manual | `server/fr/70-wallet.fr.test.ts`, `server/test/walletHolds.test.ts`, `server/test/wallet.test.ts`, `server/test/linkWallet.test.ts`, `server/test/paymentSource.test.ts`, `server/test/adversarial.test.ts`, `server/test/webhookStripe.test.ts`; iOS `LiveAPIRequestTests`, `CardBrandTests`, `WalletUITests`, `SessionUITests`, `OnboardingUITests`, `AccountUITests`, `AssistantUITests`; real Apple Pay / PaymentSheet, a real hold, and Link need a phone, the Stripe sandbox, and the Link OAuth client |
-| FR-34 | Release builds carry no debug code | automated | iOS `ParkAgentReleaseTests` (scheme `ParkAgentRelease`, runs inside the Release build), `ReleaseDenylistTests`, `ios/Tools/check-release-binary.sh`; UI `AccountUITests` (Diagnostics contents), `WalletUITests` (sandbox toggle) |
-| FR-35 | Places people name | automated | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantPlaces.test.ts`; iOS `AssistantUITests` (place choices) |
-| FR-36 | Street options with their state | automated | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantStreet.test.ts`; iOS `AssistantUITests` (street detail) |
-| FR-37 | Choosing an option | automated | `server/test/assistantRecommendation.test.ts`; iOS `PlanSelectionTests`, `AssistantUITests` (selection sync) |
-| FR-38 | Saved conversations | automated | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantHistory.test.ts`; iOS `AssistantUITests` (history, Activity link) |
-| FR-39 | Continuous dictation | automated + device-manual | iOS `DictationTranscriptTests`, `SpeechRecognizerTests`, `SpeechUITests` (scripted recognizer); the real recognizers need a phone |
-| FR-40 | Tappable questions, stated assumptions | automated | `server/test/assistantClarify.test.ts`; iOS `AssistantUITests` (duration chips, assumptions line) |
-| FR-41 | Requests that survive the network | automated | `server/fr/55-reliability.fr.test.ts`, `server/test/idempotency.test.ts`, `server/test/outbound.test.ts`, `server/test/shutdown.test.ts`, `server/test/auth.test.ts`; iOS `LiveAPIRequestTests`, `ParkOutboxTests`; `scripts/boot-check.sh` (SIGTERM → exit 0) |
+**Coverage** says what proves each FR today:
+- **nightly**: a live test tagged with the FR ran against prod in the
+  nightly;
+- **unit**: hermetic server, executor, or iOS tests in CI;
+- **device-manual**: needs a phone, a real provider, or real money (the
+  acceptance record counts here);
+- **pending**: planned in a V1 or V2 issue, not built yet.
+
+**Latest nightly** is run
+[36740411476](https://github.com/thomasbardhi01/parkagent/actions/runs/36740411476),
+2026-09-30 against `c0f64cb`: 62 tests, 61 passed, 0 failed, 1 skipped
+(FR-9, which only runs outside 08:00–20:00 Eastern; that scheduled run
+started at 11:55 ET). "—" means the FR has no live test.
+
+| FR | Requirement | Coverage | Latest nightly | Test file(s) |
+|---|---|---|---|---|
+| FR-1 | Park detection → `/parked` | nightly + unit + device-manual | ✅ passed | `server/fr/10-parked-nyc.fr.test.ts`, `server/test/parked.test.ts`, `server/test/walkAwayRoute.test.ts`; detector: iOS `ParkFusionEngineTests` (red light, headphones, relaunch, visits, a whole drive), `FixGateTests`, `SignalTraceTests` (replayed signal logs), `DetectionCapabilitiesTests`, `DetectionPersistenceTests`, `LocationReporterTests`, `ParkedNoticeTests`; UI `DetectorUITests` (real permission prompts; the GPX route through the real detector), `PermissionUITests`; field test |
+| FR-2 | NYC zone resolution | nightly + unit | ✅ passed | `server/fr/10-parked-nyc.fr.test.ts`, `server/test/zoneLookup.test.ts`, `server/test/city.test.ts` |
+| FR-3 | Boston resolution with a provider number | nightly + unit | ✅ passed | `server/fr/20-parked-boston.fr.test.ts`, `server/test/zoneNumber.test.ts` |
+| FR-4 | Boston resolution without a number | nightly + unit | ✅ passed | `server/fr/20-parked-boston.fr.test.ts`, `server/test/parked.test.ts`, `server/test/session.test.ts` |
+| FR-5 | Ambiguous fixes require confirmation | unit | — | `server/test/parked.test.ts`, `server/test/adversarial.test.ts` |
+| FR-6 | Unknown zone answers unknown_zone | nightly + unit | ✅ passed | `server/fr/10-parked-nyc.fr.test.ts`, `server/test/parked.test.ts` |
+| FR-7 | Quote correctness (ladder, observed terms, receipts) | nightly + unit | ✅ passed | `server/fr/10-parked-nyc.fr.test.ts`, `server/test/quote.test.ts`, `server/test/bostonQuote.test.ts`, `server/test/bostonBilling.test.ts`, `server/test/observedTerms.test.ts` |
+| FR-8 | Free periods and the 8 pm boundary | nightly + unit | ✅ passed | `server/fr/20-parked-boston.fr.test.ts`, `server/test/parked.test.ts`, `server/test/bostonSession.test.ts`, `executor/test/passportParse.test.ts` |
+| FR-9 | Timestamp clamping | nightly (off-hours only) + unit | ⏭️ skipped | `server/fr/10-parked-nyc.fr.test.ts`, `server/test/adversarial.test.ts` |
+| FR-10 | Session cap on every payment source | nightly + unit | ✅ passed | `server/fr/00-gate.fr.test.ts`, `server/fr/30-session-providers.fr.test.ts`, `server/test/session.test.ts`, `server/test/paymentSource.test.ts`, `server/test/walletHolds.test.ts`, `server/test/linkWallet.test.ts`, `server/test/issuing.test.ts`, `server/test/authorization.test.ts`; `server/test/limits.test.ts`, `server/test/limitsScan.test.ts`, `server/fr/35-limits.fr.test.ts`; iOS `OnboardingUITests`, `AccountUITests` (each user's own limits), `LimitsDraftTests` |
+| FR-11 | Daily cap on every payment source | nightly + unit | ✅ passed | `server/fr/00-gate.fr.test.ts`, `server/fr/35-limits.fr.test.ts`, `server/test/limits.test.ts`, `server/test/webhookStripe.test.ts`, `server/test/session.test.ts`, `server/test/paymentSource.test.ts`, `server/test/walletHolds.test.ts`, `server/test/issuing.test.ts`, `server/test/card.test.ts`, `server/test/assistantItinerary.test.ts` |
+| FR-12 | Auto-pay rate ceiling | nightly + unit | ✅ passed | `server/fr/10-parked-nyc.fr.test.ts`, `server/test/parked.test.ts` |
+| FR-13 | Start through the executor | nightly + unit + device-manual | ✅ passed | `server/fr/30-session-providers.fr.test.ts`, `server/test/session.test.ts`, `server/test/bostonSession.test.ts`, `executor/test/fixtures.test.ts`, `executor/test/parse.test.ts`, `executor/test/passportParse.test.ts`; paid: acceptance report Part B (txn 831908580) |
+| FR-14 | Extend continues the ladder | unit + device-manual | — | `server/test/session.test.ts`, `executor/test/passportParse.test.ts`; paid: acceptance report (txn 831997285) |
+| FR-15 | Stop (incl. no-early-stop zones) | unit + device-manual | — | `server/test/session.test.ts`, `executor/test/passportParse.test.ts`, `executor/test/sessionScreen.dom.test.ts`; walked live 2026-09-23 |
+| FR-16 | Auto-extend decisions | unit | — | `server/test/extendTick.test.ts`, `server/test/adversarial.test.ts` |
+| FR-17 | Provider link (per-user, sealed, background job) | nightly + unit | ✅ passed | `server/fr/30-session-providers.fr.test.ts`, `server/test/providers.test.ts`, `server/test/linkJobs.test.ts`, `server/test/linkWorker.test.ts`, `server/test/registry.test.ts` |
+| FR-18 | Link expiry → relink push | unit | — | `server/test/executorProvider.test.ts`, `server/test/providers.test.ts` |
+| FR-19 | Relink restores the account | unit + device-manual | — | `server/test/providers.test.ts` |
+| FR-20 | Zone-number reporting & precedence | nightly + unit | ✅ passed | `server/fr/20-parked-boston.fr.test.ts`, `server/test/zoneNumber.test.ts`, `server/test/zoneNumberReverts.test.ts`, `data/test_import_parkboston_zones.py` |
+| FR-21 | Assistant: single spot | nightly + unit | ✅ passed | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantLoop.test.ts`, `server/test/assistantAccuracy.test.ts` |
+| FR-22 | Assistant: itinerary | nightly + unit | ✅ passed | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantItinerary.test.ts`, `server/test/itineraryOrder.test.ts`, `server/test/itineraryReprice.test.ts`, `server/test/linkWallet.test.ts` (Link at re-priced amounts); iOS `ItineraryOrderTests`, `LiveAPIRequestTests` (the price call on the wire), `AssistantUITests` (arrival order on the card and Home; re-pricing and the over-cap Sign off) |
+| FR-23 | Named-place search within 600 m | nightly + unit | ✅ passed | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantGeocode.test.ts`, `server/test/assistantAccuracy.test.ts` |
+| FR-24 | Past-date guard | nightly + unit | ✅ passed | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantAccuracy.test.ts` |
+| FR-25 | Confirm-token gate | nightly + unit | ✅ passed | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantPlanEnforcement.test.ts` |
+| FR-26 | No plan without a quote | unit | — | `server/test/assistantPlanEnforcement.test.ts`, `server/test/assistantAccuracy.test.ts` |
+| FR-27 | Explanations | nightly + unit | ✅ passed | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantLoop.test.ts` |
+| FR-28 | Pushes | nightly + unit + device-manual | ✅ passed | `server/fr/50-ops.fr.test.ts`, `server/test/device.test.ts`, `server/test/apnsPush.test.ts`, `server/test/admin.test.ts`, `server/test/session.test.ts` (copy); live delivery needs a registered phone |
+| FR-29 | Admin summary | nightly + unit | ✅ passed | `server/fr/50-ops.fr.test.ts`, `server/test/admin.test.ts`, `server/test/providerMetrics.test.ts`, `server/test/authorization.test.ts` |
+| FR-30 | Decision audit | unit (also asserted inside nightly FR-1 and FR-20) | — | `server/fr/10-parked-nyc.fr.test.ts` (decisionId on every response), `server/test/parked.test.ts`, `server/test/adversarial.test.ts`, `server/test/security.test.ts` |
+| FR-31 | Dry-run discipline | nightly + unit | ✅ passed | `server/fr/00-gate.fr.test.ts`, `server/test/policy.test.ts`, `server/test/session.test.ts` |
+| FR-32 | Accounts | nightly + unit + device-manual | ✅ passed | `server/fr/60-accounts.fr.test.ts`, `server/test/auth.test.ts`, `server/test/appleTokens.test.ts`, `server/test/frThrowawayPurge.test.ts`, `server/test/authTokens.test.ts`, `server/test/security.test.ts`, `server/test/vehicles.test.ts`; iOS `AuthStoreTests`, `LiveAPIRequestTests`, `OnboardingGateTests`, `AuthUITests`, `AccountUITests`; Apple sign-in and email-code delivery need a phone and a mailbox |
+| FR-33 | Wallet | nightly + unit + device-manual | ✅ passed | `server/fr/70-wallet.fr.test.ts`, `server/test/walletHolds.test.ts`, `server/test/wallet.test.ts`, `server/test/linkWallet.test.ts`, `server/test/paymentSource.test.ts`, `server/test/adversarial.test.ts`, `server/test/webhookStripe.test.ts`; iOS `LiveAPIRequestTests`, `CardBrandTests`, `WalletUITests`, `SessionUITests`, `OnboardingUITests`, `AccountUITests`, `AssistantUITests`; real Apple Pay / PaymentSheet, a real hold, and Link need a phone, the Stripe sandbox, and the Link OAuth client |
+| FR-34 | Release builds carry no debug code | unit (Release-build tests in CI) | — | iOS `ParkAgentReleaseTests` (scheme `ParkAgentRelease`, runs inside the Release build), `ReleaseDenylistTests`, `ios/Tools/check-release-binary.sh`; UI `AccountUITests` (Diagnostics contents), `WalletUITests` (sandbox toggle) |
+| FR-35 | Places people name | nightly + unit | ✅ passed | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantPlaces.test.ts`; iOS `AssistantUITests` (place choices) |
+| FR-36 | Street options with their state | nightly + unit | ✅ passed | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantStreet.test.ts`; iOS `AssistantUITests` (street detail) |
+| FR-37 | Choosing an option | unit | — | `server/test/assistantRecommendation.test.ts`; iOS `PlanSelectionTests`, `AssistantUITests` (selection sync) |
+| FR-38 | Saved conversations | nightly + unit | ✅ passed | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantHistory.test.ts`; iOS `AssistantUITests` (history, Activity link) |
+| FR-39 | Continuous dictation | unit + device-manual | — | iOS `DictationTranscriptTests`, `SpeechRecognizerTests`, `SpeechUITests` (scripted recognizer); the real recognizers need a phone |
+| FR-40 | Tappable questions, stated assumptions | nightly + unit | ✅ passed | `server/test/assistantClarify.test.ts`; iOS `AssistantUITests` (duration chips, assumptions line) |
+| FR-41 | Requests that survive the network | nightly + unit | ✅ passed | `server/fr/55-reliability.fr.test.ts`, `server/test/idempotency.test.ts`, `server/test/outbound.test.ts`, `server/test/shutdown.test.ts`, `server/test/auth.test.ts`; iOS `LiveAPIRequestTests`, `ParkOutboxTests`; `scripts/boot-check.sh` (SIGTERM → exit 0) |
+| FR-42 | The request is server-owned, versioned state | pending | — | #167 |
+| FR-43 | Options from the latest search; the assistant says no | pending | — | #168 |
+| FR-44 | Place resolution with confidence and walking times | pending | — | #169 |
+| FR-45 | Three intents, request chips, near-miss cards | pending | — | #170 |
+| FR-46 | One ranking; map, list, directions; garages open in-app with their fetched time | pending | — | #171 |
+| FR-47 | Budget-aware search and saved preferences | pending | — | #172 |
+| FR-48 | Golden conversations graded on end state; pass^3 nightly | pending | — | #173 |
+| FR-49 | Garage and lot footprints | pending | — | #174 |
+| FR-50 | Garage sources under modes, a daily budget, and declared capabilities | pending | — | #175 |
+| FR-51 | Boston zones from the City's CDS feed; restrictions; coverage gate | pending | — | #176 |
+| FR-52 | Garage price freshness | pending | — | #177 |
+| FR-53 | The phone classifies the place it parked | pending | — | #178 |
+| FR-54 | `/parked` answers garage and no-pay outcomes | pending | — | #179 |
+| FR-55 | A street session runs from walk-away to return, confirmed with the amount | pending | — | #180 |
+| FR-56 | YOLO beta mode | pending | — | #180 |
+| FR-57 | Ticket capture (V2) | pending | — | #181 |
+| FR-58 | Garage stays and estimates (V2) | pending | — | #182 |
+| FR-59 | Stay budget on the Issuing webhook (V2) | pending | — | #183 |
 
 ---
 
@@ -208,8 +240,12 @@ decision records `request_ts_clamped`. **Accepted when** a stale ts
 prices at server time (live: a 3-day-old afternoon ts prices as the
 current off-hours free period) and the decision inputs say why.
 
-Evidence: live FR-9 test (runs in the nightly's off-hours window);
-`adversarial.test.ts` (all three `pricedAtSource` values).
+Evidence: live FR-9 test (runs only outside 08:00–20:00 Eastern);
+`adversarial.test.ts` (all three `pricedAtSource` values). The nightly is
+scheduled for 09:17 UTC (5:17 am Eastern), but GitHub started the
+2026-09-29 and 2026-09-30 scheduled runs at about 15:55 UTC, inside
+enforcement hours, so FR-9 skipped in both. A manual dispatch after 8 pm
+Eastern exercises it.
 
 ## Budget caps
 
@@ -226,11 +262,15 @@ is never made. The Wallet's choice (`provider_card` default, `link_wallet`,
 never what is allowed. **Accepted when** the cap binds on every path and
 the source switch respects its gates.
 
-The caps live in one shared policy that only the operator edits (`PUT
-/policy` is admin-only). `GET /policy` tells the app whether the caller
-may (`editable`), so everyone else — every invited user — sees the limits
-read-only in onboarding and in Account → Spending limits, instead of
-steppers whose save would fail.
+`policy.json` holds the ceilings, and only the operator edits it (`PUT
+/policy` is admin-only; `GET /policy` reports `editable`). Each user sets
+their own caps below those ceilings (see "Per user" under FR-11).
+
+**Changing in V1 (#180, decision 9 of
+`docs/decisions/2026-09-29-v1-scope.md`):** individuals lose the per-stop
+cap and keep the daily cap; `session_cap_usd` stays as the system's
+ceiling; allowlisted beta users run under `beta_caps`. This section is
+rewritten when #180 merges.
 
 Evidence: `session.test.ts`, `walletHolds.test.ts` ("caps bind every
 source" — all three), `linkWallet.test.ts` (no request over the cap),
@@ -377,11 +417,17 @@ backoff, dead letter, restart, no double run), `security.test.ts`
 
 When an executor call fails `auth_expired`, the provider account flips to
 `expired` and a `provider_relink` push (with provider, deep link, zone
-number) routes the user back into the link flow. **Accepted when** the
-flip and the push are pinned.
+number) routes the user back into the link flow. A daily job
+(`jobs/providerHealthTick.ts`) also verifies each linked session
+headlessly and pushes "Reconnect …" when one is expiring or expired, so
+it's fixed before the next park; `expiring` still pays
+(`providerStatusUsable()`). **Accepted when** the flip, the daily check,
+and the push are pinned.
 
 Evidence: `executorProvider.test.ts`, `providers.test.ts`,
-`apnsPush.test.ts`.
+`providerHealth.test.ts`, `apnsPush.test.ts`. Known gap: ParkNYC's
+signed-out Guest redirect reads as `ui_changed`, so for ParkNYC the daily
+check records `check_failed` instead of `expired` (#149).
 
 ### FR-19 — Relink
 
@@ -468,9 +514,10 @@ it would store recurring state on the account that signed off.
 
 ### FR-23 — Named-place search within 600 m
 
-A named street/neighborhood/landmark geocodes first (Nominatim,
-hard-biased to the NYC and Boston viewboxes; out-of-metro results are
-dropped, never a wrong fallback point), and the search runs at the PLACE,
+A named street/neighborhood/landmark geocodes first (the Apple Maps
+Server API, with Nominatim as the fallback — FR-35; biased to the NYC and
+Boston metros; out-of-metro results are dropped, never a wrong fallback
+point), and the search runs at the PLACE,
 not the phone: garage options beyond 600 m of the geocoded point are
 dropped and counted. **Accepted when** every surfaced option for a named
 area is within 600 m and out-of-coverage places resolve to nothing.
@@ -627,7 +674,9 @@ safe end to end:
   deletes vehicles and conversations, revokes the Sign in with Apple token
   at Apple (App Store 5.1.1(v); the refresh token from the sign-in's
   authorization-code exchange, stored sealed — a failed revoke never
-  blocks the delete and is retried hourly), and tombstones the users row — the
+  blocks the delete and is retried with backoff — 1 h doubling, at most
+daily — then dead-lettered after 8 attempts and shown in `/admin/summary`),
+and tombstones the users row — the
   decisions ledger keeps a valid id, the person goes, and the account's
   still-valid access token stops working at once.
 - **Admin keys** keep working for scripts and the FR user; the app never
@@ -758,11 +807,12 @@ Link OAuth client; the REST paths are VERIFY-IN-SANDBOX).
 A Release build (TestFlight, App Store) contains no mock API, fixtures,
 scenario switches, launch-argument handling, UI-test hooks, previews, or
 Diagnostics — compiled out, not hidden. Debug builds keep exactly the
-field-test kit behind five taps on the version number: detector status,
-signal-log export, the effective dry run, Reset onboarding, and the
-ParkAgent-card sandbox toggle (off by default). **Accepted when** the
+field-test kit behind five taps on the version number: detector status
+(every capability's live state), the detector self-test, signal-log
+export, the effective dry run, Reset onboarding, and the ParkAgent-card
+sandbox toggle (off by default). **Accepted when** the
 Release binary has none of the markers in `ios/Tools/release-denylist.txt`
-and none of its debug-only types, and Diagnostics shows those five things
+and none of its debug-only types, and Diagnostics shows those six things
 and nothing else.
 
 Evidence: `ParkAgentReleaseTests` runs inside the Release build (scheme
@@ -911,33 +961,7 @@ minutes after the time it names). The live assistant tests pin their
 requests to a named day (`fr/client.ts` `pinnedDay`), so a run tests the
 same scenario whatever hour it runs at.
 
----
-
-## Running the live suite
-
-```
-# once, against the TARGET environment's database (prod for the nightly):
-pnpm -C server create:fr-user            # prints the key once → FR_API_KEY
-
-# then:
-FR_API_KEY=… pnpm -C server test:fr                       # against prod
-FR_API_BASE=http://localhost:3000 FR_API_KEY=… pnpm -C server test:fr
-```
-
-The suite hard-refuses when the target's effective dry run is off, makes
-at most `FR_ASSISTANT_MAX_CALLS` (default 12) paid model calls per run,
-never links a provider, never calls `PUT /policy`, and never starts a
-session (the unlinked-start refusal is itself one of its assertions).
-Zone fixture coordinates are env-overridable (`FR_NYC_AUTOPAY_LAT`, …)
-— see `server/fr/client.ts`.
-
-The nightly workflow (`nightly-fr.yml`, Tue–Sat 09:17 UTC + manual
-`workflow_dispatch`) runs the executor fixture suite and this suite
-against prod, uploads `fr-report.json` + `fr-summary.md` as the
-`fr-report` artifact, and opens/updates a single **"Nightly FR
-failures"** issue on failure, closing it on the next green run.
-Secrets: `FR_API_KEY` (only one — the report and issue use the built-in
-`GITHUB_TOKEN`).
+## Reliability
 
 ### FR-41 — Requests that survive the network
 
@@ -966,3 +990,146 @@ claim, secrets never stored), `auth.test.ts` (the lost-rotation grace),
 `health.test.ts`; iOS `LiveAPIRequestTests` (the same key on retry,
 waiting out an in-progress payment, no retries for verdicts or sign-in,
 cancellation), `ParkOutboxTests`; `boot-check.sh` (SIGTERM → exit 0).
+
+---
+
+## Pending: the V1 workstreams (and V2)
+
+Planned, not built. Each is filled in (statement, evidence, and a live
+test where one is listed) by the PR that delivers it. Scope is in
+`docs/decisions/2026-09-29-v1-scope.md`; order and owners in
+`docs/workstreams.md`. Numbers FR-42 to FR-59 are reserved; the reports'
+own FR-41 to FR-44 and FR-5x tags are renumbered to these.
+
+### FR-42 — The request is server-owned, versioned state (#167, WS-1)
+**Accepted when** each constraint the user states is merged into a
+versioned `RequestState` by `update_request` (a later value supersedes an
+earlier one, every change is logged), the server derives the intent, and
+the state survives across turns of a conversation. Unit.
+
+### FR-43 — Options come from the latest search, and the assistant says no (#168, WS-1)
+**Accepted when** searches read the request instead of model arguments;
+`propose_plan` accepts only options from the latest search at the current
+version, with prices from the search; nothing satisfying yields a
+`none_meets` card with near-misses and relax suggestions; no plan is ever
+synthesized; with no constraint both the closest and the cheapest are
+offered, and an explicit ask decides the primary option. Unit, plus one
+live case if the model-call budget allows.
+
+### FR-44 — Place resolution with a confidence score and walking times (#169, WS-1)
+**Accepted when** `geocode_place` returns a scored resolution the model
+can't override (found / ambiguous / closest-only / none), Apple
+autocomplete catches what search misses, Apple quota falls through to the
+next source, and plan walk times come from Apple walking ETAs with the
+straight-line estimate marked. Unit; FR-35/36/40 live stay green.
+
+### FR-45 — Three intents, request chips, near-miss cards (#170, WS-1)
+**Accepted when** park-now, park-later, and garage-or-lot enable their own
+tools and defaults, a card shows the current request as chips, a
+`none_meets` card shows near-miss badges and relax chips with no Confirm,
+and a street Confirm shows the amount. Unit and UI.
+
+### FR-46 — One ranking, shared by map, list, and directions (#171, WS-1)
+**Accepted when** the server orders options once (an explicit ask first,
+then generalized cost), the map and list share one selection, Directions
+hands off to Apple Maps, Google Maps, or Waze, a garage checkout opens in
+the in-app browser, and every garage price shows when it was fetched.
+Unit and UI; FR-35/36 live carry the rank fields.
+
+### FR-47 — Budget-aware search and saved preferences (#172, WS-1)
+**Accepted when** an option over the remaining daily budget is a near-miss,
+never a proposal; `max_session_minutes` binds; saved rank and preferences
+seed a new conversation and change only through `save_preferences`; and
+no assistant tool can write policy. Unit.
+
+### FR-48 — Golden conversations graded on end state (#173, WS-1)
+**Accepted when** at least 40 golden conversations pass hermetically in
+CI's `server` job, and the 12 live cases tagged `FR-48 <case>` report
+pass^3 in the nightly, with an issue opened below 0.67. Unit and nightly.
+
+### FR-49 — Garage and lot footprints (#174, WS-2)
+**Accepted when** OSM garages and lots load per city, `GET /garages/near`
+returns containment, distance, and nearest-entrance distance, and
+`classifyByFootprint` prefers containment over proximity. Unit and
+nightly (self-skips until prod is loaded).
+
+### FR-50 — Garage sources under modes, a budget, and declared capabilities (#175, WS-2)
+**Accepted when** each garage source runs `off`, `public`, or `partner`,
+a public reader stops at its daily read budget with one `garage_budget`
+decision, every option carries provenance with its fetched time, and one
+contract suite passes for every provider. Unit.
+
+### FR-51 — Boston zones from the City's CDS feed (#176, WS-2)
+**Accepted when** Boston zones build from the City's CDS Curbs API first
+(meter-derived only where CDS has no curb), `user_zone_id` feeds zone
+numbers under the documented precedence, restricted windows are never
+quoted, and coverage can't drop below the committed baseline. Unit and
+nightly (`/zones/near` restrictions).
+
+### FR-52 — Garage price freshness (#177, WS-2)
+**Accepted when** a cached garage price keeps its original fetched time,
+a stale one says so, the refresh job never spends a user's search budget,
+and `GET /admin/garages/freshness` reports ages per source. Unit and
+nightly (the admin shape).
+
+### FR-53 — The phone classifies the place it parked (#178, WS-3)
+**Accepted when** a park (or an unlocated park) is classified street,
+garage, lot, no-pay, or unknown from place memory, footprints, and
+sensors, acting only on a 0.3 margin, with the altimeter running only in
+the stop window. Unit, trace replay, and device-manual.
+
+### FR-54 — `/parked` answers garage and no-pay outcomes (#179, WS-3)
+**Accepted when** a garage or paid-lot place answers `garage` (no ticket
+flow in V1), a no-pay place answers `nopay` silently, the user can correct
+the class, and street outcomes are unchanged. Unit and nightly.
+
+### FR-55 — A street session runs from walk-away to return (#180, WS-3)
+**Accepted when** the driver confirms the quoted amount with one tap, the
+paid session starts once at walk-away (or five minutes after the tap),
+extends while the phone is away up to the max stay, and ends when the
+phone returns: stopped where early stop exists, no more extensions where
+it doesn't. The daily cap binds every path, and individuals have no
+per-stop cap. Unit and nightly (dry run).
+
+### FR-56 — YOLO beta mode (#180, WS-3)
+**Accepted when** only admin-allowlisted users who accepted the consent
+copy skip the tap, every such payment writes a `yolo_payment` decision
+with the consent version, beta caps and the daily cap bind, and removal
+from the allowlist turns it off at once. Unit and nightly.
+
+### FR-57 to FR-59 — V2 (#181, #182, #183)
+Ticket capture and parsing; garage stays with rate cards, estimates, and
+a Live Activity; the stay budget on the Issuing webhook with the assisted
+handoff. Deferred by the V1 scope decisions.
+
+---
+
+## Running the live suite
+
+```
+# once, against the TARGET environment's database (prod for the nightly):
+pnpm -C server create:fr-user            # prints the key once → FR_API_KEY
+
+# then:
+FR_API_KEY=… pnpm -C server test:fr                       # against prod
+FR_API_BASE=http://localhost:3000 FR_API_KEY=… pnpm -C server test:fr
+```
+
+The suite hard-refuses when the target's effective dry run is off, makes
+at most `FR_ASSISTANT_MAX_CALLS` (default 12) paid model calls per run,
+never links a provider, never calls `PUT /policy`, and never starts a
+session (the unlinked-start refusal is itself one of its assertions).
+Zone fixture coordinates are env-overridable (`FR_NYC_AUTOPAY_LAT`, …)
+— see `server/fr/client.ts`.
+
+The nightly workflow (`nightly-fr.yml`, Tue–Sat 09:17 UTC + manual
+`workflow_dispatch`) runs the executor fixture suite and this suite
+against prod, uploads `fr-report.json` + `fr-summary.md` as the
+`fr-report` artifact, and opens/updates a single **"Nightly FR
+failures"** issue on failure, closing it on the next green run.
+Secrets: `FR_API_KEY` (the dedicated FR user) and `FLY_API_TOKEN`, which
+only the mint and purge steps use: they run `create:fr-throwaway` and
+`purge:fr-throwaways --apply` inside the prod machine. The pool travels
+to the suite through a file (`FR_THROWAWAY_POOL_FILE`), never an env
+value, which Actions would print in every later step's log. The report
+and the issue use the built-in `GITHUB_TOKEN`.

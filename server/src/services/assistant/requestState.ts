@@ -502,10 +502,9 @@ const patchSchema = z.strictObject({
       }),
     )
     .optional(),
-  reason: z
-    .string()
-    .refine((s) => s.trim().length > 0, "reason is required")
-    .transform((s) => oneLine(s, MAX_REASON)),
+  // Required, but only the audit row reads it: an empty one isn't worth
+  // a refused call (one of the turn's two).
+  reason: z.string().transform((s) => oneLine(s, MAX_REASON)),
 });
 
 /** Hold the model's input to the flat patch shape; refusals name the fix. */

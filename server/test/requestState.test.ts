@@ -517,6 +517,8 @@ describe("parsePatch (what the model sent, before it touches the state)", () => 
 
   test("reason is required; out-of-range values are refused", () => {
     expect(parsePatch({ maxPriceUsd: 20 }).ok).toBe(false);
+    // Required as a key; an empty one only costs the audit row its note.
+    expect(parsePatch({ maxPriceUsd: 20, reason: "" }).ok).toBe(true);
     expect(parsePatch({ maxPriceUsd: -1, reason: "r" }).ok).toBe(false);
     expect(parsePatch({ durationMinutes: 0, reason: "r" }).ok).toBe(false);
     expect(parsePatch({ durationMinutes: 721, reason: "r" }).ok).toBe(false);

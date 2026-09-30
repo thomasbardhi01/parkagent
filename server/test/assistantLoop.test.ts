@@ -1142,6 +1142,20 @@ describe("update_request, the tool (FR-42)", () => {
     });
   });
 
+  test("a refused call still counts toward the turn's two: a malformed call is a call", async () => {
+    const t = makeTestApp({});
+    const c = ctx();
+    const tools = t.deps.assistantTools!;
+    const bad = await tools.execute(c, "update_request", { durationMinutes: 0, reason: "a" });
+    expect((bad.result as { error: string }).error).toBe("invalid_patch");
+    const good = await tools.execute(c, "update_request", { maxPriceUsd: 20, reason: "b" });
+    expect((good.result as { version: number }).version).toBe(1);
+    const third = await tools.execute(c, "update_request", { maxPriceUsd: 10, reason: "c" });
+    expect((third.result as { error: string }).error).toBe("too_many_edits");
+    expect(c.requestState?.hard.maxPriceUsd).toBe(20);
+    expect(c.requestEdits).toBe(3);
+  });
+
   test("the model's contradicting intent is overridden in the result and on the record", async () => {
     const t = makeTestApp({});
     const out = await t.deps.assistantTools!.execute(ctx(), "update_request", {

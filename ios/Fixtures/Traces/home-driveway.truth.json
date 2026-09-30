@@ -1,0 +1,32 @@
+{
+  "trace": "home-driveway.log",
+  "synthesized": true,
+  "truth": {
+    "place": "home driveway",
+    "class": "nopay"
+  },
+  "context": {
+    "footprints": "footprints.json",
+    "memory": [
+      {
+        "name": "Home",
+        "class": "nopay",
+        "lat": 42.36,
+        "lng": -71.095,
+        "visits": 3
+      }
+    ],
+    "zones": "unknown"
+  },
+  "expect": {
+    "class": "nopay",
+    "minConfidence": 0.95,
+    "located": true,
+    "memoryHit": true,
+    "withoutMemory": "unknown",
+    "never": [
+      "garage",
+      "lot"
+    ]
+  }
+}

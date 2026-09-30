@@ -1,0 +1,24 @@
+{
+  "trace": "sim-drive-park-walk.log",
+  "synthesized": false,
+  "note": "Recorded through the real detector in the simulator. The phone has no zone data, so a plain street park is unknown to the classifier and /parked decides exactly as it does today (FR-1); what matters is that it is never a garage, a lot, or no-pay.",
+  "truth": {
+    "place": "metered street, Boylston St (simulator drive)",
+    "class": "street"
+  },
+  "context": {
+    "footprints": "footprints.json",
+    "memory": [],
+    "zones": "unknown"
+  },
+  "expect": {
+    "class": "unknown",
+    "located": true,
+    "gpsLoss": false,
+    "never": [
+      "garage",
+      "lot",
+      "nopay"
+    ]
+  }
+}

@@ -1,7 +1,11 @@
+import CoreLocation
 import Foundation
 import Testing
 
 @testable import ParkAgent
+
+/// The traces in ios/Fixtures/Traces that carry a truth sidecar.
+private let tracesWithTruth = ["garage-underground", "home-driveway", "sim-drive-park-walk"]
 
 /// The signal log read back and replayed through the engine: what the
 /// phone recorded is exactly what a unit test can re-run.
@@ -113,5 +117,183 @@ struct SignalTraceTests {
         let recorded = try #require(trace.decisions(.parkFired).first)
         #expect(abs(park.at.timeIntervalSince(recorded.at)) < 2, "Replay fired at a different moment")
         #expect(replay.raw.contains { $0.signal == .drivingResumedCleared })
+    }
+
+    // MARK: - Place evidence (FR-53)
+
+    /// Barometer readings are inputs the replay feeds back; the entry fix
+    /// and a GPS loss are the engine's own decisions, kept for comparison.
+    @Test func altitudeEntryFixAndGpsLossLinesParse() throws {
+        let log = """
+        # parkagent signal log v2
+        2026-09-15T14:30:00.000Z altitude 3.20m 101.2616kPa age=1s
+        2026-09-15T14:30:01.000Z entry_fix 42.350380,-71.076300 ±8m 2.5m/s
+        2026-09-15T14:30:02.000Z gps_lost accuracy ±300m
+        2026-09-15T14:30:03.000Z altitude bogus
+        """
+        let trace = SignalTrace.parse(log)
+        #expect(trace.skipped == 1)
+        guard case .altitude(let sample, let handled) = trace.events[0] else {
+            Issue.record("not an altitude reading")
+            return
+        }
+        #expect(sample.relativeAltitudeM == 3.2)
+        #expect(sample.pressureKPa == 101.2616)
+        #expect(handled.timeIntervalSince(sample.at) == 1)
+        let entry = try #require(trace.decisions(.entryFix).first)
+        #expect(SignalTrace.parseFix(entry.detail ?? "", handledAt: entry.at)?.speed == 2.5)
+        #expect(trace.decisions(.gpsLost).count == 1)
+    }
+
+    /// What the engine logs about a garage park — its fixes, the loss, the
+    /// barometer — replays to the same evidence.
+    @Test func placeEvidenceRoundTripsThroughTheLog() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let log = SignalLog(directory: dir)
+        log.isEnabled = true
+        log.clear()
+        defer { log.clear(); log.isEnabled = false }
+
+        let h = ParkFusionEngineTests.Harness()
+        h.engine.onRawSignal = { signal, at, detail in log.append(signal, at: at, detail: detail) }
+        h.driving()
+        for i in 0..<12 {
+            h.advance(3)
+            h.fix(accuracy: 6, offsetM: -60 + Double(i) * 3, speed: 3)
+        }
+        h.advance(1)
+        h.fix(accuracy: 400, offsetM: -20)
+        for _ in 0..<3 {
+            h.advance(10)
+            h.driving()
+        }
+        h.still()
+        for s in 0..<30 {
+            h.altitude(relativeM: s < 10 ? 0 : min(4, Double(s - 10) * 0.4), pressureKPa: 101.3 - (s < 10 ? 0 : min(4, Double(s - 10) * 0.4)) * 0.012)
+            h.advance(1)
+            if s == 5 { h.engine.audioDisconnected(port: .bluetooth) }
+            if s == 15 { h.walking() }
+        }
+        h.advance(200)
+        let live = try #require(h.outcomes.last)
+        #expect(live.fix == nil)
+
+        let text = (try? String(contentsOf: log.fileURL, encoding: .utf8)) ?? ""
+        let trace = SignalTrace.parse(text)
+        #expect(trace.skipped == 0)
+        let replay = TraceReplay.run(trace)
+        let replayed = try #require(replay.outcomes.last, "Replay decided nothing:\n\(text)")
+        #expect(replayed.fix == nil)
+        let entry = try #require(replayed.entryFix)
+        let liveEntry = try #require(live.entryFix)
+        #expect(entry.distance(to: liveEntry) < 1)
+        #expect(abs((replayed.gpsLossAt ?? .distantPast).timeIntervalSince(live.gpsLossAt ?? .distantFuture)) < 0.01)
+        #expect(abs((replayed.baroDeltaM ?? 0) - (live.baroDeltaM ?? 99)) < 0.02)
+        #expect(abs((live.baroDeltaM ?? 0) - 4) < 0.02)
+        #expect(abs((replayed.crawlS ?? 0) - (live.crawlS ?? 99)) < 0.01)
+        // The log says what it decided, for a field log read by eye.
+        #expect(trace.decisions(.entryFix).count >= 1)
+        #expect(trace.decisions(.gpsLost).count == 1)
+    }
+
+    // MARK: - Traces with a truth sidecar
+
+    /// What a trace's `<name>.truth.json` says: the place it really was,
+    /// what the phone knew then, and what the classifier must answer.
+    struct TruthSidecar: Decodable {
+        struct Remembered: Decodable {
+            var name: String?
+            var placeClass: String
+            var lat: Double
+            var lng: Double
+            var visits: Int
+            enum CodingKeys: String, CodingKey { case name, placeClass = "class", lat, lng, visits }
+        }
+
+        struct Context: Decodable {
+            var footprints: String?
+            var memory: [Remembered]
+            var zones: String
+        }
+
+        struct Expect: Decodable {
+            var placeClass: String
+            var minConfidence: Double?
+            var footprintId: String?
+            var located: Bool
+            var gpsLoss: Bool?
+            var baroDeltaM: Double?
+            var memoryHit: Bool?
+            var withoutMemory: String?
+            var never: [String]?
+            enum CodingKeys: String, CodingKey {
+                case placeClass = "class", minConfidence, footprintId, located, gpsLoss, baroDeltaM, memoryHit, withoutMemory, never
+            }
+        }
+
+        var trace: String
+        var context: Context
+        var expect: Expect
+    }
+
+    /// Every sidecar in the bundle is replayed below — a new field trace
+    /// can't be added and silently skipped.
+    @Test func everyTruthSidecarIsReplayed() {
+        let bundle = Bundle(for: BundleMarker.self)
+        let names = (bundle.urls(forResourcesWithExtension: "json", subdirectory: nil) ?? [])
+            .map(\.lastPathComponent)
+            .filter { $0.hasSuffix(".truth.json") }
+            .map { String($0.dropLast(".truth.json".count)) }
+        #expect(Set(names) == Set(tracesWithTruth))
+    }
+
+    /// A recorded (or, until the field test, synthesized) park replays
+    /// through the engine and the classifier to the place it really was.
+    @Test(arguments: tracesWithTruth)
+    func aTraceClassifiesAsItsTruth(_ name: String) throws {
+        let bundle = Bundle(for: BundleMarker.self)
+        let sidecarURL = try #require(bundle.url(forResource: "\(name).truth", withExtension: "json"))
+        let sidecar = try JSONDecoder().decode(TruthSidecar.self, from: Data(contentsOf: sidecarURL))
+        let logURL = try #require(bundle.url(forResource: (sidecar.trace as NSString).deletingPathExtension, withExtension: "log"))
+        let trace = SignalTrace.parse(try String(contentsOf: logURL, encoding: .utf8))
+        #expect(trace.skipped == 0)
+
+        let replay = TraceReplay.run(trace)
+        let outcome = try #require(replay.outcomes.last, "\(name): the replay never parked")
+        #expect((outcome.fix != nil) == sidecar.expect.located)
+
+        let footprints: [Footprint]
+        if let file = sidecar.context.footprints {
+            let url = try #require(bundle.url(forResource: (file as NSString).deletingPathExtension, withExtension: "json"))
+            footprints = try LinearFootprintIndex(json: Data(contentsOf: url)).footprints
+        } else {
+            footprints = []
+        }
+        var memory = PlaceMemory()
+        for place in sidecar.context.memory {
+            let placeClass = try #require(PlaceClass(rawValue: place.placeClass))
+            for visit in 0..<place.visits {
+                memory.confirm(placeClass, at: CLLocationCoordinate2D(latitude: place.lat, longitude: place.lng),
+                               name: place.name, now: outcome.stopAt.addingTimeInterval(-Double(place.visits - visit) * 86_400))
+            }
+        }
+        let zones = try #require(ZoneHint(rawValue: sidecar.context.zones))
+        let index = LinearFootprintIndex(footprints: footprints)
+        let result = PlaceClassifier.classify(park: outcome, memory: memory, footprints: index, zones: zones)
+
+        #expect(result.placeClass.rawValue == sidecar.expect.placeClass, "\(name): \(result)")
+        if let minimum = sidecar.expect.minConfidence { #expect(result.confidence >= minimum, "\(name)") }
+        if let id = sidecar.expect.footprintId { #expect(result.inputs.footprintId == id, "\(name)") }
+        if let loss = sidecar.expect.gpsLoss { #expect(result.inputs.gpsLoss == loss, "\(name)") }
+        if let hit = sidecar.expect.memoryHit { #expect(result.inputs.memoryHit == hit, "\(name)") }
+        if let baro = sidecar.expect.baroDeltaM { #expect(abs((outcome.baroDeltaM ?? 0) - baro) < 0.1, "\(name): the door's spike leaked in?") }
+        for never in sidecar.expect.never ?? [] {
+            #expect(result.placeClass.rawValue != never, "\(name) must never be \(never)")
+        }
+        if let cold = sidecar.expect.withoutMemory {
+            let withoutMemory = PlaceClassifier.classify(park: outcome, memory: PlaceMemory(), footprints: index, zones: zones)
+            #expect(withoutMemory.placeClass.rawValue == cold, "\(name) without its saved places")
+        }
     }
 }

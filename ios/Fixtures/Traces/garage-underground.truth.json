@@ -1,0 +1,27 @@
+{
+  "trace": "garage-underground.log",
+  "synthesized": true,
+  "truth": {
+    "place": "underground garage, two levels down",
+    "class": "garage",
+    "garageId": "fixture-garage-underground"
+  },
+  "context": {
+    "footprints": "footprints.json",
+    "memory": [],
+    "zones": "unknown"
+  },
+  "expect": {
+    "class": "garage",
+    "minConfidence": 0.9,
+    "footprintId": "fixture-garage-underground",
+    "located": false,
+    "gpsLoss": true,
+    "baroDeltaM": 7.0,
+    "never": [
+      "street",
+      "lot",
+      "nopay"
+    ]
+  }
+}

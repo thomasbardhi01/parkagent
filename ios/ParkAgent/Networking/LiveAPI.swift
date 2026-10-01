@@ -365,6 +365,22 @@ struct LiveAPI: APIClient {
         ])
     }
 
+    /// The route's own ceilings (server routes/garages.ts): asking past
+    /// either is a 400, so a caller that wants more gets the most there is.
+    static let garagesMaxRadiusM = 1_500
+    static let garagesMaxLimit = 1_000
+
+    func nearbyGarages(lat: Double, lng: Double, radiusM: Double, limit: Int) async throws -> NearbyGaragesResponse {
+        // Up, not to nearest: a cell's corners are at the radius.
+        let radius = min(Self.garagesMaxRadiusM, max(1, Int(radiusM.rounded(.up))))
+        return try await send("garages/near", query: [
+            URLQueryItem(name: "lat", value: String(lat)),
+            URLQueryItem(name: "lng", value: String(lng)),
+            URLQueryItem(name: "radius", value: String(radius)),
+            URLQueryItem(name: "limit", value: String(min(Self.garagesMaxLimit, max(1, limit)))),
+        ])
+    }
+
     // MARK: - City & providers
 
     func detectCity(lat: Double, lng: Double) async throws -> CityDetectResponse {

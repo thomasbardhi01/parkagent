@@ -78,6 +78,11 @@ protocol APIClient: Sendable {
     /// capped server-side at 400 m.
     func nearbyZones(lat: Double, lng: Double, radiusM: Double) async throws -> NearbyZonesResponse
 
+    /// Garage and lot outlines around a point (server/API.md "GET
+    /// /garages/near"), for the detector's footprint cache. The route caps
+    /// the radius at 1,500 m and the limit at 1,000.
+    func nearbyGarages(lat: Double, lng: Double, radiusM: Double, limit: Int) async throws -> NearbyGaragesResponse
+
     // City & provider accounts (server/API.md "GET /city", "Provider accounts").
     func detectCity(lat: Double, lng: Double) async throws -> CityDetectResponse
     func providersStatus() async throws -> ProvidersStatusResponse
@@ -151,6 +156,12 @@ extension APIClient {
     }
 
     func deleteAllConversations() async throws -> Int {
+        throw APIError.notConfigured
+    }
+
+    /// Garage outlines: a test double that never drives inherits a refusal,
+    /// which the footprint cache treats like any failed fetch.
+    func nearbyGarages(lat: Double, lng: Double, radiusM: Double, limit: Int) async throws -> NearbyGaragesResponse {
         throw APIError.notConfigured
     }
 

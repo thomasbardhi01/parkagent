@@ -925,6 +925,42 @@ struct CardPrepareResponse: Codable, Sendable {
     }
 }
 
+// MARK: - Garage outlines (server/API.md "GET /garages/near")
+
+/// Garage and lot outlines around a point, for the phone's footprint cache
+/// (Detection/FootprintIndex.swift). A garage this build can't read is
+/// skipped rather than failing the cell it came in.
+struct NearbyGaragesResponse: Decodable, Sendable {
+    var radiusM: Double
+    var limit: Int
+    /// True → more outlines matched than `limit`: the cell is incomplete.
+    var truncated: Bool
+    /// The line the outlines' license asks for wherever they are shown.
+    var attribution: String
+    var garages: [Footprint]
+
+    init(radiusM: Double, limit: Int, truncated: Bool, attribution: String, garages: [Footprint]) {
+        self.radiusM = radiusM
+        self.limit = limit
+        self.truncated = truncated
+        self.attribution = attribution
+        self.garages = garages
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case radiusM, limit, truncated, attribution, garages
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        radiusM = try container.decode(Double.self, forKey: .radiusM)
+        limit = try container.decode(Int.self, forKey: .limit)
+        truncated = try container.decode(Bool.self, forKey: .truncated)
+        attribution = try container.decodeIfPresent(String.self, forKey: .attribution) ?? ""
+        garages = try container.decode([LossyFootprint].self, forKey: .garages).compactMap(\.footprint)
+    }
+}
+
 // MARK: - Map layer (server/API.md "GET /zones/near")
 
 struct NearbyZonesResponse: Codable, Sendable {

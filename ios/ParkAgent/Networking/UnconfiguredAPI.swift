@@ -57,6 +57,9 @@ struct UnconfiguredAPI: APIClient {
     func nearbyZones(lat: Double, lng: Double, radiusM: Double) async throws -> NearbyZonesResponse {
         throw failure
     }
+    func nearbyGarages(lat: Double, lng: Double, radiusM: Double, limit: Int) async throws -> NearbyGaragesResponse {
+        throw failure
+    }
 
 
     func detectCity(lat: Double, lng: Double) async throws -> CityDetectResponse { throw failure }

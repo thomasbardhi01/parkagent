@@ -30,6 +30,9 @@ struct Footprint: Codable, Equatable, Sendable, Identifiable {
     var polygon: [[Double]]
     /// Entrances, [lng, lat].
     var entrances: [[Double]]
+    /// Rings cut out of the outline (a building in the middle of a lot);
+    /// the server sends them only when there are some.
+    var holes: [[[Double]]]? = nil
 }
 
 // MARK: - Geometry
@@ -45,14 +48,19 @@ extension Footprint {
         return ((pair[0] - origin.longitude) * kx, (pair[1] - origin.latitude) * metersPerDegree)
     }
 
-    private func ring(around origin: CLLocationCoordinate2D) -> [(x: Double, y: Double)] {
-        polygon.compactMap { Self.project($0, around: origin) }
+    private typealias Ring = [(x: Double, y: Double)]
+
+    private static func ring(_ pairs: [[Double]], around origin: CLLocationCoordinate2D) -> Ring {
+        pairs.compactMap { project($0, around: origin) }
     }
 
-    func contains(_ point: CLLocationCoordinate2D) -> Bool {
-        let ring = ring(around: point)
+    private func ring(around origin: CLLocationCoordinate2D) -> Ring {
+        Self.ring(polygon, around: origin)
+    }
+
+    /// Ray cast from the origin (the point itself) along +x.
+    private static func containsOrigin(_ ring: Ring) -> Bool {
         guard ring.count >= 3 else { return false }
-        // Ray cast from the point (the origin) along +x.
         var inside = false
         var j = ring.count - 1
         for i in ring.indices {
@@ -65,9 +73,8 @@ extension Footprint {
         return inside
     }
 
-    /// Meters from the point to the outline itself, inside or out.
-    func distanceToEdgeM(from point: CLLocationCoordinate2D) -> Double {
-        let ring = ring(around: point)
+    /// Meters from the origin to the ring's nearest side.
+    private static func distanceToOrigin(_ ring: Ring) -> Double {
         guard ring.count >= 2 else { return .infinity }
         var best = Double.infinity
         for i in ring.indices {
@@ -79,6 +86,21 @@ extension Footprint {
             best = min(best, (x * x + y * y).squareRoot())
         }
         return best
+    }
+
+    /// Inside the outline and not in one of its holes: the server's rule
+    /// (garageLookup.describeFootprint), so both agree about an outline.
+    func contains(_ point: CLLocationCoordinate2D) -> Bool {
+        guard Self.containsOrigin(ring(around: point)) else { return false }
+        return !(holes ?? []).contains { Self.containsOrigin(Self.ring($0, around: point)) }
+    }
+
+    /// Meters from the point to the outline's nearest side, a hole's
+    /// included, inside or out.
+    func distanceToEdgeM(from point: CLLocationCoordinate2D) -> Double {
+        (holes ?? []).reduce(Self.distanceToOrigin(ring(around: point))) { best, hole in
+            min(best, Self.distanceToOrigin(Self.ring(hole, around: point)))
+        }
     }
 
     /// Zero inside; otherwise meters to the outline.
@@ -110,6 +132,15 @@ extension Footprint {
 
 // MARK: - Indexes
 
+/// A footprint that may not decode: nil instead of failing the list it is
+/// in (a JSON fixture, or a cell from GET /garages/near).
+struct LossyFootprint: Decodable, Sendable {
+    var footprint: Footprint?
+    init(from decoder: any Decoder) throws {
+        footprint = try? Footprint(from: decoder)
+    }
+}
+
 /// Where the classifier finds garages and lots around a point.
 @MainActor
 protocol FootprintIndex {
@@ -129,14 +160,7 @@ struct LinearFootprintIndex: FootprintIndex {
     /// A JSON array of footprints. One that won't decode is skipped rather
     /// than emptying the whole list.
     init(json: Data) throws {
-        footprints = try JSONDecoder().decode([Lossy].self, from: json).compactMap(\.footprint)
-    }
-
-    private struct Lossy: Decodable {
-        var footprint: Footprint?
-        init(from decoder: any Decoder) throws {
-            footprint = try? Footprint(from: decoder)
-        }
+        footprints = try JSONDecoder().decode([LossyFootprint].self, from: json).compactMap(\.footprint)
     }
 
     func footprints(near point: CLLocationCoordinate2D, radiusM: Double) -> [Footprint] {
@@ -148,11 +172,11 @@ struct LinearFootprintIndex: FootprintIndex {
 /// kept on disk, so the classifier has them underground and offline, when
 /// it needs them most.
 ///
-/// Follow-up (after WS-2 #174 merges): the fetch is GET /garages/near
-/// around the cell's center, passed in by ParkDetector's owner, and
-/// `prefetch(around:)` runs on tracking fixes while driving. Until then
-/// there's no fetch: the cache stays empty, and the classifier works from
-/// place memory and the sensors alone.
+/// The fetch is GET /garages/near around the cell's center (the app's
+/// model hands it over once detection is armed), and ParkDetector calls
+/// `prefetch(around:)` with the fixes of the drive. With no fetch (signed
+/// out) the cache stays as it is, and the classifier works from place
+/// memory and the sensors alone.
 @MainActor
 final class FootprintCellCache: FootprintIndex {
     struct Cell: Hashable, Sendable {
@@ -160,22 +184,52 @@ final class FootprintCellCache: FootprintIndex {
         var col: Int
     }
 
-    typealias Fetch = @MainActor (_ center: CLLocationCoordinate2D, _ radiusM: Double) async throws -> [Footprint]
+    /// One cell as the server answered it.
+    struct Fetched: Sendable {
+        var footprints: [Footprint]
+        /// The server had more outlines in reach than one call returns.
+        var truncated: Bool
+    }
+
+    typealias Fetch = @MainActor (_ center: CLLocationCoordinate2D, _ radiusM: Double) async throws -> Fetched
+
+    /// What a `prefetch` did, for the signal log.
+    enum Prefetch: Equatable, Sendable {
+        /// Nothing to do: no fetch wired, the cell is fresh, a fetch for it
+        /// is already running, or one failed too recently to try again.
+        case skipped
+        case fetched(count: Int, truncated: Bool)
+        case failed
+    }
 
     static let cellSizeM = 2_000.0
     /// Outlines change slowly; a week-old cell is refetched when next near.
     static let freshFor: TimeInterval = 7 * 24 * 3_600
+    /// A cell the server cut short is missing outlines: ask again after a day.
+    static let truncatedFreshFor: TimeInterval = 24 * 3_600
+    /// A failed fetch isn't tried again on the next fix: the drive delivers
+    /// one a second, and the route allows sixty calls a minute.
+    static let retryAfter: TimeInterval = 5 * 60
 
     private struct Stored: Codable {
         var fetchedAt: Date
         var footprints: [Footprint]
+        /// Absent in a cell stored before truncation was tracked.
+        var truncated: Bool?
     }
 
     let directory: URL
-    private let fetch: Fetch?
+    var fetch: Fetch?
     private let now: @MainActor () -> Date
     private var loaded: [Cell: Stored] = [:]
+    /// Cells with no file on disk, so a fix a second doesn't mean a file
+    /// read a second.
+    private var missing: Set<Cell> = []
     private var fetching: Set<Cell> = []
+    private var failedAt: [Cell: Date] = [:]
+    /// Bumped by `clear`, so a fetch still in the air can't write a cell
+    /// back after sign-out.
+    private var generation = 0
 
     init(directory: URL? = nil, fetch: Fetch? = nil, now: @escaping @MainActor () -> Date = { Date() }) {
         self.directory = directory
@@ -224,16 +278,47 @@ final class FootprintCellCache: FootprintIndex {
 
     /// Fetch the point's cell if it's missing or stale. Failing (offline,
     /// refused) keeps whatever outlines the cell already had.
-    func prefetch(around point: CLLocationCoordinate2D) async {
-        guard let fetch else { return }
+    @discardableResult
+    func prefetch(around point: CLLocationCoordinate2D) async -> Prefetch {
+        guard let fetch else { return .skipped }
         let cell = Self.cell(for: point)
-        if let stored = stored(cell), now().timeIntervalSince(stored.fetchedAt) < Self.freshFor { return }
-        guard fetching.insert(cell).inserted else { return }
+        if let stored = stored(cell), now().timeIntervalSince(stored.fetchedAt) < Self.freshness(of: stored) {
+            return .skipped
+        }
+        if let failed = failedAt[cell], now().timeIntervalSince(failed) < Self.retryAfter { return .skipped }
+        guard fetching.insert(cell).inserted else { return .skipped }
         defer { fetching.remove(cell) }
+        let started = generation
         // The circle around the cell's center that covers its corners.
         let radius = Self.cellSizeM * 2.0.squareRoot() / 2 + 1
-        guard let footprints = try? await fetch(Self.center(of: cell), radius) else { return }
-        save(Stored(fetchedAt: now(), footprints: footprints), for: cell)
+        guard let fetched = try? await fetch(Self.center(of: cell), radius) else {
+            if started == generation { failedAt[cell] = now() }
+            return .failed
+        }
+        // Signed out while the request was in the air: keep nothing.
+        guard started == generation else { return .skipped }
+        failedAt[cell] = nil
+        save(Stored(fetchedAt: now(), footprints: fetched.footprints, truncated: fetched.truncated), for: cell)
+        return .fetched(count: fetched.footprints.count, truncated: fetched.truncated)
+    }
+
+    /// Whether the point's cell holds every outline the server had for it:
+    /// false for one the server cut short, nil for a cell never fetched.
+    func isComplete(around point: CLLocationCoordinate2D) -> Bool? {
+        stored(Self.cell(for: point)).map { $0.truncated != true }
+    }
+
+    /// Sign-out: the cell files are named by where the phone has driven.
+    func clear() {
+        generation += 1
+        loaded = [:]
+        missing = []
+        failedAt = [:]
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    private static func freshness(of stored: Stored) -> TimeInterval {
+        stored.truncated == true ? truncatedFreshFor : freshFor
     }
 
     private func fileURL(_ cell: Cell) -> URL {
@@ -242,15 +327,20 @@ final class FootprintCellCache: FootprintIndex {
 
     private func stored(_ cell: Cell) -> Stored? {
         if let cached = loaded[cell] { return cached }
+        if missing.contains(cell) { return nil }
         guard let data = try? Data(contentsOf: fileURL(cell)),
               let stored = try? JSONDecoder().decode(Stored.self, from: data)
-        else { return nil }
+        else {
+            missing.insert(cell)
+            return nil
+        }
         loaded[cell] = stored
         return stored
     }
 
     private func save(_ stored: Stored, for cell: Cell) {
         loaded[cell] = stored
+        missing.remove(cell)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         guard let data = try? JSONEncoder().encode(stored) else { return }
         // Read by the detector in the background, often with the phone locked.

@@ -128,9 +128,15 @@ paired that shouldn't have. Say exactly that when reporting the bug.
   `lot`, `nopay`, `street`, or `unknown`, with `footprint=`, `memory=`,
   `gps_loss=`, `baro=`, `crawl=`, `located=`. Diagnostics shows the last
   one under **Last place**. On a street park it's normally `unknown` (the
-  phone has no zone data; the server decides as always). Until WS-2 #174
-  lands the phone has no garage outlines, so a garage reads `garage 0.60`
-  (GPS lost, no footprint) at best.
+  phone has no zone data; the server decides as always).
+- `footprints_fetched n=<count> truncated=0` — the phone fetched the garage
+  and lot outlines for the 2 km cell it is driving through (`GET
+  /garages/near`), once a week per cell. `footprints_fetched failed` means
+  no signal or a refusal; it tries again five minutes later. A garage park
+  with no `footprint=` on its `place_classified` line had no outline for
+  that garage on the phone: either the cell never fetched (look for the
+  line earlier in the drive) or the garage isn't in the table, and it
+  reads `garage 0.60` (GPS lost, no footprint) at best.
 
 For each garage, lot, or home park, write down what the place really was
 (and the garage's name and level): that plus the exported log is a trace

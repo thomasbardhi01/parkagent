@@ -97,7 +97,7 @@ started at 11:55 ET). "—" means the FR has no live test.
 | FR-50 | Garage sources under modes, a daily budget, and declared capabilities | pending | — | #175 |
 | FR-51 | Boston zones from the City's CDS feed; restrictions; coverage gate | pending | — | #176 |
 | FR-52 | Garage price freshness | pending | — | #177 |
-| FR-53 | The phone classifies the place it parked | unit + device-manual (nightly: the `placeHint` contract) | — | iOS `PlaceClassifierTests`, `PlaceMemoryTests`, `FootprintIndexTests`, `ParkFusionEngineTests` (entry fix, GPS loss, barometer, crawl), `SignalTraceTests` (garage, home, and street traces with truth sidecars), `ParkDetectorTests` (the altimeter's window, sign-out), `LiveAPIRequestTests` (the hint on the wire); `server/test/parkedPlaceHint.test.ts`, `server/fr/90-park-now.fr.test.ts`; field test |
+| FR-53 | The phone classifies the place it parked | unit + device-manual (nightly: the `placeHint` contract) | — | iOS `PlaceClassifierTests`, `PlaceMemoryTests`, `FootprintIndexTests`, `ParkFusionEngineTests` (entry fix, GPS loss, barometer, crawl), `SignalTraceTests` (garage, home, and street traces with truth sidecars), `ParkDetectorTests` (the altimeter's window, sign-out), `LiveAPIRequestTests` (the hint and the `/garages/near` fetch on the wire); `server/test/parkedPlaceHint.test.ts`, `server/fr/90-park-now.fr.test.ts`; field test |
 | FR-54 | `/parked` answers garage and no-pay outcomes | pending | — | #179 |
 | FR-55 | A street session runs from walk-away to return, confirmed with the amount | pending | — | #180 |
 | FR-56 | YOLO beta mode | pending | — | #180 |
@@ -1306,9 +1306,14 @@ all, entered with good GPS, is now reported unlocated (it used to be
 silent), and a stop that driving clears (a garage's ticket gate) hands
 its entry fix on to the real stop.
 
-Not yet: garage outlines on the phone. `FootprintCellCache` keeps them per
-2 km cell; fetching them from `GET /garages/near` is the follow-up once
-WS-2's #174 merges. Until then a garage classifies at 0.6 (GPS lost, no
+The outlines reach the phone a 2 km cell at a time: `FootprintCellCache`
+fetches the cell the car is driving through from `GET /garages/near`
+(1,416 m around the cell's center, up to 1,000 outlines) and keeps it on
+disk for a week, so the classifier has it underground and offline. A cell
+the server cut short (`truncated`) is asked for again after a day, a
+failed fetch waits five minutes, a point in an outline's hole is outside
+it (as on the server), and the cells are deleted at sign-out. Where no
+outline is on the phone, a garage classifies at 0.6 (GPS lost, no
 footprint) and a lot not at all.
 
 Evidence: the unit tests in the table; trace replay of every

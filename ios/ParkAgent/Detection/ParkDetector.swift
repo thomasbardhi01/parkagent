@@ -76,9 +76,15 @@ final class ParkDetector: NSObject, CLLocationManagerDelegate {
     /// The driver's saved places. Read here; written only by what the
     /// driver confirms (#179), and cleared at sign-out.
     @ObservationIgnored let placeMemory: PlaceMemoryStore
-    /// Garage and lot outlines. Empty until the /garages/near fetch is
-    /// wired (FootprintCellCache, after WS-2 #174).
+    /// Garage and lot outlines: a FootprintCellCache, filled a 2 km cell
+    /// at a time from GET /garages/near as the car drives.
     @ObservationIgnored private let footprints: any FootprintIndex
+    /// How the cache fetches a cell. Set by the app's model once detection
+    /// is armed (the detector is built before there's an API to ask).
+    @ObservationIgnored var footprintFetch: FootprintCellCache.Fetch? {
+        didSet { footprintCache?.fetch = footprintFetch }
+    }
+    @ObservationIgnored private var footprintCache: FootprintCellCache? { footprints as? FootprintCellCache }
     @ObservationIgnored private var altimeterDeadline: Task<Void, Never>?
     @ObservationIgnored private let audio = CarAudioSource()
     @ObservationIgnored private let locationManager = CLLocationManager()
@@ -106,6 +112,9 @@ final class ParkDetector: NSObject, CLLocationManagerDelegate {
     /// keeps a week; the query is cheap). Past this, what happened while
     /// we were gone is unknown and "was driving" is forgotten.
     static let historyReach: TimeInterval = 3 * 60 * 60
+    /// A fix vaguer than this (Precise Location off blurs by kilometers)
+    /// doesn't say which 2 km cell of garage outlines the car is in.
+    static let footprintFixMaxAccuracyM = 1_000.0
 
     init(
         engine: ParkFusionEngine = ParkFusionEngine(),
@@ -219,6 +228,8 @@ final class ParkDetector: NSObject, CLLocationManagerDelegate {
         store.clear()
         // The driver's saved places are theirs: they go with the account.
         placeMemory.clear()
+        // So do the outline cells: their file names say where it drove.
+        footprintCache?.clear()
         lastPlace = nil
         lastSaved = nil
         motionHistoryThrough = nil
@@ -567,23 +578,46 @@ final class ParkDetector: NSObject, CLLocationManagerDelegate {
 
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         let fixes = locations.map(ParkFix.init)
-        Task { @MainActor in
-            let wasIdle = self.mode == .idle
-            for fix in fixes {
-                self.lastFix = fix
-                if let speed = fix.speed, speed >= self.engine.config.drivingSpeedMps {
-                    self.lastDriveEvidenceAt = fix.at
-                }
-                #if DEBUG
-                if self.simulated, let sample = (self.motion as? SpeedDerivedMotionSource)?.sample(for: fix) {
-                    self.handle(sample, live: true)
-                }
-                #endif
-                self.engine.fixReceived(fix)
+        Task { @MainActor in await self.received(fixes) }
+    }
+
+    /// Fixes from CoreLocation, in order.
+    func received(_ fixes: [ParkFix]) async {
+        let wasIdle = mode == .idle
+        for fix in fixes {
+            lastFix = fix
+            if let speed = fix.speed, speed >= engine.config.drivingSpeedMps {
+                lastDriveEvidenceAt = fix.at
             }
-            // Updates while idle are significant-change events: iOS woke
-            // (or relaunched) us because the phone moved ~500 m.
-            if wasIdle { await self.wake(.significantChange) }
+            #if DEBUG
+            if simulated, let sample = (motion as? SpeedDerivedMotionSource)?.sample(for: fix) {
+                handle(sample, live: true)
+            }
+            #endif
+            engine.fixReceived(fix)
+        }
+        if let last = fixes.last { prefetchFootprints(around: last) }
+        // Updates while idle are significant-change events: iOS woke
+        // (or relaunched) us because the phone moved ~500 m.
+        if wasIdle { await wake(.significantChange) }
+    }
+
+    /// The outlines have to be on the phone before the car is underground
+    /// with no signal: ask for the cell the car is in while it's still on
+    /// the way. Cheap when the cell is already there (the cache decides).
+    private func prefetchFootprints(around fix: ParkFix) {
+        guard isArmed, let cache = footprintCache, cache.fetch != nil,
+              fix.accuracy >= 0, fix.accuracy <= Self.footprintFixMaxAccuracyM
+        else { return }
+        Task { [weak self] in
+            switch await cache.prefetch(around: fix.coordinate) {
+            case .fetched(let count, let truncated):
+                self?.log(.footprintsFetched, "n=\(count) truncated=\(truncated ? 1 : 0)")
+            case .failed:
+                self?.log(.footprintsFetched, "failed")
+            case .skipped:
+                break
+            }
         }
     }
 

@@ -396,6 +396,13 @@ struct MockAPI: APIClient {
         return MockFixtures.nearbyZones(around: (lat: lat, lng: lng), radiusM: radiusM)
     }
 
+    /// No outlines: the mock's parks are classified by the sensors alone,
+    /// and what /parked answers is the scenario's to say.
+    func nearbyGarages(lat: Double, lng: Double, radiusM: Double, limit: Int) async throws -> NearbyGaragesResponse {
+        try await pause()
+        return NearbyGaragesResponse(radiusM: radiusM, limit: limit, truncated: false, attribution: "", garages: [])
+    }
+
     // MARK: - City & providers
 
     func detectCity(lat: Double, lng: Double) async throws -> CityDetectResponse {

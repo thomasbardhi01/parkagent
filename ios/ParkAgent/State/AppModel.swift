@@ -404,6 +404,14 @@ final class AppModel {
         detector.onUnlocatedPark = { preciseOff in
             Task { await ParkedNotice.postUnlocated(preciseOff: preciseOff) }
         }
+        // Garage and lot outlines for the place classifier, a 2 km cell at
+        // a time as the car drives (FootprintCellCache).
+        detector.footprintFetch = { [api] center, radiusM in
+            let response = try await api.nearbyGarages(
+                lat: center.latitude, lng: center.longitude, radiusM: radiusM, limit: LiveAPI.garagesMaxLimit
+            )
+            return FootprintCellCache.Fetched(footprints: response.garages, truncated: response.truncated)
+        }
         reporter.onDistance = { [weak self] meters in
             self?.distanceFromCarMeters = meters
         }

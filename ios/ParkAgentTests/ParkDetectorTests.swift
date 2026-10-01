@@ -1,3 +1,4 @@
+import CoreLocation
 import Foundation
 import Testing
 
@@ -240,6 +241,114 @@ struct ParkDetectorTests {
         #expect(places.memory.places.isEmpty)
         #expect(!FileManager.default.fileExists(atPath: places.fileURL.path))
         #expect(detector.lastPlace == nil)
+    }
+
+    // MARK: - Garage outlines (GET /garages/near)
+
+    @MainActor
+    final class FakeGarages {
+        var calls: [CLLocationCoordinate2D] = []
+        var answer: [Footprint] = [PlaceClassifierTests.garage]
+        func fetch(_ center: CLLocationCoordinate2D, _ radius: Double) async throws -> FootprintCellCache.Fetched {
+            calls.append(center)
+            return FootprintCellCache.Fetched(footprints: answer, truncated: false)
+        }
+    }
+
+    func tempCache() -> FootprintCellCache {
+        FootprintCellCache(directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+    }
+
+    func makeDetector(cache: FootprintCellCache, motion: FakeMotion = FakeMotion()) -> ParkDetector {
+        ParkDetector(
+            engine: ParkFusionEngine(), signalLog: SignalLog(directory: FileManager.default.temporaryDirectory),
+            store: tempStore(), motion: motion, altimeter: FakeAltimeter(), placeMemory: tempPlaces(), footprints: cache
+        )
+    }
+
+    /// The outlines have to be on the phone before the car goes
+    /// underground: every fix on the way asks for its cell, once.
+    @Test func fixesOnTheWayFetchTheGarageOutlinesAroundThem() async {
+        let cache = tempCache()
+        let garages = FakeGarages()
+        let detector = makeDetector(cache: cache)
+        // How AppModel wires it: after the detector exists, when it arms.
+        detector.footprintFetch = garages.fetch
+        detector.arm(capabilities: DetectionCapabilities())
+        await settle()
+
+        let here = PlaceClassifierTests.Geo.at(n: 200, e: 0)
+        for second in 0..<5 {
+            await detector.received([ParkFix(coordinate: here, accuracy: 30, at: Date.now.addingTimeInterval(Double(second)), speed: 12)])
+        }
+        await settle()
+        #expect(garages.calls.count == 1, "One cell, one fetch, however many fixes")
+        #expect(cache.footprints(near: PlaceClassifierTests.Geo.origin, radiusM: 100).map(\.id) == ["test-garage"])
+
+        // A fix iOS blurred by kilometers (Precise Location off) says
+        // nothing about which cell the car is in.
+        let farBlur = ParkFix(coordinate: PlaceClassifierTests.Geo.at(n: 9_000, e: 0), accuracy: 3_000, at: .now)
+        await detector.received([farBlur])
+        await settle()
+        #expect(garages.calls.count == 1)
+    }
+
+    /// Disarmed (signed out, or never past onboarding) nothing is fetched.
+    @Test func nothingIsFetchedUntilTheDetectorIsArmed() async {
+        let cache = tempCache()
+        let garages = FakeGarages()
+        let detector = makeDetector(cache: cache)
+        detector.footprintFetch = garages.fetch
+        await detector.received([ParkFix(coordinate: PlaceClassifierTests.Geo.origin, accuracy: 10, at: .now)])
+        await settle()
+        #expect(garages.calls.isEmpty)
+    }
+
+    /// A park in a garage whose outline was fetched on the way in is
+    /// classified from it: the wiring end to end, short of the network.
+    @Test func aParkInAFetchedGarageIsClassifiedAsThatGarage() async throws {
+        let cache = tempCache()
+        let garages = FakeGarages()
+        let motion = FakeMotion()
+        let detector = makeDetector(cache: cache, motion: motion)
+        detector.footprintFetch = garages.fetch
+        var places: [PlaceClassification] = []
+        detector.onPark = { _, _, place in places.append(place) }
+        detector.arm(capabilities: DetectionCapabilities())
+        await settle()
+        let t = Date.now
+        motion.handler?(MotionSample(at: t, automotive: true))
+        await detector.received([ParkFix(coordinate: PlaceClassifierTests.Geo.at(n: 80, e: 0), accuracy: 10, at: t, speed: 9)])
+        await settle()
+        motion.handler?(MotionSample(at: t.addingTimeInterval(1), stationary: true))
+        await settle()
+        for _ in 0..<3 {
+            detector.engine.fixReceived(ParkFix(coordinate: PlaceClassifierTests.Geo.origin, accuracy: 5, at: .now))
+        }
+        motion.handler?(MotionSample(at: t.addingTimeInterval(2), walking: true))
+        await settle()
+        let place = try #require(places.first)
+        #expect(place.placeClass == .garage)
+        #expect(place.inputs.footprintId == "test-garage")
+        #expect(place.inputs.containsPoint)
+    }
+
+    /// The cell files are named by where the phone has been: signing out
+    /// leaves none of them behind.
+    @Test func signingOutForgetsTheFetchedOutlines() async throws {
+        let cache = tempCache()
+        let garages = FakeGarages()
+        let detector = makeDetector(cache: cache)
+        detector.footprintFetch = garages.fetch
+        detector.arm(capabilities: DetectionCapabilities())
+        await settle()
+        await detector.received([ParkFix(coordinate: PlaceClassifierTests.Geo.origin, accuracy: 10, at: .now, speed: 10)])
+        await settle()
+        #expect(try FileManager.default.contentsOfDirectory(atPath: cache.directory.path).count == 1)
+
+        detector.disarm()
+        #expect(cache.footprints(near: PlaceClassifierTests.Geo.origin, radiusM: 100).isEmpty)
+        #expect((try? FileManager.default.contentsOfDirectory(atPath: cache.directory.path))?.isEmpty ?? true)
     }
 
     /// A park goes out with its place classification, and parking alone

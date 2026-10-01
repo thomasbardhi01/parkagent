@@ -515,9 +515,11 @@ describe("parsePatch (what the model sent, before it touches the state)", () => 
     }
   });
 
-  test("reason is required; out-of-range values are refused", () => {
-    expect(parsePatch({ maxPriceUsd: 20 }).ok).toBe(false);
-    // Required as a key; an empty one only costs the audit row its note.
+  test("reason is an optional note; out-of-range values are refused", () => {
+    // Optional: under strict tool use a required field is generated FIRST,
+    // and a free-text one swallowed the whole request (see the schema test
+    // in assistantLoop.test.ts).
+    expect(parsePatch({ maxPriceUsd: 20 })).toEqual({ ok: true, patch: { maxPriceUsd: 20 } });
     expect(parsePatch({ maxPriceUsd: 20, reason: "" }).ok).toBe(true);
     expect(parsePatch({ maxPriceUsd: -1, reason: "r" }).ok).toBe(false);
     expect(parsePatch({ durationMinutes: 0, reason: "r" }).ok).toBe(false);

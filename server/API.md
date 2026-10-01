@@ -2086,15 +2086,23 @@ before searching."
 
 **`update_request`** is the only way the model changes the request. It
 is a strict tool (`strict: true`, so the API holds the model's input to
-its schema) with a flat schema. Every field is optional except `reason`:
-`intent`, `placeQuery`, `startsAt`, `durationMinutes` (1–720),
+its schema) with a flat schema. Every field is optional: `intent`, `placeQuery`, `startsAt`, `durationMinutes` (1–720),
 `maxPriceUsd` (≥ 0, kept to cents), `maxWalkMinutes` (1–120), `kinds`
 (`street`/`garage`), `entryType` (`self`/`valet`), `covered`, `rank`
 (`cheapest`/`closest`/`balanced`), `prefer` (`valet`, `covered`,
 `garage`, `street`), and `clear`, an array of dotted names:
 `place.query`, `window.startsAt`, `window.durationMinutes`,
 `hard.maxPriceUsd`, `hard.maxWalkMinutes`, `hard.kinds`, `hard.entryType`,
-`hard.covered`, `soft.rank`, `soft.prefer`. The strict schema can't carry
+`hard.covered`, `soft.rank`, `soft.prefer`. Last comes `reason`, a note
+that changes nothing.
+
+**Nothing is required, on purpose.** Strict tool use generates required
+properties first. With `reason` required, live Sonnet 5 wrote the whole
+request into it ("Newbury St, Tue Oct 6 2pm, 2h") and closed the object:
+17 of 17 calls set no field (local FR run, 2026-09-30). So no free-text
+field may be required, and a test holds the schema to that.
+
+The strict schema can't carry
 ranges (the API rejects `minimum`/`maximum` on strict tools), so the
 server checks them. A value replaces the old one (a supersede, never a
 range merge). Unmentioned fields keep their values. An equal value (the
@@ -2106,19 +2114,21 @@ It answers `{version, changed, overrides, state}`: `state` is the full
 new request without its log, `changed` the dotted fields that changed,
 and `overrides` any intent the model sent that the derivation replaced
 (`{field: "intent", requested, applied, why}`). A patch that changes
-nothing keeps the version and says "Nothing changed". Refusals leave the
-request as it was:
+nothing keeps the version and says "Nothing changed". One that sets no
+field at all says so: "reason is only a note", with an example of
+fields. Refusals leave the request as it was:
 
 | Refusal | When |
 |---|---|
-| `invalid_patch` | Not the flat shape: the whole state, an unknown field, a `clear` name not in the list, a value out of range, no `reason`, or one field both set and cleared. The `issues` name the fix. |
+| `invalid_patch` | Not the flat shape: the whole state, an unknown field, a `clear` name not in the list, a value out of range, or one field both set and cleared. The `issues` name the fix. |
 | `unreadable_time` | `startsAt` can't be read; the instruction carries the time format and the current time. |
 | `too_many_edits` | The turn's third call (at most 2 per turn), so a model can't thrash the request. |
 
 Every call, refusals included, writes an `assistant_tool` decision with
 inputs `{tool: "update_request", patch, conversationId}` and outcome
-`{version, changed, overrides}` (rule `request_updated` or
-`request_unchanged`), or the refusal's error (rule `invalid_patch`,
+`{version, changed, overrides}` (rule `request_updated`,
+`request_unchanged`, or `empty_patch` for a call that set no field), or
+the refusal's error (rule `invalid_patch`,
 `conflicting_patch`, `unreadable_time`, or `too_many_edits`).
 
 ### Saved conversations

@@ -1020,7 +1020,14 @@ describe("update_request, the tool (FR-42)", () => {
       properties: Record<string, Record<string, unknown>>;
     };
     expect(schema.additionalProperties).toBe(false);
-    expect(schema.required).toEqual(["reason"]);
+    // Strict tool use generates REQUIRED properties first. With `reason`
+    // required, live Sonnet 5 wrote the whole request into it and closed
+    // the object: 17 of 17 calls set no field (local FR run, 2026-09-30).
+    // So no free-text field may be required, and the note comes last.
+    for (const name of schema.required) {
+      expect(schema.properties[name]!["enum"], `required free text: ${name}`).toBeDefined();
+    }
+    expect(Object.keys(schema.properties).at(-1)).toBe("reason");
     // Flat: every field is a scalar or an array of scalars — no nested
     // object for the model to fill with the whole state.
     for (const [name, prop] of Object.entries(schema.properties)) {
@@ -1140,6 +1147,21 @@ describe("update_request, the tool (FR-42)", () => {
       rule: "request_unchanged",
       outcome: { version: 1, changed: [], overrides: [] },
     });
+  });
+
+  test("a patch that sets no field (only a note) says so — not just 'nothing changed'", async () => {
+    // The live failure: the request written into reason, no fields set,
+    // and the model re-sent it until too_many_edits.
+    const t = makeTestApp({});
+    const out = await t.deps.assistantTools!.execute(ctx(), "update_request", {
+      reason: "Newbury St, Tue Oct 6 2pm, 2h",
+    });
+    const result = out.result as { version: number; changed: string[]; instruction: string };
+    expect(result.version).toBe(0);
+    expect(result.changed).toEqual([]);
+    expect(result.instruction).toMatch(/set no field/);
+    expect(result.instruction).toContain("placeQuery");
+    expect(t.state.decisions.at(-1)).toMatchObject({ rule: "empty_patch" });
   });
 
   test("a refused call still counts toward the turn's two: a malformed call is a call", async () => {

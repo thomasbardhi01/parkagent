@@ -95,6 +95,18 @@ final class DetectorSelfTest {
         add("wakes", "Background wake-ups",
             detector.monitoringSignificantChanges && detector.monitoringVisits ? .pass : .fail,
             "Significant-change \(detector.monitoringSignificantChanges ? "on" : "off"), visits \(detector.monitoringVisits ? "on" : "off")")
+        // The barometer (place classification) costs battery: it may only
+        // run while a stop is being judged, never idle or driving.
+        let altimeter = CoreMotionAltimeter()
+        if !detector.altimeterWithinStopWindow {
+            add("altimeter", "Barometer", .fail, "Running with no stop being judged: a battery bug")
+        } else if !altimeter.isAvailable {
+            add("altimeter", "Barometer", .warn,
+                "Not available on this phone (or Motion & Fitness is off): garages are judged without it")
+        } else {
+            add("altimeter", "Barometer", .pass,
+                detector.altimeterRunning ? "Running: a stop is being judged" : "Off until the next stop")
+        }
         add("refresh", "Background App Refresh",
             caps.backgroundRefresh == .available ? .pass : .warn, caps.value(of: .backgroundRefresh))
         add("power", "Low Power Mode", caps.lowPowerMode ? .warn : .pass, caps.lowPowerMode ? "On" : "Off")

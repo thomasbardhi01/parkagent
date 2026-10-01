@@ -47,6 +47,7 @@ FixturePoint
 diagnostics.view
 account.diagnosticsLink
 diagnostics.sandboxToggle
+diagnostics.lastPlaceClassification
 Log raw detector signals
 ParkAgent card sandbox
 Reset onboarding?

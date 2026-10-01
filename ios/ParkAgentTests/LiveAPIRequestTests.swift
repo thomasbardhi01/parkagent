@@ -227,6 +227,47 @@ final class LiveAPIRequestTests: XCTestCase {
         XCTAssertTrue(sentRequests().isEmpty)
     }
 
+    // MARK: - Parked
+
+    private static let parkedResponseBody = #"""
+    {"action": "unknown_zone", "candidates": [], "quote": null, "rule": "unknown_zone", "dryRun": true, "provider": null, "needsZoneNumber": false, "parkedEventId": "pe1", "decisionId": "d1"}
+    """#
+
+    /// The phone's place classification rides in the /parked body (FR-53;
+    /// the server reads it from #179 on). A park with no classification
+    /// sends no placeHint key at all, exactly as before.
+    func testParkedCarriesThePlaceHint() async throws {
+        StubURLProtocol.respond(json: Self.parkedResponseBody)
+        let hint = PlaceHint(
+            placeClass: "garage", confidence: 0.95,
+            runnerUp: PlaceHint.Scored(placeClass: "nopay", confidence: 0.3),
+            garageId: "fixture-garage",
+            entryFix: PlaceHint.EntryFix(lat: 42.35, lng: -71.07, accuracy: 9, ts: Date(timeIntervalSince1970: 1_790_000_000)),
+            inputs: PlaceHint.Inputs(
+                located: false, memoryHit: false, footprintId: "fixture-garage", containsPoint: true,
+                nearestEntranceM: 8, gpsLoss: true, baroDeltaM: 6.5, crawl: true
+            )
+        )
+        let at = Date(timeIntervalSince1970: 1_790_000_060)
+        _ = try await api.parked(
+            ParkedRequest(lat: 42.35, lng: -71.07, accuracy: 9, ts: at, signals: ["motion_stop"], placeHint: hint),
+            idempotencyKey: "park-1"
+        )
+        let sent = try body(try sentRequest())
+        let placeHint = try XCTUnwrap(sent["placeHint"] as? [String: Any])
+        XCTAssertEqual(placeHint["class"] as? String, "garage")
+        XCTAssertEqual(placeHint["confidence"] as? Double, 0.95)
+        XCTAssertEqual(placeHint["garageId"] as? String, "fixture-garage")
+        XCTAssertEqual((placeHint["runnerUp"] as? [String: Any])?["class"] as? String, "nopay")
+        let entry = try XCTUnwrap(placeHint["entryFix"] as? [String: Any])
+        XCTAssertEqual(entry["ts"] as? String, "2026-09-21T14:13:20Z")
+        XCTAssertEqual((placeHint["inputs"] as? [String: Any])?["gpsLoss"] as? Bool, true)
+
+        StubURLProtocol.respond(json: Self.parkedResponseBody)
+        _ = try await api.parked(ParkedRequest(lat: 42.35, lng: -71.07, accuracy: 9, ts: at, signals: []), idempotencyKey: "park-2")
+        XCTAssertNil(try body(try sentRequest())["placeHint"])
+    }
+
     // MARK: - Limits
 
     /// The server's own shape (routes/limits.ts, pinned in limits.test.ts).

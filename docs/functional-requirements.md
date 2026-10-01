@@ -97,7 +97,7 @@ started at 11:55 ET). "—" means the FR has no live test.
 | FR-50 | Garage sources under modes, a daily budget, and declared capabilities | pending | — | #175 |
 | FR-51 | Boston zones from the City's CDS feed; restrictions; coverage gate | pending | — | #176 |
 | FR-52 | Garage price freshness | pending | — | #177 |
-| FR-53 | The phone classifies the place it parked | pending | — | #178 |
+| FR-53 | The phone classifies the place it parked | unit + device-manual (nightly: the `placeHint` contract) | — | iOS `PlaceClassifierTests`, `PlaceMemoryTests`, `FootprintIndexTests`, `ParkFusionEngineTests` (entry fix, GPS loss, barometer, crawl), `SignalTraceTests` (garage, home, and street traces with truth sidecars), `ParkDetectorTests` (the altimeter's window, sign-out), `LiveAPIRequestTests` (the hint on the wire); `server/test/parkedPlaceHint.test.ts`, `server/fr/90-park-now.fr.test.ts`; field test |
 | FR-54 | `/parked` answers garage and no-pay outcomes | pending | — | #179 |
 | FR-55 | A street session runs from walk-away to return, confirmed with the amount | pending | — | #180 |
 | FR-56 | YOLO beta mode | pending | — | #180 |
@@ -1124,10 +1124,47 @@ and `GET /admin/garages/freshness` reports ages per source. Unit and
 nightly (the admin shape).
 
 ### FR-53 — The phone classifies the place it parked (#178, WS-3)
-**Accepted when** a park (or an unlocated park) is classified street,
-garage, lot, no-pay, or unknown from place memory, footprints, and
-sensors, acting only on a 0.3 margin, with the altimeter running only in
-the stop window. Unit, trace replay, and device-manual.
+The detector classifies every park, located or unlocated after GPS died,
+as street, garage, lot, no-pay, or unknown
+(`ios/ParkAgent/Detection/PlaceClassifier.swift`). It uses, in order:
+
+1. the driver's saved places (`State/PlaceMemory.swift`: a spot confirmed
+   twice as the same class, within 60 m);
+2. the garage or lot outline the car is in or drove into (a
+   `FootprintIndex`);
+3. the stop's own evidence: the entry fix (the last good fix of the car
+   still moving in), GPS lost on the way in (accuracy past 65 m, or 45 s
+   of silence, after a good fix; a good fix while still driving takes it
+   back), a ±2.5 m barometer change over the stop window, and a 30 s
+   parking-lot crawl.
+
+**Accepted when** the top class is acted on only when it beats the next
+by 0.3 (otherwise `unknown`, keeping the best guess); memory beats
+footprints beats sensors; a located fix nearer a garage's edge than its
+own accuracy is not a certain garage; no-pay is never a guess next to
+anything that might charge; Precise Location off and a tunnel before a
+street park are never garages; the altimeter runs only in the stop window
+(asserted by the detector self-test); place memory changes only on the
+driver's confirmation and is cleared at sign-out; and `/parked` carries
+the classification as `placeHint`, with nothing from place memory but
+`memoryHit`, which the server ignores until FR-54.
+
+Two detector changes ride along: an underground park with no fixes at
+all, entered with good GPS, is now reported unlocated (it used to be
+silent), and a stop that driving clears (a garage's ticket gate) hands
+its entry fix on to the real stop.
+
+Not yet: garage outlines on the phone. `FootprintCellCache` keeps them per
+2 km cell; fetching them from `GET /garages/near` is the follow-up once
+WS-2's #174 merges. Until then a garage classifies at 0.6 (GPS lost, no
+footprint) and a lot not at all.
+
+Evidence: the unit tests in the table; trace replay of every
+`ios/Fixtures/Traces/*.truth.json` (an underground garage and a home
+driveway, synthesized by `ios/Fixtures/make-traces.py` until the field
+test records real ones, plus the simulator's street drive); live FR-53
+(`/parked` answers the same with a `placeHint` as without); device-manual:
+the field test (`docs/field-test-checklist.md`, "Where it parked").
 
 ### FR-54 — `/parked` answers garage and no-pay outcomes (#179, WS-3)
 **Accepted when** a garage or paid-lot place answers `garage` (no ticket

@@ -300,7 +300,36 @@ Request:
   "lng": -73.9818,
   "accuracy": 12.5,          // horizontal accuracy, meters
   "ts": "2026-09-20T14:03:22-04:00",   // optional: when the phone detected the park
-  "signals": ["motion_stop", "bt_disconnect"]   // free-form detector evidence
+  "signals": ["motion_stop", "bt_disconnect"],  // free-form detector evidence
+  "placeHint": { … }         // optional: the phone's own read of the place (below)
+}
+```
+
+`placeHint` (FR-53) is what the app's on-device place classifier made of
+the park. **The server ignores it** (the body schema strips it, and the
+decision's `inputs.body` doesn't carry it) until #179 (FR-54) reads it, so
+it can't change what a park pays; an app that sends none, or a malformed
+one, gets the same answer.
+
+```json
+"placeHint": {
+  "class": "garage",         // street | garage | lot | nopay | unknown
+  "confidence": 0.95,        // the class's score, 0–1 (0 for unknown)
+  "runnerUp": { "class": "nopay", "confidence": 0.3 },  // next best (for unknown: the best guess)
+  "garageId": "…",           // the footprint, when the class is garage or lot
+  "entryFix": { "lat": 42.347, "lng": -71.082, "accuracy": 9, "ts": "2026-09-28T14:01:36Z" },
+                             // the last good fix of the car driving in
+  "inputs": {
+    "located": false,        // false: no fix at the spot (GPS gone)
+    "memoryHit": false,      // one of the driver's saved places matched —
+                             // their names and locations never leave the phone
+    "footprintId": "…",
+    "containsPoint": true,
+    "nearestEntranceM": 8,
+    "gpsLoss": true,         // GPS went bad on the way in and stayed bad
+    "baroDeltaM": 6.5,       // barometer climb over the stop window, meters
+    "crawl": true            // a 30 s parking-lot crawl before the stop
+  }
 }
 ```
 

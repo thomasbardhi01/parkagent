@@ -10,12 +10,14 @@ struct SignalTrace {
         case audio(ParkFusionEngine.AudioPort, at: Date)
         case fix(ParkFix, handledAt: Date)
         case visit(ParkFix, handledAt: Date)
+        case altitude(AltitudeSample, handledAt: Date)
         /// What the recording engine decided (not fed back in).
         case decision(RawDetectorSignal, at: Date, detail: String?)
 
         var handledAt: Date {
             switch self {
-            case .motion(_, let at), .audio(_, let at), .fix(_, let at), .visit(_, let at), .decision(_, let at, _): at
+            case .motion(_, let at), .audio(_, let at), .fix(_, let at), .visit(_, let at), .altitude(_, let at),
+                 .decision(_, let at, _): at
             }
         }
     }
@@ -71,6 +73,12 @@ struct SignalTrace {
                     continue
                 }
                 trace.events.append(.visit(fix, handledAt: at))
+            case .altitude:
+                guard let detail, let sample = parseAltitude(detail, handledAt: at) else {
+                    trace.skipped += 1
+                    continue
+                }
+                trace.events.append(.altitude(sample, handledAt: at))
             case .motionDriving:
                 // v1 had no raw motion lines: its transitions stand in.
                 legacyMotion.append(.motion(MotionSample(at: at, automotive: true), handledAt: at))
@@ -142,6 +150,20 @@ struct SignalTrace {
         )
     }
 
+    /// "relm pressurekPa [age=Ns]"
+    static func parseAltitude(_ detail: String, handledAt: Date) -> AltitudeSample? {
+        let tokens = detail.split(separator: " ").map(String.init)
+        guard tokens.count >= 2, tokens[0].hasSuffix("m"), tokens[1].hasSuffix("kPa"),
+              let relative = Double(tokens[0].dropLast()),
+              let pressure = Double(tokens[1].dropLast(3))
+        else { return nil }
+        return AltitudeSample(
+            at: handledAt.addingTimeInterval(-age(in: detail)),
+            relativeAltitudeM: relative,
+            pressureKPa: pressure
+        )
+    }
+
     /// "automotive,stationary high [age=Ns]"
     static func parseMotion(_ detail: String, handledAt: Date) -> MotionSample? {
         let tokens = detail.split(separator: " ").map(String.init)
@@ -180,6 +202,8 @@ enum TraceReplay {
     struct Result {
         var parks: [Park] = []
         var unlocated: [Date] = []
+        /// Every park, located or not, with the place classifier's evidence.
+        var outcomes: [ParkOutcome] = []
         var raw: [(signal: RawDetectorSignal, at: Date)] = []
     }
 
@@ -199,6 +223,7 @@ enum TraceReplay {
         var result = Result()
         engine.onPark = { fix, signals in result.parks.append(Park(at: clock.now, fix: fix, signals: signals)) }
         engine.onUnlocatedPark = { _ in result.unlocated.append(clock.now) }
+        engine.onOutcome = { outcome in result.outcomes.append(outcome) }
         engine.onRawSignal = { signal, at, _ in result.raw.append((signal, at)) }
 
         func advance(to time: Date) {
@@ -221,6 +246,7 @@ enum TraceReplay {
             case .audio(let port, let at): engine.audioDisconnected(port: port, at: at)
             case .fix(let fix, _): engine.fixReceived(fix)
             case .visit(let fix, _): engine.visitArrived(fix)
+            case .altitude(let sample, _): engine.altitude(sample)
             case .decision: break
             }
         }

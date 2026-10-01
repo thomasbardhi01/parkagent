@@ -113,6 +113,30 @@ engine in a unit test (`ios/Fixtures/Traces/`, `SignalTraceTests`).
 A missed park = which line never appeared. A false park = which lines
 paired that shouldn't have. Say exactly that when reporting the bug.
 
+**Where it parked (FR-53).** Every park is also classified on the phone:
+
+- `entry_fix <fix>` — the last good fix of the car still moving in, logged
+  when the stop begins. In a garage it should be at or just inside the
+  entrance.
+- `gps_lost accuracy ±…m` or `gps_lost silence …s` — GPS went bad on the
+  way in (a garage ramp). None on a street park; one then good fixes again
+  before the stop is a tunnel, and doesn't count.
+- `altimeter_started` / `altimeter_stopped` bracket the stop's window, and
+  `altitude <climb>m <pressure>kPa` lines appear only between them. An
+  `altitude` line outside that bracket is a battery bug: report it.
+- `place_classified <class> <confidence> …` — the verdict: `garage`,
+  `lot`, `nopay`, `street`, or `unknown`, with `footprint=`, `memory=`,
+  `gps_loss=`, `baro=`, `crawl=`, `located=`. Diagnostics shows the last
+  one under **Last place**. On a street park it's normally `unknown` (the
+  phone has no zone data; the server decides as always). Until WS-2 #174
+  lands the phone has no garage outlines, so a garage reads `garage 0.60`
+  (GPS lost, no footprint) at best.
+
+For each garage, lot, or home park, write down what the place really was
+(and the garage's name and level): that plus the exported log is a trace
+for `ios/Fixtures/Traces/` with a `<name>.truth.json` sidecar (see
+`ios/Fixtures/make-traces.py` for the format).
+
 ## During/after the day: /admin/summary
 
 From any machine with your api key:

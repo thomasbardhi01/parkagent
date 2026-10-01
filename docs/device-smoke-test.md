@@ -128,7 +128,11 @@ tracking, if you're moving), every capability row in its good state,
 "Background wake-ups: Significant-change on, visits on", and "Fully
 armed". Then tap **Run detector self-test**: every line should be green,
 ending in **PASS — ready to drive**. A red line names what to fix. Without
-Location Always, no park can fire with the app closed.
+Location Always, no park can fire with the app closed. **Barometer** reads
+"Off until the next stop" when parked or idle; red means the altimeter is
+running outside a stop (a battery bug), and yellow means this phone has no
+barometer or Motion & Fitness is off (garages are then judged without it).
+After a park, Diagnostics shows **Last place**: what the phone made of it.
 
 Turn on **Log raw detector signals** here before a field-test drive; it is
 the only way to debug a missed or false park afterwards.

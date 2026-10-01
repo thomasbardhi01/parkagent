@@ -9,7 +9,7 @@ import Foundation
 /// Line format (v2): `<ISO-8601 time> <event> [detail]`, where the time is
 /// when the detector handled the event. Fixes carry
 /// `lat,lng ±acc [speed m/s] [age=Ns]`. Motion samples carry their kinds
-/// and confidence. v1 logs (no coordinates) still parse; their fixes just
+/// and confidence; barometer readings `relm pressurekPa`. v1 logs (no coordinates) still parse; their fixes just
 /// can't be replayed.
 @MainActor
 final class SignalLog {

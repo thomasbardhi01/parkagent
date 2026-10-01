@@ -95,6 +95,9 @@ Put these in one message (or a folder):
 1. **Your notes**, one row per stop: time, place, notification yes/no and
    delay, zone on the sheet vs the sign, price on the sheet, anything odd.
    Include every red light or drive-through that fired a park by mistake.
+   For each stop also write what the place really was (street, garage and
+   its level, lot, home) next to Diagnostics' **Last place**: that pairing
+   is what the place classifier is scored on (FR-53).
 2. **The signal log**: Diagnostics → Export signal log.
 3. **Photos** of the signs and **screenshots** of the sheets and sessions.
 4. **The server's view of the day**:

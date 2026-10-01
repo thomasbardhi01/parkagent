@@ -45,6 +45,55 @@ struct ParkedRequest: Codable, Sendable, Equatable {
     var accuracy: Double
     var ts: Date
     var signals: [String]
+    /// The phone's own read of the place (FR-53); absent when there's none.
+    var placeHint: PlaceHint? = nil
+}
+
+/// The phone's own read of where it parked (PlaceClassifier, FR-53), sent
+/// with /parked. The server ignores it until #179 (FR-54) reads it. Of the
+/// driver's saved places it says only whether one matched: never a name
+/// or a center.
+struct PlaceHint: Codable, Sendable, Equatable {
+    struct Scored: Codable, Sendable, Equatable {
+        var placeClass: String
+        var confidence: Double
+
+        enum CodingKeys: String, CodingKey {
+            case placeClass = "class", confidence
+        }
+    }
+
+    /// The last good fix of the car driving in.
+    struct EntryFix: Codable, Sendable, Equatable {
+        var lat: Double
+        var lng: Double
+        var accuracy: Double
+        var ts: Date
+    }
+
+    struct Inputs: Codable, Sendable, Equatable {
+        var located: Bool
+        var memoryHit: Bool
+        var footprintId: String?
+        var containsPoint: Bool
+        var nearestEntranceM: Double?
+        var gpsLoss: Bool
+        var baroDeltaM: Double?
+        var crawl: Bool
+    }
+
+    /// street | garage | lot | nopay | unknown
+    var placeClass: String
+    var confidence: Double
+    var runnerUp: Scored?
+    /// The garage or lot, when the class is one.
+    var garageId: String?
+    var entryFix: EntryFix?
+    var inputs: Inputs
+
+    enum CodingKeys: String, CodingKey {
+        case placeClass = "class", confidence, runnerUp, garageId, entryFix, inputs
+    }
 }
 
 enum ParkedAction: String, Codable, Sendable {

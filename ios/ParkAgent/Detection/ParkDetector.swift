@@ -28,6 +28,11 @@ import UIKit
 /// (DetectorStore), and `AppServices` re-arms the detector when iOS
 /// relaunches the app for a location event, so a relaunch mid-park loses
 /// nothing.
+///
+/// Every park, located or not, is classified (PlaceClassifier: the
+/// driver's saved places, garage and lot footprints, and the stop's
+/// evidence — its entry fix, GPS loss, and the barometer, which runs only
+/// with the burst) and the classification rides along with `onPark`.
 @MainActor
 @Observable
 final class ParkDetector: NSObject, CLLocationManagerDelegate {
@@ -39,8 +44,9 @@ final class ParkDetector: NSObject, CLLocationManagerDelegate {
         case arm, locationLaunch, foreground, significantChange, visitArrival, visitDeparture, carAudioConnected
     }
 
-    /// Fires with the resting fix and the signal names, for /parked.
-    @ObservationIgnored var onPark: ((ParkFix, [String]) -> Void)?
+    /// Fires with the resting fix, the signal names, and what kind of
+    /// place it is, for /parked.
+    @ObservationIgnored var onPark: ((ParkFix, [String], PlaceClassification) -> Void)?
     /// A park with nowhere to point (Precise Location off, no GPS fix).
     @ObservationIgnored var onUnlocatedPark: ((_ preciseOff: Bool) -> Void)?
     /// Asks for full accuracy for this session (PermissionsManager).
@@ -53,11 +59,27 @@ final class ParkDetector: NSObject, CLLocationManagerDelegate {
     private(set) var monitoringSignificantChanges = false
     private(set) var monitoringVisits = false
     private(set) var capabilities = DetectionCapabilities()
+    /// The last park's place classification, for Diagnostics.
+    private(set) var lastPlace: LastPlace?
+    private(set) var altimeterRunning = false
+
+    struct LastPlace: Equatable {
+        var classification: PlaceClassification
+        var at: Date
+    }
 
     @ObservationIgnored let engine: ParkFusionEngine
     @ObservationIgnored private let signalLog: SignalLog
     @ObservationIgnored private let store: DetectorStore
     @ObservationIgnored private let motion: any MotionSource
+    @ObservationIgnored private let altimeter: any AltimeterSource
+    /// The driver's saved places. Read here; written only by what the
+    /// driver confirms (#179), and cleared at sign-out.
+    @ObservationIgnored let placeMemory: PlaceMemoryStore
+    /// Garage and lot outlines. Empty until the /garages/near fetch is
+    /// wired (FootprintCellCache, after WS-2 #174).
+    @ObservationIgnored private let footprints: any FootprintIndex
+    @ObservationIgnored private var altimeterDeadline: Task<Void, Never>?
     @ObservationIgnored private let audio = CarAudioSource()
     @ObservationIgnored private let locationManager = CLLocationManager()
     @ObservationIgnored private var backgroundSession: CLBackgroundActivitySession?
@@ -90,12 +112,18 @@ final class ParkDetector: NSObject, CLLocationManagerDelegate {
         signalLog: SignalLog = .shared,
         store: DetectorStore = DetectorStore(),
         motion: (any MotionSource)? = nil,
+        altimeter: (any AltimeterSource)? = nil,
+        placeMemory: PlaceMemoryStore? = nil,
+        footprints: (any FootprintIndex)? = nil,
         simulated: Bool = false
     ) {
         self.engine = engine
         self.signalLog = signalLog
         self.store = store
         self.simulated = simulated
+        self.altimeter = altimeter ?? CoreMotionAltimeter()
+        self.placeMemory = placeMemory ?? PlaceMemoryStore()
+        self.footprints = footprints ?? FootprintCellCache()
         #if DEBUG
         self.motion = motion ?? (simulated ? SpeedDerivedMotionSource() : CoreMotionSource())
         #else
@@ -104,19 +132,26 @@ final class ParkDetector: NSObject, CLLocationManagerDelegate {
         super.init()
         locationManager.delegate = self
 
-        engine.onPark = { [weak self] fix, signals in
+        engine.onOutcome = { [weak self] outcome in
             guard let self else { return }
-            // The spot is known; the reporter takes over if a session
-            // starts. Back to near-free monitoring until the next drive.
-            self.endTracking(reason: "parked")
-            self.onPark?(fix, signals)
+            let place = self.classify(outcome)
+            if let fix = outcome.fix {
+                // The spot is known; the reporter takes over if a session
+                // starts. Back to near-free monitoring until the next drive.
+                self.endTracking(reason: "parked")
+                self.onPark?(fix, outcome.signals, place)
+            } else {
+                self.onUnlocatedPark?(!self.capabilities.preciseLocation)
+            }
         }
-        engine.onUnlocatedPark = { [weak self] _ in
-            guard let self else { return }
-            self.onUnlocatedPark?(!self.capabilities.preciseLocation)
+        engine.onStartBurst = { [weak self] in
+            self?.startBurst()
+            self?.startAltimeter()
         }
-        engine.onStartBurst = { [weak self] in self?.startBurst() }
-        engine.onStopBurst = { [weak self] in self?.stopBurst() }
+        engine.onStopBurst = { [weak self] in
+            self?.stopBurst()
+            self?.stopAltimeter()
+        }
         engine.onRawSignal = { [weak self] signal, at, detail in
             self?.signalLog.append(signal, at: at, detail: detail)
         }
@@ -175,12 +210,16 @@ final class ParkDetector: NSObject, CLLocationManagerDelegate {
         monitoringSignificantChanges = false
         monitoringVisits = false
         setMode(.idle)
+        stopAltimeter()
         deadlineTask?.cancel()
         keepAliveTask?.cancel()
         if let foregroundObserver { NotificationCenter.default.removeObserver(foregroundObserver) }
         foregroundObserver = nil
         engine.restore(ParkFusionEngine.State())
         store.clear()
+        // The driver's saved places are theirs: they go with the account.
+        placeMemory.clear()
+        lastPlace = nil
         lastSaved = nil
         motionHistoryThrough = nil
         lastDriveEvidenceAt = nil
@@ -384,6 +423,83 @@ final class ParkDetector: NSObject, CLLocationManagerDelegate {
         burstDeadline?.cancel()
         burstDeadline = nil
         if mode == .burst { setMode(.tracking) }
+    }
+
+    // MARK: - The barometer
+
+    /// The stop's window, and only it: the altimeter starts with the burst
+    /// and stops with it, or after `burstHardStop` whatever happens.
+    private func startAltimeter() {
+        guard !altimeter.isRunning, altimeter.isAvailable else { return }
+        altimeter.start { [weak self] sample in self?.altitudeReceived(sample) }
+        altimeterRunning = altimeter.isRunning
+        guard altimeterRunning else { return }
+        log(.altimeterStarted)
+        altimeterDeadline?.cancel()
+        altimeterDeadline = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Self.burstHardStop))
+            guard !Task.isCancelled else { return }
+            self?.stopAltimeter()
+        }
+    }
+
+    private func stopAltimeter() {
+        altimeterDeadline?.cancel()
+        altimeterDeadline = nil
+        guard altimeter.isRunning else {
+            altimeterRunning = false
+            return
+        }
+        altimeter.stop()
+        altimeterRunning = false
+        log(.altimeterStopped)
+    }
+
+    private func altitudeReceived(_ sample: AltitudeSample) {
+        // A reading with no stop being judged means the window closed
+        // without us hearing: close it now.
+        guard engine.hasPendingStop, engine.state.burstActive else {
+            stopAltimeter()
+            return
+        }
+        engine.altitude(sample)
+    }
+
+    /// The battery rule the self-test asserts: the altimeter never runs
+    /// outside a stop's window.
+    var altimeterWithinStopWindow: Bool {
+        !altimeter.isRunning || (engine.hasPendingStop && engine.state.burstActive)
+    }
+
+    // MARK: - The place
+
+    /// What kind of place this park is. The phone has no zone data, so
+    /// zones are `.unknown`: a street park is unknown here and /parked
+    /// decides as it always has.
+    private func classify(_ outcome: ParkOutcome) -> PlaceClassification {
+        let place = PlaceClassifier.classify(
+            park: outcome, memory: placeMemory.memory, footprints: footprints, zones: .unknown
+        )
+        lastPlace = LastPlace(classification: place, at: .now)
+        log(.placeClassified, Self.describe(place))
+        return place
+    }
+
+    /// "garage 0.95 runner_up=nopay:0.30 footprint=… memory=0 gps_loss=1
+    /// baro=3.1m crawl=1 located=0" — never a saved place's name.
+    static func describe(_ place: PlaceClassification) -> String {
+        let inputs = place.inputs
+        var parts = [String(format: "%@ %.2f", place.placeClass.rawValue, place.confidence)]
+        if let runnerUp = place.runnerUp {
+            parts.append(String(format: "runner_up=%@:%.2f", runnerUp.placeClass.rawValue, runnerUp.confidence))
+        }
+        if let footprint = inputs.footprintId { parts.append("footprint=\(footprint)") }
+        parts.append("memory=\(inputs.memoryHit ? 1 : 0)")
+        parts.append("gps_loss=\(inputs.gpsLoss ? 1 : 0)")
+        if let baro = inputs.baroDeltaM { parts.append(String(format: "baro=%.1fm", baro)) }
+        parts.append("crawl=\(inputs.crawl ? 1 : 0)")
+        parts.append("located=\(inputs.located ? 1 : 0)")
+        return parts.joined(separator: " ")
     }
 
     private func setMode(_ next: Mode) {

@@ -38,6 +38,30 @@ final class ParkOutboxTests: XCTestCase {
         XCTAssertEqual(pending.map(\.key), ["key-1"])
     }
 
+    /// A park the previous build queued (no placeHint in its request) is
+    /// still delivered after the update, and a new one keeps its hint.
+    func testAParkQueuedByThePreviousBuildStillDelivers() async throws {
+        let queued = #"""
+        [{"key": "key-old", "queuedAt": "\#(ISO8601DateFormatter().string(from: Date()))", "attempts": 0,
+          "request": {"lat": 42.35, "lng": -71.07, "accuracy": 10, "ts": "\#(ISO8601DateFormatter().string(from: Date()))", "signals": ["motion_stop"]}}]
+        """#
+        try Data(queued.utf8).write(to: file)
+        let outbox = ParkOutbox(fileURL: file)
+        var pending = await outbox.pending
+        XCTAssertEqual(pending.map(\.key), ["key-old"])
+        XCTAssertNil(pending.first?.request.placeHint)
+
+        var hinted = park()
+        hinted.placeHint = PlaceHint(
+            placeClass: "garage", confidence: 0.9, runnerUp: nil, garageId: nil, entryFix: nil,
+            inputs: PlaceHint.Inputs(located: false, memoryHit: false, footprintId: nil, containsPoint: false,
+                                     nearestEntranceM: nil, gpsLoss: true, baroDeltaM: nil, crawl: false)
+        )
+        await outbox.enqueue(hinted, key: "key-new")
+        pending = await ParkOutbox(fileURL: file).pending
+        XCTAssertEqual(pending.last?.request.placeHint?.placeClass, "garage")
+    }
+
     func testDeliveredInOrderUnderTheirOwnKeys() async {
         let outbox = ParkOutbox(fileURL: file)
         await outbox.enqueue(park(3), key: "key-1")

@@ -393,8 +393,13 @@ final class AppModel {
 
     private func armDetection(reason: ParkDetector.WakeReason) {
         Self.detectionArmed = true
-        detector.onPark = { [weak self] fix, signals in
-            Task { await self?.handleDetectedPark(coordinate: fix.coordinate, accuracy: fix.accuracy, signals: signals, detectedAt: fix.at) }
+        detector.onPark = { [weak self] fix, signals, place in
+            Task {
+                await self?.handleDetectedPark(
+                    coordinate: fix.coordinate, accuracy: fix.accuracy, signals: signals, detectedAt: fix.at,
+                    placeHint: PlaceHint(place)
+                )
+            }
         }
         detector.onUnlocatedPark = { preciseOff in
             Task { await ParkedNotice.postUnlocated(preciseOff: preciseOff) }
@@ -454,7 +459,8 @@ final class AppModel {
         coordinate: CLLocationCoordinate2D,
         accuracy: Double,
         signals: [String],
-        detectedAt: Date? = nil
+        detectedAt: Date? = nil,
+        placeHint: PlaceHint? = nil
     ) async {
         // Priced at when the car stopped, not when the report got out: a
         // park confirmed by walking away (or replayed after a relaunch)
@@ -464,7 +470,8 @@ final class AppModel {
             lng: coordinate.longitude,
             accuracy: accuracy,
             ts: detectedAt ?? AppClock.now,
-            signals: signals
+            signals: signals,
+            placeHint: placeHint
         )
         // One key for this park, kept if it has to wait in the outbox, so
         // it's recorded once however many times it's delivered.

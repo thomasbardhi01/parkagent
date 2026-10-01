@@ -141,7 +141,7 @@ export interface RequestState {
   log: RequestLogEntry[];
 }
 
-/** What update_request takes: flat, every field optional but the reason. */
+/** What update_request takes: flat, every field optional. */
 export interface RequestPatch {
   intent?: Intent | undefined;
   placeQuery?: string | undefined;
@@ -155,7 +155,8 @@ export interface RequestPatch {
   rank?: Rank | undefined;
   prefer?: Preference[] | undefined;
   clear?: ClearableField[] | undefined;
-  reason: string;
+  /** A note for the audit row; changes nothing. */
+  reason?: string | undefined;
 }
 
 export interface IntentOverride {
@@ -407,17 +408,22 @@ const SETTABLE_FIELDS = [
 
 /**
  * update_request's input schema. Flat (no nested state for the model to
- * send whole), every field optional but `reason`. It is sent with
- * `strict: true`, which the API compiles only from a subset of JSON
- * Schema: no minimum/maximum, no string lengths, no maxItems, minItems 0
- * or 1, additionalProperties false, and at most 24 optional parameters
- * across all strict tools (docs: build-with-claude/structured-outputs).
- * The ranges live in the parser below instead.
+ * send whole), every field optional. It is sent with `strict: true`, which
+ * the API compiles only from a subset of JSON Schema: no minimum/maximum,
+ * no string lengths, no maxItems, minItems 0 or 1, additionalProperties
+ * false, and at most 24 optional parameters across all strict tools
+ * (docs: build-with-claude/structured-outputs). The ranges live in the
+ * parser below instead.
+ *
+ * Nothing is required, and the free-text `reason` comes last: strict tool
+ * use generates required properties FIRST, and with `reason` required the
+ * live model wrote the whole request into it and closed the object — 17
+ * of 17 calls set no field (local FR run, 2026-09-30).
  */
 export const UPDATE_REQUEST_INPUT_SCHEMA = {
   type: "object" as const,
   additionalProperties: false,
-  required: ["reason"],
+  required: [] as string[],
   properties: {
     intent: {
       type: "string",
@@ -471,14 +477,15 @@ export const UPDATE_REQUEST_INPUT_SCHEMA = {
     },
     reason: {
       type: "string",
-      description: "What the user said that this patch records, in a few words.",
+      description:
+        "Optional note, a few words, AFTER the fields. It changes nothing: every change goes in its own field above.",
     },
   },
 };
 
 const FLAT_HINT =
   "update_request takes only the fields that changed, flat — not the whole request. " +
-  `The fields are: ${SETTABLE_FIELDS.join(", ")}, clear, reason.`;
+  `The fields are: ${SETTABLE_FIELDS.join(", ")}, clear, and an optional reason.`;
 
 const patchSchema = z.strictObject({
   intent: z.enum(INTENTS).optional(),
@@ -502,10 +509,21 @@ const patchSchema = z.strictObject({
       }),
     )
     .optional(),
-  // Required, but only the audit row reads it: an empty one isn't worth
-  // a refused call (one of the turn's two).
-  reason: z.string().transform((s) => oneLine(s, MAX_REASON)),
+  // A note for the audit row, never required (see the schema above).
+  reason: z
+    .string()
+    .transform((s) => oneLine(s, MAX_REASON))
+    .optional(),
 });
+
+/** Whether a patch names no field to set or clear — only a note and, at
+ * most, the model's (advisory) intent. */
+export function setsNothing(patch: RequestPatch): boolean {
+  return (
+    SETTABLE_FIELDS.every((f) => f === "intent" || patch[f] === undefined) &&
+    (patch.clear ?? []).length === 0
+  );
+}
 
 /** Hold the model's input to the flat patch shape; refusals name the fix. */
 export function parsePatch(

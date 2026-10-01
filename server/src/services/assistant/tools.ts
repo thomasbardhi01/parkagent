@@ -25,6 +25,7 @@ import {
   applyPatch,
   emptyState,
   parsePatch,
+  setsNothing,
   stateForModel,
   type RequestState,
 } from "./requestState.js";
@@ -201,7 +202,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: "update_request",
     description:
-      'Record a change to the user\'s parking request — the server-owned state shown as "Current request". Send ONLY what changed, flat (e.g. {maxPriceUsd: 20, reason: "under $20"}), never the whole request: a value you send replaces the old one, `clear` removes one, and unmentioned fields keep their values. Call it before searching whenever the user states or changes the place, the time, the stay, a limit (price, walk, garage or street, valet, covered), or a preference (cheapest, closest). The server derives the intent from the time and the kinds; yours is advisory. The result is the full new request, what changed, and any intent the server overrode. At most two calls per turn.',
+      'Record a change to the user\'s parking request — the server-owned state shown as "Current request". Put each change in its own field and send ONLY what changed, never the whole request — e.g. {placeQuery: "Fenway", startsAt: "2026-09-26T19:00:00-04:00", durationMinutes: 120, maxPriceUsd: 20}. A value you send replaces the old one, `clear` removes one, and unmentioned fields keep their values; `reason` is only a note and changes nothing. Call it before searching whenever the user states or changes the place, the time, the stay, a limit (price, walk, garage or street, valet, covered), or a preference (cheapest, closest). The server derives the intent from the time and the kinds; yours is advisory. The result is the full new request, what changed, and any intent the server overrode. At most two calls per turn.',
     strict: true,
     input_schema: UPDATE_REQUEST_INPUT_SCHEMA,
   },
@@ -688,14 +689,26 @@ export class AssistantTools {
       changed: applied.changed,
       overrides: applied.overrides,
     };
-    await audit(applied.changed.length > 0 ? "request_updated" : "request_unchanged", outcome);
+    // A note with no field is the live failure mode (the request written
+    // into reason): say exactly that, so the next call puts it in fields.
+    const empty = applied.changed.length === 0 && setsNothing(parsed.patch);
+    await audit(
+      applied.changed.length > 0 ? "request_updated" : empty ? "empty_patch" : "request_unchanged",
+      outcome,
+    );
     return {
       result: {
         ...outcome,
         state: stateForModel(applied.state),
-        ...(applied.changed.length === 0
-          ? { instruction: "Nothing changed: the request already says that." }
-          : {}),
+        ...(empty
+          ? {
+              instruction:
+                "This patch set no field, so nothing changed: reason is only a note. Put each change in its own field, " +
+                'e.g. {"placeQuery": "Newbury Street", "startsAt": "2026-10-06T14:00:00-04:00", "durationMinutes": 120}.',
+            }
+          : applied.changed.length === 0
+            ? { instruction: "Nothing changed: the request already says that." }
+            : {}),
         ...(applied.overrides.length > 0
           ? {
               note: `The intent is ${applied.state.intent}: ${applied.overrides[0]!.why}. The server derives it; change startsAt or kinds to change it.`,

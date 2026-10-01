@@ -568,6 +568,116 @@ changes what the executor will type at the provider. `400` bad number,
 
 ---
 
+## GET /garages/near?lat&lng&radius&limit
+
+Garage and lot footprints around a point (FR-49): every garage or lot whose
+outline comes within `radius` metres, nearest first, each with whether the
+point is inside it, how far its outline is, and how far its nearest
+entrance is. The outlines are OpenStreetMap's `amenity=parking` areas,
+loaded per city by `pnpm -C server load:garages` (data/README.md).
+Parking along the street is a zone (`/zones/near`), never a footprint.
+
+`radius` is optional (default 250 m) and **capped at 1,500 m**, which
+covers the app's 2 km footprint cell from its center. `limit` is optional
+(default **10**, at most 500); `truncated: true` means more garages matched
+than were returned. A PostGIS read runs per call, so the route is
+rate-limited at 60/min per user (shared with `GET /garages/:id`).
+
+```json
+{
+  "radiusM": 250,
+  "limit": 10,
+  "truncated": false,
+  "attribution": "© OpenStreetMap contributors",
+  "garages": [
+    {
+      "id": "bos-fixture-deck-0a1b2c",
+      "city": "bos",
+      "name": "Fixture Deck",
+      "operator": "Fixture Parking Co",
+      "kind": "multi_storey",
+      "fee": true,
+      "access": "customers",
+      "capacity": 420,
+      "website": "https://example.com/deck",
+      "polygon": [[-71.0704, 42.3497], [-71.0696, 42.3497], [-71.0696, 42.3503], [-71.0704, 42.3503], [-71.0704, 42.3497]],
+      "entrances": [[-71.0696, 42.35]],
+      "source": "osm",
+      "sourceVersion": "2026-09-30T12:00:00Z",
+      "containsPoint": true,
+      "distanceM": 0,
+      "nearestEntranceM": 20
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `id` | `<city>-<slug>-<hash6>`: the slug from the name (the kind when unnamed), the hash from the outline's identity at the source. Stable across reloads; a rename at the source changes the slug. |
+| `kind` | `multi_storey`, `underground`, `surface`, `rooftop`, or `unknown`. A client treats a value it doesn't know as `unknown`. |
+| `fee` | `true` charges, `false` is free, `null` the source doesn't say. |
+| `access` | The source's access tag (`private`, `customers`, `permit`, …), or `null`. |
+| `name`, `operator`, `capacity`, `website` | As tagged, or `null`. `website` is always http(s). |
+| `polygon` | The outline's outer ring, GeoJSON `[lng, lat]` pairs, closed. |
+| `holes` | Rings cut out of the outline. Present only when there are some. |
+| `entrances` | `[lng, lat]` pairs: mapped entrances, else the outline's vertex nearest a road (a guess). Empty when neither is known. |
+| `containsPoint` | The point is inside the outline and not in a hole. |
+| `distanceM` | Metres from the point to the outline; `0` inside. To 0.1 m. |
+| `nearestEntranceM` | Metres from the point to the nearest entrance, or `null` when `entrances` is empty. |
+| `source`, `sourceVersion` | Where the outline came from (`osm`) and that source's version (the OSM snapshot time). |
+
+`attribution` is the line the source's license requires wherever its data
+is shown (OpenStreetMap's ODbL); a client that draws or lists these
+garages shows it.
+
+Reading garages decides nothing and writes nothing: no decisions row.
+
+Errors: `400` bad or missing coordinates, or `radius` / `limit` out of
+range; `401` no credential; `429` rate limited; `501 {"error":
+"garage_footprints_unavailable"}` on a deployment with no footprint store
+wired. A database with no garages loaded answers `200` with an empty list.
+
+---
+
+## GET /garages/:id
+
+One garage by id: `{"garage": {…}, "attribution": "…"}`, the same fields as
+above without the three measured from a point (`containsPoint`,
+`distanceM`, `nearestEntranceM`). `404 {"error": "garage_not_found"}` for
+an id nobody loaded, and for anything that couldn't be an id.
+
+### Classifying a point: `classifyByFootprint`
+
+`server/src/services/garageLookup.ts` exports the pure function `/parked`
+classifies with (FR-54, #179):
+
+```ts
+classifyByFootprint(point: { lat, lng }, accuracyM: number, garages: GarageFootprint[])
+  → { kind, garageId, containsPoint, nearestEntranceM }
+```
+
+1. **Containment wins.** The outline the point is inside; of nested
+   outlines, the smallest. `containsPoint` is `true`.
+2. **Else the nearest entrance** within `max(40, accuracyM)` metres,
+   capped at 100 m, among `multi_storey`, `underground`, and `rooftop`
+   garages only. `containsPoint` is `false`. A surface lot is matched by
+   being inside it; near a lot's entrance is where a street park beside
+   the lot is.
+3. Otherwise no match: `{kind: null, garageId: null, containsPoint:
+   false, nearestEntranceM: null}`.
+
+`nearestEntranceM` is the matched garage's, to 0.1 m (`null` when it has no
+entrance). Ties go to the smaller id. A garage whose kind isn't one of the
+five is never returned. The geometry is the phone's (equirectangular
+metres around the point), so the app's `FootprintIndex` and the server
+agree about the same outline. `describeFootprint(point, garage)` gives the
+measurements for one garage, including `edgeDistanceM` (how deep inside a
+contained point is), and `makeGarageStore(prisma).near(…)` fetches the
+`garages` argument.
+
+---
+
 ## POST /session/start
 
 The money-moving path. Executes through the executor protocol

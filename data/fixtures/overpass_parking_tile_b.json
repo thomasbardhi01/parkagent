@@ -1,0 +1,117 @@
+{
+  "version": 0.6,
+  "generator": "Overpass API 0.7.62.5 (fixture)",
+  "osm3s": {
+    "timestamp_osm_base": "2026-09-30T12:07:00Z",
+    "copyright": "The data included in this document is from www.openstreetmap.org. The data is made available under ODbL."
+  },
+  "elements": [
+    {
+      "type": "way",
+      "id": 101,
+      "bounds": {
+        "minlat": 42.3498203,
+        "minlon": -71.0702431,
+        "maxlat": 42.3501797,
+        "maxlon": -71.0697569
+      },
+      "nodes": [
+        1001,
+        1002,
+        1005,
+        1003,
+        1004,
+        1001
+      ],
+      "geometry": [
+        {
+          "lat": 42.3498203,
+          "lon": -71.0702431
+        },
+        {
+          "lat": 42.3498203,
+          "lon": -71.0697569
+        },
+        {
+          "lat": 42.35,
+          "lon": -71.0697569
+        },
+        {
+          "lat": 42.3501797,
+          "lon": -71.0697569
+        },
+        {
+          "lat": 42.3501797,
+          "lon": -71.0702431
+        },
+        {
+          "lat": 42.3498203,
+          "lon": -71.0702431
+        }
+      ],
+      "tags": {
+        "amenity": "parking",
+        "parking": "multi-storey",
+        "name": "Fixture Garage",
+        "operator": "Fixture Parking Co",
+        "fee": "yes",
+        "access": "customers",
+        "capacity": "420",
+        "website": "https://example.com/garage",
+        "building": "parking"
+      }
+    },
+    {
+      "type": "way",
+      "id": 110,
+      "bounds": {
+        "minlat": 42.3543568,
+        "minlon": -71.0677513,
+        "maxlat": 42.3546263,
+        "maxlon": -71.0673867
+      },
+      "nodes": [
+        1101,
+        1102,
+        1103,
+        1104,
+        1101
+      ],
+      "geometry": [
+        {
+          "lat": 42.3543568,
+          "lon": -71.0677513
+        },
+        {
+          "lat": 42.3543568,
+          "lon": -71.0673867
+        },
+        {
+          "lat": 42.3546263,
+          "lon": -71.0673867
+        },
+        {
+          "lat": 42.3546263,
+          "lon": -71.0677513
+        },
+        {
+          "lat": 42.3543568,
+          "lon": -71.0677513
+        }
+      ],
+      "tags": {
+        "amenity": "parking",
+        "parking": "surface"
+      }
+    },
+    {
+      "type": "node",
+      "id": 1005,
+      "lat": 42.35,
+      "lon": -71.0697569,
+      "tags": {
+        "entrance": "yes"
+      }
+    }
+  ]
+}

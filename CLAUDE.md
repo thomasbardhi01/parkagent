@@ -34,7 +34,8 @@ under `.claude/worktrees/`, which is gitignored. Remove them, and any
 `~/Documents/pa-*` worktree, once their branch has merged.
 
 ## Layout
-- data/      Python scripts that fetch NYC/Boston open data and build zone GeoJSON
+- data/      Python scripts that fetch NYC/Boston open data and build zone GeoJSON,
+             and garage and lot footprints from OSM (the `garages` table, FR-49)
 - server/    Fastify + TypeScript API on Fly.io; Prisma + Postgres/PostGIS
 - executor/  Playwright scripts that drive the ParkNYC and ParkBoston web apps (isolated, replaceable)
 - ios/       SwiftUI app: park detection, location reporting, session UI;
@@ -453,3 +454,6 @@ check it with `fly scale show -a parkagent-api`.
 - `uv run data/fetch_boston.py`         refresh raw Boston meter data
 - `uv run data/build_boston_zones.py`   rebuild boston_zones.geojson
   (load either file with `pnpm -C server load:zones [--file …]`, once per city)
+- `uv run data/fetch_parking_footprints.py [--city bos|nyc]`  garage and lot outlines from OSM
+  -> data/out/<city>_garages.geojson (Overpass, cached per tile; New York takes about an hour)
+- `pnpm -C server load:garages [--file …]`   load them into `garages`, once per city (data/README.md)

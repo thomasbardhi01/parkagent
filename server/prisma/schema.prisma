@@ -52,6 +52,44 @@ model Zone {
   @@map("zones")
 }
 
+// One garage or lot outline (FR-49), beside zones: where a car can be parked
+// that is not a metered curb. Loaded from data/out/<city>_garages.geojson by
+// `pnpm -C server load:garages`, one city per run; the rows of that city and
+// source mirror the file (ids the file no longer carries are deleted).
+// Street-side parking is a zone, never a row here.
+model Garage {
+  // "<city>-<slug>-<hash6>": the slug from the name (else the kind), the
+  // hash from the source's own identity for the outline.
+  id            String   @id
+  // Which city's file the row came from: "nyc" | "bos".
+  city          String
+  name          String?
+  operator      String?
+  // "multi_storey" | "underground" | "surface" | "rooftop" | "unknown"
+  kind          String
+  // Whether it charges: true, false, or null when the source doesn't say.
+  fee           Boolean?
+  // The source's access tag ("private", "customers", …); null when untagged.
+  access        String?
+  capacity      Int?
+  website       String?
+  // The outline: point-in-polygon and distance lookups.
+  geom          Unsupported("geometry(Polygon, 4326)")
+  // Where cars drive in: mapped entrances, else the outline's vertex
+  // nearest a road. Empty when neither is known.
+  entrances     Unsupported("geometry(MultiPoint, 4326)")
+  // Where the outline came from ("osm"), and that source's version (for
+  // OSM, the snapshot time the data was read at).
+  source        String
+  sourceVersion String   @map("source_version")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([geom], type: Gist)
+  @@index([city, source])
+  @@map("garages")
+}
+
 // One user's report of the pay-by-app number posted at a zone (Boston: the
 // open data has none, so drivers read it off the meter). One row per
 // (zone, user) — re-reporting updates it; the zone's provider_zone_number

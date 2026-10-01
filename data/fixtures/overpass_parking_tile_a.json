@@ -1,0 +1,603 @@
+{
+  "version": 0.6,
+  "generator": "Overpass API 0.7.62.5 (fixture)",
+  "osm3s": {
+    "timestamp_osm_base": "2026-09-30T12:00:00Z",
+    "copyright": "The data included in this document is from www.openstreetmap.org. The data is made available under ODbL."
+  },
+  "elements": [
+    {
+      "type": "way",
+      "id": 101,
+      "bounds": {
+        "minlat": 42.3498203,
+        "minlon": -71.0702431,
+        "maxlat": 42.3501797,
+        "maxlon": -71.0697569
+      },
+      "nodes": [
+        1001,
+        1002,
+        1005,
+        1003,
+        1004,
+        1001
+      ],
+      "geometry": [
+        {
+          "lat": 42.3498203,
+          "lon": -71.0702431
+        },
+        {
+          "lat": 42.3498203,
+          "lon": -71.0697569
+        },
+        {
+          "lat": 42.35,
+          "lon": -71.0697569
+        },
+        {
+          "lat": 42.3501797,
+          "lon": -71.0697569
+        },
+        {
+          "lat": 42.3501797,
+          "lon": -71.0702431
+        },
+        {
+          "lat": 42.3498203,
+          "lon": -71.0702431
+        }
+      ],
+      "tags": {
+        "amenity": "parking",
+        "parking": "multi-storey",
+        "name": "Fixture Garage",
+        "operator": "Fixture Parking Co",
+        "fee": "yes",
+        "access": "customers",
+        "capacity": "420",
+        "website": "https://example.com/garage",
+        "building": "parking"
+      }
+    },
+    {
+      "type": "way",
+      "id": 102,
+      "bounds": {
+        "minlat": 42.3498203,
+        "minlon": -71.0679336,
+        "maxlat": 42.3501797,
+        "maxlon": -71.0672043
+      },
+      "nodes": [
+        1021,
+        1022,
+        1023,
+        1024,
+        1021
+      ],
+      "geometry": [
+        {
+          "lat": 42.3498203,
+          "lon": -71.0679336
+        },
+        {
+          "lat": 42.3498203,
+          "lon": -71.0672043
+        },
+        {
+          "lat": 42.3501797,
+          "lon": -71.0672043
+        },
+        {
+          "lat": 42.3501797,
+          "lon": -71.0679336
+        },
+        {
+          "lat": 42.3498203,
+          "lon": -71.0679336
+        }
+      ],
+      "tags": {
+        "amenity": "parking",
+        "parking": "surface",
+        "fee": "no",
+        "capacity": "about 40"
+      }
+    },
+    {
+      "type": "way",
+      "id": 103,
+      "bounds": {
+        "minlat": 42.3490837,
+        "minlon": -71.0703647,
+        "maxlat": 42.3491197,
+        "maxlon": -71.0696353
+      },
+      "nodes": [
+        1031,
+        1032,
+        1033,
+        1034,
+        1031
+      ],
+      "geometry": [
+        {
+          "lat": 42.3490837,
+          "lon": -71.0703647
+        },
+        {
+          "lat": 42.3490837,
+          "lon": -71.0696353
+        },
+        {
+          "lat": 42.3491197,
+          "lon": -71.0696353
+        },
+        {
+          "lat": 42.3491197,
+          "lon": -71.0703647
+        },
+        {
+          "lat": 42.3490837,
+          "lon": -71.0703647
+        }
+      ],
+      "tags": {
+        "amenity": "parking",
+        "parking": "street_side",
+        "fee": "yes"
+      }
+    },
+    {
+      "type": "way",
+      "id": 104,
+      "bounds": {
+        "minlat": 42.3489041,
+        "minlon": -71.0703647,
+        "maxlat": 42.34894,
+        "maxlon": -71.0696353
+      },
+      "nodes": [
+        1041,
+        1042,
+        1043,
+        1044,
+        1041
+      ],
+      "geometry": [
+        {
+          "lat": 42.3489041,
+          "lon": -71.0703647
+        },
+        {
+          "lat": 42.3489041,
+          "lon": -71.0696353
+        },
+        {
+          "lat": 42.34894,
+          "lon": -71.0696353
+        },
+        {
+          "lat": 42.34894,
+          "lon": -71.0703647
+        },
+        {
+          "lat": 42.3489041,
+          "lon": -71.0703647
+        }
+      ],
+      "tags": {
+        "amenity": "parking",
+        "parking": "lane"
+      }
+    },
+    {
+      "type": "way",
+      "id": 105,
+      "bounds": {
+        "minlat": 42.3553,
+        "minlon": -71.0628285,
+        "maxlat": 42.3554797,
+        "maxlon": -71.0625854
+      },
+      "nodes": [
+        1051,
+        1052,
+        1053,
+        1054,
+        1051
+      ],
+      "geometry": [
+        {
+          "lat": 42.3553,
+          "lon": -71.0628285
+        },
+        {
+          "lat": 42.3553,
+          "lon": -71.0625854
+        },
+        {
+          "lat": 42.3554797,
+          "lon": -71.0625854
+        },
+        {
+          "lat": 42.3554797,
+          "lon": -71.0628285
+        },
+        {
+          "lat": 42.3553,
+          "lon": -71.0628285
+        }
+      ],
+      "tags": {
+        "amenity": "parking",
+        "access": "private",
+        "name": "   ",
+        "website": "javascript:alert(1)"
+      }
+    },
+    {
+      "type": "way",
+      "id": 106,
+      "bounds": {
+        "minlat": 42.3524704,
+        "minlon": -71.0703039,
+        "maxlat": 42.3529195,
+        "maxlon": -71.0696961
+      },
+      "nodes": [
+        1061,
+        1062,
+        1063,
+        1064,
+        1061
+      ],
+      "geometry": [
+        {
+          "lat": 42.3524704,
+          "lon": -71.0703039
+        },
+        {
+          "lat": 42.3524704,
+          "lon": -71.0696961
+        },
+        {
+          "lat": 42.3529195,
+          "lon": -71.0696961
+        },
+        {
+          "lat": 42.3529195,
+          "lon": -71.0703039
+        },
+        {
+          "lat": 42.3524704,
+          "lon": -71.0703039
+        }
+      ],
+      "tags": {
+        "amenity": "parking",
+        "parking": "underground",
+        "name": "Under The Park Garage",
+        "fee": "Mo-Fr 08:00-18:00",
+        "contact:website": "http://example.org/under"
+      }
+    },
+    {
+      "type": "way",
+      "id": 107,
+      "bounds": {
+        "minlat": 42.35,
+        "minlon": -71.065138,
+        "maxlat": 42.3503593,
+        "maxlon": -71.0646518
+      },
+      "nodes": [
+        1071,
+        1072,
+        1073,
+        1074
+      ],
+      "geometry": [
+        {
+          "lat": 42.35,
+          "lon": -71.065138
+        },
+        {
+          "lat": 42.35,
+          "lon": -71.0646518
+        },
+        {
+          "lat": 42.3503593,
+          "lon": -71.0646518
+        },
+        {
+          "lat": 42.3503593,
+          "lon": -71.065138
+        }
+      ],
+      "tags": {
+        "amenity": "parking",
+        "parking": "surface",
+        "name": "Never Closed"
+      }
+    },
+    {
+      "type": "way",
+      "id": 108,
+      "bounds": {
+        "minlat": 42.349991,
+        "minlon": -71.0639346,
+        "maxlat": 42.350009,
+        "maxlon": -71.0639103
+      },
+      "nodes": [
+        1081,
+        1082,
+        1083,
+        1084,
+        1081
+      ],
+      "geometry": [
+        {
+          "lat": 42.349991,
+          "lon": -71.0639346
+        },
+        {
+          "lat": 42.349991,
+          "lon": -71.0639103
+        },
+        {
+          "lat": 42.350009,
+          "lon": -71.0639103
+        },
+        {
+          "lat": 42.350009,
+          "lon": -71.0639346
+        },
+        {
+          "lat": 42.349991,
+          "lon": -71.0639346
+        }
+      ],
+      "tags": {
+        "amenity": "parking",
+        "parking": "surface"
+      }
+    },
+    {
+      "type": "relation",
+      "id": 201,
+      "bounds": {
+        "minlat": 42.3496407,
+        "minlon": -71.0741327,
+        "maxlat": 42.3519763,
+        "maxlon": -71.0731603
+      },
+      "members": [
+        {
+          "type": "way",
+          "ref": 301,
+          "role": "outer",
+          "geometry": [
+            {
+              "lat": 42.3496407,
+              "lon": -71.0741327
+            },
+            {
+              "lat": 42.3496407,
+              "lon": -71.0731603
+            },
+            {
+              "lat": 42.3503593,
+              "lon": -71.0731603
+            },
+            {
+              "lat": 42.3503593,
+              "lon": -71.0741327
+            },
+            {
+              "lat": 42.3496407,
+              "lon": -71.0741327
+            }
+          ]
+        },
+        {
+          "type": "way",
+          "ref": 303,
+          "role": "inner",
+          "geometry": [
+            {
+              "lat": 42.3499102,
+              "lon": -71.0737681
+            },
+            {
+              "lat": 42.3499102,
+              "lon": -71.073525
+            },
+            {
+              "lat": 42.3500898,
+              "lon": -71.073525
+            },
+            {
+              "lat": 42.3500898,
+              "lon": -71.0737681
+            },
+            {
+              "lat": 42.3499102,
+              "lon": -71.0737681
+            }
+          ]
+        },
+        {
+          "type": "way",
+          "ref": 302,
+          "role": "outer",
+          "geometry": [
+            {
+              "lat": 42.351617,
+              "lon": -71.0738896
+            },
+            {
+              "lat": 42.351617,
+              "lon": -71.0734034
+            },
+            {
+              "lat": 42.3519763,
+              "lon": -71.0734034
+            },
+            {
+              "lat": 42.3519763,
+              "lon": -71.0738896
+            },
+            {
+              "lat": 42.351617,
+              "lon": -71.0738896
+            }
+          ]
+        }
+      ],
+      "tags": {
+        "type": "multipolygon",
+        "amenity": "parking",
+        "parking": "surface",
+        "name": "Split Lot",
+        "fee": "yes"
+      }
+    },
+    {
+      "type": "relation",
+      "id": 202,
+      "bounds": {
+        "minlat": 42.3525153,
+        "minlon": -71.0665966,
+        "maxlat": 42.3528746,
+        "maxlon": -71.0661104
+      },
+      "members": [
+        {
+          "type": "way",
+          "ref": 304,
+          "role": "outer",
+          "geometry": [
+            {
+              "lat": 42.3525153,
+              "lon": -71.0665966
+            },
+            {
+              "lat": 42.3525153,
+              "lon": -71.0661104
+            },
+            {
+              "lat": 42.3528746,
+              "lon": -71.0661104
+            }
+          ]
+        },
+        {
+          "type": "way",
+          "ref": 305,
+          "role": "outer",
+          "geometry": [
+            {
+              "lat": 42.3528746,
+              "lon": -71.0661104
+            },
+            {
+              "lat": 42.3528746,
+              "lon": -71.0665966
+            },
+            {
+              "lat": 42.3525153,
+              "lon": -71.0665966
+            }
+          ]
+        }
+      ],
+      "tags": {
+        "type": "multipolygon",
+        "amenity": "parking",
+        "parking": "rooftop",
+        "name": "Roof Deck"
+      }
+    },
+    {
+      "type": "node",
+      "id": 1005,
+      "lat": 42.35,
+      "lon": -71.0697569,
+      "tags": {
+        "entrance": "yes"
+      }
+    },
+    {
+      "type": "node",
+      "id": 2001,
+      "lat": 42.3526949,
+      "lon": -71.0695138,
+      "tags": {
+        "amenity": "parking_entrance",
+        "parking": "underground"
+      }
+    },
+    {
+      "type": "node",
+      "id": 2002,
+      "lat": 42.3525153,
+      "lon": -71.0661104,
+      "tags": {
+        "entrance": "yes"
+      }
+    },
+    {
+      "type": "node",
+      "id": 2003,
+      "lat": 42.3580848,
+      "lon": -71.0590605,
+      "tags": {
+        "amenity": "parking_entrance"
+      }
+    },
+    {
+      "type": "way",
+      "id": 501,
+      "bounds": {
+        "minlat": 42.3497305,
+        "minlon": -71.0687845,
+        "maxlat": 42.3497305,
+        "maxlon": -71.0678729
+      },
+      "geometry": [
+        {
+          "lat": 42.3497305,
+          "lon": -71.0687845
+        },
+        {
+          "lat": 42.3497305,
+          "lon": -71.0678729
+        }
+      ]
+    },
+    {
+      "type": "way",
+      "id": 502,
+      "bounds": {
+        "minlat": 42.3491017,
+        "minlon": -71.0742543,
+        "maxlat": 42.3496856,
+        "maxlon": -71.0742543
+      },
+      "geometry": [
+        {
+          "lat": 42.3491017,
+          "lon": -71.0742543
+        },
+        {
+          "lat": 42.3496856,
+          "lon": -71.0742543
+        }
+      ]
+    }
+  ]
+}

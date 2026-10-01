@@ -1,6 +1,8 @@
 # data
 
-Python scripts that fetch open data and build zone GeoJSON, one file per city.
+Python scripts that fetch open data and build zone GeoJSON, one file per city,
+and garage and lot footprints from OpenStreetMap (see "Garage and lot
+footprints" below).
 
     # NYC
     uv run data/fetch_nyc.py       # -> data/raw/*.geojson   (add --force to refetch)
@@ -11,6 +13,11 @@ Python scripts that fetch open data and build zone GeoJSON, one file per city.
     uv run data/fetch_boston.py         # -> data/raw/boston_meters.geojson
     uv run data/build_boston_zones.py   # -> data/out/boston_zones.geojson
     pnpm -C server load:zones --file data/out/boston_zones.geojson
+
+    # Garages and lots, both cities
+    uv run data/fetch_parking_footprints.py   # -> data/out/<city>_garages.geojson
+    pnpm -C server load:garages --file data/out/bos_garages.geojson
+    pnpm -C server load:garages --file data/out/nyc_garages.geojson
 
 (A relative `--file` resolves against the repo root; the old
 `../data/out/…` cwd-relative form still works.)
@@ -183,6 +190,105 @@ matched/ambiguous/unmatched/unparseable). Load and refresh:
 
 Tests: `uv run data/test_import_parkboston_zones.py` (parser + matcher, no
 network); the precedence rules are pinned in `server/test/zoneNumber.test.ts`.
+
+## Garage and lot footprints
+
+`data/fetch_parking_footprints.py` builds `data/out/<city>_garages.geojson`
+from OpenStreetMap: every `amenity=parking` way and multipolygon relation in
+the city's bounding box, one Polygon per outline (a relation with two outer
+rings is two features). The server keeps them in the `garages` table, beside
+`zones`; the park-now classifier reads them to tell a garage or a lot from a
+metered curb (`GET /garages/near`, `classifyByFootprint`; server/API.md).
+
+    uv run data/fetch_parking_footprints.py [--city bos|nyc|all] [--force]
+
+**What it keeps:** `name`, `operator`, `parking` (as `kind`:
+`multi_storey`, `underground`, `surface`, `rooftop`, else `unknown`), `fee`
+(`yes` → true, `no` → false, anything else null), `access`, `capacity`
+(whole numbers only), and `website` (http(s) only; anything else in the tag
+is dropped, since the app may open it).
+
+**What it skips:** parking along the street — `parking=street_side`,
+`lane`, `on_kerb`, `half_on_kerb`, `shoulder`, `layby`. Those are our zones.
+Also outlines that never close and ones under 10 m².
+
+**Entrances**, in order: nodes on the outline tagged `entrance=*`;
+`amenity=parking_entrance` nodes on or within 30 m of the outline (an
+underground garage's ramp is usually mapped beside it), unless the node
+names a different place or says it leads to a different kind of parking;
+failing both, the outline's vertex nearest a road centerline within 60 m —
+driveable roads only, and never the aisles inside a lot. That last one is a
+guess, and each feature says which it got in `entrance_source` (`osm`,
+`road_vertex`, or `none`). The build summary counts them.
+
+**What OSM doesn't outline, this doesn't have.** A garage mapped as a
+single point (`amenity=parking` on a node), or only by its entrance nodes,
+has no polygon and isn't in the file. In Boston on 2026-10-01 that was 31
+multi-storey and underground garages — the Boston Common Garage, the
+Garage at Post Office Square, Copley Place, Center Plaza, and 60 State
+Street among them — against 207 that are outlined. Two ways to add one:
+draw its outline in OpenStreetMap (the next fetch picks it up), or load a
+hand-made file with its own `metadata.source` (say `manual`): the loader
+mirrors per city and per source, so an OSM reload never deletes those rows.
+
+**Ids** are `<city>-<slug>-<hash6>`: the slug from the name (the kind when
+unnamed, `parking` when the kind is unknown too), the hash from the
+outline's OSM type and id, so an id survives a rebuild. A rename in OSM
+changes the slug. Where two outlines under one slug share six hash
+characters, both get the shortest longer hash that tells them apart.
+
+**Source and politeness.** The public Overpass API, one tile (about
+4.4 km × 4.1 km) at a time, one request at a time, a 2 s pause between
+requests, backoff on 429/504, and an identifying User-Agent. Each tile's
+answer is cached in `data/raw/parking_footprints/<city>/`, so a rerun asks
+only for what's missing (`--force` refetches). Boston is 25 tiles, New York
+144: allow ten minutes and an hour, more when the public server is busy
+(it answers 429 or 504 and the script waits and asks again, for up to
+about ten minutes a tile). A tile that still fails stops the build rather
+than shrinking it; rerun to resume from the cache. `OVERPASS_URL` points
+the script at another Overpass instance.
+
+**License.** OpenStreetMap data is © OpenStreetMap contributors, under the
+[ODbL](https://www.openstreetmap.org/copyright). The collection's metadata
+carries the attribution, `GET /garages/near` returns it, and wherever the
+outlines are shown that line goes with them.
+
+Load and refresh (the same pattern as zones):
+
+    # 1. Fetch and build (cached; --force for fresh OSM data)
+    uv run data/fetch_parking_footprints.py
+
+    # 2. Load dev (Neon) — DATABASE_URL comes from the repo-root .env.
+    #    One loader run per city; each mirrors only its own city's rows.
+    pnpm -C server load:garages --file data/out/bos_garages.geojson
+    pnpm -C server load:garages --file data/out/nyc_garages.geojson
+
+    # 3. Load prod (Fly Postgres) — after the deploy that carries the
+    #    garages migration. Proxy the cluster to localhost first.
+    #    Terminal A (leave it running):
+    fly proxy 15432:5432 -a parkagent-db
+
+    #    Terminal B: read the app's DATABASE_URL, then run the loader against
+    #    the proxy — same URL with the host swapped for localhost:15432.
+    fly ssh console -a parkagent-api -C "printenv DATABASE_URL"
+    DATABASE_URL="postgres://<user>:<password>@localhost:15432/<db>?sslmode=disable" \
+      pnpm -C server load:garages --file data/out/bos_garages.geojson
+    DATABASE_URL="postgres://<user>:<password>@localhost:15432/<db>?sslmode=disable" \
+      pnpm -C server load:garages --file data/out/nyc_garages.geojson
+
+With no `--file`, the loader loads every `data/out/*_garages.geojson`, each
+in its own transaction. The table mirrors each load per city and per
+source: rows of that city and source whose id the file no longer carries
+are deleted, and nothing else is touched. The file is checked whole before
+anything is written (ids, kinds, closed polygons, http(s) websites), and a
+file with under half the rows the city already has is refused — a
+cut-short fetch must not empty the table — unless `--allow-shrink` says the
+drop is real. Check a load with `GET /garages/near` at a garage you know.
+
+Tests: `uv run data/test_fetch_parking_footprints.py` (kind mapping,
+entrances and the fallback, street-side exclusion, ids, the tile cache; two
+fixture tiles in `data/fixtures/`, no network); the loader's checks are
+pinned in `server/test/garageFootprintFile.test.ts`.
 
 ## Output
 

@@ -570,6 +570,20 @@ export const BOS_UNNUMBERED = {
   lng: num("FR_BOS_UNNUMBERED_LNG", -71.07112),
 };
 
+/** A point about 27 m inside the Prudential Center's underground garage in
+ * Back Bay (bos-prudential-center-parking-garage-31d731 in the 2026-10-01
+ * OSM load). FR-49 finds the garage by its name, not its id: a rename at
+ * the source changes the id's slug, and the name is what a person knows. */
+export const BOS_GARAGE = {
+  lat: num("FR_BOS_GARAGE_LAT", 42.3464),
+  lng: num("FR_BOS_GARAGE_LNG", -71.08176),
+  name: new RegExp(process.env["FR_BOS_GARAGE_NAME"] ?? "Prudential", "i"),
+};
+
+/** The inner harbor between downtown and East Boston: inside no garage or
+ * lot, with at most a pier's lot within 400 m. */
+export const BOS_HARBOR = { lat: 42.3625, lng: -71.0425 };
+
 /** Open water south of Long Island — no metered zone within 20 km. */
 export const NOWHERE = { lat: 40.55, lng: -73.4 };
 

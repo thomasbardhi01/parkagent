@@ -56,6 +56,8 @@ import { makePendingSessionCheck } from "../src/services/pendingSession.js";
 import type { Policy } from "../src/services/policy.js";
 import { PolicyService } from "../src/services/policy.js";
 import type { StripeGateway } from "../src/services/stripeGateway.js";
+import type { GarageFootprint, GarageStore } from "../src/services/garageLookup.js";
+import { compareIds, describeFootprint } from "../src/services/garageLookup.js";
 import type { Candidate, NearbyZone } from "../src/services/zoneLookup.js";
 
 export const API_KEY = "test-key";
@@ -1985,12 +1987,36 @@ export function seedProviderAccount(
   return row;
 }
 
+/**
+ * The garages table without PostGIS: the same contract as makeGarageStore
+ * (outlines within the radius, nearest first, one row past the limit means
+ * truncated), measured with the service's own geometry.
+ */
+export function fakeGarageStore(garages: GarageFootprint[]): GarageStore {
+  return {
+    near: async ({ lat, lng, radiusM, limit }) => {
+      const inReach = garages
+        .map((garage) => ({ garage, distanceM: describeFootprint({ lat, lng }, garage).distanceM }))
+        .filter((g) => g.distanceM <= radiusM)
+        .sort((a, b) => a.distanceM - b.distanceM || compareIds(a.garage.id, b.garage.id));
+      return {
+        garages: inReach.slice(0, limit).map((g) => g.garage),
+        truncated: inReach.length > limit,
+      };
+    },
+    byId: async (id) => garages.find((garage) => garage.id === id) ?? null,
+  };
+}
+
 export function makeTestApp(options: {
   candidates?: Candidate[];
   /** What GET /zones/near draws; absent leaves the route's 501 seam open. */
   nearbyZones?: NearbyZone[];
   /** Whether the fake geometry fetcher reports hitting its ceiling. */
   nearbyTruncated?: boolean;
+  /** The garages table, for GET /garages/near and /garages/:id; absent
+   * leaves those routes' 501 seam open. */
+  garages?: GarageFootprint[];
   policy?: Partial<Policy>;
   envDryRun?: boolean;
   now?: () => Date;
@@ -2062,6 +2088,7 @@ export function makeTestApp(options: {
     zones: options.nearbyZones ?? [],
     truncated: options.nearbyTruncated ?? false,
   });
+  const garageFootprints = options.garages ? fakeGarageStore(options.garages) : undefined;
   const policyService = makePolicyService(options.policy, options.envDryRun ?? true);
   const linkWallet = new LinkWallet({
     db,
@@ -2093,6 +2120,7 @@ export function makeTestApp(options: {
     policy: policyService,
     findCandidates,
     findNearbyZones,
+    ...(garageFootprints ? { garageFootprints } : {}),
     auth,
     authenticate: makeAuthenticate(db, TEST_PEPPER, TEST_JWT_SECRET, now),
     executorFor: () => options.executor ?? dryRunExecutor,

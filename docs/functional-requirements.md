@@ -93,7 +93,7 @@ started at 11:55 ET). "—" means the FR has no live test.
 | FR-46 | One ranking; map, list, directions; garages open in-app with their fetched time | pending | — | #171 |
 | FR-47 | Budget-aware search and saved preferences | pending | — | #172 |
 | FR-48 | Golden conversations graded on end state; pass^3 nightly | pending | — | #173 |
-| FR-49 | Garage and lot footprints | pending | — | #174 |
+| FR-49 | Garage and lot footprints | nightly (self-skips until the target is loaded) + unit | — | `server/fr/80-garages.fr.test.ts`, `server/test/garageLookup.test.ts`, `server/test/garagesRoute.test.ts`, `server/test/garageFootprintFile.test.ts`; `data/test_fetch_parking_footprints.py` |
 | FR-50 | Garage sources under modes, a daily budget, and declared capabilities | pending | — | #175 |
 | FR-51 | Boston zones from the City's CDS feed; restrictions; coverage gate | pending | — | #176 |
 | FR-52 | Garage price freshness | pending | — | #177 |
@@ -1209,10 +1209,52 @@ CI's `server` job, and the 12 live cases tagged `FR-48 <case>` report
 pass^3 in the nightly, with an issue opened below 0.67. Unit and nightly.
 
 ### FR-49 — Garage and lot footprints (#174, WS-2)
-**Accepted when** OSM garages and lots load per city, `GET /garages/near`
-returns containment, distance, and nearest-entrance distance, and
-`classifyByFootprint` prefers containment over proximity. Unit and
-nightly (self-skips until prod is loaded).
+A `garages` table beside `zones` holds one outline per garage or lot, with
+its kind (`multi_storey`, `underground`, `surface`, `rooftop`, `unknown`),
+whether it charges, its access, and where cars drive in. The outlines are
+OpenStreetMap's `amenity=parking` areas for each city
+(`data/fetch_parking_footprints.py` → `pnpm -C server load:garages`, one
+city per run). Entrances are the mapped ones; where none is mapped, the
+outline's vertex nearest a road, marked as a guess.
+
+**Accepted when**
+
+- parking along the street is never a footprint: the builder skips it, the
+  loader refuses a file that carries it, and neither the routes nor
+  `classifyByFootprint` returns a kind outside the five;
+- `GET /garages/near?lat&lng&radius` answers up to 10 garages (more with
+  `limit`, and `truncated` says when there were more), nearest first, each
+  with `containsPoint`, `distanceM` to its outline, `nearestEntranceM`, its
+  outline, and its entrances; `GET /garages/:id` answers one garage, and
+  404 for an id nobody loaded. Both need a credential, like every other
+  read;
+- `classifyByFootprint(point, accuracyM, garages)` answers `{kind,
+  garageId, containsPoint, nearestEntranceM}`: the outline the point is
+  inside wins (the smallest of nested ones); otherwise the nearest
+  entrance of a multi-storey, underground, or rooftop garage within
+  `max(40 m, accuracyM)`, capped at 100 m; otherwise nothing. A surface
+  lot is matched only by being inside it;
+- a load mirrors one city and one source: another city's rows are never
+  touched, a file is checked whole before anything is written, and a file
+  with under half the rows the city already has is refused unless
+  `--allow-shrink` is passed;
+- reading garages writes nothing: no decisions row, no push. `/parked`
+  does not read them yet; that is FR-54.
+
+Evidence: the unit tests in the table (`garageLookup.test.ts`: containment
+beats proximity, the entrance radius scales with accuracy and stops at the
+cap, street-side kinds never returned; `garagesRoute.test.ts`: near and
+by-id, 404, auth, limits; `garageFootprintFile.test.ts`: what the loader
+refuses); `data/test_fetch_parking_footprints.py` on two fixture tiles
+(kind mapping, mapped entrances, the nearest-road fallback, street-side
+exclusion, ids, the tile cache); live FR-49 (a point inside a known Boston
+garage is answered with it and `containsPoint`; a point in the harbor is
+inside nothing; an unknown id is 404). The live cases that need the data
+skip themselves on a target with no garages loaded, so the nightly stays
+green between a merge and the by-hand load.
+
+The outlines are © OpenStreetMap contributors (ODbL); both routes carry
+that line as `attribution`, and the app shows it wherever it shows them.
 
 ### FR-50 — Garage sources under modes, a budget, and declared capabilities (#175, WS-2)
 **Accepted when** each garage source runs `off`, `public`, or `partner`,

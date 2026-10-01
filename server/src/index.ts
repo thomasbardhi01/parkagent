@@ -51,6 +51,7 @@ import { LinkWallet } from "./services/link/linkWallet.js";
 import { makeItineraryWorker } from "./jobs/itineraryTick.js";
 import { isTestModeKey, makeStripeGateway } from "./services/stripeGateway.js";
 import { makeWalletTick } from "./jobs/walletTick.js";
+import { makeGarageStore } from "./services/garageLookup.js";
 import { makeCandidateFetcher, makeNearbyZoneFetcher } from "./services/zoneLookup.js";
 
 // Secrets live in the repo-root .env (see .env.example), not in server/.
@@ -216,6 +217,8 @@ const explainModel = env.ANTHROPIC_API_KEY
 const findCandidates = makeCandidateFetcher(prisma);
 // The map's curb layer (GET /zones/near) — same prefilter, plus geometry.
 const findNearbyZones = makeNearbyZoneFetcher(prisma);
+// Garage and lot outlines (GET /garages/near, /garages/:id).
+const garageFootprints = makeGarageStore(prisma);
 // Place search for the assistant, biased to the covered cities: Apple
 // Maps (restaurants, venues, businesses by the names people use) when its
 // key is set, then Nominatim (streets, neighborhoods, landmarks — the same
@@ -320,6 +323,7 @@ buildApp(
     policy,
     findCandidates,
     findNearbyZones,
+    garageFootprints,
     auth,
     authenticate: makeAuthenticate(db, env.API_KEY_PEPPER, env.AUTH_JWT_SECRET),
     ...(assistantModel ? { assistantModel } : {}),

@@ -17,6 +17,7 @@ import type { IdTokenResult } from "./services/idToken.js";
 import { registerCard } from "./routes/card.js";
 import { registerCity } from "./routes/city.js";
 import { registerDevice } from "./routes/device.js";
+import { registerGarages } from "./routes/garages.js";
 import { registerLocation } from "./routes/location.js";
 import { registerLimits } from "./routes/limits.js";
 import { registerIdempotency } from "./services/idempotency.js";
@@ -42,6 +43,7 @@ import type { PolicyService } from "./services/policy.js";
 import type { ExecutorRuntime } from "./services/parknycExecutor.js";
 import type { ProviderOpsFactory } from "./services/providerOps.js";
 import type { StripeGateway } from "./services/stripeGateway.js";
+import type { GarageStore } from "./services/garageLookup.js";
 import type { CandidateFetcher, NearbyZoneFetcher } from "./services/zoneLookup.js";
 
 declare module "fastify" {
@@ -74,6 +76,9 @@ export interface AppDeps {
    * 501s. Separate from findCandidates because the pay path never needs
    * geometry and tests fake the two independently. */
   findNearbyZones?: NearbyZoneFetcher;
+  /** Garage and lot outlines (GET /garages/near, /garages/:id); absent →
+   * those routes 501. */
+  garageFootprints?: GarageStore;
   authenticate: preHandlerHookHandler;
   /** Picks the dry-run or real executor per call (dry_run can flip at runtime). */
   executorFor: ExecutorProvider;
@@ -312,6 +317,7 @@ export function buildApp(deps?: AppDeps, app: FastifyInstance = createFastify())
     registerParked(app, deps);
     registerCity(app, deps);
     registerZones(app, deps);
+    registerGarages(app, deps);
     registerPolicy(app, deps);
     registerSession(app, deps);
     registerLocation(app, deps);

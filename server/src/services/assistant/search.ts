@@ -358,7 +358,7 @@ export function buildSearchResult(
     return plain;
   });
   const judged = options.map((option) => ({ option, violates: violationsOf(option, state.hard) }));
-  const satisfying = orderForRequest(
+  const ordered = orderForRequest(
     judged.filter((j) => j.violates.length === 0).map((j) => j.option),
     {
       rank: state.soft.rank,
@@ -366,7 +366,16 @@ export function buildSearchResult(
       priceLimited: state.hard.maxPriceUsd !== null,
       walkLimited: state.hard.maxWalkMinutes !== null,
     },
-  ).slice(0, MAX_SATISFYING_SHOWN);
+  );
+  // What the model is shown: the head of the order — and the best option
+  // of each kind, so a handful of cheap meters never hides every garage
+  // (or the reverse) from a request that didn't rule the kind out.
+  const satisfying = ordered.slice(0, MAX_SATISFYING_SHOWN);
+  for (const kind of KINDS) {
+    if (satisfying.some((o) => o.type === kind)) continue;
+    const best = ordered.find((o) => o.type === kind);
+    if (best) satisfying[satisfying.length - 1] = best;
+  }
   const nearMisses = judged
     .filter((j) => j.violates.length > 0)
     .sort(

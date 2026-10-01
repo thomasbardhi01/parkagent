@@ -465,6 +465,38 @@ describe("garage options", () => {
     expect((plan.result as { error: string }).error).toBe("stale_or_unknown_option");
   });
 
+  test("a street full of cheap meters doesn't hide every garage: the best of each kind is always shown", async () => {
+    // Seven blocks, all cheaper than the one garage: by score alone the
+    // five options shown would all be street.
+    const blocks = Array.from({ length: 7 }, (_, i) =>
+      zone(`bos-block-${i}`, `BLOCK ${i} ST`, 2 + i * 0.25, 60 + i * 30),
+    );
+    const t = makeTestApp({
+      nearbyZones: blocks,
+      garage: garages([garageOption({ id: "g-deck", priceUsd: 24, walkMinutes: 6 })]),
+    });
+    const tools = t.deps.assistantTools!;
+    const ctx = ctxAt();
+    await tools.execute(ctx, "update_request", { durationMinutes: 60 });
+    await tools.execute(ctx, "quote_street", {});
+    const search = (await tools.execute(ctx, "search_garages", {})).result as Search;
+    expect(search.satisfying).toHaveLength(5);
+    expect(search.satisfying.map((o) => o.type)).toEqual([
+      "street",
+      "street",
+      "street",
+      "street",
+      "garage",
+    ]);
+    expect(search.satisfying.at(-1)!.id).toBe("v1-g-deck");
+    // And it can be proposed, behind the options that lead.
+    const out = await tools.execute(ctx, "propose_plan", {
+      plan: { kind: "single_spot", options: [{ id: "v1-g-deck" }] },
+    });
+    const plan = out.endTurn!.plan as unknown as { options: Option[] };
+    expect(plan.options.map((o) => o.type)).toEqual(["street", "garage"]);
+  });
+
   test("every garage option says when its price was fetched, on the search and on the card", async () => {
     const t = makeTestApp({ garage: garages([garageOption({ id: "g1", priceUsd: 12 })]) });
     const tools = t.deps.assistantTools!;

@@ -181,6 +181,17 @@ struct StoredPlanCard: View {
                     }
                     Text(Format.money(day.totalUsd)).font(.secondaryText).monospacedDigit()
                 }
+            case .noneMeets(let none):
+                Label(NoCardPresentation.title(none), systemImage: "exclamationmark.circle")
+                    .font(.secondaryText)
+                ForEach(none.nearMisses) { option in
+                    NearMissRow(option: option)
+                }
+            case .noData:
+                Label("No parking data for that place", systemImage: "mappin.slash")
+                    .font(.secondaryText)
+            case .unsupported:
+                EmptyView()
             }
             Text("Prices were for then — ask again for today's.")
                 .font(.captionText)

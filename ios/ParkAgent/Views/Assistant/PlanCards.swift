@@ -99,21 +99,13 @@ struct SingleSpotPlanCards: View {
     }
 
     /// Provenance once for the whole list — which sources the garages
-    /// came from and when we looked. Never invented: no provenance from
-    /// the server, no line.
+    /// came from and when we looked, or that garages couldn't be checked.
+    /// Never invented: no provenance from the server, no line.
     private var providerNote: String? {
-        guard plan.options.contains(where: { $0.type == "garage" }),
-              let provenance = plan.provenance
-        else { return nil }
-        // The server sends the sources actually shown, "+"-joined.
-        let names = provenance.provider
-            .split(separator: "+")
-            .map { GarageSource.displayName($0) ?? $0.capitalized }
-        let sources = ListFormatter.localizedString(byJoining: names)
-        guard let searchedAt = Format.parseArrival(provenance.searchedAt) else {
-            return "Garage prices from \(sources)."
-        }
-        return "Garage prices from \(sources), checked \(Format.clockTime(searchedAt))."
+        NoCardPresentation.providerNote(
+            plan.provenance,
+            hasGarages: plan.options.contains { $0.type == "garage" }
+        )
     }
 }
 
@@ -261,10 +253,19 @@ private struct CompactOptionRow: View {
                 Image(systemName: option.type == "garage" ? "building.2.fill" : "parkingsign")
                     .font(.captionText)
                     .foregroundStyle(isExpanded ? Color.actionCoralLink : Color.textSecondary)
-                Text(option.label)
-                    .font(.secondaryText)
-                    .foregroundStyle(Color.textPrimary)
-                    .lineLimit(1)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(option.label)
+                        .font(.secondaryText)
+                        .foregroundStyle(Color.textPrimary)
+                        .lineLimit(1)
+                    // "Closest" / "Cheapest": what this option is the best
+                    // on, from the server's ranking.
+                    if let axis = NoCardPresentation.axisLabel(option) {
+                        Text(axis)
+                            .font(.captionTextSemibold)
+                            .foregroundStyle(Color.textSecondary)
+                    }
+                }
                 Spacer(minLength: Spacing.half)
                 if let walk = option.walkMinutes {
                     Text("\(walk) min")
@@ -289,6 +290,14 @@ private struct CompactOptionRow: View {
             .accessibilityIdentifier("assistant.optionRow.\(option.id)")
             .accessibilityHint(isExpanded ? "Collapses the option" : "Shows the option's details")
 
+            // An option that breaks a limit of the request says so whether
+            // or not it is open.
+            if let badges = NoCardPresentation.badges(option), option.nearMiss == true {
+                NearMissBadge(text: badges, optionID: option.id)
+                    .padding(.horizontal, Spacing.unit)
+                    .padding(.bottom, isExpanded ? 0 : Spacing.unit)
+            }
+
             if isExpanded {
                 VStack(alignment: .leading, spacing: Spacing.half) {
                     if !option.detailLine.isEmpty {
@@ -308,7 +317,11 @@ private struct CompactOptionRow: View {
                     if linkConnected && option.type == "garage" && option.priceUsd > 0 {
                         LinkPayBadge()
                     }
-                    if option.payOnArrival == true {
+                    if option.nearMiss == true {
+                        // Shown for information: the server refuses a
+                        // near-miss too. The user changes the limit instead.
+                        EmptyView()
+                    } else if option.payOnArrival == true {
                         AutoPayNote(optionID: option.id)
                     } else {
                         Button("Choose") { onChoose() }

@@ -487,13 +487,13 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
   const stored = await args.db.conversation.findUnique({ where: { id: args.conversationId } });
   const history: ModelTurn[] =
     stored && stored.userId === args.userId ? (stored.turns as ModelTurn[]) : [];
+  const at = args.now?.() ?? new Date();
   // The request this conversation has built so far, loaded before the
   // first model call; a new conversation (or a row from before request
-  // state) starts from the empty request.
-  const at = args.now?.() ?? new Date();
-  // …and, when this message is a tap on one of the places the last turn
-  // couldn't choose between, with that place already chosen: the choice is
-  // the user's, so it is taken from the request, not left to the model.
+  // state) starts from the empty request. When this message is a tap on
+  // one of the places the last turn couldn't choose between, it is loaded
+  // with that place already chosen: the choice is the user's, so it is
+  // taken from the request, not left to the model.
   const requestState = resolveTappedCandidate(
     stored && stored.userId === args.userId ? parseStoredState(stored.requestState) : emptyState(),
     args.text,

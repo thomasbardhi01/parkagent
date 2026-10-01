@@ -523,7 +523,8 @@ model AssistantPlan {
   id        String    @id
   userId    String    @map("user_id")
   conversationId String @map("conversation_id")
-  // "single_spot" | "itinerary"
+  // "single_spot" | "itinerary", and the two cards that say no and can't
+  // be confirmed: "none_meets" | "no_data" (services/assistant/plans.ts).
   kind      String
   // The structured plan exactly as proposed (options / stops / totals).
   plan      Json

@@ -33,6 +33,11 @@ export const singleSpotOptionSchema = z.object({
   priceUsd: z.number().nonnegative(),
   durationMinutes: z.number().int().positive().max(720),
   walkMinutes: z.number().int().nonnegative().max(120).optional(),
+  /** SERVER-ATTACHED from the search (model input ignored): false when
+   * `walkMinutes` is a walking time from the destination to the pin
+   * (Apple's), true when it is the straight-line estimate — shown as
+   * "~7 min". */
+  walkEstimate: z.boolean().optional(),
   entryType: z.string().max(40).optional(),
   /** street options */
   zoneId: z.string().optional(),

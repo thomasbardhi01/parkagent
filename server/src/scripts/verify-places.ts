@@ -2,13 +2,16 @@
  * The device-test phrases through the REAL place search and street
  * search — no model: each place goes through geocode_place exactly as the
  * assistant calls it (the Apple Maps → Nominatim chain, the phone's city
- * bias, the found / closest / ambiguous classification), from a phone in
- * Braintree — just outside the Boston box, where the 2026-09-25 test was
- * sent. Where the real place is known, prints how far the answer landed
- * from it. With DATABASE_URL set, each found place then goes through
- * quote_street (the walking-radius zone search, which reads the place and
- * the window from the request) for the stay, default next Saturday
- * 7–10 PM, and prints the street options in the card's words.
+ * bias, the found / closest / ambiguous / none classification with its
+ * confidence, and which source answered — search, autocomplete, or
+ * Nominatim), from a phone in Braintree — just outside the Boston box,
+ * where the 2026-09-25 test was sent. Where the real place is known,
+ * prints how far the answer landed from it. With DATABASE_URL set, each
+ * found place then goes through quote_street (the walking-radius zone
+ * search, which reads the place and the window from the request) for the
+ * stay, default next Saturday 7–10 PM, and prints the street options in
+ * the card's words — with Apple's walking time where it has one ("~" marks
+ * a straight-line estimate).
  *
  *   pnpm -C server verify:places
  *   pnpm -C server verify:places --places "Lola 42 Seaport,TD Garden"
@@ -33,6 +36,7 @@ import {
 } from "../services/assistant/geocoder.js";
 import type { GeocoderProvider } from "../services/assistant/geocoder.js";
 import type { SearchResult } from "../services/assistant/search.js";
+import { carriesTheName } from "../services/assistant/placeMatch.js";
 import { AssistantTools } from "../services/assistant/tools.js";
 import type { ToolContext } from "../services/assistant/tools.js";
 import type { AppDb } from "../db.js";
@@ -47,6 +51,8 @@ config({ path: fileURLToPath(new URL("../../../.env", import.meta.url)), quiet: 
 const DEFAULT_PLACES: { query: string; real?: { lat: number; lng: number; what: string } }[] = [
   { query: "Lola 42 Seaport", real: { lat: 42.35458, lng: -71.04526, what: "22 Liberty Dr" } },
   { query: "Lola 42", real: { lat: 42.35458, lng: -71.04526, what: "22 Liberty Dr" } },
+  // What the search reads literally and autocomplete completes (FR-44).
+  { query: "lola42", real: { lat: 42.35458, lng: -71.04526, what: "22 Liberty Dr" } },
   {
     query: "Moo steakhouse Seaport Boston",
     real: { lat: 42.34945, lng: -71.05034, what: "49 Melcher St" },
@@ -54,6 +60,9 @@ const DEFAULT_PLACES: { query: string; real?: { lat: number; lng: number; what: 
   { query: "Moo steakhouse" },
   { query: "Seaport" },
   { query: "TD Garden", real: { lat: 42.36621, lng: -71.06216, what: "100 Legends Way" } },
+  { query: "MFA", real: { lat: 42.3394, lng: -71.094, what: "465 Huntington Ave" } },
+  { query: "Boylston and Dartmouth" },
+  { query: "xyzzy restaurant" },
 ];
 
 const BRAINTREE = { lat: 42.2206, lng: -71.0041 };
@@ -117,7 +126,14 @@ async function main(): Promise<void> {
   }
   // Reads go to the zone tables; the audit is the only write, and it goes
   // nowhere.
-  const noAudit = { create: async () => ({ id: "verify" }) };
+  // Kept in memory so each lookup's source and confidence can be printed.
+  const audits: { rule: string; outcome: Record<string, unknown> }[] = [];
+  const noAudit = {
+    create: async (args: { data: { rule: string; outcome: Record<string, unknown> } }) => {
+      audits.push({ rule: args.data.rule, outcome: args.data.outcome });
+      return { id: "verify" };
+    },
+  };
   const db = prisma
     ? (new Proxy(asAppDb(prisma), {
         get: (target, prop) =>
@@ -143,7 +159,9 @@ async function main(): Promise<void> {
         throw new Error("verify-places never books");
       },
     },
-    geocoder: new FallbackGeocoder(chain),
+    // The chain as the server wires it (index.ts): the next source is
+    // asked when this one's results don't carry the name.
+    geocoder: new FallbackGeocoder(chain, carriesTheName),
   });
 
   for (const [index, place] of places.entries()) {
@@ -153,6 +171,14 @@ async function main(): Promise<void> {
     const ctx: ToolContext = { userId: "verify", conversationId: "verify", location: from };
     const out = await tools.execute(ctx, "geocode_place", { query: place.query });
     const r = out.result as Record<string, unknown>;
+    // geocode_place writes one row: the lookup's.
+    const audit = audits[audits.length - 1];
+    const failures = (audit?.outcome["failures"] as { provider: string; reason: string }[]) ?? [];
+    const how =
+      ` [${String(audit?.outcome["source"] ?? "no source")}` +
+      (typeof r["confidence"] === "number" ? `, confidence ${r["confidence"].toFixed(2)}` : "") +
+      failures.map((f) => `, ${f.provider} failed: ${f.reason}`).join("") +
+      "]";
     let line: string;
     if (r["ambiguous"] === true) {
       const choices = r["choices"] as { label: string }[];
@@ -174,7 +200,7 @@ async function main(): Promise<void> {
     } else {
       line = `NOT FOUND (${String(r["error"] ?? r["instruction"] ?? "")})`.slice(0, 160);
     }
-    console.log(`${place.query.padEnd(32)} ${line}`);
+    console.log(`${place.query.padEnd(32)} ${line}${how}`);
     if (prisma && r["found"] === true && r["ambiguous"] !== true) {
       await tools.execute(ctx, "update_request", {
         startsAt: parseEasternTime(when) ? when : `${when}:00`,
@@ -188,8 +214,9 @@ async function main(): Promise<void> {
         console.log(`${"".padEnd(32)}   street: ${radius}`);
       }
       for (const o of options) {
+        const walk = `${o.walkEstimate === false ? "" : "~"}${o.walkMinutes} min`;
         console.log(
-          `${"".padEnd(32)}   street: ${o.summary ?? o.label} · $${o.priceUsd.toFixed(2)}`,
+          `${"".padEnd(32)}   street: ${o.summary ?? o.label} · $${o.priceUsd.toFixed(2)} · ${walk}`,
         );
       }
     }

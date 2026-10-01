@@ -3,195 +3,185 @@
  * SOMETHING near a name — the 2026-09-25 device test's "Moo steakhouse in
  * Seaport" came back as the Seaport neighborhood and the assistant quietly
  * searched "Seaport center" as if it were the restaurant. So the tool asks
- * three questions of the results before it grounds anything:
+ * three questions of the results before it grounds anything, each answered
+ * from the results' scores (placeScore.ts) — numbers the model is shown and
+ * can't change:
  *
  *  1. Does any result carry the NAME the user said? Names are compared
  *     loosely — case, punctuation, and stretched letters don't count
  *     ("Moo" is "Mooo....") and generic words ("steakhouse", "restaurant")
  *     and the area the user named ("in Seaport") aren't part of the name.
- *     None → the best result is only the closest thing found, and the
- *     assistant must say so instead of presenting it as the place.
+ *     None → the best result that shares a word with the query is only the
+ *     closest thing found, and the assistant must say so instead of
+ *     presenting it as the place; a result that shares nothing, or scores
+ *     under `closestFloor`, is not offered at all.
  *  2. Did the user name an area? Then matches in that area win ("Moo in
  *     Seaport" is the Seaport location, not the Beacon Hill one).
  *  3. Are the remaining matches one place or several? Several distinct
- *     places (more than DISTINCT_M apart) are a question for the user, as
- *     tappable choices — never a guess.
+ *     places (more than `distinctM` apart) are a question for the user, as
+ *     tappable choices — never a guess — unless one scores `found` or
+ *     better and stands clear of the rest by more than `ambiguousGap`.
  */
 
 import type { GeocodeResult } from "./geocoder.js";
 import { metersBetween } from "./geocoder.js";
+import type { Scored } from "./placeScore.js";
+import {
+  RESOLUTION_THRESHOLDS,
+  areaTokensOf,
+  bestOf,
+  nameOf,
+  readQuery,
+  scoreCandidates,
+} from "./placeScore.js";
+
+import { isFillerWord, nameTokens } from "./placeTokens.js";
+
+export { nameTokens, tokenMatches } from "./placeTokens.js";
 
 /** Two results closer than this are the same place listed twice. */
-export const DISTINCT_M = 250;
-
-/** Words that describe a kind of place, not its name. */
-const GENERIC_WORDS = new Set([
-  "a",
-  "an",
-  "the",
-  "at",
-  "in",
-  "on",
-  "near",
-  "by",
-  "of",
-  "and",
-  "restaurant",
-  "steakhouse",
-  "steak",
-  "bar",
-  "grill",
-  "cafe",
-  "coffee",
-  "pub",
-  "bistro",
-  "diner",
-  "tavern",
-  "kitchen",
-  "hotel",
-  "place",
-  "spot",
-  "venue",
-  "club",
-]);
-
-/** Street-name abbreviations people say or type, spelled out — "Newbury
- * St" is "Newbury Street". */
-const ABBREVIATIONS: Record<string, string> = {
-  st: "street",
-  ave: "avenue",
-  av: "avenue",
-  blvd: "boulevard",
-  rd: "road",
-  sq: "square",
-  pl: "place",
-  ln: "lane",
-  dr: "drive",
-  ct: "court",
-  pkwy: "parkway",
-  hwy: "highway",
-  wy: "way",
-};
-
-/** Lowercased, accent- and punctuation-free word tokens, abbreviations
- * spelled out, stretched letters collapsed ("Mooo...." → ["mo"], "LoLa 42"
- * → ["lola", "42"], "Newbury St" and "Newbury Street" alike). */
-export function nameTokens(text: string): string[] {
-  return text
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .replace(/&/g, " and ")
-    .replace(/[^a-z0-9]+/g, " ")
-    .split(" ")
-    .filter((t) => t.length > 0)
-    .map((t) => ABBREVIATIONS[t] ?? t)
-    .map((t) => t.replace(/([a-z])\1+/g, "$1"));
-}
+export const DISTINCT_M = RESOLUTION_THRESHOLDS.distinctM;
 
 export type PlaceMatch =
   | { kind: "none" }
-  /** nameMatched false: nothing carried the name; `place` is only the
-   * closest result, and the user must be told so. */
-  | { kind: "found"; place: GeocodeResult; nameMatched: boolean }
-  | { kind: "ambiguous"; choices: GeocodeResult[] };
+  /** nameMatched false ("closest only"): nothing carried the name;
+   * `place` is only the closest result, and the user must be told so.
+   * `confidence` is the place's score, 0–1. */
+  | { kind: "found"; place: GeocodeResult; nameMatched: boolean; confidence: number }
+  /** `scores[i]` is `choices[i]`'s score. */
+  | { kind: "ambiguous"; choices: GeocodeResult[]; scores: number[] };
 
-/** The words that say WHERE a result is: its neighborhoods and its street
- * address. A tapped choice sends "Mooo...., 15 Beacon St" — the address
- * picks the location, it isn't part of the name. */
-function areaTokensOf(result: GeocodeResult): Set<string> {
-  return new Set(
-    [...(result.areaNames ?? []), result.area ?? "", result.address ?? ""].flatMap((name) =>
-      nameTokens(name),
-    ),
-  );
-}
-
-function tokenMatches(queryToken: string, nameToken: string): boolean {
-  if (queryToken === nameToken) return true;
-  // A partial word counts only past two letters ("lol" ≠ "lola 42").
-  return (
-    Math.min(queryToken.length, nameToken.length) >= 3 &&
-    (nameToken.startsWith(queryToken) || queryToken.startsWith(nameToken))
-  );
-}
-
-/** Collapse results within DISTINCT_M of an earlier one, keeping order. */
-function distinctPlaces(results: GeocodeResult[]): GeocodeResult[] {
-  const kept: GeocodeResult[] = [];
-  for (const r of results) {
-    if (kept.some((k) => metersBetween(k.lat, k.lng, r.lat, r.lng) < DISTINCT_M)) continue;
-    kept.push(r);
+/** Collapse results within `distinctM` of an earlier one, keeping order. */
+function distinctPlaces(scored: Scored[]): Scored[] {
+  const kept: Scored[] = [];
+  for (const s of scored) {
+    const dup = kept.some(
+      (k) =>
+        metersBetween(k.result.lat, k.result.lng, s.result.lat, s.result.lng) <
+        RESOLUTION_THRESHOLDS.distinctM,
+    );
+    if (!dup) kept.push(s);
   }
   return kept;
 }
 
-export function classifyPlaceMatches(query: string, results: GeocodeResult[]): PlaceMatch {
-  if (results.length === 0) return { kind: "none" };
-  const queryTokens = nameTokens(query);
-  // The area words the user said: any query word some result lists among
-  // its localities/neighborhoods ("seaport", "boston").
-  const allAreaTokens = new Set(results.flatMap((r) => [...areaTokensOf(r)]));
-  const saidArea = queryTokens.filter((t) => allAreaTokens.has(t));
-  const nameOf = (r: GeocodeResult) => nameTokens(r.name ?? r.displayName.split(",")[0] ?? "");
-  // The name part: what's left after generic words — and after area words
-  // only when no result carries them in its NAME ("Fenway Park" is a name
-  // with a neighborhood in it; "Lola 42 Seaport" is a name and an area;
-  // "Seaport" alone IS the name).
-  const withoutGeneric = queryTokens.filter((t) => !GENERIC_WORDS.has(t));
-  const matching = (tokens: string[]) =>
-    results.filter((r) => {
-      const name = nameOf(r);
-      return tokens.every((t) => name.some((n) => tokenMatches(t, n)));
-    });
-  const withoutArea = withoutGeneric.filter((t) => !saidArea.includes(t));
-  const whole = withoutGeneric.length > 0 ? matching(withoutGeneric) : [];
-  const core = whole.length > 0 || withoutArea.length === 0 ? withoutGeneric : withoutArea;
-  if (core.length === 0) return { kind: "found", place: results[0]!, nameMatched: true };
+const found = (s: Scored, nameMatched: boolean): PlaceMatch => ({
+  kind: "found",
+  place: s.result,
+  nameMatched,
+  confidence: s.score,
+});
 
-  let matched = whole.length > 0 ? whole : matching(core);
+/**
+ * What the results come to for this query. `bias` is where the search
+ * looked first (geocoder.ts `biasPointFor`): results are scored by their
+ * distance from it, and several choices are offered nearest it first.
+ */
+export function classifyPlaceMatches(
+  query: string,
+  results: GeocodeResult[],
+  bias?: { lat: number; lng: number } | null,
+): PlaceMatch {
+  if (results.length === 0) return { kind: "none" };
+  const reading = readQuery(query, results);
+  const scored = scoreCandidates(query, results, bias);
+  // A query that names nothing ("a cafe") takes the source's first.
+  if (reading.name.length === 0) return found(scored[0]!, true);
+
+  let matched = scored.filter((s) => s.nameMatched);
   if (matched.length === 0) {
-    return { kind: "found", place: results[0]!, nameMatched: false };
+    // Nothing carries the name. The closest thing is offered as exactly
+    // that — and only if it shares a word with what the user said: a
+    // result that is merely nearby and listed first is the phone's
+    // location by another name.
+    const closest = bestOf(scored.filter((s) => s.evidence));
+    return closest && closest.score >= RESOLUTION_THRESHOLDS.closestFloor
+      ? found(closest, false)
+      : { kind: "none" };
   }
   // An exact name beats a longer one that contains it ("Seaport" the
-  // neighborhood, not "Seaport Hotel").
-  const exact = matched.filter((r) => nameOf(r).join(" ") === core.join(" "));
+  // neighborhood, not "Seaport Hotel") — the name as the user said it
+  // first, kind words included: "Seaport Hotel" is the hotel, and only
+  // then the name without them ("Moo steakhouse" is "Mooo....").
+  const spoken = (tokens: string[]) => tokens.filter((t) => !isFillerWord(t)).join(" ");
+  const said = spoken(nameTokens(query).filter((t) => !reading.area.includes(t)));
+  const asSaid = matched.filter((s) => spoken(nameOf(s.result)) === said);
+  const exact =
+    asSaid.length > 0
+      ? asSaid
+      : matched.filter((s) => nameOf(s.result).join(" ") === reading.name.join(" "));
   if (exact.length > 0) matched = exact;
   // The area the user named narrows a chain to its location there. Every
   // location is "in" the city, so the most specific wins: the results
   // matching the MOST named area words ("Seaport" and "Boston" beats
   // "Boston" alone).
-  const areaWords = saidArea.filter((t) => !core.includes(t));
-  if (areaWords.length > 0) {
-    const score = (r: GeocodeResult) => {
-      const tokens = areaTokensOf(r);
-      return areaWords.filter((t) => tokens.has(t)).length;
+  if (reading.area.length > 0) {
+    const hits = (s: Scored) => {
+      const tokens = areaTokensOf(s.result);
+      return reading.area.filter((t) => tokens.has(t)).length;
     };
-    const best = Math.max(...matched.map(score));
-    if (best > 0) matched = matched.filter((r) => score(r) === best);
+    const most = Math.max(...matched.map(hits));
+    if (most > 0) matched = matched.filter((s) => hits(s) === most);
   }
   // Choices the user couldn't tell apart are one place: a long street
   // comes back as several segments ("Newbury Street · Back Bay" three
   // times, 2026-09-25 live run) — only different names or neighborhoods
   // are a question worth asking.
   const seen = new Set<string>();
-  const places = distinctPlaces(matched).filter((place) => {
-    const label = choiceLabel(place).toLowerCase();
+  const places = distinctPlaces(matched).filter((s) => {
+    const label = choiceLabel(s.result).toLowerCase();
     if (seen.has(label)) return false;
     seen.add(label);
     return true;
   });
-  if (places.length === 1) return { kind: "found", place: places[0]!, nameMatched: true };
+  if (places.length === 1) return found(places[0]!, true);
+
+  const best = bestOf(places)!;
+  const { found: sure, ambiguousFloor, ambiguousGap } = RESOLUTION_THRESHOLDS;
+  // One place far ahead of its namesakes is the place: no question.
+  const clear = places.every((s) => s === best || s.score < best.score - ambiguousGap);
+  if (best.score >= sure && clear) return found(best, true);
   // Streets, neighborhoods, and stops of one name in one city ("Fenway":
   // the road called Fenway and the Fenway T stop, live 2026-09-25) mean the
-  // best-ranked one — a question there is noise. Two or more businesses of
-  // one name (a chain's locations), or the name in two cities, is a real
+  // best one — a question there is noise. Two or more businesses of one
+  // name (a chain's locations), or the name in two cities, is a real
   // question.
-  const oneCity = places.every((place) => place.city === places[0]!.city);
-  if (oneCity && places.filter((place) => place.kind === "poi").length < 2) {
-    return { kind: "found", place: places[0]!, nameMatched: true };
+  const oneCity = places.every((s) => s.result.city === places[0]!.result.city);
+  if (oneCity && places.filter((s) => s.result.kind === "poi").length < 2) {
+    return found(best, true);
   }
-  return { kind: "ambiguous", choices: places.slice(0, 3) };
+  // The choices: the places in real contention when there are two or more
+  // of them, else every place that carries the name. With a bias point the
+  // nearest come first (a chain's six locations are the three nearest);
+  // without one, the source's order stands.
+  const strong = places.filter(
+    (s) => s.score >= ambiguousFloor && s.score >= best.score - ambiguousGap,
+  );
+  const contenders = strong.length >= 2 ? strong : places;
+  const ordered = bias
+    ? [...contenders].sort(
+        (a, b) =>
+          metersBetween(bias.lat, bias.lng, a.result.lat, a.result.lng) -
+          metersBetween(bias.lat, bias.lng, b.result.lat, b.result.lng),
+      )
+    : contenders;
+  const choices = ordered.slice(0, 3);
+  return {
+    kind: "ambiguous",
+    choices: choices.map((s) => s.result),
+    scores: choices.map((s) => s.score),
+  };
+}
+
+/** Whether some result carries the whole name the query says: what tells
+ * the geocoder chain to stop asking further sources. */
+export function carriesTheName(
+  query: string,
+  results: GeocodeResult[],
+  bias?: { lat: number; lng: number } | null,
+): boolean {
+  const match = classifyPlaceMatches(query, results, bias);
+  return match.kind === "ambiguous" || (match.kind === "found" && match.nameMatched);
 }
 
 /** A choice's button text: the name, then where it is. */

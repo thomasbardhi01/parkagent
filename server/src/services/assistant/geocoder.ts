@@ -10,9 +10,10 @@
  *
  * Two implementations sit behind one interface, chained by
  * FallbackGeocoder: the Apple Maps Server API (appleMaps.ts — businesses,
- * venues, and landmarks by the names people use) when its key is
- * configured, then Nominatim (OpenStreetMap: streets, neighborhoods,
- * landmarks; the same free geocoder the Boston zone-number importer uses).
+ * venues, and landmarks by the names people use; search first, then
+ * autocomplete when the search is weak) when its key is configured, then
+ * Nominatim (OpenStreetMap: streets, neighborhoods, landmarks; the same
+ * free geocoder the Boston zone-number importer uses).
  * Both take an injectable HTTP fetch so tests run offline against
  * fixtures. Results outside both metros' bounding boxes are dropped — a
  * parking answer 500 miles away is never useful — and what remains is
@@ -74,8 +75,13 @@ export interface GeocodeResult {
   kind?: "poi" | "address" | "area" | undefined;
   /** The source's category for a POI ("Restaurant"). */
   category?: string | undefined;
-  /** Which search produced it ("apple_maps" | "nominatim"). */
+  /** Which search produced it: "apple_search" | "apple_autocomplete" |
+   * "nominatim". */
   source?: string | undefined;
+  /** Its place in the response that produced it, 0 first — what the rank
+   * bonus reads once two sources' results are in one list. Absent → its
+   * place in the list it is in. */
+  rank?: number | undefined;
 }
 
 export interface GeocodeQuery {
@@ -90,15 +96,51 @@ export interface GeocodeQuery {
   userLocation?: { lat: number; lng: number } | undefined;
 }
 
+/** A source that failed while another answered. `reason` is "quota" when
+ * the source refused for its daily call quota. */
+export interface GeocodeFailure {
+  provider: string;
+  reason: string;
+}
+
+export type GeocodeOutcome =
+  | {
+      ok: true;
+      results: GeocodeResult[];
+      /** Sources (or steps of one) that failed on the way to these
+       * results; absent when none did. */
+      failures?: GeocodeFailure[];
+    }
+  | { ok: false; reason: string };
+
+/** A walk between two points: time and route distance. */
+export interface WalkingEta {
+  seconds: number;
+  meters: number;
+}
+
 export interface GeocoderProvider {
+  /** Names the source in a failure. */
+  readonly id?: string;
   /** Up to `limit` matches inside a covered metro, best first; empty when
    * the place couldn't be resolved to either city. Never throws — a
    * transport failure returns `{ ok: false }` so the tool can tell the
    * model "couldn't locate that" rather than crash the turn. */
-  geocode(
-    q: GeocodeQuery,
-    limit?: number,
-  ): Promise<{ ok: true; results: GeocodeResult[] } | { ok: false; reason: string }>;
+  geocode(q: GeocodeQuery, limit?: number): Promise<GeocodeOutcome>;
+  /** Walking time from one point to each of several, one entry per
+   * destination in order (null where the source gave none). Never throws:
+   * null when the source can't answer at all. */
+  walkingEtas?(
+    origin: { lat: number; lng: number },
+    destinations: readonly { lat: number; lng: number }[],
+  ): Promise<(WalkingEta | null)[] | null>;
+}
+
+/** Where a query's search looks first, which is where its results are
+ * measured from: the given point, else the biased city's center, else
+ * nowhere (no location and no city: both metros are searched alike). */
+export function biasPointFor(q: GeocodeQuery): { lat: number; lng: number } | null {
+  return q.near ?? (q.city ? METRO_CENTER[q.city] : null);
 }
 
 function inBox(lat: number, lng: number, box: readonly [number, number, number, number]): boolean {
@@ -208,10 +250,7 @@ export class NominatimGeocoder implements GeocoderProvider {
     this.now = opts.now ?? (() => new Date());
   }
 
-  async geocode(
-    q: GeocodeQuery,
-    limit = 3,
-  ): Promise<{ ok: true; results: GeocodeResult[] } | { ok: false; reason: string }> {
+  async geocode(q: GeocodeQuery, limit = 3): Promise<GeocodeOutcome> {
     const key = `${q.city ?? "both"}::${q.query.trim().toLowerCase()}`;
     const cached = this.cache.get(key);
     if (cached && this.now().getTime() - cached.at < NominatimGeocoder.TTL_MS) {
@@ -270,8 +309,9 @@ export class NominatimGeocoder implements GeocoderProvider {
           metersBetween(a.lat, a.lng, c.lat, c.lng) - metersBetween(b.lat, b.lng, c.lat, c.lng),
       );
     }
-    this.cache.set(key, { at: this.now().getTime(), results: deduped });
-    return { ok: true, results: deduped.slice(0, limit) };
+    const ranked = deduped.map((result, rank) => ({ ...result, rank }));
+    this.cache.set(key, { at: this.now().getTime(), results: ranked });
+    return { ok: true, results: ranked.slice(0, limit) };
   }
 
   private async queryCity(query: string, city: MetroCity): Promise<NominatimRow[]> {
@@ -311,7 +351,8 @@ function dedupeByProximity(results: GeocodeResult[]): GeocodeResult[] {
  * Tries each geocoder in order and returns the first that found anything
  * — Apple Maps (POIs) first when configured, Nominatim after it. A source
  * that FAILS (network, quota, a bad key) falls through to the next rather
- * than failing the lookup; only every source failing is a failure.
+ * than failing the lookup, and is named in `failures`; only every source
+ * failing is a failure.
  */
 export class FallbackGeocoder implements GeocoderProvider {
   /** `carriesName` says whether a source's results include the place the
@@ -321,30 +362,49 @@ export class FallbackGeocoder implements GeocoderProvider {
    * is enough. */
   constructor(
     private readonly chain: GeocoderProvider[],
-    private readonly carriesName: (query: string, results: GeocodeResult[]) => boolean = () => true,
+    private readonly carriesName: (
+      query: string,
+      results: GeocodeResult[],
+      bias: { lat: number; lng: number } | null,
+    ) => boolean = () => true,
   ) {}
 
-  async geocode(
-    q: GeocodeQuery,
-    limit?: number,
-  ): Promise<{ ok: true; results: GeocodeResult[] } | { ok: false; reason: string }> {
+  async geocode(q: GeocodeQuery, limit?: number): Promise<GeocodeOutcome> {
     let answered = false;
-    const failures: string[] = [];
+    const failures: GeocodeFailure[] = [];
     let found: GeocodeResult[] = [];
-    for (const geocoder of this.chain) {
+    const done = (): GeocodeOutcome => ({
+      ok: true,
+      results: found,
+      ...(failures.length > 0 ? { failures } : {}),
+    });
+    for (const [index, geocoder] of this.chain.entries()) {
       const outcome = await geocoder.geocode(q, limit);
       if (!outcome.ok) {
-        failures.push(outcome.reason);
+        failures.push({ provider: geocoder.id ?? `geocoder_${index + 1}`, reason: outcome.reason });
         continue;
       }
       answered = true;
+      failures.push(...(outcome.failures ?? []));
       found = [...found, ...outcome.results];
-      if (found.length > 0 && this.carriesName(q.query, found)) {
-        return { ok: true, results: found };
-      }
+      if (found.length > 0 && this.carriesName(q.query, found, biasPointFor(q))) return done();
     }
     return answered
-      ? { ok: true, results: found }
-      : { ok: false, reason: failures.join("; ") || "no geocoder configured" };
+      ? done()
+      : {
+          ok: false,
+          reason: failures.map((f) => f.reason).join("; ") || "no geocoder configured",
+        };
+  }
+
+  /** Walking times from the first source that has them (Apple). */
+  async walkingEtas(
+    origin: { lat: number; lng: number },
+    destinations: readonly { lat: number; lng: number }[],
+  ): Promise<(WalkingEta | null)[] | null> {
+    for (const geocoder of this.chain) {
+      if (geocoder.walkingEtas) return geocoder.walkingEtas(origin, destinations);
+    }
+    return null;
   }
 }

@@ -61,7 +61,13 @@ export interface SearchOption {
   type: Kind;
   label: string;
   priceUsd: number;
+  /** The walk from the place to the option's pin: an Apple walking time
+   * where one was fetched (`walkEstimate: false`), else straight-line
+   * distance × 1.3 at 80 m/min. The limits and the order read this. */
   walkMinutes: number;
+  /** false: `walkMinutes` is a real walking time. true, or absent on a
+   * search from before FR-44: it is the straight-line estimate. */
+  walkEstimate?: boolean | undefined;
   distanceM: number;
   /** The minutes the price buys: the stay, or a meter's max stay when the
    * stay outruns it. */

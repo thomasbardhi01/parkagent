@@ -15,8 +15,8 @@ import { z } from "zod";
 import { coveredCitiesSentence, providerForCity } from "../../providers/registry.js";
 import { explainDecision } from "../explanations.js";
 import type { GarageProvider } from "../garage/garageProvider.js";
-import type { GeocodeResult, GeocoderProvider } from "./geocoder.js";
-import { homeMetroForPoint, metersBetween, metroForPoint } from "./geocoder.js";
+import type { GeocodeFailure, GeocodeQuery, GeocodeResult, GeocoderProvider } from "./geocoder.js";
+import { biasPointFor, homeMetroForPoint, metersBetween, metroForPoint } from "./geocoder.js";
 import { assumptionsFor, windowAssumption } from "./clarify.js";
 import { requestedTimeProblem, type TimeRequest } from "./requestedTime.js";
 import {
@@ -33,6 +33,7 @@ import {
   type RequestState,
 } from "./requestState.js";
 import { choiceLabel, choiceReply, classifyPlaceMatches, nameTokens } from "./placeMatch.js";
+import { bestOf, candidateRecord, scoreCandidates } from "./placeScore.js";
 import type { ModelClient, ModelUsage } from "./loop.js";
 import { easternIso, parseEasternTime } from "../hours.js";
 import type { LinkWallet } from "../link/linkWallet.js";
@@ -87,6 +88,7 @@ import {
   displayStreet,
   nearestPointOn,
   streetOptionsNear,
+  streetSummary,
   walkMinutesFor,
 } from "./streetOptions.js";
 import { policyFor } from "../limits.js";
@@ -156,15 +158,42 @@ export interface ToolContext {
   utterance?: string | undefined;
 }
 
-/** What looking a place up came to. */
+/** How a lookup was decided, for its decisions row (FR-44): which source
+ * the answer came from, how sure it is, the scored candidates (the best
+ * five), and any source that failed on the way — "quota" among them. */
+export interface PlaceScoring {
+  source: string | null;
+  confidence: number | null;
+  candidates: { name: string; lat: number; lng: number; score: number }[];
+  failures?: GeocodeFailure[];
+}
+
+/** What looking a place up came to. The outcome and its confidence are
+ * the server's (placeMatch.ts, placeScore.ts): the model reads them and
+ * sets neither. */
 export type PlaceLookup =
   /** No geocoder is configured, or its sources failed. */
   | { kind: "unavailable"; reason: string }
-  | { kind: "none" }
-  | { kind: "ambiguous"; choices: PlaceCandidate[] }
-  /** nameMatched false: nothing carried the name; `place` is only the
-   * closest thing found, and the user must be told so. */
-  | { kind: "found"; place: GeocodeResult; nameMatched: boolean; count: number };
+  | { kind: "none"; scoring: PlaceScoring }
+  | { kind: "ambiguous"; choices: PlaceCandidate[]; scores: number[]; scoring: PlaceScoring }
+  /** nameMatched false ("closest only"): nothing carried the name;
+   * `place` is only the closest thing found, and the user must be told so. */
+  | {
+      kind: "found";
+      place: GeocodeResult;
+      nameMatched: boolean;
+      confidence: number;
+      count: number;
+      scoring: PlaceScoring;
+    };
+
+/** The four ways a lookup that answered can come out. */
+export type PlaceResolution = "found" | "closest_only" | "ambiguous" | "none";
+
+function resolutionOf(lookup: Exclude<PlaceLookup, { kind: "unavailable" }>): PlaceResolution {
+  if (lookup.kind === "found") return lookup.nameMatched ? "found" : "closest_only";
+  return lookup.kind;
+}
 
 /** One tappable answer to a clarifying question: the chip's text and the
  * message it sends. */
@@ -257,6 +286,9 @@ const SEARCH_INPUT_SCHEMA = {
 /** Garage options farther than this from a NAMED place are dropped: every
  * option surfaced for a place is walkable from it (FR-23). */
 export const NAMED_PLACE_GARAGE_RADIUS_M = 600;
+/** Options per search that get a real walking time: the nearest ones,
+ * as many as one ETA request carries. */
+export const MAX_WALK_TIMED = 10;
 /** How far the "no data" card looks for the nearest zones we do have. */
 const NEAREST_ZONE_RADIUS_M = 3000;
 /** A start more than this far ahead is paid on arrival, not confirmed now
@@ -275,7 +307,7 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: "geocode_place",
-    description: `Look up a NAMED place — a restaurant, bar, venue, business, hotel, landmark, street, or neighborhood — and make it the request's place, biased to the phone's city among the cities ParkAgent covers (${coveredCitiesSentence()}). Call this FIRST whenever the user names a place instead of relying on their current location, passing their words including any area they named (e.g. 'Lola 42 Seaport'); quote_street and search_garages then search there. Answers: found with match "exact" → the request's place is set; match "closest" → the NAME wasn't found, only the nearest thing (tell the user); ambiguous with choices → call ask_user with those choices; found:false → couldn't find it.`,
+    description: `Look up a NAMED place — a restaurant, bar, venue, business, hotel, landmark, street, or neighborhood — and make it the request's place, biased to the phone's city among the cities ParkAgent covers (${coveredCitiesSentence()}). Call this FIRST whenever the user names a place instead of relying on their current location, passing their words including any area they named (e.g. 'Lola 42 Seaport'); quote_street and search_garages then search there. Answers: found with match "exact" → the request's place is set; match "closest" → the NAME wasn't found, only the nearest thing (tell the user); ambiguous with choices → call ask_user with those choices; found:false → couldn't find it. Every answer carries the server's \`resolution\` (found, closest_only, ambiguous, or none) and its 0–1 \`confidence\`: act on the resolution as given — it isn't yours to upgrade.`,
     input_schema: {
       type: "object" as const,
       additionalProperties: false,
@@ -772,18 +804,29 @@ export class AssistantTools {
       ctx.location && city && metroForPoint(ctx.location.lat, ctx.location.lng) === city
         ? ctx.location
         : undefined;
-    const outcome = await this.deps.geocoder.geocode(
-      {
-        query,
-        ...(city ? { city } : {}),
-        ...(near ? { near } : {}),
-        ...(ctx.location ? { userLocation: ctx.location } : {}),
-      },
-      5,
-    );
+    const asked: GeocodeQuery = {
+      query,
+      ...(city ? { city } : {}),
+      ...(near ? { near } : {}),
+      ...(ctx.location ? { userLocation: ctx.location } : {}),
+    };
+    const outcome = await this.deps.geocoder.geocode(asked, 5);
     if (!outcome.ok) return remember({ kind: "unavailable", reason: outcome.reason });
-    const match = classifyPlaceMatches(query, outcome.results);
-    if (match.kind === "none") return remember({ kind: "none" });
+    // Scored from where the search looked first: the phone, or the city's
+    // center when the phone is outside it.
+    const bias = biasPointFor(asked);
+    const match = classifyPlaceMatches(query, outcome.results, bias);
+    const scored = scoreCandidates(query, outcome.results, bias);
+    const top = [...scored].sort((a, b) => b.score - a.score).slice(0, 5);
+    const scoring = (source: string | null | undefined, confidence: number | null) => ({
+      source: source ?? null,
+      confidence,
+      candidates: top.map(candidateRecord),
+      ...(outcome.failures?.length ? { failures: outcome.failures } : {}),
+    });
+    if (match.kind === "none") {
+      return remember({ kind: "none", scoring: scoring(bestOf(scored)?.result.source, null) });
+    }
     if (match.kind === "ambiguous") {
       return remember({
         kind: "ambiguous",
@@ -793,13 +836,17 @@ export class AssistantTools {
           lat: place.lat,
           lng: place.lng,
         })),
+        scores: match.scores,
+        scoring: scoring(match.choices[0]?.source, Math.max(...match.scores)),
       });
     }
     return remember({
       kind: "found",
       place: match.place,
       nameMatched: match.nameMatched,
+      confidence: match.confidence,
       count: outcome.results.length,
+      scoring: scoring(match.place.source, match.confidence),
     });
   }
 
@@ -871,10 +918,11 @@ export class AssistantTools {
     const phoneMetro = ctx.location ? homeMetroForPoint(ctx.location.lat, ctx.location.lng) : null;
     const phoneCity = phoneMetro ? providerForCity(phoneMetro)?.cityDisplayName : undefined;
     if (lookup.kind === "none") {
-      await this.audit(ctx, "geocode_place", input, "no_match", { query });
+      await this.audit(ctx, "geocode_place", input, "no_match", { query, ...lookup.scoring });
       return {
         result: {
           found: false,
+          resolution: resolutionOf(lookup),
           stateVersion,
           instruction:
             `Couldn't find "${query}" in ${coveredCitiesSentence()}. Tell the user plainly and ask for its street address or a cross street. ` +
@@ -888,12 +936,16 @@ export class AssistantTools {
     if (lookup.kind === "ambiguous") {
       await this.audit(ctx, "geocode_place", input, "ambiguous", {
         query,
+        ...lookup.scoring,
         choices: lookup.choices,
+        scores: lookup.scores,
       });
       return {
         result: {
           found: true,
           ambiguous: true,
+          resolution: resolutionOf(lookup),
+          confidence: lookup.scoring.confidence,
           stateVersion,
           choices: lookup.choices,
           instruction: `Several places match "${query}". Call ask_user now with one suggestion per choice, using each choice's label and reply exactly. Don't pick one yourself.`,
@@ -904,14 +956,16 @@ export class AssistantTools {
     const summary = placeSummary(place);
     await this.audit(ctx, "geocode_place", input, lookup.nameMatched ? "ok" : "closest_only", {
       query,
+      ...lookup.scoring,
       count: lookup.count,
       top: summary,
-      source: place.source ?? null,
     });
     return {
       result: {
         found: true,
         match: lookup.nameMatched ? "exact" : "closest",
+        resolution: resolutionOf(lookup),
+        confidence: lookup.confidence,
         stateVersion,
         place: summary,
         ...(lookup.nameMatched ? {} : { instruction: closestOnlyInstruction(query, place) }),
@@ -1044,6 +1098,15 @@ export class AssistantTools {
     if (!state.place.resolved && !state.place.candidates?.length && query) {
       // Named, never resolved: look it up now (once per turn).
       const lookup = await this.lookUpPlace(ctx, query);
+      if (lookup.kind !== "unavailable") {
+        // The search resolved the place itself: the same record
+        // geocode_place leaves, under this tool's name.
+        await this.audit(ctx, tool, input, "place_lookup", {
+          query,
+          resolution: resolutionOf(lookup),
+          ...lookup.scoring,
+        });
+      }
       if (lookup.kind === "found" || lookup.kind === "ambiguous") {
         this.recordPlace(ctx, query, lookup);
         state = this.stateOf(ctx);
@@ -1219,6 +1282,62 @@ export class AssistantTools {
     return { options, meta, fetchedAt, fromCache: outcome.fromCache };
   }
 
+  /**
+   * Real walking times for a search's options (FR-44), before the request's
+   * limits and order are read off them: from the place the user named to
+   * each option's pin, for the nearest MAX_WALK_TIMED options — one call.
+   * `walkMinutes` becomes ceil(seconds / 60), at least 1, with
+   * `walkEstimate: false`; every other option keeps its straight-line
+   * estimate, marked `walkEstimate: true`. So does every option when the
+   * request names no
+   * place (the card has no destination to walk to), no source has walking
+   * times, or the call fails. A street option's one-line summary is
+   * rebuilt, so it never states a walk the option doesn't carry.
+   */
+  private async withWalkingTimes(
+    place: SearchPlace,
+    options: SearchOption[],
+  ): Promise<{ options: SearchOption[]; timed: number }> {
+    const estimated = options.map((o) => ({ ...o, walkEstimate: true }));
+    const geocoder = this.deps.geocoder;
+    if (!geocoder?.walkingEtas || place.source !== "user") return { options: estimated, timed: 0 };
+    const pinned = estimated
+      .filter(
+        (o): o is typeof o & { lat: number; lng: number } =>
+          o.lat !== undefined && o.lng !== undefined,
+      )
+      .sort((a, b) => a.distanceM - b.distanceM)
+      .slice(0, MAX_WALK_TIMED);
+    if (pinned.length === 0) return { options: estimated, timed: 0 };
+    const etas = await geocoder.walkingEtas(
+      { lat: place.lat, lng: place.lng },
+      pinned.map((o) => ({ lat: o.lat, lng: o.lng })),
+    );
+    if (!etas) return { options: estimated, timed: 0 };
+    const minutes = new Map<string, number>();
+    pinned.forEach((o, i) => {
+      const eta = etas[i];
+      // Never under a minute, like the estimate: "0 min walk" reads as none.
+      if (eta) minutes.set(o.id, Math.max(1, Math.ceil(eta.seconds / 60)));
+    });
+    return {
+      timed: minutes.size,
+      options: estimated.map((o) => {
+        const walkMinutes = minutes.get(o.id);
+        if (walkMinutes === undefined) return o;
+        const facts = o.facts
+          ? { ...o.facts, walkMinutes, summary: streetSummary({ ...o.facts, walkMinutes }) }
+          : undefined;
+        return {
+          ...o,
+          walkMinutes,
+          walkEstimate: false,
+          ...(facts ? { facts, summary: facts.summary } : {}),
+        };
+      }),
+    };
+  }
+
   /** Whether a point is inside a city we cover: what tells "we have no
    * data here" from "we don't cover there". */
   private inCoverage(place: SearchPlace): boolean {
@@ -1246,12 +1365,16 @@ export class AssistantTools {
     const pool = this.poolFor(ctx, state.version, place, window);
 
     let fromCache: boolean | undefined;
+    let walks: { options: SearchOption[]; timed: number };
     if (kind === "street") {
-      pool.street = await this.streetPool(place, start, window, state.version, fetchedAt);
+      const street = await this.streetPool(place, start, window, state.version, fetchedAt);
+      walks = await this.withWalkingTimes(place, street.options);
+      pool.street = { ...street, options: walks.options };
     } else {
       const garage = await this.garagePool(ctx, input, place, window, state.version, fetchedAt);
       fromCache = garage.fromCache;
-      pool.garage = { options: garage.options, meta: garage.meta, fetchedAt };
+      walks = await this.withWalkingTimes(place, garage.options);
+      pool.garage = { options: walks.options, meta: garage.meta, fetchedAt };
       // A garage-only request whose garage search is down has nothing to
       // show: the turn ends on an "unavailable" card, with no street
       // substitute — the user asked for a garage.
@@ -1276,6 +1399,8 @@ export class AssistantTools {
         violates: n.violates.map((v) => v.field),
       })),
       placeSource: place.source,
+      // How many of this search's options carry a real walking time.
+      walksTimed: walks.timed,
       ...(kind === "street"
         ? { streetCount: pool.street!.options.length, ...pool.street!.meta }
         : {
@@ -1896,6 +2021,8 @@ export class AssistantTools {
       priceUsd: option.priceUsd,
       durationMinutes: Math.min(720, Math.max(1, Math.round(option.durationMinutes))),
       walkMinutes: Math.min(120, Math.max(0, Math.round(option.walkMinutes))),
+      // Only a walking time the search fetched is not an estimate.
+      walkEstimate: option.walkEstimate !== false,
       fetchedAt: option.fetchedAt,
       // One canonical form, so the phone parses what the server did.
       ...(starts ? { startsAt: easternIso(starts) } : {}),

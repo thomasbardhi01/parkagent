@@ -20,8 +20,10 @@ const DEFAULT_NEAR_RADIUS_M = 250;
 /** A 2 km cell's center-to-corner distance (1,415 m) fits under it. */
 export const GARAGE_NEAR_MAX_RADIUS_M = 1_500;
 const DEFAULT_NEAR_LIMIT = 10;
-/** Hard ceiling on what one call returns; `truncated` says when it was hit. */
-export const GARAGE_NEAR_MAX_LIMIT = 500;
+/** Hard ceiling on what one call returns; `truncated` says when it was hit.
+ * Room for a whole 2 km cell: the densest in the 2026-10-01 load holds 442
+ * outlines, about 230 KB. */
+export const GARAGE_NEAR_MAX_LIMIT = 1_000;
 
 const nearQuerySchema = z.object({
   lat: z.coerce.number().min(-90).max(90),

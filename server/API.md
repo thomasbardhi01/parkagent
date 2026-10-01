@@ -579,7 +579,7 @@ Parking along the street is a zone (`/zones/near`), never a footprint.
 
 `radius` is optional (default 250 m) and **capped at 1,500 m**, which
 covers the app's 2 km footprint cell from its center. `limit` is optional
-(default **10**, at most 500); `truncated: true` means more garages matched
+(default **10**, at most 1,000); `truncated: true` means more garages matched
 than were returned. A PostGIS read runs per call, so the route is
 rate-limited at 60/min per user (shared with `GET /garages/:id`).
 

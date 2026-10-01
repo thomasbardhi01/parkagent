@@ -17,16 +17,19 @@ import { explainDecision } from "../explanations.js";
 import type { GarageProvider } from "../garage/garageProvider.js";
 import type { GeocodeResult, GeocoderProvider } from "./geocoder.js";
 import { homeMetroForPoint, metersBetween, metroForPoint } from "./geocoder.js";
-import { assumptionsFor } from "./clarify.js";
+import { assumptionsFor, windowAssumption } from "./clarify.js";
 import { requestedTimeProblem, type TimeRequest } from "./requestedTime.js";
 import {
   MAX_REQUEST_EDITS_PER_TURN,
   UPDATE_REQUEST_INPUT_SCHEMA,
   applyPatch,
+  applyPlaceResolution,
   emptyState,
   parsePatch,
   setsNothing,
   stateForModel,
+  type Kind,
+  type PlaceCandidate,
   type RequestState,
 } from "./requestState.js";
 import { choiceLabel, choiceReply, classifyPlaceMatches, nameTokens } from "./placeMatch.js";
@@ -36,24 +39,56 @@ import type { LinkWallet } from "../link/linkWallet.js";
 import type { PolicyService } from "../policy.js";
 import { spentToday } from "../sessions.js";
 import type { CandidateFetcher, NearbyZoneFetcher } from "../zoneLookup.js";
-import { currentTimeLine } from "./loop.js";
+import { currentTimeLine, scrubUngroundedAmounts } from "./loop.js";
 import {
   MODEL_PLAN_JSON_SCHEMA,
   itineraryTotalUsd,
   orderStopsByArrival,
   planSchema,
+  proposedPlanSchema,
   recommendationReason,
 } from "./plans.js";
 import type {
   AssistantPlanBody,
   EditedItineraryStop,
   ItineraryStop,
+  NoDataPlan,
+  NoneMeetsPlan,
+  ProposedPlan,
   SingleSpotOption,
   SingleSpotPlan,
+  Violation,
 } from "./plans.js";
 import type { GarageOption } from "../garage/garageProvider.js";
-import type { StreetOption, StreetSearch } from "./streetOptions.js";
-import { DEFAULT_STREET_RADIUS_M, streetOptionsNear, walkMinutesFor } from "./streetOptions.js";
+import {
+  DEFAULT_STAY_MINUTES,
+  buildSearchResult,
+  constraintsFailedFor,
+  garageSearchOption,
+  isFresh,
+  kindsToSearch,
+  noneMeetsHeadline,
+  poolFromResult,
+  poolOptions,
+  streetSearchOption,
+} from "./search.js";
+import type {
+  GarageSearchMeta,
+  SearchOption,
+  SearchPlace,
+  SearchPool,
+  SearchResult,
+  SearchWindow,
+} from "./search.js";
+import type { StreetSearch } from "./streetOptions.js";
+import {
+  DEFAULT_STREET_RADIUS_M,
+  MAX_STREET_RADIUS_M,
+  displayStreet,
+  nearestPointOn,
+  streetOptionsNear,
+  walkMinutesFor,
+} from "./streetOptions.js";
 import { policyFor } from "../limits.js";
 
 export interface AssistantDeps {
@@ -76,66 +111,43 @@ export interface AssistantDeps {
   now?: (() => Date) | undefined;
 }
 
-/** One zone quote_street found — what a street option is grounded in. */
-export interface StreetQuote {
-  zoneId: string;
-  costUsd: number;
-  /** The option's map pin: the curb nearest the destination (the quoted
-   * point, for a quote stored before street search had geometry). */
-  lat?: number | undefined;
-  lng?: number | undefined;
-  /** The rest of the street search's option — what the card shows. */
-  option?: StreetOption | undefined;
-  /** The window the quote priced: its start (ET ISO) and the stay asked for. */
-  startsAt?: string | undefined;
-  stayMinutes?: number | undefined;
-}
-
-/** The place geocode_place resolved — the card's destination pin. */
-export interface GeocodedPlace {
-  lat: number;
-  lng: number;
-  label: string;
-}
-
-/** The latest garage search — the card's "checked 2:05 PM". */
-export interface GarageSearchStamp {
-  provider: string;
-  searchedAt: string;
-}
-
 /**
- * Per-turn state the tools read and write. The grounding fields are this
- * CONVERSATION's so far: the loop seeds them from the stored transcript
- * (so a follow-up turn, or another server machine, sees what earlier turns
- * found) and the tools append as they run. propose_plan grounds and
- * backfills plans from them — models drop optional fields routinely.
+ * Per-turn state the tools read and write. The request and the latest
+ * search are this CONVERSATION's so far: the loop loads the request from
+ * its row and the search from the stored transcript (so a follow-up turn,
+ * or another server machine, sees what earlier turns found), and the tools
+ * replace them as they run.
  */
 export interface ToolContext {
   userId: string;
   conversationId: string;
   /** The phone's location when the message was sent, if it sent one. */
   location?: { lat: number; lng: number } | undefined;
-  /** Street quotes: a street option's zoneId and map pin come from here. */
-  streetQuotes?: StreetQuote[] | undefined;
-  /** The latest geocode_place match. */
-  geocode?: GeocodedPlace | undefined;
-  /** The latest search_garages. */
-  garageSearch?: GarageSearchStamp | undefined;
+  /** The latest search of the request (search.ts): what propose_plan
+   * accepts options from, at the request's current version only. */
+  lastSearch?: SearchResult | undefined;
+  /** Everything this turn's searches found at one version, before it was
+   * cut to what the model is shown: what relaxing a limit is counted over. */
+  searchPool?: SearchPool | undefined;
+  /** Searches run this turn. A turn that searched owes the user a card. */
+  searchesThisTurn?: number | undefined;
   /** This turn's ambiguous place matches, if a search found several — the
    * suggestions the loop offers when the model asks in prose instead of
    * calling ask_user. */
   placeChoices?: Suggestion[] | undefined;
+  /** Place lookups made this turn, by query: the search that finds the
+   * request's place unresolved never looks the same words up twice. */
+  placeLookups?: Map<string, PlaceLookup> | undefined;
   /** Model calls a tool makes on its own (explain_decision's phrasing)
    * report here, so the turn's accounting row — and the daily spend cap
    * that reads it — counts them too. */
   onModelUsage?: ((usage: ModelUsage) => void) | undefined;
   /** The clock time this turn's message asked for (requestedTime.ts):
-   * quotes and single-spot plans must honor it, never move it to now. */
+   * searches and single-spot plans must honor it, never move it to now. */
   timeRequest?: TimeRequest | undefined;
   /** The conversation's request (requestState.ts), loaded from its row
-   * before the turn; update_request replaces it, and the loop saves it.
-   * Absent → the empty request. */
+   * before the turn; update_request (and a place lookup) replace it, and
+   * the loop saves it. Absent → the empty request. */
   requestState?: RequestState | undefined;
   /** update_request calls so far this turn — refused past the limit. */
   requestEdits?: number | undefined;
@@ -144,6 +156,16 @@ export interface ToolContext {
   utterance?: string | undefined;
 }
 
+/** What looking a place up came to. */
+export type PlaceLookup =
+  /** No geocoder is configured, or its sources failed. */
+  | { kind: "unavailable"; reason: string }
+  | { kind: "none" }
+  | { kind: "ambiguous"; choices: PlaceCandidate[] }
+  /** nameMatched false: nothing carried the name; `place` is only the
+   * closest thing found, and the user must be told so. */
+  | { kind: "found"; place: GeocodeResult; nameMatched: boolean; count: number };
+
 /** One tappable answer to a clarifying question: the chip's text and the
  * message it sends. */
 export interface Suggestion {
@@ -151,10 +173,15 @@ export interface Suggestion {
   reply: string;
 }
 
-/** A clarifying question with its tappable answers — ask_user's exit. */
+/** A clarifying question with its tappable answers — ask_user's exit,
+ * and a search's when the request's place can't be resolved (then the
+ * answers are the places it could be, or none at all). */
 export interface Ask {
   question: string;
   suggestions: Suggestion[];
+  /** The server asked, not the model: the question is the server's own
+   * words (it may quote the user's), so the reply check leaves it be. */
+  server?: true;
 }
 
 /** What a tool hands back to the loop. `endTurn` is propose_plan's exit,
@@ -194,7 +221,47 @@ function placeSummary(place: GeocodeResult) {
   };
 }
 
+/** What the model is told when a lookup found only the closest thing:
+ * say so, never present it as the place the user named. */
+function closestOnlyInstruction(query: string, place: GeocodeResult): string {
+  const named = nameTokens(query).length > 0 ? `"${query}"` : "that place";
+  const label = placeLabel(place);
+  return (
+    `No place called ${named} was found — the closest result is ${label}` +
+    `${place.kind === "area" ? " (an area, not the place they named)" : ""}. ` +
+    `Tell the user you couldn't find ${named} and that you're searching around ${label} instead, or ask for the address. ` +
+    `Never present ${label} as the place they named.`
+  );
+}
+
 export const CONFIRMATION_TTL_MS = 10 * 60_000;
+
+/**
+ * What quote_street and search_garages take: nothing but an optional note
+ * (FR-43). The place, the window, the limits, and the ranking are read
+ * from the conversation's request, so there is no argument to drop a
+ * constraint from. Strict, so the API holds the model to it.
+ */
+const SEARCH_INPUT_SCHEMA = {
+  type: "object" as const,
+  additionalProperties: false,
+  required: [] as string[],
+  properties: {
+    note: {
+      type: "string",
+      description: "Optional, a few words on why you're searching. It changes nothing.",
+    },
+  },
+};
+
+/** Garage options farther than this from a NAMED place are dropped: every
+ * option surfaced for a place is walkable from it (FR-23). */
+export const NAMED_PLACE_GARAGE_RADIUS_M = 600;
+/** How far the "no data" card looks for the nearest zones we do have. */
+const NEAREST_ZONE_RADIUS_M = 3000;
+/** A start more than this far ahead is paid on arrival, not confirmed now
+ * (the same line the request's intent draws). */
+const PAY_ON_ARRIVAL_MS = 15 * 60_000;
 
 /** Anthropic tool definitions (Messages API shape). Kept in one place so
  * the schema tests pin exactly what the model sees. */
@@ -208,7 +275,7 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: "geocode_place",
-    description: `Resolve a NAMED place to coordinates — a restaurant, bar, venue, business, hotel, landmark, street, or neighborhood — biased to the phone's city among the cities ParkAgent covers (${coveredCitiesSentence()}). Call this FIRST whenever the user names a place instead of relying on their current location, passing their words including any area they named (e.g. 'Lola 42 Seaport'). Answers: found with match "exact" → use place.lat/lng; match "closest" → the NAME wasn't found, only the nearest thing (tell the user); ambiguous with choices → call ask_user with those choices; found:false → couldn't find it. Then pass the place's lat/lng to quote_street or search_garages.`,
+    description: `Look up a NAMED place — a restaurant, bar, venue, business, hotel, landmark, street, or neighborhood — and make it the request's place, biased to the phone's city among the cities ParkAgent covers (${coveredCitiesSentence()}). Call this FIRST whenever the user names a place instead of relying on their current location, passing their words including any area they named (e.g. 'Lola 42 Seaport'); quote_street and search_garages then search there. Answers: found with match "exact" → the request's place is set; match "closest" → the NAME wasn't found, only the nearest thing (tell the user); ambiguous with choices → call ask_user with those choices; found:false → couldn't find it.`,
     input_schema: {
       type: "object" as const,
       additionalProperties: false,
@@ -231,48 +298,15 @@ export const TOOL_DEFINITIONS = [
   {
     name: "search_garages",
     description:
-      "Search off-street garages near a point for a time window. Returns up to 8 options with price, walk time, entry type, and a checkout deep link. Sources: SpotHero and ParkWhiz, merged — each option names its provider, and checkout is a deep link to that site (the user finishes the purchase there). For a NAMED area, geocode_place it first and pass within_m: 600 so every option is walkable from that place.",
-    input_schema: {
-      type: "object" as const,
-      additionalProperties: false,
-      required: ["lat", "lng", "starts_at", "ends_at"],
-      properties: {
-        lat: { type: "number", description: "Latitude of the destination" },
-        lng: { type: "number", description: "Longitude of the destination" },
-        starts_at: { type: "string", description: "ISO start of the parking window" },
-        ends_at: { type: "string", description: "ISO end of the parking window" },
-        budget_usd: {
-          type: "number",
-          description: "Optional price ceiling; pricier options are dropped",
-        },
-        within_m: {
-          type: "number",
-          description:
-            "Optional max walking distance in metres from the point; options farther away are dropped. Use 600 for a named-area search so results are actually at that place.",
-        },
-      },
-    },
+      "Off-street garages for the CURRENT REQUEST. Takes no arguments: it reads the place, the time, the stay, the limits, and the ranking from the request — to search another place, time, stay, or budget, change the request first (update_request, geocode_place). Sources: SpotHero and ParkWhiz, merged; each option names its provider, and checkout is a deep link to that site (the user finishes the purchase there). Returns {stateVersion, verdict, satisfying, nearMisses, relaxSuggestions?}: `satisfying` options meet every limit and are already ranked (keep the order); each of `nearMisses` breaks a limit, and its `violates` says which and by how much; the result covers street too once quote_street has run for this request. Propose options by `id`.",
+    strict: true,
+    input_schema: SEARCH_INPUT_SCHEMA,
   },
   {
     name: "quote_street",
-    description: `Street parking within a walk of a point (the destination, or the phone): every metered block within radius_m (default ${DEFAULT_STREET_RADIUS_M} m, about a ${walkMinutesFor(DEFAULT_STREET_RADIUS_M)}-minute walk), each priced for the stay and described for THAT window — free (e.g. "Free after 6 PM"), metered then free, or metered with its rate and max stay — cheapest first, with the walk from the point. Uses the same zone data and pricing as automatic payments. found:false means no metered block within the radius: say that, with the radius.`,
-    input_schema: {
-      type: "object" as const,
-      additionalProperties: false,
-      required: ["lat", "lng", "duration_minutes", "when"],
-      properties: {
-        lat: { type: "number" },
-        lng: { type: "number" },
-        duration_minutes: { type: "integer", minimum: 1, maximum: 720 },
-        when: { type: "string", description: "ISO start time of the stay" },
-        radius_m: {
-          type: "integer",
-          minimum: 100,
-          maximum: 800,
-          description: `Walking radius in metres (default ${DEFAULT_STREET_RADIUS_M})`,
-        },
-      },
-    },
+    description: `Street parking for the CURRENT REQUEST: every metered block within a walk of the request's place (${DEFAULT_STREET_RADIUS_M} m, about a ${walkMinutesFor(DEFAULT_STREET_RADIUS_M)}-minute walk; wider when that holds none), each priced for the request's window and described for THAT window — free (e.g. "Free after 6 PM"), metered then free, or metered with its rate and max stay. Takes no arguments: it reads the place, the time, the stay, the limits, and the ranking from the request — to search another place, time, stay, or budget, change the request first (update_request, geocode_place). Uses the same zone data and pricing as automatic payments. Returns {stateVersion, verdict, satisfying, nearMisses, relaxSuggestions?}: \`satisfying\` options meet every limit and are already ranked (keep the order); each of \`nearMisses\` breaks a limit, and its \`violates\` says which and by how much; the result covers garages too once search_garages has run for this request. Propose options by \`id\`.`,
+    strict: true,
+    input_schema: SEARCH_INPUT_SCHEMA,
   },
   {
     name: "build_itinerary",
@@ -307,7 +341,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: "propose_plan",
     description:
-      "Present the final plan to the user as cards and END your turn. Single-spot: up to 3 options, exactly one recommended; a street option carries the zoneId quote_street returned, a garage option the garageOptionId search_garages returned. Itinerary: the per-stop choices with costs and the day total. Nothing is booked or paid by this tool — the user must tap Confirm/Sign off.",
+      'Present the final plan to the user as a card and END your turn. Single-spot: up to 3 options from the LATEST search, each named by its `id` exactly as the search returned it — the server attaches the price, walk, time, and link, puts the options in the search\'s order, and recommends the first. An option from `nearMisses` may ride along only with nearMiss: true. When the search\'s verdict is not "meets", send {kind: "none_meets"} instead: the server fills in what came closest and what relaxing a limit would yield. Itinerary: the per-stop choices with costs and the day total. Nothing is booked or paid by this tool — the user must tap Confirm/Sign off.',
     input_schema: {
       type: "object" as const,
       additionalProperties: false,
@@ -315,7 +349,8 @@ export const TOOL_DEFINITIONS = [
       properties: {
         plan: {
           ...MODEL_PLAN_JSON_SCHEMA,
-          description: "The plan: a single_spot plan (1–3 options) or an itinerary (1–12 stops)",
+          description:
+            "The plan: a single_spot plan (1–3 options by id), an itinerary (1–12 stops), or none_meets",
         },
       },
     },
@@ -411,46 +446,27 @@ function num(v: unknown): number {
   return typeof v === "number" ? v : Number(v);
 }
 
-/** Fill each street option's missing zoneId from the conversation's
- * quotes: a quoted zone the option's id names (prod's sonnet-5 put the
- * zone there), else the only zone quoted, else the only zone quoted at
- * the option's price, else the only quoted street the option's label
- * names ("Seaport Blvd — free after 6 PM" — a street search quotes several
- * $0 blocks at once). Anything else is ambiguous — the model must say. */
-export function groundStreetOptions(
-  options: SingleSpotOption[],
-  quotes: StreetQuote[],
-): { ok: true; options: SingleSpotOption[] } | { ok: false; optionId: string } {
-  const zones = new Set(quotes.map((q) => q.zoneId));
-  const grounded: SingleSpotOption[] = [];
-  for (const option of options) {
-    if (option.type !== "street" || option.zoneId) {
-      grounded.push(option);
-      continue;
-    }
-    const atPrice = new Set(
-      quotes.filter((q) => Math.abs(q.costUsd - option.priceUsd) < 0.005).map((q) => q.zoneId),
-    );
-    const label = option.label.toLowerCase();
-    const byStreet = new Set(
-      quotes
-        .filter((q) => q.option?.street && label.includes(q.option.street.toLowerCase()))
-        .filter((q) => Math.abs(q.costUsd - option.priceUsd) < 0.005)
-        .map((q) => q.zoneId),
-    );
-    const zoneId = zones.has(option.id)
-      ? option.id
-      : zones.size === 1
-        ? [...zones][0]
-        : atPrice.size === 1
-          ? [...atPrice][0]
-          : byStreet.size === 1
-            ? [...byStreet][0]
-            : null;
-    if (!zoneId) return { ok: false, optionId: option.id };
-    grounded.push({ ...option, zoneId });
+/** The amounts an option's own words may state, in cents: its price, its
+ * meter/fee split, and its hourly rate. */
+function ownAmounts(option: SearchOption): Set<number> {
+  const cents = (usd: number | undefined) => (usd === undefined ? [] : [Math.round(usd * 100)]);
+  return new Set([
+    ...cents(option.priceUsd),
+    ...cents(option.facts?.meterUsd),
+    ...cents(option.facts?.feeUsd),
+    ...cents(option.facts?.ratePerHourUsd),
+    ...cents(option.facts?.rateAdditionalHourUsd),
+  ]);
+}
+
+/** A checkout link the card can carry: an https URL. */
+function isUrl(value: string | undefined): value is string {
+  if (!value) return false;
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
+    return false;
   }
-  return { ok: true, options: grounded };
 }
 
 const TIME_FORMAT_HINT =
@@ -548,9 +564,9 @@ export class AssistantTools {
         case "geocode_place":
           return await this.geocodePlace(ctx, input as Record<string, unknown>);
         case "search_garages":
-          return await this.searchGarages(ctx, input as Record<string, unknown>);
+          return await this.searchGarages(ctx, input);
         case "quote_street":
-          return await this.quoteStreet(ctx, input as Record<string, unknown>);
+          return await this.quoteStreet(ctx, input);
         case "build_itinerary":
           return await this.buildItinerary(ctx, input as Record<string, unknown>);
         case "propose_plan":
@@ -579,7 +595,15 @@ export class AssistantTools {
    * prod bug: "tonight" hallucinated as a 2024 date → SpotHero 400).
    * Bounce it back with the current time so the model self-corrects in
    * the same turn instead of the provider erroring opaquely. */
-  private pastWindowError(ctx: ToolContext, tool: string, input: unknown, startsAt: string) {
+  private pastWindowError(
+    ctx: ToolContext,
+    tool: string,
+    input: unknown,
+    startsAt: string,
+    /** How to fix it, appended to the instruction: a search reads its
+     * start from the request, so the fix is an update_request. */
+    fix = "",
+  ) {
     const at = this.now();
     const starts = parseEasternTime(startsAt);
     if (!starts) {
@@ -598,7 +622,7 @@ export class AssistantTools {
     const moved = requestedTimeProblem(ctx.timeRequest, starts, at, { earlierOnly: true });
     if (moved) {
       return this.audit(ctx, tool, input, "requested_time_moved", { startsAt }).then(() => ({
-        result: { error: "requested_time_moved", startsAt, instruction: moved },
+        result: { error: "requested_time_moved", startsAt, instruction: `${moved}${fix}` },
       }));
     }
     if (at.getTime() - starts.getTime() <= 60 * 60_000) return null;
@@ -612,7 +636,7 @@ export class AssistantTools {
           `That start time is in the past — you guessed the date. ${currentTimeLine(at)} ` +
           "Recompute the DATE from the current time and keep the clock time the user asked for; " +
           "if it has already passed today, use tomorrow and say so, or ask with ask_user " +
-          '("Tomorrow at …" / "Now"). Never move a requested time to now.',
+          `("Tomorrow at …" / "Now"). Never move a requested time to now.${fix}`,
       },
     }));
   }
@@ -718,28 +742,25 @@ export class AssistantTools {
     };
   }
 
-  /** Resolve a named place to coordinates, biased to NYC/Boston. The model
-   * calls this before quoting a named area so it searches the PLACE, not
-   * the phone's dot. */
-  private async geocodePlace(
+  /**
+   * Look a named place up, biased to the covered metros: the geocoder's
+   * results classified into one place, several, the closest thing only, or
+   * nothing (placeMatch.ts). One lookup per query per turn — geocode_place
+   * and a search that finds the request's place unresolved share it.
+   */
+  private async lookUpPlace(
     ctx: ToolContext,
-    input: Record<string, unknown>,
-  ): Promise<ToolOutcome> {
-    const query = String(input["query"] ?? "").trim();
-    if (!query) {
-      return { result: { error: "query is required" } };
-    }
-    if (!this.deps.geocoder) {
-      await this.audit(ctx, "geocode_place", input, "geocoder_unavailable", {});
-      return {
-        result: {
-          error: "geocoding_unavailable",
-          instruction:
-            "Geocoding isn't configured. If the user gave an explicit address or coordinates, use those; otherwise ask them to share their location or name a more specific spot.",
-        },
-      };
-    }
-    const cityRaw = input["city"];
+    query: string,
+    cityRaw?: unknown,
+  ): Promise<PlaceLookup> {
+    const key = `${String(cityRaw ?? "")}:${query.toLowerCase()}`;
+    const cached = ctx.placeLookups?.get(key);
+    if (cached) return cached;
+    const remember = (lookup: PlaceLookup): PlaceLookup => {
+      (ctx.placeLookups ??= new Map()).set(key, lookup);
+      return lookup;
+    };
+    if (!this.deps.geocoder) return remember({ kind: "unavailable", reason: "not_configured" });
     // Bias order: the model's explicit choice, else the metro the phone
     // is in or near — "Seaport" from a Braintree phone searches Boston
     // first, and never comes back as a which-city question.
@@ -760,23 +781,101 @@ export class AssistantTools {
       },
       5,
     );
-    if (!outcome.ok) {
-      await this.audit(ctx, "geocode_place", input, "geocode_error", { reason: outcome.reason });
+    if (!outcome.ok) return remember({ kind: "unavailable", reason: outcome.reason });
+    const match = classifyPlaceMatches(query, outcome.results);
+    if (match.kind === "none") return remember({ kind: "none" });
+    if (match.kind === "ambiguous") {
+      return remember({
+        kind: "ambiguous",
+        choices: match.choices.map((place) => ({
+          label: choiceLabel(place),
+          reply: choiceReply(place),
+          lat: place.lat,
+          lng: place.lng,
+        })),
+      });
+    }
+    return remember({
+      kind: "found",
+      place: match.place,
+      nameMatched: match.nameMatched,
+      count: outcome.results.length,
+    });
+  }
+
+  /** Write what a lookup found onto the request (requestState.ts): the
+   * one place, the several it could be, or — found nothing — the words
+   * alone, so a search knows a place was named and never falls back to
+   * the phone's location for it. */
+  private recordPlace(ctx: ToolContext, query: string, lookup: PlaceLookup): void {
+    const state = ctx.requestState ?? emptyState();
+    const found =
+      lookup.kind === "found"
+        ? {
+            query,
+            resolved: {
+              lat: lookup.place.lat,
+              lng: lookup.place.lng,
+              label: placeLabel(lookup.place),
+              city: lookup.place.city,
+            },
+          }
+        : lookup.kind === "ambiguous"
+          ? { query, candidates: lookup.choices }
+          : { query, candidates: [] };
+    ctx.requestState = applyPlaceResolution(state, found, ctx.utterance ?? "", this.now()).state;
+    ctx.placeChoices =
+      lookup.kind === "ambiguous"
+        ? lookup.choices.map(({ label, reply }) => ({ label, reply }))
+        : undefined;
+  }
+
+  /** Look a named place up and make it the request's place. The model
+   * calls this before searching a named area so the search is at the
+   * PLACE, not the phone's dot. */
+  private async geocodePlace(
+    ctx: ToolContext,
+    input: Record<string, unknown>,
+  ): Promise<ToolOutcome> {
+    const query = String(input["query"] ?? "").trim();
+    if (!query) {
+      return { result: { error: "query is required" } };
+    }
+    const lookup = await this.lookUpPlace(ctx, query, input["city"]);
+    // Found or not, the request now names this place: a search after a
+    // failed lookup must ask for it, never search the phone's location.
+    this.recordPlace(ctx, query, lookup);
+    const stateVersion = (ctx.requestState ?? emptyState()).version;
+    if (lookup.kind === "unavailable" && lookup.reason === "not_configured") {
+      await this.audit(ctx, "geocode_place", input, "geocoder_unavailable", {});
+      return {
+        result: {
+          error: "geocoding_unavailable",
+          stateVersion,
+          instruction:
+            "Geocoding isn't configured. Ask the user to share their location or name a more specific spot.",
+        },
+      };
+    }
+    if (lookup.kind === "unavailable") {
+      await this.audit(ctx, "geocode_place", input, "geocode_error", { reason: lookup.reason });
       return {
         result: {
           error: "geocode_failed",
+          stateVersion,
           instruction:
             "Couldn't look that place up right now — tell the user and ask them to try a nearby cross-street or share their location.",
         },
       };
     }
+    const phoneMetro = ctx.location ? homeMetroForPoint(ctx.location.lat, ctx.location.lng) : null;
     const phoneCity = phoneMetro ? providerForCity(phoneMetro)?.cityDisplayName : undefined;
-    const match = classifyPlaceMatches(query, outcome.results);
-    if (match.kind === "none") {
+    if (lookup.kind === "none") {
       await this.audit(ctx, "geocode_place", input, "no_match", { query });
       return {
         result: {
           found: false,
+          stateVersion,
           instruction:
             `Couldn't find "${query}" in ${coveredCitiesSentence()}. Tell the user plainly and ask for its street address or a cross street. ` +
             "Never substitute the phone's location or a neighborhood center for a place you couldn't find" +
@@ -786,55 +885,36 @@ export class AssistantTools {
         },
       };
     }
-    if (match.kind === "ambiguous") {
-      const choices = match.choices.map((place) => ({
-        label: choiceLabel(place),
-        reply: choiceReply(place),
-        lat: place.lat,
-        lng: place.lng,
-      }));
-      ctx.placeChoices = choices.map(({ label, reply }) => ({ label, reply }));
-      await this.audit(ctx, "geocode_place", input, "ambiguous", { query, choices });
+    if (lookup.kind === "ambiguous") {
+      await this.audit(ctx, "geocode_place", input, "ambiguous", {
+        query,
+        choices: lookup.choices,
+      });
       return {
         result: {
           found: true,
           ambiguous: true,
-          choices,
+          stateVersion,
+          choices: lookup.choices,
           instruction: `Several places match "${query}". Call ask_user now with one suggestion per choice, using each choice's label and reply exactly. Don't pick one yourself.`,
         },
       };
     }
-    const place = match.place;
+    const place = lookup.place;
     const summary = placeSummary(place);
-    // A later search that found the place supersedes an earlier ambiguous one.
-    ctx.placeChoices = undefined;
-
-    await this.audit(ctx, "geocode_place", input, match.nameMatched ? "ok" : "closest_only", {
+    await this.audit(ctx, "geocode_place", input, lookup.nameMatched ? "ok" : "closest_only", {
       query,
-      count: outcome.results.length,
+      count: lookup.count,
       top: summary,
       source: place.source ?? null,
     });
-    // Remember the resolved place so propose_plan can pin it as the
-    // card's destination even when the model drops the optional field.
-    ctx.geocode = { lat: place.lat, lng: place.lng, label: summary.displayName };
-    const named = nameTokens(query).length > 0 ? `"${query}"` : "that place";
     return {
       result: {
         found: true,
-        match: match.nameMatched ? "exact" : "closest",
+        match: lookup.nameMatched ? "exact" : "closest",
+        stateVersion,
         place: summary,
-        // The shape earlier turns stored (groundingIn reads results[0]).
-        results: [summary],
-        ...(match.nameMatched
-          ? {}
-          : {
-              instruction:
-                `No place called ${named} was found — the closest result is ${summary.displayName}` +
-                `${place.kind === "area" ? " (an area, not the place they named)" : ""}. ` +
-                `Tell the user you couldn't find ${named} and that you're searching around ${summary.displayName} instead, or ask for the address. ` +
-                `Never present ${summary.displayName} as the place they named.`,
-            }),
+        ...(lookup.nameMatched ? {} : { instruction: closestOnlyInstruction(query, place) }),
       },
     };
   }
@@ -857,112 +937,449 @@ export class AssistantTools {
     return { result: { presented: true }, ask: parsed.data };
   }
 
-  private async searchGarages(
+  // -------------------------------------------------------------------------
+  // The searches (FR-43). quote_street and search_garages read the place,
+  // the window, the limits, and the ranking from the request; nothing the
+  // model passes can change what is searched.
+  // -------------------------------------------------------------------------
+
+  private stateOf(ctx: ToolContext): RequestState {
+    return ctx.requestState ?? emptyState();
+  }
+
+  /** The latest search, when it is still good to propose from: run at the
+   * request's current version, and fresh. */
+  private currentSearch(ctx: ToolContext): SearchResult | null {
+    const last = ctx.lastSearch;
+    if (!last || last.stateVersion !== this.stateOf(ctx).version) return null;
+    return isFresh(last, this.now()) ? last : null;
+  }
+
+  /** The window the request asks for: its start (now when it names none)
+   * and its stay (two hours when it names none, said as an assumption).
+   * Refused when the start is in the past or moves a time the user named. */
+  private async searchWindow(
     ctx: ToolContext,
-    input: Record<string, unknown>,
-  ): Promise<ToolOutcome> {
-    const past = await this.pastWindowError(
+    tool: string,
+    input: unknown,
+  ): Promise<
+    { ok: true; window: SearchWindow; start: Date } | { ok: false; outcome: ToolOutcome }
+  > {
+    const state = this.stateOf(ctx);
+    const at = this.now();
+    const startsAt = state.window.startsAt ?? easternIso(at);
+    const refused = await this.pastWindowError(
       ctx,
-      "search_garages",
+      tool,
       input,
-      String(input["starts_at"] ?? ""),
+      startsAt,
+      " The search reads its start from the request: set it with update_request (startsAt), then search again.",
     );
-    if (past) return past;
-    // One canonical form for the window (NYC offset spelled out): the
-    // providers read it, the cache keys on it, and the checkout links
-    // carry it — an offset-less or UTC string meant a different hour to
-    // each of them.
-    const starts = parseEasternTime(String(input["starts_at"]))!;
-    const ends = parseEasternTime(String(input["ends_at"] ?? ""));
-    if (!ends || ends.getTime() <= starts.getTime()) {
-      await this.audit(ctx, "search_garages", input, "bad_window", {});
+    if (refused) return { ok: false, outcome: refused };
+    // Readable by construction: pastWindowError bounced anything else.
+    const start = parseEasternTime(startsAt)!;
+    const minutes = state.window.durationMinutes ?? DEFAULT_STAY_MINUTES;
+    return {
+      ok: true,
+      start,
+      window: {
+        startsAt: easternIso(start),
+        endsAt: easternIso(new Date(start.getTime() + minutes * 60_000)),
+        durationMinutes: minutes,
+        startsNow: state.window.startsAt === null,
+        durationSource: state.window.durationMinutes === null ? "default" : "user",
+      },
+    };
+  }
+
+  /**
+   * Where the request says to search. A place the user named is searched
+   * at its resolved point, looked up here if nothing has yet; one that
+   * matched several places, or none, is never guessed at — the search
+   * answers place_unresolved and the turn ends asking the user (with the
+   * candidates as chips when there are any). With no place named, the
+   * phone's location is the place, stated as an assumption. The one time a
+   * named place falls back to the phone is a park-now request whose lookup
+   * is DOWN: the driver is at the curb, and the card says what it assumed.
+   */
+  private async placeFor(
+    ctx: ToolContext,
+    tool: string,
+    input: unknown,
+  ): Promise<
+    { ok: true; place: SearchPlace; note?: string } | { ok: false; outcome: ToolOutcome }
+  > {
+    const unresolved = async (
+      reason: "ambiguous" | "not_found" | "lookup_unavailable" | "no_place",
+      question: string,
+      candidates: PlaceCandidate[] = [],
+    ) => {
+      const state = this.stateOf(ctx);
+      await this.audit(ctx, tool, input, "place_unresolved", {
+        reason,
+        query: state.place.query,
+        candidates: candidates.length,
+        stateVersion: state.version,
+      });
+      const suggestions = candidates.slice(0, 4).map(({ label, reply }) => ({ label, reply }));
+      if (suggestions.length >= 2) ctx.placeChoices = suggestions;
       return {
-        result: {
-          error: "bad_window",
-          instruction: `ends_at must be a readable time after starts_at. ${TIME_FORMAT_HINT}`,
+        ok: false as const,
+        outcome: {
+          result: {
+            error: "place_unresolved",
+            reason,
+            stateVersion: state.version,
+            ...(candidates.length > 0 ? { candidates } : {}),
+            instruction:
+              "Nothing was searched: the request's place isn't resolved. The user is being asked for it.",
+          },
+          ask: { question, suggestions, server: true as const },
         },
       };
+    };
+
+    let state = this.stateOf(ctx);
+    const query = state.place.query;
+    if (!state.place.resolved && !state.place.candidates?.length && query) {
+      // Named, never resolved: look it up now (once per turn).
+      const lookup = await this.lookUpPlace(ctx, query);
+      if (lookup.kind === "found" || lookup.kind === "ambiguous") {
+        this.recordPlace(ctx, query, lookup);
+        state = this.stateOf(ctx);
+        if (lookup.kind === "found") {
+          return {
+            ok: true,
+            place: { ...state.place.resolved!, source: "user" },
+            ...(lookup.nameMatched ? {} : { note: closestOnlyInstruction(query, lookup.place) }),
+          };
+        }
+      } else if (lookup.kind === "none") {
+        return unresolved(
+          "not_found",
+          `I couldn't find "${query}". What's its address or a nearby cross street?`,
+        );
+      } else if (state.intent === "park_now" && ctx.location) {
+        return {
+          ok: true,
+          place: { ...ctx.location, label: null, source: "default" },
+          note: `Couldn't look up "${query}" right now, so this searched around the phone's location instead. Say so: never present these as being at "${query}".`,
+        };
+      } else {
+        return unresolved(
+          "lookup_unavailable",
+          `I couldn't look up "${query}" right now. What's its address or a nearby cross street?`,
+        );
+      }
     }
-    const anchorLat = num(input["lat"]);
-    const anchorLng = num(input["lng"]);
-    const withinM = input["within_m"] !== undefined ? num(input["within_m"]) : null;
-    const outcome = await this.deps.garage.search({
-      lat: anchorLat,
-      lng: anchorLng,
-      startsAt: easternIso(starts),
-      endsAt: easternIso(ends),
-      ...(input["budget_usd"] !== undefined ? { budgetUsd: num(input["budget_usd"]) } : {}),
-    });
+    if (state.place.resolved) {
+      const { lat, lng, label } = state.place.resolved;
+      return { ok: true, place: { lat, lng, label, source: "user" } };
+    }
+    if (state.place.candidates?.length) {
+      return unresolved("ambiguous", "Which one did you mean?", state.place.candidates);
+    }
+    if (ctx.location) {
+      return { ok: true, place: { ...ctx.location, label: null, source: "default" } };
+    }
+    return unresolved("no_place", "Where do you want to park? Name a place or an address.");
+  }
+
+  /** The pool this search adds to: this turn's, or the previous turn's
+   * read back from the transcript — when it is for the same request
+   * version and the same point, and still fresh. Otherwise a new one. */
+  private poolFor(
+    ctx: ToolContext,
+    version: number,
+    place: SearchPlace,
+    window: SearchWindow,
+  ): SearchPool {
+    const last = this.currentSearch(ctx);
+    const held = ctx.searchPool ?? (last ? poolFromResult(last) : null);
+    const same =
+      held !== null &&
+      held !== undefined &&
+      held.stateVersion === version &&
+      metersBetween(held.place.lat, held.place.lng, place.lat, place.lng) < 50;
+    return same ? { ...held, place, window } : { stateVersion: version, place, window };
+  }
+
+  /** Every metered block within a walk of the place, as search options.
+   * When the usual walk holds none, the widest one is tried. */
+  private async streetPool(
+    place: SearchPlace,
+    start: Date,
+    window: SearchWindow,
+    version: number,
+    fetchedAt: string,
+  ): Promise<NonNullable<SearchPool["street"]>> {
+    let search = await this.streetSearch(place.lat, place.lng, start, window.durationMinutes);
+    if (search.all.length === 0) {
+      search = await this.streetSearch(
+        place.lat,
+        place.lng,
+        start,
+        window.durationMinutes,
+        MAX_STREET_RADIUS_M,
+      );
+    }
+    return {
+      options: search.all.map((o) =>
+        streetSearchOption(o, {
+          version,
+          startsAt: window.startsNow ? null : window.startsAt,
+          fetchedAt,
+        }),
+      ),
+      meta: { radiusM: search.radiusM, zonesInRadius: search.zonesInRadius },
+      fetchedAt,
+    };
+  }
+
+  /** The garage sources' offers for the window, as search options. A
+   * failure — thrown or typed — is a different fact from "no garages",
+   * and comes back as `unavailable`, audited with the error. */
+  private async garagePool(
+    ctx: ToolContext,
+    input: unknown,
+    place: SearchPlace,
+    window: SearchWindow,
+    version: number,
+    fetchedAt: string,
+  ): Promise<NonNullable<SearchPool["garage"]> & { fromCache?: boolean }> {
+    const provider = this.deps.garage.id;
+    let outcome: Awaited<ReturnType<GarageProvider["search"]>>;
+    try {
+      outcome = await this.deps.garage.search({
+        lat: place.lat,
+        lng: place.lng,
+        startsAt: window.startsAt,
+        endsAt: window.endsAt,
+      });
+    } catch (err) {
+      outcome = {
+        ok: false,
+        error: "network",
+        detail: err instanceof Error ? (err.message.split("\n")[0] ?? "") : String(err),
+      };
+    }
     if (!outcome.ok) {
-      // Search FAILED — a different fact from "no garages". The model
-      // must say it couldn't check and still offer street.
       await this.audit(ctx, "search_garages", input, "garage_search_error", {
-        provider: this.deps.garage.id,
+        provider,
         error: outcome.error,
         detail: outcome.detail,
       });
       return {
-        result: {
-          error: "garage_search_unavailable",
-          reason: outcome.error,
-          instruction:
-            "The garage search is unavailable right now (this is NOT 'no garages'). Tell the user " +
-            "you couldn't check garages at the moment, and still offer the street option.",
-        },
+        options: [],
+        meta: { provider, found: 0, unavailable: true, reason: outcome.error },
+        fetchedAt,
       };
     }
-    // Named-area guard: when the caller anchored the search to a geocoded
-    // place (within_m), drop any option farther than that from the point,
-    // so every option we surface is actually walkable from the named place.
-    // The provider reports distanceM, but recompute from the option's own
-    // coordinates when it carries them so the guard can't be fooled.
-    let options = outcome.options;
-    let droppedFar = 0;
-    let nearestBeyondM: number | null = null;
-    if (withinM !== null && Number.isFinite(withinM)) {
-      const measured = options.map((o) => ({
-        option: o,
-        d:
-          typeof o.lat === "number" && typeof o.lng === "number"
-            ? metersBetween(anchorLat, anchorLng, o.lat, o.lng)
-            : o.distanceM,
-      }));
-      const near = measured.filter((m) => m.d <= withinM);
-      const far = measured.filter((m) => m.d > withinM);
-      droppedFar = far.length;
-      if (far.length > 0) {
-        nearestBeyondM = Math.round(Math.min(...far.map((m) => m.d)));
-      }
-      options = near.map((m) => m.option);
-    }
-    const searchedAt = this.now().toISOString();
-    ctx.garageSearch = { provider: this.deps.garage.id, searchedAt };
-    await this.audit(ctx, "search_garages", input, "ok", {
-      provider: this.deps.garage.id,
-      count: options.length,
-      fromCache: outcome.fromCache,
-      ...(withinM !== null ? { withinM, droppedFar } : {}),
+    // Named-place guard (FR-23): every option surfaced for a named place
+    // is walkable from it. The provider reports distanceM, but it is
+    // recomputed from the option's own coordinates when it carries them,
+    // so the guard can't be fooled.
+    const measured = outcome.options.map((option) => ({
+      option,
+      distanceM:
+        typeof option.lat === "number" && typeof option.lng === "number"
+          ? metersBetween(place.lat, place.lng, option.lat, option.lng)
+          : option.distanceM,
+    }));
+    const guarded = place.source === "user";
+    const near = guarded
+      ? measured.filter((m) => m.distanceM <= NAMED_PLACE_GARAGE_RADIUS_M)
+      : measured;
+    const far = guarded ? measured.filter((m) => m.distanceM > NAMED_PLACE_GARAGE_RADIUS_M) : [];
+    const options = near
+      .map((m) =>
+        garageSearchOption(m.option, {
+          version,
+          minutes: window.durationMinutes,
+          fetchedAt,
+          distanceM: m.distanceM,
+        }),
+      )
+      .filter((o): o is SearchOption => o !== null);
+    const droppedNoPrice = near.length - options.length;
+    const meta: GarageSearchMeta = {
+      provider,
+      found: options.length,
       ...(outcome.degraded?.length ? { degraded: outcome.degraded } : {}),
+      ...(far.length > 0
+        ? {
+            droppedForDistance: far.length,
+            // How far the closest too-far garage is, so the reply can say
+            // "the nearest is about 900 m away" instead of "none found".
+            nearestBeyondM: Math.round(Math.min(...far.map((m) => m.distanceM))),
+          }
+        : {}),
+      ...(droppedNoPrice > 0 ? { droppedNoPrice } : {}),
+    };
+    return { options, meta, fetchedAt, fromCache: outcome.fromCache };
+  }
+
+  /** Whether a point is inside a city we cover: what tells "we have no
+   * data here" from "we don't cover there". */
+  private inCoverage(place: SearchPlace): boolean {
+    return metroForPoint(place.lat, place.lng) !== null;
+  }
+
+  /**
+   * quote_street / search_garages. Searches one kind for the request as
+   * it stands and answers with the request's whole search so far at this
+   * version — both kinds once both have run — filtered and ordered by the
+   * server (search.ts). That result becomes the conversation's latest
+   * search: the only thing propose_plan accepts options from.
+   */
+  private async runSearch(ctx: ToolContext, kind: Kind, input: unknown): Promise<ToolOutcome> {
+    const tool = kind === "street" ? "quote_street" : "search_garages";
+    const windowed = await this.searchWindow(ctx, tool, input);
+    if (!windowed.ok) return windowed.outcome;
+    const placed = await this.placeFor(ctx, tool, input);
+    if (!placed.ok) return placed.outcome;
+    // Read after the place: resolving it may have bumped the version.
+    const state = this.stateOf(ctx);
+    const { window, start } = windowed;
+    const { place } = placed;
+    const fetchedAt = this.now().toISOString();
+    const pool = this.poolFor(ctx, state.version, place, window);
+
+    let fromCache: boolean | undefined;
+    if (kind === "street") {
+      pool.street = await this.streetPool(place, start, window, state.version, fetchedAt);
+    } else {
+      const garage = await this.garagePool(ctx, input, place, window, state.version, fetchedAt);
+      fromCache = garage.fromCache;
+      pool.garage = { options: garage.options, meta: garage.meta, fetchedAt };
+      // A garage-only request whose garage search is down has nothing to
+      // show: the turn ends on an "unavailable" card, with no street
+      // substitute — the user asked for a garage.
+      if (garage.meta.unavailable && state.intent === "garage_or_lot") {
+        return this.garageUnavailableCard(ctx, state, place, window, garage.meta, fetchedAt);
+      }
+    }
+    ctx.searchPool = pool;
+    const result = buildSearchResult(pool, state, {
+      searchedAt: fetchedAt,
+      inCoverage: this.inCoverage(place),
+    });
+    ctx.lastSearch = result;
+    ctx.searchesThisTurn = (ctx.searchesThisTurn ?? 0) + 1;
+    await this.audit(ctx, tool, input, "ok", {
+      stateVersion: result.stateVersion,
+      verdict: result.verdict,
+      searched: result.searched,
+      satisfying: result.satisfying.map((o) => ({ id: o.id, priceUsd: o.priceUsd })),
+      nearMisses: result.nearMisses.map((n) => ({
+        id: n.option.id,
+        violates: n.violates.map((v) => v.field),
+      })),
+      placeSource: place.source,
+      ...(kind === "street"
+        ? { streetCount: pool.street!.options.length, ...pool.street!.meta }
+        : {
+            garageCount: pool.garage!.options.length,
+            ...pool.garage!.meta,
+            ...(fromCache !== undefined ? { fromCache } : {}),
+          }),
     });
     return {
-      result: {
-        provider: this.deps.garage.id,
-        searchedAt,
-        options,
-        ...(droppedFar > 0 ? { droppedForDistance: droppedFar } : {}),
-        // How far the closest too-far garage is, so the model can say
-        // "the nearest is about 900 m away" instead of "none found".
-        ...(nearestBeyondM !== null ? { nearestBeyondM } : {}),
-        ...(options.length === 0 && droppedFar > 0
-          ? {
-              instruction: `No garage within ${withinM} m of that place; the nearest is about ${nearestBeyondM} m away. Tell the user that distance — do not say none were found.`,
-            }
-          : {}),
-        // Providers that failed while others answered — mention reduced
-        // coverage when it matters.
-        ...(outcome.degraded?.length ? { degraded: outcome.degraded } : {}),
-      },
+      result: { ...result, instruction: this.searchInstruction(result, state, placed.note) },
     };
+  }
+
+  /** What the model is told to do with a search result. The verdict is
+   * the server's; this only says which propose_plan follows from it. */
+  private searchInstruction(result: SearchResult, state: RequestState, placeNote?: string): string {
+    const parts: string[] = [];
+    if (placeNote) parts.push(placeNote);
+    const missing = kindsToSearch(state.hard).filter((k) => !result.searched.includes(k));
+    const other = (k: Kind) => (k === "street" ? "quote_street" : "search_garages");
+    if (result.verdict === "meets") {
+      parts.push(
+        "Propose with propose_plan: a single_spot plan of up to 3 options from `satisfying`, each by its id. The order is the server's and the first is the recommendation.",
+      );
+      const [first, second] = result.satisfying;
+      if (first?.axis === "cheapest" && second?.axis === "closest" && !second.secondary) {
+        parts.push(
+          "The user asked for no ranking, so offer both the cheapest and the closest — the first two.",
+        );
+      } else if (second?.secondary) {
+        parts.push(
+          "The second option is the best on the other axis: an alternative, never the recommendation.",
+        );
+      }
+      if (result.nearMisses.length > 0) {
+        parts.push(
+          "An option from `nearMisses` breaks a limit: it may ride along only with nearMiss: true, and never as if it met the request.",
+        );
+      }
+    } else if (missing.length > 0) {
+      parts.push(
+        `Nothing found so far meets the request. Call ${missing.map(other).join(" and ")} too before deciding.`,
+      );
+    } else if (result.verdict === "none_meets") {
+      parts.push(
+        'Nothing meets the request. Call propose_plan with {kind: "none_meets"}: the card shows what came closest and what relaxing a limit would yield. Never present a near-miss as if it met the request, and never loosen a limit yourself — that is the user\'s tap.',
+      );
+    } else if (result.verdict === "no_data") {
+      parts.push(
+        'Our data has no parking to offer at that place. Call propose_plan with {kind: "none_meets"}: the card names the nearest blocks we do have.',
+      );
+    } else {
+      parts.push(
+        `That place is outside the cities ParkAgent covers (${coveredCitiesSentence()}). Say so in one sentence; there is no card for it.`,
+      );
+    }
+    if (result.garage?.unavailable) {
+      parts.push(
+        "The garage search is unavailable right now (this is NOT 'no garages'). Tell the user you couldn't check garages at the moment, and still offer the street options.",
+      );
+    } else if (result.garage?.nearestBeyondM !== undefined && result.garage.found === 0) {
+      parts.push(
+        `No garage within ${NAMED_PLACE_GARAGE_RADIUS_M} m of that place; the nearest is about ${result.garage.nearestBeyondM} m away. Tell the user that distance — do not say none were found.`,
+      );
+    }
+    if (result.street?.zonesInRadius === 0) {
+      parts.push(
+        `No metered street parking in our data within ${result.street.radiusM} m (about a ${walkMinutesFor(result.street.radiusM)}-minute walk) of the place — say the radius if you mention it.`,
+      );
+    }
+    if (result.window.durationSource === "default") {
+      parts.push(
+        `The request names no stay, so this assumed ${result.window.durationMinutes / 60} hours — say so.`,
+      );
+    }
+    return parts.join(" ");
+  }
+
+  /**
+   * Before the server says "nothing meets this", it searches whatever the
+   * request allows that hasn't been searched at this version: the verdict
+   * is never taken on half a search. Street is our own data and is always
+   * included; the garage sources are asked unless the request rules
+   * garages out.
+   */
+  private async completeSearch(ctx: ToolContext): Promise<ToolOutcome | null> {
+    for (const kind of kindsToSearch(this.stateOf(ctx).hard)) {
+      const last = this.currentSearch(ctx);
+      if (!last || last.satisfying.length > 0) return null;
+      if (last.searched.includes(kind)) continue;
+      const outcome = await this.runSearch(ctx, kind, { note: "completing the search" });
+      // A garage-only request whose garage search is down ends the turn
+      // on its own card.
+      if (outcome.endTurn) return outcome;
+    }
+    return null;
+  }
+
+  private searchGarages(ctx: ToolContext, input: unknown): Promise<ToolOutcome> {
+    return this.runSearch(ctx, "garage", input);
+  }
+
+  private quoteStreet(ctx: ToolContext, input: unknown): Promise<ToolOutcome> {
+    return this.runSearch(ctx, "street", input);
   }
 
   /**
@@ -1103,7 +1520,13 @@ export class AssistantTools {
     return { stops, repriced, estimates };
   }
 
-  private async quoteStreet(
+  /**
+   * One itinerary stop's street quote: the blocks within a walk of the
+   * stop's own point, for the stop's own window. A day's stops each have
+   * their place and time, so this takes them as arguments — unlike
+   * quote_street, which searches the one request.
+   */
+  private async quoteStreetAt(
     ctx: ToolContext,
     input: Record<string, unknown>,
   ): Promise<ToolOutcome> {
@@ -1151,19 +1574,6 @@ export class AssistantTools {
         state: o.state,
       })),
     });
-    // Each option is grounding for a street card: its zone, price, and pin
-    // (the curb nearest the destination).
-    for (const option of search.options) {
-      (ctx.streetQuotes ??= []).push({
-        zoneId: option.zoneId,
-        costUsd: option.costUsd,
-        lat: option.lat,
-        lng: option.lng,
-        option,
-        startsAt: window.startsAt,
-        stayMinutes: minutes,
-      });
-    }
     return {
       result: {
         found: true,
@@ -1202,7 +1612,7 @@ export class AssistantTools {
       const minutes = num(stop["duration_minutes"]);
       // A day's stops each have their own time: the message's one
       // requested time (if any) isn't theirs to honor.
-      const street = await this.quoteStreet(
+      const street = await this.quoteStreetAt(
         { ...ctx, timeRequest: undefined },
         {
           lat: stop["lat"],
@@ -1246,276 +1656,517 @@ export class AssistantTools {
     return { result: summary };
   }
 
+  /**
+   * propose_plan. A single-spot plan is options from the latest search,
+   * by id, held to the request by these rules — in this order, each
+   * refusal audited under its own name (FR-43):
+   *
+   *  V1  every option id is in the latest search, and that search was run
+   *      at the request's current version and is fresh
+   *      (`stale_or_unknown_option`);
+   *  V2  the price, walk, zone, window, and link are the search's; a price
+   *      the model typed that differs is recorded (`model_price_mismatch`);
+   *  V3  an option that breaks a limit rides along only as nearMiss: true,
+   *      with the server's `violates` (`hard_constraint_violation`);
+   *  V4  with nothing satisfying, the only plan is the "no" (`must_say_no`);
+   *      with something satisfying, a "no" is refused (`options_available`);
+   *  V5  an itinerary's total is recomputed and held to the caller's daily
+   *      cap (`over_daily_cap`). There is no per-plan cap (decision 9).
+   *
+   * The reply's own check (V6, `ungrounded_number`) is the loop's.
+   */
   private async proposePlan(
     ctx: ToolContext,
     input: Record<string, unknown>,
   ): Promise<ToolOutcome> {
-    const parsed = planSchema.safeParse(input["plan"]);
+    const parsed = proposedPlanSchema.safeParse(input["plan"]);
     if (!parsed.success) {
-      await this.audit(ctx, "propose_plan", input, "invalid_plan", {
-        issues: parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).slice(0, 8),
-      });
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".")}: ${i.message}`)
+        .slice(0, 8);
+      await this.audit(ctx, "propose_plan", input, "invalid_plan", { issues });
+      return { result: { error: "invalid plan shape", issues } };
+    }
+    const proposed = parsed.data;
+    if (proposed.kind === "itinerary") return this.proposeItinerary(ctx, proposed);
+    if (proposed.kind === "none_meets") return this.proposeNoneMeets(ctx, input, proposed);
+    return this.proposeSingleSpot(ctx, input, proposed);
+  }
+
+  /** Why the latest search can't be proposed from, in the model's words. */
+  private staleHint(ctx: ToolContext): string {
+    const last = ctx.lastSearch;
+    const version = this.stateOf(ctx).version;
+    if (!last) {
+      return "Nothing has been searched for this request yet: call quote_street and search_garages, then propose options by the ids they return.";
+    }
+    if (last.stateVersion !== version) {
+      return `The request changed after that search (it is at version ${version} now): search again, then propose options by the new ids.`;
+    }
+    if (!isFresh(last, this.now())) {
+      return "That search is more than 10 minutes old, and prices are for when they were fetched: search again, then propose by the new ids.";
+    }
+    return "Use option ids exactly as the latest search returned them (validIds).";
+  }
+
+  private async staleOrUnknown(
+    ctx: ToolContext,
+    input: unknown,
+    optionIds: string[],
+    validIds: string[],
+  ): Promise<ToolOutcome> {
+    const stateVersion = this.stateOf(ctx).version;
+    await this.audit(ctx, "propose_plan", input, "stale_or_unknown_option", {
+      optionIds,
+      stateVersion,
+      searchVersion: ctx.lastSearch?.stateVersion ?? null,
+    });
+    return {
+      result: {
+        error: "stale_or_unknown_option",
+        optionIds,
+        validIds,
+        stateVersion,
+        hint: this.staleHint(ctx),
+      },
+    };
+  }
+
+  private async proposeSingleSpot(
+    ctx: ToolContext,
+    input: unknown,
+    proposed: Extract<ProposedPlan, { kind: "single_spot" }>,
+  ): Promise<ToolOutcome> {
+    const last = this.currentSearch(ctx);
+    const meets = new Map((last?.satisfying ?? []).map((o) => [o.id, o]));
+    const misses = new Map((last?.nearMisses ?? []).map((n) => [n.option.id, n]));
+
+    // V1: an option is a result of the latest search or it isn't on the card.
+    const unknown = proposed.options.filter((o) => !meets.has(o.id) && !misses.has(o.id));
+    if (!last || unknown.length > 0) {
+      return this.staleOrUnknown(
+        ctx,
+        input,
+        (last ? unknown : proposed.options).map((o) => o.id),
+        [...meets.keys(), ...misses.keys()],
+      );
+    }
+    // V3: a near-miss is shown as one, or not at all.
+    const dressed = proposed.options.filter((o) => misses.has(o.id) && o.nearMiss !== true);
+    if (dressed.length > 0) {
+      const optionIds = dressed.map((o) => o.id);
+      await this.audit(ctx, "propose_plan", input, "hard_constraint_violation", { optionIds });
       return {
         result: {
-          error: "invalid plan shape",
-          issues: parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).slice(0, 8),
+          error: "hard_constraint_violation",
+          optionIds,
+          violates: Object.fromEntries(optionIds.map((id) => [id, misses.get(id)!.violates])),
+          hint: "These options break a limit of the request. Leave them out, or include one with nearMiss: true — never as if it met the request.",
         },
       };
     }
-    let plan = parsed.data;
-    const policy = await policyFor(this.deps, ctx.userId);
-    if (plan.kind === "itinerary") {
-      // Never trust model arithmetic: recompute the total, pin the cap,
-      // and refuse a plan that busts the day's remaining budget.
-      const totalUsd = itineraryTotalUsd(plan.stops);
-      const spentTodayUsd = await spentToday(this.deps.db, ctx.userId, this.now());
-      if (spentTodayUsd + totalUsd > policy.daily_cap_usd) {
-        await this.audit(ctx, "propose_plan", { kind: plan.kind, totalUsd }, "over_daily_cap", {
-          totalUsd,
-          spentTodayUsd,
-          capUsd: policy.daily_cap_usd,
-        });
-        return {
-          result: {
-            error: "plan_over_daily_cap",
-            totalUsd,
-            spentTodayUsd,
-            capUsd: policy.daily_cap_usd,
-            hint: "drop or shorten stops until the total fits the remaining budget",
-          },
-        };
-      }
-      const unreadable = plan.stops.find((stop) => !parseEasternTime(stop.arrival));
-      if (unreadable) {
-        return {
-          result: {
-            error: "unreadable_time",
-            stopId: unreadable.id,
-            value: unreadable.arrival,
-            instruction: `Couldn't read that stop's arrival. ${TIME_FORMAT_HINT}`,
-          },
-        };
-      }
-      plan = {
-        ...plan,
-        totalUsd,
-        capUsd: policy.daily_cap_usd,
-        // Stored in arrival order, whatever order the model listed them
-        // in: the card shows the day as it will happen.
-        stops: orderStopsByArrival(plan.stops).map((stop) => {
-          // Arrivals are stored in one canonical form: the itinerary tick
-          // pushes each garage link 15 minutes before this instant, and an
-          // offset-less string meant a different instant on every host.
-          const arrival = easternIso(parseEasternTime(stop.arrival)!);
-          // A garage stop's link is pushed to the phone later — it comes
-          // from the search cache, never from model text.
-          const rest = { ...stop };
-          delete rest.deepLink;
-          const cached =
-            stop.choice === "garage" && stop.garageOptionId
-              ? this.deps.garage.optionById(stop.garageOptionId)
-              : null;
-          return { ...rest, arrival, ...(cached ? { deepLink: cached.deepLink } : {}) };
-        }),
+    // V4: nothing satisfies, so the only honest plan is the "no".
+    if (last.satisfying.length === 0) {
+      await this.audit(ctx, "propose_plan", input, "must_say_no", {
+        stateVersion: last.stateVersion,
+      });
+      return {
+        result: {
+          error: "must_say_no",
+          instruction:
+            'Nothing in the latest search meets the request, so there is no single_spot plan to propose. Call propose_plan with {kind: "none_meets"}.',
+        },
       };
-    } else {
-      // FR-26: a street option carries the zone quote_street quoted.
-      // Models drop the optional zoneId, or rename it and zod strips the
-      // unknown key, so a missing one is re-attached from this
-      // conversation's quotes; one with nothing to ground it in bounces
-      // back to the model instead of reaching a card with no zone.
-      const quotes = ctx.streetQuotes ?? [];
-      const grounded = groundStreetOptions(plan.options, quotes);
-      if (!grounded.ok) {
-        const quotedZoneIds = [...new Set(quotes.map((q) => q.zoneId))];
-        await this.audit(ctx, "propose_plan", input, "ungrounded_street_option", {
-          optionId: grounded.optionId,
-          quotedZoneIds,
-        });
-        return {
-          result: {
-            error: "street_option_ungrounded",
-            optionId: grounded.optionId,
-            quotedZoneIds,
-            hint:
-              quotes.length === 0
-                ? "quote this spot with quote_street first, then propose with the zoneId it returned"
-                : "set zoneId on the street option to the zoneId quote_street returned for it",
-          },
-        };
-      }
-      plan = { ...plan, options: grounded.options };
-      // The same rule for garages: an option is a search_garages result
-      // or it isn't on the card. Its price, link, source, and pin are the
-      // search's, never model text — a model-typed deepLink would open
-      // whatever URL it wrote, and become the Link merchant URL.
-      const garageMisses = plan.options.filter(
-        (o) => o.type === "garage" && !this.deps.garage.optionById(o.garageOptionId ?? o.id),
-      );
-      if (garageMisses.length > 0) {
-        await this.audit(ctx, "propose_plan", input, "ungrounded_garage_option", {
-          optionIds: garageMisses.map((o) => o.id),
-        });
-        return {
-          result: {
-            error: "garage_option_ungrounded",
-            optionIds: garageMisses.map((o) => o.id),
-            hint: "set garageOptionId to an option id from a search_garages result (search again if it's been a while), then propose again",
-          },
-        };
-      }
-      const badges = plan.options.filter((o) => o.recommended).length;
-      if (badges !== 1) {
-        // Normalize instead of bouncing: first option wins the badge.
-        plan = {
-          ...plan,
-          options: plan.options.map((o, i) => ({ ...o, recommended: i === 0 })),
-        };
-      }
-      // payOnArrival is OURS to decide, never the model's: a street
-      // option starting more than 15 minutes out cannot be confirmed
-      // now (meters run from payment) — the detector pays on arrival.
-      // Street options pin at the point their own zone was quoted, and
-      // the plan carries destination + provenance from this
-      // conversation's grounding when the model left them off.
-      const at = this.now().getTime();
-      // Which sources the SURFACED options actually came from — with two
-      // providers merged, the aggregate search id ("spothero+parkwhiz")
-      // would credit a source whose option didn't make the card.
-      const shownProviders = new Set<string>();
-      plan = {
-        ...plan,
-        options: plan.options.map((o) => {
-          if (o.type !== "street") {
-            const cached = this.deps.garage.optionById(o.garageOptionId ?? o.id)!;
-            shownProviders.add(cached.provider);
-            return {
-              ...o,
-              garageOptionId: cached.id,
-              priceUsd: cached.priceUsd,
-              // The walk and entry the recommendation reason compares are
-              // the search's, not the model's.
-              walkMinutes: cached.walkMinutes,
+    }
 
-              ...(cached.entryType ? { entryType: cached.entryType } : {}),
-              provider: cached.provider,
-              deepLink: cached.deepLink,
-              payOnArrival: false,
-              ...(cached.lat !== undefined && cached.lng !== undefined
-                ? { lat: cached.lat, lng: cached.lng }
-                : {}),
-            };
-          }
-          // A street option has no checkout link or garage source; model
-          // text in either would reach the Link merchant fields.
-          const rest = { ...o };
-          delete rest.startsAt;
-          delete rest.provider;
-          delete rest.deepLink;
-          const starts = o.startsAt ? parseEasternTime(o.startsAt) : null;
-          const future = starts !== null && starts.getTime() - at > 15 * 60_000;
-          const pin = [...(ctx.streetQuotes ?? [])]
-            .reverse()
-            .find((q) => q.zoneId === o.zoneId && q.lat !== undefined && q.lng !== undefined);
-          // The street search's own facts for this zone are server truth,
-          // as a garage's price and link are: where the block is, the walk,
-          // its street, hours, and max stay always; its price, state line,
-          // and meter/fee split only when the quote was for THIS stay — a
-          // "make it 90 minutes" proposed without re-quoting keeps the
-          // user's stay rather than an older quote's.
-          const quote = [...(ctx.streetQuotes ?? [])]
-            .reverse()
-            .find((q) => q.zoneId === o.zoneId && q.option !== undefined);
-          const quoted = quote?.option;
-          // The stay the user asked for, or the max the meter allows (the
-          // quote's clampedMinutes, which the model often proposes).
-          // And the same start: the option's, or — with none — now (a quote
-          // for 7 PM must not price, or describe, a Confirm-now option).
-          const quoteStart = quote?.startsAt ? parseEasternTime(quote.startsAt) : null;
-          const sameStart =
-            quoteStart === null
-              ? starts === null
-              : starts === null
-                ? Math.abs(quoteStart.getTime() - at) <= 15 * 60_000
-                : quoteStart.getTime() === starts.getTime();
-          const sameStay =
-            quote !== undefined &&
-            (quote.stayMinutes === o.durationMinutes ||
-              quoted?.clampedMinutes === o.durationMinutes) &&
-            sameStart;
-          return {
-            ...rest,
-            // One canonical form, so the phone parses what the server did.
-            ...(starts ? { startsAt: easternIso(starts) } : {}),
-            payOnArrival: future,
-            ...(o.lat === undefined && pin ? { lat: pin.lat!, lng: pin.lng! } : {}),
-            ...(quoted
-              ? {
-                  lat: quoted.lat,
-                  lng: quoted.lng,
-                  walkMinutes: quoted.walkMinutes,
-                  ...(quoted.street ? { street: quoted.street } : {}),
-                  zoneNumber: quoted.zoneNumber,
-                  ratePerHourUsd: quoted.ratePerHourUsd,
-                  hoursToday: quoted.hoursToday,
-                  maxStayMinutes: quoted.maxStayMinutes,
-                }
-              : {}),
-            ...(quoted && sameStay
-              ? {
-                  priceUsd: quoted.costUsd,
-                  streetState: quoted.state,
-                  streetSummary: quoted.summary,
-                  priceBreakdown: { meterUsd: quoted.meterUsd, feeUsd: quoted.feeUsd },
-                  exceedsMaxStay: quoted.exceedsMaxStay,
-                }
-              : {}),
-          };
-        }),
-        ...(plan.destination === undefined && ctx.geocode ? { destination: ctx.geocode } : {}),
+    // The time the user named is the plan's (requestedTime.ts): a plan
+    // starting anywhere else goes back to the model with the time they
+    // asked for.
+    const now = this.now();
+    const moved = this.requestedTimeMoved(ctx, last.window, now);
+    if (moved) {
+      await this.audit(ctx, "propose_plan", input, "requested_time_moved", {
+        startsAt: last.window.startsNow ? null : last.window.startsAt,
+      });
+      return {
+        result: {
+          error: "requested_time_moved",
+          instruction: `${moved} The plan's time is the request's: set it with update_request (startsAt), then search and propose again.`,
+        },
       };
-      // Provenance and the recommendation's reason are server truth, never
-      // model text: the reason reads the final prices and walks.
-      delete plan.provenance;
-      delete plan.recommendedReason;
-      const reason = recommendationReason(plan.options);
-      if (reason) plan.recommendedReason = reason;
-      if (shownProviders.size > 0 && ctx.garageSearch) {
-        plan.provenance = {
-          provider: [...shownProviders].sort().join("+"),
-          searchedAt: ctx.garageSearch.searchedAt,
-        };
-      }
     }
-    // The time the user named is the plan's (requestedTime.ts): a single
-    // spot starting anywhere else — "now" for a 7 PM that has passed
-    // today, as nightly 36361125345 got — goes back to the model with the
-    // time they asked for. A plan with no startsAt starts now, which is
-    // what its card would say. A day plan's stops keep their own times.
-    if (plan.kind === "single_spot" && ctx.timeRequest) {
-      const now = this.now();
-      const starts = plan.options.map((o) => (o.startsAt ? parseEasternTime(o.startsAt) : null));
-      const checked = starts.some((s) => s !== null) ? starts.filter((s) => s !== null) : [now];
-      const moved = checked
-        .map((start) => requestedTimeProblem(ctx.timeRequest, start, now))
-        .find((problem) => problem !== null);
-      if (moved) {
-        await this.audit(ctx, "propose_plan", input, "requested_time_moved", {
-          startsAt: plan.options.map((o) => o.startsAt ?? null),
+
+    // The card's options, in the search's order (the model never
+    // reorders). Decision 8: the option that honors the ask is always on
+    // the card and first; with no ask, the cheapest and the closest both
+    // lead. Then what the model chose, then any flagged near-miss.
+    const chosen = new Set(proposed.options.map((o) => o.id));
+    const [first, second] = last.satisfying;
+    const coPrimary = first?.axis === "cheapest" && second?.axis === "closest" && !second.secondary;
+    const picked = [
+      ...last.satisfying.filter((o, i) => i === 0 || (i === 1 && coPrimary) || chosen.has(o.id)),
+      ...last.nearMisses.filter((n) => chosen.has(n.option.id)).map((n) => n.option),
+    ].slice(0, 3);
+
+    const words = new Map(proposed.options.map((o) => [o.id, o]));
+    for (const option of picked) {
+      const typed = words.get(option.id)?.priceUsd;
+      if (typeof typed === "number" && Math.abs(typed - option.priceUsd) >= 0.005) {
+        // V2: the card shows the search's price; the model's is on record.
+        await this.audit(ctx, "propose_plan", { optionId: option.id }, "model_price_mismatch", {
+          optionId: option.id,
+          modelPriceUsd: typed,
+          priceUsd: option.priceUsd,
         });
-        return {
-          result: {
-            error: "requested_time_moved",
-            instruction: `${moved} Set startsAt on each option to the time you propose.`,
-          },
-        };
       }
     }
-    // What the plan assumed — server truth from the plan itself, stated
-    // on every card however the model phrased its reply.
-    delete plan.assumptions;
-    const assumptions = assumptionsFor(plan, this.now(), ctx.timeRequest);
-    if (assumptions) plan = { ...plan, assumptions };
+    const options = picked.map((option, index) => {
+      // The model's words reach the card only where they can't mislead: a
+      // near-miss is named by the server (with what it breaks), and a
+      // label or detail quoting an amount that isn't this option's own
+      // falls back to the server's.
+      const nearMiss = misses.get(option.id);
+      const own = ownAmounts(option);
+      const said = (text: string | undefined) =>
+        text !== undefined && !nearMiss && scrubUngroundedAmounts(text, own).dropped.length === 0
+          ? text
+          : undefined;
+      return {
+        ...this.cardOption(option, last.window, now, {
+          label: said(words.get(option.id)?.label),
+          detail: said(words.get(option.id)?.detail),
+          violates: nearMiss?.violates,
+        }),
+        // The first option is the one that honors the ask: it holds the
+        // badge whatever the model marked.
+        recommended: index === 0,
+      };
+    });
+
+    // The card's note is the model's prose: held to the same check as the
+    // reply (V6), against the prices of the options that meet the request.
+    const sayable = new Set(
+      picked.filter((o) => !misses.has(o.id)).flatMap((o) => [...ownAmounts(o)]),
+    );
+    const note = proposed.note ? scrubUngroundedAmounts(proposed.note, sayable).text : "";
+    const plan: SingleSpotPlan = {
+      kind: "single_spot",
+      options,
+      ...this.cardFrame(last, options, now, ctx.timeRequest),
+      ...(note.length > 0 ? { note } : {}),
+    };
+    const reason = recommendationReason(plan.options);
+    if (reason) plan.recommendedReason = reason;
+    return this.presentPlan(ctx, input, plan, "proposed");
+  }
+
+  /** Why a plan for `window` moves the time the user named, or null. */
+  private requestedTimeMoved(ctx: ToolContext, window: SearchWindow, now: Date): string | null {
+    if (!ctx.timeRequest) return null;
+    const start = window.startsNow ? now : (parseEasternTime(window.startsAt) ?? now);
+    return requestedTimeProblem(ctx.timeRequest, start, now);
+  }
+
+  /**
+   * A search option as a card option: every fact is the search's. Only
+   * the label and the one-line detail may be the model's words.
+   */
+  private cardOption(
+    option: SearchOption,
+    window: SearchWindow,
+    now: Date,
+    extra: {
+      label?: string | undefined;
+      detail?: string | undefined;
+      violates?: Violation[] | undefined;
+    },
+  ): SingleSpotOption {
+    const starts = window.startsNow ? null : parseEasternTime(window.startsAt);
+    const facts = option.facts;
+    return {
+      id: option.id,
+      type: option.type,
+      label: (extra.label ?? option.label).slice(0, 120),
+      detail: (
+        extra.detail ??
+        (option.type === "street"
+          ? (option.summary ?? "Metered street parking")
+          : "Off-street garage")
+      ).slice(0, 240),
+      priceUsd: option.priceUsd,
+      durationMinutes: Math.min(720, Math.max(1, Math.round(option.durationMinutes))),
+      walkMinutes: Math.min(120, Math.max(0, Math.round(option.walkMinutes))),
+      fetchedAt: option.fetchedAt,
+      // One canonical form, so the phone parses what the server did.
+      ...(starts ? { startsAt: easternIso(starts) } : {}),
+      ...(option.lat !== undefined && option.lng !== undefined
+        ? { lat: option.lat, lng: option.lng }
+        : {}),
+      ...(option.axis ? { axis: option.axis } : {}),
+      ...(option.secondary ? { secondary: true as const } : {}),
+      ...(extra.violates?.length ? { nearMiss: true as const, violates: extra.violates } : {}),
+      ...(option.type === "street"
+        ? {
+            zoneId: option.zoneId,
+            // A future meter can't be started now (meters run from
+            // payment): the detector pays on arrival, and the card shows
+            // that instead of Confirm.
+            payOnArrival: starts !== null && starts.getTime() - now.getTime() > PAY_ON_ARRIVAL_MS,
+            ...(facts
+              ? {
+                  ...(facts.street ? { street: facts.street } : {}),
+                  zoneNumber: facts.zoneNumber,
+                  streetState: facts.state,
+                  streetSummary: facts.summary,
+                  priceBreakdown: { meterUsd: facts.meterUsd, feeUsd: facts.feeUsd },
+                  ratePerHourUsd: facts.ratePerHourUsd,
+                  hoursToday: facts.hoursToday,
+                  maxStayMinutes: facts.maxStayMinutes,
+                  exceedsMaxStay: facts.exceedsMaxStay,
+                }
+              : {}),
+          }
+        : {
+            garageOptionId: option.garageOptionId,
+            payOnArrival: false,
+            ...(option.provider ? { provider: option.provider } : {}),
+            ...(option.entryType ? { entryType: option.entryType } : {}),
+            ...(isUrl(option.deepLink) ? { deepLink: option.deepLink } : {}),
+          }),
+      recommended: false,
+    };
+  }
+
+  /** What every single-place card carries besides its options, all from
+   * the search: the place it was searched at, where garage prices came
+   * from and when, and what the plan assumed in one line. */
+  private cardFrame(
+    search: SearchResult,
+    shown: SingleSpotOption[],
+    now: Date,
+    request: TimeRequest | undefined,
+  ): Pick<SingleSpotPlan, "destination" | "provenance" | "assumptions"> {
+    const { place, window } = search;
+    const garages = shown.filter((o) => o.type === "garage");
+    // Which sources the SURFACED options came from — with two providers
+    // merged, the aggregate id would credit a source with nothing shown.
+    const provenance =
+      garages.length > 0
+        ? {
+            provider: [...new Set(garages.map((o) => o.provider ?? ""))]
+              .filter((p) => p.length > 0)
+              .sort()
+              .join("+"),
+            searchedAt: garages.map((o) => o.fetchedAt ?? search.searchedAt).sort()[0]!,
+          }
+        : search.garage?.unavailable
+          ? {
+              provider: search.garage.provider,
+              searchedAt: search.searchedAt,
+              garage: "unavailable" as const,
+            }
+          : null;
+    return {
+      ...(place.source === "user" && place.label
+        ? { destination: { lat: place.lat, lng: place.lng, label: place.label.slice(0, 120) } }
+        : {}),
+      ...(provenance && provenance.provider.length > 0 ? { provenance } : {}),
+      assumptions: windowAssumption(
+        {
+          start: window.startsNow ? null : parseEasternTime(window.startsAt),
+          minutes: window.durationMinutes,
+        },
+        place.source === "user" ? place.label : null,
+        now,
+        request,
+      ),
+    };
+  }
+
+  /**
+   * The "no". The model names the kind; the server decides whether it
+   * stands and fills the card. Not before the request's whole search has
+   * run: an unsearched kind is searched here first, and if that turns
+   * something up, the "no" is refused with it (`options_available`).
+   */
+  private async proposeNoneMeets(
+    ctx: ToolContext,
+    input: unknown,
+    proposed: Extract<ProposedPlan, { kind: "none_meets" }>,
+  ): Promise<ToolOutcome> {
+    if (!this.currentSearch(ctx)) return this.staleOrUnknown(ctx, input, [], []);
+    const ended = await this.completeSearch(ctx);
+    if (ended) return ended;
+    const last = this.currentSearch(ctx)!;
+    const state = this.stateOf(ctx);
+    const now = this.now();
+
+    if (last.verdict === "meets") {
+      await this.audit(ctx, "propose_plan", input, "options_available", {
+        stateVersion: last.stateVersion,
+        satisfying: last.satisfying.map((o) => o.id),
+      });
+      return {
+        result: {
+          error: "options_available",
+          stateVersion: last.stateVersion,
+          satisfying: last.satisfying,
+          nearMisses: last.nearMisses,
+          instruction:
+            "Options that meet the request exist, so this is not a none_meets. Propose a single_spot plan from `satisfying`, by id.",
+        },
+      };
+    }
+    if (last.verdict === "outside_coverage") {
+      await this.audit(ctx, "propose_plan", input, "outside_coverage", {
+        stateVersion: last.stateVersion,
+      });
+      return {
+        result: {
+          error: "outside_coverage",
+          instruction: `That place is outside the cities ParkAgent covers (${coveredCitiesSentence()}). Say so in one sentence; there is no card for it.`,
+        },
+      };
+    }
+    if (last.verdict === "no_data") {
+      return this.presentPlan(
+        ctx,
+        input,
+        await this.noDataPlan(last, now, ctx.timeRequest),
+        "no_zone_here",
+      );
+    }
+
+    // V1 for the near-misses the model named; by default, the nearest three.
+    const misses = new Map(last.nearMisses.map((n) => [n.option.id, n]));
+    const named = proposed.nearMissIds ?? [];
+    const unknown = named.filter((id) => !misses.has(id));
+    if (unknown.length > 0) return this.staleOrUnknown(ctx, input, unknown, [...misses.keys()]);
+    const shown = (
+      named.length > 0
+        ? last.nearMisses.filter((n) => named.includes(n.option.id))
+        : last.nearMisses
+    ).slice(0, 3);
+    const nearMisses = shown.map((n) =>
+      this.cardOption(n.option, last.window, now, { violates: n.violates }),
+    );
+    const pool =
+      ctx.searchPool?.stateVersion === last.stateVersion
+        ? poolOptions(ctx.searchPool)
+        : last.nearMisses.map((n) => n.option);
+    const garageDown = last.garage?.unavailable === true;
+    const plan: NoneMeetsPlan = {
+      kind: "none_meets",
+      headline:
+        noneMeetsHeadline(state.hard, last.place, shown[0]?.option) +
+        (garageDown ? " I couldn't check garages right now." : ""),
+      constraintsFailed: constraintsFailedFor(pool, state.hard),
+      nearMisses,
+      relaxSuggestions: (last.relaxSuggestions ?? []).slice(0, 3),
+      ...this.cardFrame(last, nearMisses, now, ctx.timeRequest),
+    };
+    return this.presentPlan(ctx, input, plan, "none_meets");
+  }
+
+  /** The "we have nothing there" card: the nearest zones we do have. */
+  private async noDataPlan(
+    search: SearchResult,
+    now: Date,
+    request: TimeRequest | undefined,
+  ): Promise<NoDataPlan> {
+    const { place } = search;
+    const query = { lat: place.lat, lng: place.lng, radiusM: NEAREST_ZONE_RADIUS_M };
+    const zones: (Awaited<ReturnType<CandidateFetcher>>[number] & {
+      street?: string | null;
+      centerline?: number[][][];
+    })[] = this.deps.findNearbyZones
+      ? (await this.deps.findNearbyZones(query)).zones
+      : await this.deps.findCandidates(query);
+    const nearestZones = [...zones]
+      .sort((a, b) => a.distanceM - b.distanceM)
+      .slice(0, 3)
+      .map((zone) => {
+        const pin = zone.centerline ? nearestPointOn(zone.centerline, place.lat, place.lng) : null;
+        return {
+          zoneId: zone.zoneId,
+          street: displayStreet(zone.street),
+          zoneNumber: zone.providerZoneNumber || null,
+          distanceM: Math.round(zone.distanceM),
+          walkMinutes: walkMinutesFor(zone.distanceM),
+          ...(pin ? { lat: pin.lat, lng: pin.lng } : {}),
+        };
+      });
+    const radiusM = search.street?.radiusM ?? MAX_STREET_RADIUS_M;
+    const where = place.source === "user" && place.label ? place.label : "you";
+    const nearest = nearestZones[0];
+    const headline =
+      `Our data has no street parking or garages within ${radiusM} m of ${where}.` +
+      (nearest
+        ? ` The nearest metered block is ${nearest.street ? `on ${nearest.street}, ` : ""}about ${nearest.distanceM} m away.`
+        : "") +
+      (search.garage?.unavailable ? " I couldn't check garages right now." : "");
+    return {
+      kind: "no_data",
+      rule: "no_zone_here",
+      headline,
+      radiusM,
+      nearestZones,
+      ...this.cardFrame(search, [], now, request),
+    };
+  }
+
+  /**
+   * A garage-only request whose garage search is down: a card that says
+   * so, with nothing on it — no street substitute, the user asked for a
+   * garage — and one chip to try again. Ends the turn.
+   */
+  private async garageUnavailableCard(
+    ctx: ToolContext,
+    state: RequestState,
+    place: SearchPlace,
+    window: SearchWindow,
+    meta: GarageSearchMeta,
+    searchedAt: string,
+  ): Promise<ToolOutcome> {
+    const search: SearchResult = {
+      stateVersion: state.version,
+      verdict: "none_meets",
+      searched: ["garage"],
+      searchedAt,
+      place,
+      window,
+      satisfying: [],
+      nearMisses: [],
+      garage: meta,
+    };
+    const plan: NoneMeetsPlan = {
+      kind: "none_meets",
+      headline: "I couldn't check garages right now.",
+      constraintsFailed: [{ field: "garageSearch", reason: "unavailable" }],
+      nearMisses: [],
+      relaxSuggestions: [],
+      ...this.cardFrame(search, [], this.now(), ctx.timeRequest),
+    };
+    ctx.searchesThisTurn = (ctx.searchesThisTurn ?? 0) + 1;
+    return this.presentPlan(ctx, { tool: "search_garages" }, plan, "garage_search_unavailable");
+  }
+
+  /** Store a plan and end the turn on it. The plan is checked against the
+   * card contract first: a malformed plan never reaches the client. */
+  private async presentPlan(
+    ctx: ToolContext,
+    input: unknown,
+    plan: AssistantPlanBody,
+    rule: "proposed" | "none_meets" | "no_zone_here" | "garage_search_unavailable",
+  ): Promise<ToolOutcome> {
+    const checked = planSchema.safeParse(plan);
+    if (!checked.success) {
+      const issues = checked.error.issues
+        .map((i) => `${i.path.join(".")}: ${i.message}`)
+        .slice(0, 8);
+      await this.audit(ctx, "propose_plan", input, "invalid_plan", { issues, built: true });
+      return { result: { error: "invalid plan shape", issues } };
+    }
     const planId = randomUUID();
     await this.deps.db.assistantPlan.create({
       data: {
@@ -1530,12 +2181,81 @@ export class AssistantTools {
       data: {
         kind: "assistant_plan",
         inputs: { conversationId: ctx.conversationId, kind: plan.kind },
-        rule: "proposed",
+        rule,
         outcome: { planId, plan },
         userId: ctx.userId,
       },
     });
-    return { result: { planId, presented: true }, endTurn: { planId, plan } };
+    return { result: { planId, presented: true, kind: plan.kind }, endTurn: { planId, plan } };
+  }
+
+  /** An itinerary. V5: never trust model arithmetic — the total is
+   * recomputed, the cap pinned to the caller's own, and a day that busts
+   * what is left of it refused. (Its per-stop prices are still the ones
+   * the model read off build_itinerary, #132.) */
+  private async proposeItinerary(
+    ctx: ToolContext,
+    proposed: Extract<ProposedPlan, { kind: "itinerary" }>,
+  ): Promise<ToolOutcome> {
+    const policy = await policyFor(this.deps, ctx.userId);
+    const totalUsd = itineraryTotalUsd(proposed.stops);
+    const spentTodayUsd = await spentToday(this.deps.db, ctx.userId, this.now());
+    if (spentTodayUsd + totalUsd > policy.daily_cap_usd) {
+      await this.audit(ctx, "propose_plan", { kind: proposed.kind, totalUsd }, "over_daily_cap", {
+        totalUsd,
+        spentTodayUsd,
+        capUsd: policy.daily_cap_usd,
+      });
+      return {
+        result: {
+          error: "plan_over_daily_cap",
+          totalUsd,
+          spentTodayUsd,
+          capUsd: policy.daily_cap_usd,
+          hint: "drop or shorten stops until the total fits the remaining budget",
+        },
+      };
+    }
+    const unreadable = proposed.stops.find((stop) => !parseEasternTime(stop.arrival));
+    if (unreadable) {
+      return {
+        result: {
+          error: "unreadable_time",
+          stopId: unreadable.id,
+          value: unreadable.arrival,
+          instruction: `Couldn't read that stop's arrival. ${TIME_FORMAT_HINT}`,
+        },
+      };
+    }
+    const plan: AssistantPlanBody = {
+      ...proposed,
+      totalUsd,
+      capUsd: policy.daily_cap_usd,
+      // Stored in arrival order, whatever order the model listed them
+      // in: the card shows the day as it will happen.
+      stops: orderStopsByArrival(proposed.stops).map((stop) => {
+        // Arrivals are stored in one canonical form: the itinerary tick
+        // pushes each garage link 15 minutes before this instant, and an
+        // offset-less string meant a different instant on every host.
+        const arrival = easternIso(parseEasternTime(stop.arrival)!);
+        // A garage stop's link is pushed to the phone later — it comes
+        // from the search cache, never from model text.
+        const cached =
+          stop.choice === "garage" && stop.garageOptionId
+            ? this.deps.garage.optionById(stop.garageOptionId)
+            : null;
+        return { ...stop, arrival, ...(cached ? { deepLink: cached.deepLink } : {}) };
+      }),
+    };
+    // What the plan assumed — server truth from the plan itself, stated
+    // on every card however the model phrased its reply.
+    const assumptions = assumptionsFor(plan, this.now(), ctx.timeRequest);
+    return this.presentPlan(
+      ctx,
+      { kind: proposed.kind },
+      assumptions ? { ...plan, assumptions } : plan,
+      "proposed",
+    );
   }
 
   /** Shared gate for the two consequential tools: a token minted by the

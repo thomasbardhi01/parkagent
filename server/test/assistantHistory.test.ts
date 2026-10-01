@@ -72,28 +72,25 @@ function garage(): GarageProvider {
   };
 }
 
-/** A turn that quotes a garage and proposes it. */
+/** The phone, by the museum: the place a request that names none searches. */
+const MUSEUM = { lat: 40.7784, lng: -73.9819 };
+
+/** A turn that searches garages and proposes the one found, by its id. */
 const PROPOSE_GARAGE: ModelResponse[] = [
-  tool("t1", "search_garages", {
-    lat: 40.7784,
-    lng: -73.9819,
-    starts_at: "2026-01-05T15:00:00-05:00",
-    ends_at: "2026-01-05T17:00:00-05:00",
+  tool("t1", "search_garages", {}),
+  tool("t2", "propose_plan", {
+    plan: { kind: "single_spot", options: [{ id: "v0-g1", label: "Underground Deck" }] },
   }),
+];
+
+/** A turn that quotes the street for an hour and proposes the block found. */
+const PROPOSE_STREET: ModelResponse[] = [
+  tool("t0", "update_request", { durationMinutes: 60 }),
+  tool("t1", "quote_street", {}),
   tool("t2", "propose_plan", {
     plan: {
       kind: "single_spot",
-      options: [
-        {
-          id: "garage-g1",
-          type: "garage",
-          label: "Underground Deck",
-          priceUsd: 18,
-          durationMinutes: 120,
-          garageOptionId: "g1",
-          recommended: true,
-        },
-      ],
+      options: [{ id: `v1-${STEINWAY_A.zoneId}`, label: "Steinway St" }],
     },
   }),
 ];
@@ -108,7 +105,11 @@ async function say(
     method: "POST",
     url: "/assistant/message",
     headers,
-    payload: { text: message, ...(conversationId ? { conversation_id: conversationId } : {}) },
+    payload: {
+      text: message,
+      location: MUSEUM,
+      ...(conversationId ? { conversation_id: conversationId } : {}),
+    },
   });
   expect(res.statusCode).toBe(200);
   return res.json() as { conversationId: string; reply: string; plan: { planId: string } | null };
@@ -252,7 +253,7 @@ describe("GET /assistant/conversations", () => {
       method: "POST",
       url: "/assistant/confirm",
       headers: HEADERS,
-      payload: { planId: one.plan!.planId, optionId: "garage-g1" },
+      payload: { planId: one.plan!.planId, optionId: "v0-g1" },
     });
     expect(confirm.statusCode).toBe(200);
     const list = (
@@ -468,7 +469,7 @@ describe("Activity links back to the conversation", () => {
       method: "POST",
       url: "/assistant/confirm",
       headers: HEADERS,
-      payload: { planId: one.plan!.planId, optionId: "garage-g1" },
+      payload: { planId: one.plan!.planId, optionId: "v0-g1" },
     });
     const activity = async () =>
       (await t.app.inject({ method: "GET", url: "/wallet/activity", headers: HEADERS })).json()
@@ -487,37 +488,14 @@ describe("Activity links back to the conversation", () => {
   test("a street spot confirmed in chat is a plan row in Activity", async () => {
     const t = makeTestApp({
       candidates: [STEINWAY_A],
-      assistantModel: scripted([
-        tool("t1", "quote_street", {
-          lat: 40.7784,
-          lng: -73.9819,
-          duration_minutes: 60,
-          when: "2026-01-05T14:00:00-05:00",
-        }),
-        tool("t2", "propose_plan", {
-          plan: {
-            kind: "single_spot",
-            options: [
-              {
-                id: "street-1",
-                type: "street",
-                label: "Steinway St",
-                priceUsd: 2.15,
-                durationMinutes: 60,
-                zoneId: STEINWAY_A.zoneId,
-                recommended: true,
-              },
-            ],
-          },
-        }),
-      ]),
+      assistantModel: scripted(PROPOSE_STREET),
     });
     const one = await say(t.app, "park me here for an hour");
     const confirm = await t.app.inject({
       method: "POST",
       url: "/assistant/confirm",
       headers: HEADERS,
-      payload: { planId: one.plan!.planId, optionId: "street-1" },
+      payload: { planId: one.plan!.planId, optionId: `v1-${STEINWAY_A.zoneId}` },
     });
     expect(confirm.statusCode).toBe(200);
     const items = (
@@ -588,37 +566,14 @@ describe("independent review fixes: trimming and Activity", () => {
   test("a street plan gives way to its session once the car parks there; plan rows carry no charge", async () => {
     const t = makeTestApp({
       candidates: [STEINWAY_A],
-      assistantModel: scripted([
-        tool("t1", "quote_street", {
-          lat: 40.7784,
-          lng: -73.9819,
-          duration_minutes: 60,
-          when: "2026-01-05T14:00:00-05:00",
-        }),
-        tool("t2", "propose_plan", {
-          plan: {
-            kind: "single_spot",
-            options: [
-              {
-                id: "street-1",
-                type: "street",
-                label: "Steinway St",
-                priceUsd: 2.15,
-                durationMinutes: 60,
-                zoneId: STEINWAY_A.zoneId,
-                recommended: true,
-              },
-            ],
-          },
-        }),
-      ]),
+      assistantModel: scripted(PROPOSE_STREET),
     });
     const one = await say(t.app, "park me here for an hour");
     await t.app.inject({
       method: "POST",
       url: "/assistant/confirm",
       headers: HEADERS,
-      payload: { planId: one.plan!.planId, optionId: "street-1" },
+      payload: { planId: one.plan!.planId, optionId: `v1-${STEINWAY_A.zoneId}` },
     });
     const activity = async () =>
       (await t.app.inject({ method: "GET", url: "/wallet/activity", headers: HEADERS })).json()

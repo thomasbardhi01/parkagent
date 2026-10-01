@@ -5,13 +5,17 @@
  * at Seaport at 7 PM near Lola 42 for three hours". The past-window guard
  * bounced 7 PM today and told the model to recompute from the current
  * time, and the card read "8:11–11:11 PM". Now the loop states the reading
- * on the message (requestedTime.ts), the quote tools and propose_plan
- * refuse a window that moves it, the card says what it assumed, and a
- * question about it comes with its two answers.
+ * on the message (requestedTime.ts), the searches and propose_plan refuse
+ * a window that moves it, the card says what it assumed, and a question
+ * about it comes with its two answers.
+ *
+ * Since FR-43 the window is the REQUEST's: a search for "now" is a request
+ * with no start, and the fix the refusal names is update_request.
  */
 import { describe, expect, test } from "vitest";
 
 import type { ModelClient, ModelResponse, ModelTurn } from "../src/services/assistant/loop.js";
+import type { GeocoderProvider } from "../src/services/assistant/geocoder.js";
 import { requestedTimeIn } from "../src/services/assistant/requestedTime.js";
 import { API_KEY, BOYLSTON_BOS, makeTestApp } from "./helpers.js";
 
@@ -45,26 +49,42 @@ const text = (t: string): ModelResponse => ({
   stopReason: "end_turn",
 });
 
-const quote = (id: string, when: string, minutes: number) =>
-  tool(id, "quote_street", { lat: LOLA.lat, lng: LOLA.lng, duration_minutes: minutes, when });
+/** The place the phrases name, as the geocoder knows it. */
+const geocoder: GeocoderProvider = {
+  async geocode() {
+    return {
+      ok: true,
+      results: [
+        {
+          lat: LOLA.lat,
+          lng: LOLA.lng,
+          displayName: "LoLa 42, 22 Liberty Dr, Seaport",
+          city: "bos",
+          name: "LoLa 42",
+          address: "22 Liberty Dr",
+          area: "Seaport",
+          areaNames: ["Seaport", "Boston"],
+          kind: "poi",
+        },
+      ],
+    };
+  },
+};
 
-const propose = (id: string, startsAt: string | null, minutes: number) =>
+const place = (id: string) => tool(id, "geocode_place", { query: "Lola 42 Seaport" });
+/** Put the stay — and, when given, the start — on the request. */
+const edit = (id: string, minutes: number | null, startsAt?: string) =>
+  tool(id, "update_request", {
+    ...(minutes !== null ? { durationMinutes: minutes } : {}),
+    ...(startsAt ? { startsAt } : {}),
+  });
+const quote = (id: string) => tool(id, "quote_street", {});
+/** Propose the one block by the id a search at `version` gave it. */
+const propose = (id: string, version: number) =>
   tool(id, "propose_plan", {
     plan: {
       kind: "single_spot",
-      destination: LOLA,
-      options: [
-        {
-          id: "street-1",
-          type: "street",
-          label: "Boylston St",
-          priceUsd: 0,
-          durationMinutes: minutes,
-          zoneId: BOYLSTON_BOS.zoneId,
-          ...(startsAt ? { startsAt } : {}),
-          recommended: true,
-        },
-      ],
+      options: [{ id: `v${version}-${BOYLSTON_BOS.zoneId}`, label: "Boylston St" }],
     },
   });
 
@@ -110,25 +130,30 @@ async function send(
   return res.json();
 }
 
+const app = (model: { client: ModelClient }, now: Date) =>
+  makeTestApp({
+    assistantModel: model.client,
+    candidates: [BOYLSTON_BOS],
+    geocoder,
+    now: () => now,
+  });
+
 describe("a requested time that has already passed today", () => {
   // The nightly's own moment: Sunday 8:11 PM, "at 7 PM".
   const NOW = new Date("2026-09-27T20:11:00-04:00");
-  const NOW_ISO = "2026-09-27T20:11:00-04:00";
   const TOMORROW_7 = "2026-09-28T19:00:00-04:00";
 
-  test("is read as tomorrow, never moved to now: both guards refuse now, and the card says it assumed", async () => {
+  test("is read as tomorrow, never moved to now: a search for now is refused, and the card says it assumed", async () => {
     const model = recording([
-      quote("q1", NOW_ISO, 180), // the model reaches for "now"…
-      quote("q2", TOMORROW_7, 180), // …is told the next occurrence, and uses it
-      propose("p1", NOW_ISO, 180), // a plan for now is refused too
-      propose("p2", TOMORROW_7, 180),
+      place("g1"), // → request version 1
+      edit("u1", 180), // the model reaches for "now": no start → version 2
+      quote("q1"), // …and the search is refused
+      edit("u2", null, TOMORROW_7), // told the next occurrence, it sets it → version 3
+      quote("q2"),
+      propose("p1", 3),
       text("Here are your options for tomorrow evening."),
     ]);
-    const t = makeTestApp({
-      assistantModel: model.client,
-      candidates: [BOYLSTON_BOS],
-      now: () => NOW,
-    });
+    const t = app(model, NOW);
     const out = await send(t, DEVICE_TEST);
 
     // What the model was told, before any tool: it has passed, and when
@@ -138,19 +163,48 @@ describe("a requested time that has already passed today", () => {
     expect(told).toContain("already passed");
     expect(told).toContain(TOMORROW_7);
 
-    // A quote for now is refused with the requested time's next occurrence
-    // and the question to ask instead…
-    const quoteBounce = lastToolResult(model.seen[1]!);
+    // A search for now is refused with the requested time's next
+    // occurrence, the question to ask instead, and where to put the time.
+    const quoteBounce = lastToolResult(model.seen[3]!);
     expect(quoteBounce["error"]).toBe("requested_time_moved");
     expect(String(quoteBounce["instruction"])).toContain(TOMORROW_7);
     expect(String(quoteBounce["instruction"])).toContain('"Tomorrow at 7 PM" / "Now"');
     expect(String(quoteBounce["instruction"])).not.toContain("from the current time");
-    // …and so is a plan that starts now.
-    expect(lastToolResult(model.seen[3]!)["error"]).toBe("requested_time_moved");
-    expect(t.state.decisions.filter((d) => d.rule === "requested_time_moved")).toHaveLength(2);
+    expect(String(quoteBounce["instruction"])).toContain("update_request (startsAt)");
+    expect(t.state.decisions.filter((d) => d.rule === "requested_time_moved")).toHaveLength(1);
 
     // The card: tomorrow at 7, and it says so.
     expect(out.plan).not.toBeNull();
+    expect(out.plan!.plan.options[0]!.startsAt).toBe(TOMORROW_7);
+    expect(out.plan!.plan.assumptions).toBe(
+      "Assuming tomorrow, 7:00–10:00 PM, near LoLa 42, Seaport",
+    );
+  });
+
+  test("a plan from a search made before the time was named is refused too", async () => {
+    const model = recording([
+      // Turn one names no time: searching now is right.
+      place("g1"),
+      edit("u1", 180),
+      quote("q1"),
+      text("Street or a garage?"),
+      text("Street or a garage?"),
+      // Turn two names 7 PM. The request hasn't changed, so the earlier
+      // search is still its latest — and it is for now.
+      propose("p1", 2),
+      edit("u2", null, TOMORROW_7),
+      quote("q2"),
+      propose("p2", 3),
+    ]);
+    const t = app(model, NOW);
+    const first = await send(t, "Find me parking near Lola 42 for three hours");
+    expect(first.plan).toBeNull();
+    const out = await send(t, "street, at 7 PM", first.conversationId);
+
+    const bounce = lastToolResult(model.seen[6]!);
+    expect(bounce["error"]).toBe("requested_time_moved");
+    expect(String(bounce["instruction"])).toContain(TOMORROW_7);
+    expect(String(bounce["instruction"])).toContain("update_request (startsAt)");
     expect(out.plan!.plan.options[0]!.startsAt).toBe(TOMORROW_7);
     expect(out.plan!.plan.assumptions).toBe(
       "Assuming tomorrow, 7:00–10:00 PM, near LoLa 42, Seaport",
@@ -161,15 +215,13 @@ describe("a requested time that has already passed today", () => {
     const model = recording([
       text("7 PM has already passed today — do you want tomorrow at 7 PM, or now?"),
       // The user taps "Now": no time in that message, so now is theirs.
-      quote("q1", NOW_ISO, 180),
-      propose("p1", null, 180),
+      place("g1"),
+      edit("u1", 180),
+      quote("q1"),
+      propose("p1", 2),
       text("Here's what's open now."),
     ]);
-    const t = makeTestApp({
-      assistantModel: model.client,
-      candidates: [BOYLSTON_BOS],
-      now: () => NOW,
-    });
+    const t = app(model, NOW);
     const asked = await send(t, DEVICE_TEST);
     expect(asked.plan).toBeNull();
     expect(asked.suggestions).toEqual([
@@ -180,21 +232,20 @@ describe("a requested time that has already passed today", () => {
     const now = await send(t, "Now", asked.conversationId);
     expect(userMessage(model.seen[1]!.slice(-1))).not.toContain("[requested time");
     expect(now.plan).not.toBeNull();
+    expect(now.plan!.plan.options[0]!.startsAt).toBeUndefined();
     expect(now.plan!.plan.assumptions).toBe("Now–11:11 PM, near LoLa 42, Seaport");
     expect(t.state.decisions.some((d) => d.rule === "requested_time_moved")).toBe(false);
   });
 
   test("a day the user named is theirs: no reading, and the card says the day plainly", async () => {
     const model = recording([
-      quote("q1", TOMORROW_7, 180),
-      propose("p1", TOMORROW_7, 180),
+      place("g1"),
+      edit("u1", 180, TOMORROW_7),
+      quote("q1"),
+      propose("p1", 2),
       text("Here are your options."),
     ]);
-    const t = makeTestApp({
-      assistantModel: model.client,
-      candidates: [BOYLSTON_BOS],
-      now: () => NOW,
-    });
+    const t = app(model, NOW);
     const out = await send(t, "Find me parking near Lola 42 tomorrow at 7 PM for three hours");
     expect(userMessage(model.seen[0]!)).not.toContain("[requested time");
     expect(out.plan!.plan.assumptions).toBe("Tomorrow 7:00–10:00 PM, near LoLa 42, Seaport");
@@ -204,31 +255,27 @@ describe("a requested time that has already passed today", () => {
 describe("a requested time later today", () => {
   // Monday 3 PM, "at 7 PM": tonight, as asked.
   const NOW = new Date("2026-09-28T15:00:00-04:00");
-  const NOW_ISO = "2026-09-28T15:00:00-04:00";
   const TODAY_7 = "2026-09-28T19:00:00-04:00";
 
-  test("is planned for exactly that time: a quote or plan for now is refused", async () => {
+  test("is planned for exactly that time: a search for now is refused", async () => {
     const model = recording([
-      quote("q1", NOW_ISO, 180),
-      quote("q2", TODAY_7, 180),
-      propose("p1", NOW_ISO, 180),
-      propose("p2", TODAY_7, 180),
+      place("g1"),
+      edit("u1", 180),
+      quote("q1"),
+      edit("u2", null, TODAY_7),
+      quote("q2"),
+      propose("p1", 3),
       text("Here are your options."),
     ]);
-    const t = makeTestApp({
-      assistantModel: model.client,
-      candidates: [BOYLSTON_BOS],
-      now: () => NOW,
-    });
+    const t = app(model, NOW);
     const out = await send(t, DEVICE_TEST);
 
     const told = userMessage(model.seen[0]!);
     expect(told).toContain("[requested time: 7 PM — later today");
     expect(told).toContain(TODAY_7);
-    const bounce = lastToolResult(model.seen[1]!);
+    const bounce = lastToolResult(model.seen[3]!);
     expect(bounce["error"]).toBe("requested_time_moved");
     expect(String(bounce["instruction"])).toContain("don't move the time they asked for");
-    expect(lastToolResult(model.seen[3]!)["error"]).toBe("requested_time_moved");
 
     expect(out.plan!.plan.options[0]!.startsAt).toBe(TODAY_7);
     // Today, as asked: no day, nothing assumed.
@@ -239,28 +286,24 @@ describe("a requested time later today", () => {
 describe('"tonight" asked after midnight', () => {
   // Monday 1:30 AM: "tonight" is Monday evening, not the night still going.
   const NOW = new Date("2026-09-28T01:30:00-04:00");
-  const NOW_ISO = "2026-09-28T01:30:00-04:00";
   const EVENING_7 = "2026-09-28T19:00:00-04:00";
 
   test("means this coming evening: now is refused, and the card says it assumed the evening", async () => {
     const model = recording([
-      quote("q1", NOW_ISO, 120),
-      quote("q2", EVENING_7, 120),
-      propose("p1", NOW_ISO, 120),
-      propose("p2", EVENING_7, 120),
+      place("g1"),
+      edit("u1", 120),
+      quote("q1"),
+      edit("u2", null, EVENING_7),
+      quote("q2"),
+      propose("p1", 3),
       text("Here are your options for this evening."),
     ]);
-    const t = makeTestApp({
-      assistantModel: model.client,
-      candidates: [BOYLSTON_BOS],
-      now: () => NOW,
-    });
+    const t = app(model, NOW);
     const out = await send(t, "Find me street parking near Lola 42 tonight for two hours");
 
     const told = userMessage(model.seen[0]!);
     expect(told).toContain('[requested time: "tonight", asked at 1:30 AM');
     expect(told).toContain("this coming evening");
-    expect(lastToolResult(model.seen[1]!)["error"]).toBe("requested_time_moved");
     expect(lastToolResult(model.seen[3]!)["error"]).toBe("requested_time_moved");
 
     expect(out.plan!.plan.options[0]!.startsAt).toBe(EVENING_7);
@@ -271,11 +314,7 @@ describe('"tonight" asked after midnight', () => {
 
   test("a question about it offers this evening or now", async () => {
     const model = recording([text("Do you mean this evening, or right now?")]);
-    const t = makeTestApp({
-      assistantModel: model.client,
-      candidates: [BOYLSTON_BOS],
-      now: () => NOW,
-    });
+    const t = app(model, NOW);
     const asked = await send(t, "parking near Fenway tonight");
     expect(asked.suggestions).toEqual([
       { label: "This evening", reply: "This evening" },

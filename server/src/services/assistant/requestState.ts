@@ -362,12 +362,27 @@ export function applyPatch(
       ? [{ field: "intent", requested: patch.intent, applied: derived.intent, why: derived.why }]
       : [];
 
+  const committed = commit(state, next, utterance, now);
+  return { ok: true, state: committed.state, changed: committed.changed, overrides };
+}
+
+/**
+ * What `next` changed of `state`, on the record: the version bumped by
+ * one and a log entry per changed field. Nothing changed → `state` itself,
+ * version and log as they were.
+ */
+function commit(
+  state: RequestState,
+  next: RequestState,
+  utterance: string,
+  now: Date,
+): { state: RequestState; changed: string[] } {
   const changes = DIFFED_FIELDS.map((field) => ({
     field,
     from: read(state, field),
     to: read(next, field),
   })).filter((c) => !sameValue(c.from, c.to));
-  if (changes.length === 0) return { ok: true, state, changed: [], overrides };
+  if (changes.length === 0) return { state, changed: [] };
 
   const version = state.version + 1;
   const said = oneLine(utterance, MAX_UTTERANCE);
@@ -384,7 +399,69 @@ export function applyPatch(
       at,
     })),
   ].slice(-MAX_LOG_ENTRIES);
-  return { ok: true, state: next, changed: changes.map((c) => c.field), overrides };
+  return { state: next, changed: changes.map((c) => c.field) };
+}
+
+/**
+ * Record what the server found for a place (FR-43): the words it looked
+ * up, and either the one place they mean or the several they could. This
+ * is the only writer of `place.resolved` and `place.candidates` — a patch
+ * can't carry them. The same rules as a patch: the version bumps once if
+ * anything changed, with a log entry per field, and looking up the place
+ * the request already holds changes nothing.
+ */
+export function applyPlaceResolution(
+  state: RequestState,
+  found:
+    { query: string; resolved: ResolvedPlace } | { query: string; candidates: PlaceCandidate[] },
+  utterance: string,
+  now: Date,
+): { state: RequestState; changed: string[] } {
+  const next = cloneState(state);
+  const query = oneLine(found.query, MAX_PLACE_QUERY);
+  next.place = {
+    query: query.length > 0 && !sameQuery(query, next.place.query) ? query : next.place.query,
+    resolved: "resolved" in found ? { ...found.resolved } : null,
+    // No candidates is "looked up, found nothing": the words stay, so the
+    // request still says a place was named.
+    candidates:
+      "candidates" in found && found.candidates.length > 0
+        ? found.candidates.map((c) => ({ ...c }))
+        : null,
+  };
+  next.intent = intentFor(next, now).intent;
+  return commit(state, next, utterance, now);
+}
+
+/**
+ * A tap on one of the places the request couldn't choose between. A chip
+ * sends its `reply` verbatim as the user's next message, so when that
+ * message IS one of the request's candidates, the choice is the user's and
+ * the place is that candidate — taken from the request itself, with no
+ * lookup and nothing for the model to get wrong. Any other message leaves
+ * the request as it was.
+ */
+export function resolveTappedCandidate(
+  state: RequestState,
+  message: string,
+  now: Date,
+): RequestState {
+  const candidates = state.place.candidates;
+  if (state.place.resolved || !candidates?.length) return state;
+  const said = message.replace(/\s+/g, " ").trim().toLowerCase();
+  const picked = candidates.find(
+    (c) => c.reply.trim().toLowerCase() === said || c.label.trim().toLowerCase() === said,
+  );
+  if (!picked) return state;
+  return applyPlaceResolution(
+    state,
+    {
+      query: picked.reply,
+      resolved: { lat: picked.lat, lng: picked.lng, label: picked.label, city: null },
+    },
+    message,
+    now,
+  ).state;
 }
 
 // ---------------------------------------------------------------------------

@@ -338,13 +338,16 @@ describe("adversarial: sensible answer, no plan minted", () => {
       garage: garageProvider(),
       now: NOW,
     });
-    const out = await tools.execute(CTX, "quote_street", {
-      lat: 42.35,
-      lng: -71.08,
-      duration_minutes: 60,
-      when: "2020-01-01T10:00:00-05:00",
+    // The start is the request's now: a past one is refused at the search.
+    const ctx: ToolContext = { ...CTX, location: { lat: 42.35, lng: -71.08 } };
+    await tools.execute(ctx, "update_request", {
+      startsAt: "2020-01-01T10:00:00-05:00",
+      durationMinutes: 60,
     });
+    const out = await tools.execute(ctx, "quote_street", {});
     expect(out.result).toMatchObject({ error: "window_in_the_past" });
+    expect((out.result as { instruction: string }).instruction).toContain("update_request");
+    expect(ctx.lastSearch).toBeUndefined();
   });
 
   test("budget zero: any itinerary busts it and is refused", async () => {

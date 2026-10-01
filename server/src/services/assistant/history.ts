@@ -139,9 +139,12 @@ export function conversationOutcome(
         at: confirmed.confirmedAt!.toISOString(),
       };
     }
-    const option = (confirmed.plan as SingleSpotPlan).options.find(
-      (o) => o.id === confirmed.confirmedOptionId,
-    );
+    const option =
+      confirmed.kind === "single_spot"
+        ? (confirmed.plan as SingleSpotPlan).options.find(
+            (o) => o.id === confirmed.confirmedOptionId,
+          )
+        : undefined;
     if (option) {
       return option.type === "garage"
         ? {
@@ -167,6 +170,17 @@ export function conversationOutcome(
     return {
       kind: "proposed",
       label: `Day plan proposed — ${day.stops.length} stops, ${money(day.totalUsd)}`,
+      amountUsd: null,
+      planId: latest.id,
+      at: latest.createdAt.toISOString(),
+    };
+  }
+  // A "no" card proposed nothing: it says so, and never reads as an offer.
+  if (latest.kind !== "single_spot") {
+    return {
+      kind: "proposed",
+      label:
+        latest.kind === "none_meets" ? "Nothing met the request" : "No parking data for that place",
       amountUsd: null,
       planId: latest.id,
       at: latest.createdAt.toISOString(),

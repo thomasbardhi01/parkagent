@@ -1,11 +1,12 @@
 /**
- * PR #117 review findings, pinned:
+ * PR #117 review findings, pinned (and, since FR-43, held by the request
+ * and its latest search rather than by per-field grounding):
  *
- * - Grounding (destination, pins, provenance) comes from the stored
- *   TRANSCRIPT, not a per-process map — so it survives a restart, holds
- *   across machines, and never crosses from one user's conversation into
- *   another's.
- * - Street options pin at the point THEIR zone was quoted.
+ * - What a card is grounded in — its destination, pins, provenance — comes
+ *   from the conversation's stored ROW (the request and the transcript),
+ *   not a per-process map: it survives a restart, holds across machines,
+ *   and never crosses from one user's conversation into another's.
+ * - Street options pin at THEIR block's own curb.
  * - Garage options are search results or they don't reach a card: price,
  *   link, and source come from the search, never model text; the handoff
  *   note names the source the option came from.
@@ -19,12 +20,13 @@
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
 import type { ModelClient, ModelResponse, ModelTurn } from "../src/services/assistant/loop.js";
-import { groundingIn } from "../src/services/assistant/loop.js";
 import type { SingleSpotPlan } from "../src/services/assistant/plans.js";
+import { lastSearchIn } from "../src/services/assistant/search.js";
+import type { ToolContext } from "../src/services/assistant/tools.js";
 import type { GarageOption, GarageProvider } from "../src/services/garage/garageProvider.js";
 import { makeMultiGarageProvider } from "../src/services/garage/multiProvider.js";
 import type { GeocoderProvider } from "../src/services/assistant/geocoder.js";
-import type { Candidate } from "../src/services/zoneLookup.js";
+import type { NearbyZone } from "../src/services/zoneLookup.js";
 import {
   API_KEY,
   BOYLSTON_BOS,
@@ -66,6 +68,8 @@ const geocoder: GeocoderProvider = {
   },
 };
 
+/** A street option as a stored plan carries it (the token tests seed
+ * plans directly). */
 const streetOption = (extra: Record<string, unknown> = {}) => ({
   id: "s1",
   type: "street",
@@ -78,21 +82,27 @@ const streetOption = (extra: Record<string, unknown> = {}) => ({
   ...extra,
 });
 
-describe("grounding lives in the transcript", () => {
+/** propose_plan for the one street block, by the id a search at `version`
+ * gave it. */
+const proposeStreet = (id: string, version: number) =>
+  toolUse(id, "propose_plan", {
+    plan: {
+      kind: "single_spot",
+      options: [{ id: `v${version}-${BOYLSTON_BOS.zoneId}`, label: "Boylston meter" }],
+    },
+  });
+
+describe("grounding lives in the conversation's row", () => {
   test("a later turn's plan keeps the earlier turn's destination (no in-memory state)", async () => {
     const model = scriptedModel([
       toolUse("t1", "geocode_place", { query: "Newbury Street" }),
-      toolUse("t2", "quote_street", {
-        lat: NEWBURY.lat,
-        lng: NEWBURY.lng,
-        duration_minutes: 60,
-        when: MONDAY_2PM,
-      }),
-      toolUse("t3", "propose_plan", { plan: { kind: "single_spot", options: [streetOption()] } }),
-      // Turn two re-proposes without geocoding again.
-      toolUse("t4", "propose_plan", {
-        plan: { kind: "single_spot", options: [streetOption({ durationMinutes: 90 })] },
-      }),
+      toolUse("t2", "quote_street", {}),
+      proposeStreet("t3", 1),
+      // Turn two changes the stay and searches again — without geocoding
+      // again: the place is the request's.
+      toolUse("t4", "update_request", { durationMinutes: 90 }),
+      toolUse("t5", "quote_street", {}),
+      proposeStreet("t6", 2),
     ]);
     const first = makeTestApp({
       candidates: [BOYLSTON_BOS],
@@ -104,13 +114,13 @@ describe("grounding lives in the transcript", () => {
       method: "POST",
       url: "/assistant/message",
       headers: HEADERS,
-      payload: { text: "parking on Newbury Street for an hour" },
+      payload: { text: "parking on Newbury Street" },
     });
     expect(one.statusCode).toBe(200);
     const conversationId = one.json().conversationId as string;
 
-    // "A restart": a fresh app (fresh AssistantTools, empty caches) over
-    // the same database rows.
+    // "A restart": a fresh app (fresh AssistantTools, empty caches, and no
+    // geocoder at all) over the same database rows.
     const second = makeTestApp({
       candidates: [BOYLSTON_BOS],
       assistantModel: model,
@@ -137,13 +147,8 @@ describe("grounding lives in the transcript", () => {
   test("another user's conversation id is refused before any model call, and their transcript is untouched", async () => {
     const model = scriptedModel([
       toolUse("t1", "geocode_place", { query: "Newbury Street" }),
-      toolUse("t2", "quote_street", {
-        lat: NEWBURY.lat,
-        lng: NEWBURY.lng,
-        duration_minutes: 60,
-        when: MONDAY_2PM,
-      }),
-      toolUse("t3", "propose_plan", { plan: { kind: "single_spot", options: [streetOption()] } }),
+      toolUse("t2", "quote_street", {}),
+      proposeStreet("t3", 1),
       { content: [{ type: "text", text: "unused" }], stopReason: "end_turn" },
     ]);
     const t = makeTestApp({
@@ -173,101 +178,118 @@ describe("grounding lives in the transcript", () => {
     expect(JSON.stringify(t.state.conversations)).toBe(before);
   });
 
-  test("groundingIn reads quotes with their points, the latest place, and the latest search", () => {
+  test("lastSearchIn reads the latest search at the request's version, and nothing else", () => {
+    const search = (stateVersion: number, id: string) => ({
+      stateVersion,
+      verdict: "meets",
+      searched: ["street"],
+      searchedAt: "2026-01-05T19:00:00.000Z",
+      place: { lat: 42.1, lng: -71.1, label: null, source: "default" },
+      window: {
+        startsAt: "2026-01-05T14:00:00-05:00",
+        endsAt: "2026-01-05T15:00:00-05:00",
+        durationMinutes: 60,
+        startsNow: true,
+        durationSource: "user",
+      },
+      satisfying: [
+        {
+          id,
+          type: "street",
+          label: "Street — Zone 1",
+          priceUsd: 4.1,
+          walkMinutes: 2,
+          distanceM: 90,
+          durationMinutes: 60,
+          fetchedAt: "2026-01-05T19:00:00.000Z",
+          zoneId: "bos-a",
+        },
+      ],
+      nearMisses: [],
+    });
+    const result = (tool_use_id: string, content: unknown) => ({
+      type: "tool_result" as const,
+      tool_use_id,
+      content: typeof content === "string" ? content : JSON.stringify(content),
+    });
     const turns: ModelTurn[] = [
       {
         role: "assistant",
         content: [
-          { type: "tool_use", id: "g1", name: "geocode_place", input: { query: "a" } },
-          { type: "tool_use", id: "q1", name: "quote_street", input: { lat: 42.1, lng: -71.1 } },
+          { type: "tool_use", id: "q1", name: "quote_street", input: {} },
           { type: "tool_use", id: "s1", name: "search_garages", input: {} },
-          { type: "tool_use", id: "g2", name: "geocode_place", input: { query: "b" } },
+          { type: "tool_use", id: "q2", name: "quote_street", input: {} },
+          { type: "tool_use", id: "q3", name: "quote_street", input: {} },
+          { type: "tool_use", id: "q4", name: "quote_street", input: {} },
+          // A search result's shape under another tool's name is not a search.
+          { type: "tool_use", id: "p1", name: "propose_plan", input: {} },
         ],
       },
       {
         role: "user",
         content: [
-          {
-            type: "tool_result",
-            tool_use_id: "g1",
-            content: JSON.stringify({
-              found: true,
-              results: [{ lat: 1, lng: 2, displayName: "First", city: "bos" }],
-            }),
-          },
-          {
-            type: "tool_result",
-            tool_use_id: "q1",
-            content: JSON.stringify({ found: true, zoneId: "bos-a", costUsd: 4.1 }),
-          },
-          {
-            type: "tool_result",
-            tool_use_id: "s1",
-            content: JSON.stringify({
-              provider: "spothero",
-              searchedAt: "2026-01-05T19:00:00.000Z",
-            }),
-          },
-          // A miss doesn't replace the place that was found.
-          { type: "tool_result", tool_use_id: "g2", content: JSON.stringify({ found: false }) },
+          result("q1", search(3, "v3-first")),
+          result("s1", search(3, "v3-latest")),
+          // Another version: an edit came between.
+          result("q2", search(4, "v4-later")),
+          // A refusal, and a result from before FR-43, are not searches.
+          result("q3", { error: "place_unresolved" }),
+          result("q4", { found: true, options: [{ zoneId: "bos-a", costUsd: 4.1 }] }),
+          result("p1", search(3, "v3-smuggled")),
+          // Its tool_use was trimmed away with the context: skipped.
+          result("gone", search(3, "v3-orphan")),
+          result("q1", "not json"),
         ],
       },
     ];
-    expect(groundingIn(turns)).toEqual({
-      streetQuotes: [{ zoneId: "bos-a", costUsd: 4.1, lat: 42.1, lng: -71.1 }],
-      geocode: { lat: 1, lng: 2, label: "First" },
-      garageSearch: { provider: "spothero", searchedAt: "2026-01-05T19:00:00.000Z" },
-    });
+    expect(lastSearchIn(turns, 3)?.satisfying.map((o) => o.id)).toEqual(["v3-latest"]);
+    expect(lastSearchIn(turns, 4)?.satisfying.map((o) => o.id)).toEqual(["v4-later"]);
+    expect(lastSearchIn(turns, 5)).toBeNull();
+    expect(lastSearchIn([], 0)).toBeNull();
   });
 });
 
 describe("street pins", () => {
-  test("two street options each pin at the point their own zone was quoted", async () => {
-    const west: Candidate = {
+  test("two street options each pin at their own block's curb", async () => {
+    const HERE = { lat: 42.35, lng: -71.08 };
+    const block = (zoneId: string, street: string, rate: number, east: number): NearbyZone => ({
       ...BOYLSTON_BOS,
-      zoneId: "bos-west",
-      providerZoneNumber: "111",
-      rateFirstHourUsd: 2,
-      rateAdditionalHourUsd: 2,
+      zoneId,
+      providerZoneNumber: "",
+      street,
+      rateFirstHourUsd: rate,
+      rateAdditionalHourUsd: rate,
       hours: HOURS_MON_SAT,
-    };
-    const east: Candidate = {
-      ...west,
-      zoneId: "bos-east",
-      providerZoneNumber: "222",
-      rateFirstHourUsd: 3,
-      rateAdditionalHourUsd: 3,
-    };
-    let next: Candidate = west;
-    const t = makeTestApp({ candidates: [west], now: () => NOW });
-    // Serve whichever zone the test says is at the point being quoted.
-    t.deps.assistantTools!["deps"].findCandidates = async () => [next];
-    const ctx = { userId: "u1", conversationId: "c1" };
-    await t.deps.assistantTools!.execute(ctx, "quote_street", {
-      lat: 42.1,
-      lng: -71.1,
-      duration_minutes: 60,
-      when: MONDAY_2PM,
-    });
-    next = east;
-    await t.deps.assistantTools!.execute(ctx, "quote_street", {
-      lat: 42.2,
-      lng: -71.2,
-      duration_minutes: 60,
-      when: MONDAY_2PM,
-    });
-    const out = await t.deps.assistantTools!.execute(ctx, "propose_plan", {
-      plan: {
-        kind: "single_spot",
-        options: [
-          streetOption({ id: "w", zoneId: "bos-west", priceUsd: 2 }),
-          streetOption({ id: "e", zoneId: "bos-east", priceUsd: 3, recommended: false }),
+      distanceM: 100,
+      containsPoint: false,
+      // A north–south block `east` degrees of longitude from the place.
+      centerline: [
+        [
+          [HERE.lng + east, HERE.lat - 0.001],
+          [HERE.lng + east, HERE.lat + 0.001],
         ],
-      },
+      ],
+    });
+    const t = makeTestApp({
+      nearbyZones: [
+        block("bos-west", "WEST ST", 2, -0.001),
+        block("bos-east", "EAST ST", 3, 0.001),
+      ],
+      now: () => NOW,
+    });
+    const ctx: ToolContext = { userId: "u1", conversationId: "c1", location: HERE };
+    await t.deps.assistantTools!.execute(ctx, "update_request", { durationMinutes: 60 });
+    await t.deps.assistantTools!.execute(ctx, "quote_street", {});
+    const out = await t.deps.assistantTools!.execute(ctx, "propose_plan", {
+      plan: { kind: "single_spot", options: [{ id: "v1-bos-west" }, { id: "v1-bos-east" }] },
     });
     const [w, e] = (out.endTurn!.plan as SingleSpotPlan).options;
-    expect([w!.lat, w!.lng]).toEqual([42.1, -71.1]);
-    expect([e!.lat, e!.lng]).toEqual([42.2, -71.2]);
+    expect([w!.zoneId, e!.zoneId]).toEqual(["bos-west", "bos-east"]);
+    // Each at the nearest point of ITS OWN centerline: due west, due east.
+    expect(w!.lat).toBeCloseTo(HERE.lat, 6);
+    expect(w!.lng).toBeCloseTo(HERE.lng - 0.001, 6);
+    expect(e!.lat).toBeCloseTo(HERE.lat, 6);
+    expect(e!.lng).toBeCloseTo(HERE.lng + 0.001, 6);
   });
 });
 
@@ -307,52 +329,51 @@ function cachedGarages(options: GarageOption[]): GarageProvider & { queries: unk
   };
 }
 
-const garageOption = (extra: Record<string, unknown> = {}) => ({
-  id: "o1",
-  type: "garage",
-  label: "Garage pw-1",
-  detail: "",
-  priceUsd: 9.99,
-  durationMinutes: 120,
-  garageOptionId: "pw-1",
-  recommended: true,
-  ...extra,
-});
+/** A phone near the garages: the place a request that names none searches. */
+const NEAR_GARAGES = { lat: 42.3505, lng: -71.08 };
+
+/** A context that has searched garages once (the request is at version 0). */
+async function searchedGarages(t: ReturnType<typeof makeTestApp>): Promise<ToolContext> {
+  const ctx: ToolContext = { userId: "u1", conversationId: "c1", location: NEAR_GARAGES };
+  await t.deps.assistantTools!.execute(ctx, "search_garages", {});
+  return ctx;
+}
 
 describe("garage options are search results", () => {
   test("an option no search returned is bounced back to the model", async () => {
     const t = makeTestApp({ garage: cachedGarages([garage("pw-1", "parkwhiz")]), now: () => NOW });
-    const out = await t.deps.assistantTools!.execute(
-      { userId: "u1", conversationId: "c1" },
-      "propose_plan",
-      { plan: { kind: "single_spot", options: [garageOption({ garageOptionId: "invented" })] } },
-    );
+    const ctx = await searchedGarages(t);
+    const out = await t.deps.assistantTools!.execute(ctx, "propose_plan", {
+      plan: { kind: "single_spot", options: [{ id: "v0-invented", label: "Garage pw-1" }] },
+    });
     expect(out.endTurn).toBeUndefined();
     expect(out.result).toMatchObject({
-      error: "garage_option_ungrounded",
-      optionIds: ["o1"],
+      error: "stale_or_unknown_option",
+      optionIds: ["v0-invented"],
+      validIds: ["v0-pw-1"],
     });
     expect(t.state.assistantPlans).toHaveLength(0);
   });
 
   test("price, link, source, and pin are the search's — model text is replaced", async () => {
     const t = makeTestApp({ garage: cachedGarages([garage("pw-1", "parkwhiz")]), now: () => NOW });
-    const out = await t.deps.assistantTools!.execute(
-      { userId: "u1", conversationId: "c1" },
-      "propose_plan",
-      {
-        plan: {
-          kind: "single_spot",
-          options: [
-            garageOption({
-              deepLink: "https://evil.example/pay",
-              provider: "spothero",
-              priceUsd: 9.99,
-            }),
-          ],
-        },
+    const ctx = await searchedGarages(t);
+    const out = await t.deps.assistantTools!.execute(ctx, "propose_plan", {
+      plan: {
+        kind: "single_spot",
+        options: [
+          {
+            id: "v0-pw-1",
+            label: "Garage pw-1",
+            deepLink: "https://evil.example/pay",
+            provider: "spothero",
+            priceUsd: 9.99,
+            lat: 1,
+            lng: 2,
+          },
+        ],
       },
-    );
+    });
     const option = (out.endTurn!.plan as SingleSpotPlan).options[0]!;
     expect(option).toMatchObject({
       priceUsd: 21.5,
@@ -365,16 +386,15 @@ describe("garage options are search results", () => {
 
   test("a ParkWhiz option's handoff names ParkWhiz, not SpotHero", async () => {
     const t = makeTestApp({ garage: cachedGarages([garage("pw-1", "parkwhiz")]), now: () => NOW });
-    const proposed = await t.deps.assistantTools!.execute(
-      { userId: "u1", conversationId: "c1" },
-      "propose_plan",
-      { plan: { kind: "single_spot", options: [garageOption()] } },
-    );
+    const ctx = await searchedGarages(t);
+    const proposed = await t.deps.assistantTools!.execute(ctx, "propose_plan", {
+      plan: { kind: "single_spot", options: [{ id: "v0-pw-1" }] },
+    });
     const confirm = await t.app.inject({
       method: "POST",
       url: "/assistant/confirm",
       headers: HEADERS,
-      payload: { planId: proposed.endTurn!.planId, optionId: "o1" },
+      payload: { planId: proposed.endTurn!.planId, optionId: "v0-pw-1" },
     });
     expect(confirm.statusCode).toBe(200);
     expect(confirm.json()).toMatchObject({
@@ -422,18 +442,19 @@ describe("model times without an offset are Eastern, on any host", () => {
 
   test("an offset-less future start is pay-on-arrival and stored with its offset", async () => {
     const t = makeTestApp({ candidates: [BOYLSTON_BOS], now: () => NOW });
-    const ctx = { userId: "u1", conversationId: "c1" };
-    await t.deps.assistantTools!.execute(ctx, "quote_street", {
-      lat: 42.35,
-      lng: -71.08,
-      duration_minutes: 60,
-      when: "2026-01-05T17:00:00",
+    const tools = t.deps.assistantTools!;
+    const ctx: ToolContext = {
+      userId: "u1",
+      conversationId: "c1",
+      location: { lat: 42.35, lng: -71.08 },
+    };
+    await tools.execute(ctx, "update_request", {
+      startsAt: "2026-01-05T17:00:00",
+      durationMinutes: 60,
     });
-    const out = await t.deps.assistantTools!.execute(ctx, "propose_plan", {
-      plan: {
-        kind: "single_spot",
-        options: [streetOption({ startsAt: "2026-01-05T17:00:00" })],
-      },
+    await tools.execute(ctx, "quote_street", {});
+    const out = await tools.execute(ctx, "propose_plan", {
+      plan: { kind: "single_spot", options: [{ id: `v1-${BOYLSTON_BOS.zoneId}` }] },
     });
     const option = (out.endTurn!.plan as SingleSpotPlan).options[0]!;
     // 5 PM ET on the fixture Monday: three hours out.
@@ -441,35 +462,35 @@ describe("model times without an offset are Eastern, on any host", () => {
     expect(option.startsAt).toBe("2026-01-05T17:00:00-05:00");
   });
 
-  test("search_garages hands providers one canonical ET window; unreadable and inverted windows bounce", async () => {
+  test("search_garages hands providers one canonical ET window; an unreadable start never reaches them", async () => {
     const garages = cachedGarages([]);
     const t = makeTestApp({ garage: garages, now: () => NOW });
-    const ctx = { userId: "u1", conversationId: "c1" };
-    await t.deps.assistantTools!.execute(ctx, "search_garages", {
-      lat: 42.35,
-      lng: -71.08,
-      starts_at: "2026-01-05T22:00:00Z",
-      ends_at: "2026-01-05T19:00:00",
+    const tools = t.deps.assistantTools!;
+    const ctx: ToolContext = {
+      userId: "u1",
+      conversationId: "c1",
+      location: { lat: 42.35, lng: -71.08 },
+    };
+    // The start in UTC, the stay as minutes: the window is the request's,
+    // so it can't be inverted or end at an unreadable time.
+    await tools.execute(ctx, "update_request", {
+      startsAt: "2026-01-05T22:00:00Z",
+      durationMinutes: 120,
     });
+    await tools.execute(ctx, "search_garages", {});
     expect(garages.queries[0]).toMatchObject({
       startsAt: "2026-01-05T17:00:00-05:00",
       endsAt: "2026-01-05T19:00:00-05:00",
     });
-    const garbled = await t.deps.assistantTools!.execute(ctx, "search_garages", {
-      lat: 42.35,
-      lng: -71.08,
-      starts_at: "tonight at 7",
-      ends_at: "2026-01-05T21:00:00-05:00",
-    });
+    const garbled = await tools.execute(ctx, "update_request", { startsAt: "tonight at 7" });
     expect(garbled.result).toMatchObject({ error: "unreadable_time" });
-    const inverted = await t.deps.assistantTools!.execute(ctx, "search_garages", {
-      lat: 42.35,
-      lng: -71.08,
-      starts_at: "2026-01-05T19:00:00-05:00",
-      ends_at: "2026-01-05T18:00:00-05:00",
+    // The request kept its window, and a search still asks for that one.
+    await tools.execute(ctx, "search_garages", {});
+    expect(garages.queries).toHaveLength(2);
+    expect(garages.queries[1]).toMatchObject({
+      startsAt: "2026-01-05T17:00:00-05:00",
+      endsAt: "2026-01-05T19:00:00-05:00",
     });
-    expect(inverted.result).toMatchObject({ error: "bad_window" });
-    expect(garages.queries).toHaveLength(1);
   });
 });
 

@@ -26,6 +26,7 @@ import type { Policy } from "../policy.js";
 import { priceStay } from "../quote.js";
 import type { Candidate, CandidateFetcher, NearbyZoneFetcher } from "../zoneLookup.js";
 import { applyObservedToCandidates } from "../zoneTermsObserved.js";
+import type { Preference, Rank } from "./requestState.js";
 
 /** Default walking radius: about a 7-minute walk (walkMinutesFor). */
 export const DEFAULT_STREET_RADIUS_M = 400;
@@ -82,7 +83,11 @@ export interface StreetSearch {
   radiusM: number;
   /** Zones in the radius before collapsing blocks of the same street. */
   zonesInRadius: number;
+  /** The five cheapest (then nearest): what an itinerary stop prices from. */
   options: StreetOption[];
+  /** Every block after collapsing, cheapest (then nearest) first: what a
+   * request's search filters and ranks. */
+  all: StreetOption[];
 }
 
 export interface StreetSearchDeps {
@@ -379,8 +384,170 @@ export async function streetOptionsNear(
     seen.add(key);
     return true;
   });
-  const options = collapsed
-    .sort((a, b) => a.costUsd - b.costUsd || a.distanceM - b.distanceM)
-    .slice(0, MAX_OPTIONS);
-  return { radiusM, zonesInRadius: zones.length, options };
+  const sorted = collapsed.sort((a, b) => a.costUsd - b.costUsd || a.distanceM - b.distanceM);
+  return {
+    radiusM,
+    zonesInRadius: zones.length,
+    options: sorted.slice(0, MAX_OPTIONS),
+    all: sorted,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Ranking (FR-43). Pure: the options and the request in, an order out. The
+// model is handed the result and never reorders it.
+// ---------------------------------------------------------------------------
+
+/** What ranking reads of an option, street or garage. */
+export interface RankableOption {
+  id: string;
+  type: "street" | "garage";
+  priceUsd: number;
+  walkMinutes: number;
+  /** Breaks a tie between two options the same whole minutes away. */
+  distanceM?: number | undefined;
+  entryType?: string | undefined;
+}
+
+/** "balanced" prices a minute of walking at this much. */
+export const WALK_USD_PER_MINUTE = 0.5;
+/** What a matched preference takes off an option's score. It reorders;
+ * it never filters, and it never changes the price shown. */
+export const PREFERENCE_BONUS_USD = 1;
+
+/** Whether an option is something the user said they'd like. "covered"
+ * matches nothing yet: no source says whether a garage is covered. */
+function isPreferred(option: RankableOption, prefer: readonly Preference[] | null): boolean {
+  if (!prefer) return false;
+  return prefer.some(
+    (p) =>
+      (p === "valet" && option.entryType === "valet") ||
+      (p === "garage" && option.type === "garage") ||
+      (p === "street" && option.type === "street"),
+  );
+}
+
+/**
+ * The options in rank order:
+ *  - cheapest: price, then walk;
+ *  - closest:  walk, then price;
+ *  - balanced: price + $0.50 per minute of walk (also the order when the
+ *    user asked for none);
+ * with a fixed $1.00 off the score of an option the user prefers. Ties go
+ * to the cheaper, then the nearer (by minutes, then by metres), then the
+ * id, so the order is stable.
+ */
+export function rankOptions<T extends RankableOption>(
+  options: readonly T[],
+  soft: { rank: Rank | null; prefer: readonly Preference[] | null },
+): T[] {
+  const scored = (o: T) => o.priceUsd - (isPreferred(o, soft.prefer) ? PREFERENCE_BONUS_USD : 0);
+  const keys = (o: T): number[] => {
+    switch (soft.rank) {
+      case "cheapest":
+        return [scored(o), o.walkMinutes, o.priceUsd];
+      case "closest":
+        return [o.walkMinutes, scored(o), o.priceUsd];
+      default:
+        return [scored(o) + WALK_USD_PER_MINUTE * o.walkMinutes, o.priceUsd, o.walkMinutes];
+    }
+  };
+  return [...options].sort((a, b) => {
+    const ka = keys(a);
+    const kb = keys(b);
+    for (let i = 0; i < ka.length; i += 1) {
+      // Scores are dollars: compare to the cent, not to float noise.
+      const diff = Math.round((ka[i]! - kb[i]!) * 100);
+      if (diff !== 0) return diff;
+    }
+    const metres = Math.round((a.distanceM ?? 0) - (b.distanceM ?? 0));
+    if (metres !== 0) return metres;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
+}
+
+/** Which of price and walk an option is the best on. */
+export type Axis = "cheapest" | "closest" | "both";
+
+/** What the user asked about ranking: an explicit rank, or a limit on one
+ * of price and walk (a limit on an axis is an ask about that axis). */
+export interface RequestAsk {
+  rank: Rank | null;
+  prefer: readonly Preference[] | null;
+  /** hard.maxPriceUsd is set. */
+  priceLimited: boolean;
+  /** hard.maxWalkMinutes is set. */
+  walkLimited: boolean;
+}
+
+export type Ordered<T> = T & { axis?: Axis; secondary?: true };
+
+/**
+ * The order a search presents options in (decision 8,
+ * docs/decisions/2026-09-29-v1-scope.md):
+ *
+ *  - no ask (no rank, and a limit on neither or both of price and walk):
+ *    the cheapest and the closest lead, each labeled — one entry when one
+ *    option is both — and the rest follow by balanced score;
+ *  - an ask (a rank, or a limit on exactly one axis): the option that best
+ *    honors it comes first, and the best option on the other axis rides
+ *    second as `secondary` — an alternative, never the recommendation.
+ *    "balanced" has two other axes, so both ride along.
+ *
+ * `axis` says what an option truly is among these options (by price and
+ * walk alone, preferences aside), so a label never claims "cheapest" for
+ * an option a preference lifted over a cheaper one.
+ */
+export function orderForRequest<T extends RankableOption>(
+  options: readonly T[],
+  ask: RequestAsk,
+): Ordered<T>[] {
+  if (options.length === 0) return [];
+  const cheapest = rankOptions(options, { rank: "cheapest", prefer: null })[0]!;
+  const closest = rankOptions(options, { rank: "closest", prefer: null })[0]!;
+  const tagged = (o: T, secondary: boolean): Ordered<T> => {
+    const axis: Axis | null =
+      o === cheapest && o === closest
+        ? "both"
+        : o === cheapest
+          ? "cheapest"
+          : o === closest
+            ? "closest"
+            : null;
+    return { ...o, ...(axis ? { axis } : {}), ...(secondary ? { secondary: true as const } : {}) };
+  };
+  const asked: Rank | null =
+    ask.rank ??
+    (ask.priceLimited && !ask.walkLimited
+      ? "cheapest"
+      : ask.walkLimited && !ask.priceLimited
+        ? "closest"
+        : null);
+
+  let leads: { option: T; secondary: boolean }[];
+  let rest: T[];
+  if (asked === null) {
+    leads = [cheapest, closest]
+      .filter((o, i, all) => all.indexOf(o) === i)
+      .map((option) => ({ option, secondary: false }));
+    rest = rankOptions(
+      options.filter((o) => o !== cheapest && o !== closest),
+      { rank: "balanced", prefer: ask.prefer },
+    );
+  } else {
+    const sorted = rankOptions(options, { rank: asked, prefer: ask.prefer });
+    const first = sorted[0]!;
+    const others = (
+      asked === "cheapest" ? [closest] : asked === "closest" ? [cheapest] : [cheapest, closest]
+    ).filter((o, i, all) => o !== first && all.indexOf(o) === i);
+    leads = [
+      { option: first, secondary: false },
+      ...others.map((option) => ({ option, secondary: true })),
+    ];
+    rest = sorted.filter((o) => o !== first && !others.includes(o));
+  }
+  return [
+    ...leads.map(({ option, secondary }) => tagged(option, secondary)),
+    ...rest.map((o) => tagged(o, false)),
+  ];
 }

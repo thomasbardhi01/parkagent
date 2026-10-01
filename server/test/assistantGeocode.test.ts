@@ -35,6 +35,25 @@ beforeEach(() => {
   CTX = { userId: "u1", conversationId: "c1" };
 });
 const NOW = () => new Date("2026-09-23T14:00:00-04:00");
+/** A phone on Newbury Street: where a request that names no place searches. */
+const NEWBURY = { lat: 42.3503, lng: -71.0811 };
+/** The window these tests ask for: 3 PM that day, for `minutes`. */
+const window3pm = (minutes: number) => ({
+  startsAt: "2026-09-23T15:00:00-04:00",
+  durationMinutes: minutes,
+});
+
+/** What a search answers with (services/assistant/search.ts). */
+interface Search {
+  stateVersion: number;
+  satisfying: {
+    id: string;
+    distanceM: number;
+    facts?: { maxStayMinutes: number; clampedMinutes: number; termsSource?: string };
+  }[];
+  garage?: { droppedForDistance?: number; nearestBeyondM?: number };
+  instruction: string;
+}
 
 /** Four real Boston places and their coordinates, as our fake geocoder
  * "knows" them (values are the actual OSM points, rounded). */
@@ -134,18 +153,19 @@ describe("geocode_place resolves the named area, biased to our cities", () => {
   test.each(Object.keys(PLACES))("resolves %s to its Boston coordinates", async (place) => {
     const { tools } = toolsWith({ geocoder: fakeGeocoder() });
     const out = await tools.execute(CTX, "geocode_place", { query: place });
-    const result = out.result as { found: boolean; results: GeocodeResult[] };
+    const result = out.result as { found: boolean; place: GeocodeResult };
     expect(result.found).toBe(true);
-    expect(result.results[0]!.city).toBe("bos");
+    expect(result.place.city).toBe("bos");
     // The resolved point is the place, not (say) the phone's NYC default.
     expect(
-      metersBetween(
-        result.results[0]!.lat,
-        result.results[0]!.lng,
-        PLACES[place]!.lat,
-        PLACES[place]!.lng,
-      ),
+      metersBetween(result.place.lat, result.place.lng, PLACES[place]!.lat, PLACES[place]!.lng),
     ).toBeLessThan(5);
+    // And it is the request's place now: what the searches will search.
+    expect(CTX.requestState?.place.resolved).toMatchObject({
+      lat: PLACES[place]!.lat,
+      lng: PLACES[place]!.lng,
+      city: "bos",
+    });
   });
 
   test("a place in neither city returns found:false, never a fallback point", async () => {
@@ -185,34 +205,18 @@ describe("geocode_place resolves the named area, biased to our cities", () => {
 });
 
 describe("plan cards carry destination, coordinates, and provenance", () => {
-  test("propose_plan backfills what the model dropped, from this conversation's grounding", async () => {
+  test("the card's destination and provenance are the request's place and the search's, whatever the model sent", async () => {
     const { tools, state } = toolsWith({ geocoder: fakeGeocoder(), garage: fakeGarage() });
     const anchor = PLACES["newbury street"]!;
     await tools.execute(CTX, "geocode_place", { query: "newbury street" });
-    await tools.execute(CTX, "search_garages", {
-      lat: anchor.lat,
-      lng: anchor.lng,
-      starts_at: "2026-09-23T15:00:00-04:00",
-      ends_at: "2026-09-23T17:00:00-04:00",
-      within_m: 600,
-    });
-    // The model proposes without destination, provenance, or coords —
-    // the usual case for optional schema fields.
+    await tools.execute(CTX, "update_request", window3pm(120));
+    const search = (await tools.execute(CTX, "search_garages", {})).result as Search;
+    // The model proposes an id and nothing else: no destination,
+    // provenance, or coordinates are its to send.
     const out = await tools.execute(CTX, "propose_plan", {
       plan: {
         kind: "single_spot",
-        options: [
-          {
-            id: "g-near",
-            type: "garage",
-            label: "Garage near",
-            detail: "",
-            priceUsd: 15,
-            durationMinutes: 120,
-            garageOptionId: "near",
-            recommended: true,
-          },
-        ],
+        options: [{ id: `v${search.stateVersion}-near`, label: "Garage near", recommended: true }],
       },
     });
     expect(out.endTurn).toBeDefined();
@@ -224,89 +228,44 @@ describe("plan cards carry destination, coordinates, and provenance", () => {
     expect(plan.destination!.lat).toBeCloseTo(anchor.lat, 4);
     expect(plan.provenance).toMatchObject({ provider: "spothero" });
     expect(plan.provenance!.searchedAt).toBe(NOW().toISOString());
-    // The stored row carries the same enriched plan.
+    // The stored row carries the same plan.
     expect(state.assistantPlans).toHaveLength(1);
   });
 
   test("provenance credits only the sources whose options made the card", async () => {
     // A merged search returns one option from each provider; the plan
     // surfaces only the SpotHero one, so ParkWhiz must not be credited.
+    // (SpotHero's is the cheapest and the closest, so it leads on its own.)
+    const options = (lat: number, lng: number): GarageOption[] => [
+      { ...garageAt("sh-1", lat, lng, 160), provider: "spothero", priceUsd: 12 },
+      { ...garageAt("pw-1", lat, lng, 400), provider: "parkwhiz", priceUsd: 16 },
+    ];
     const merged: GarageProvider = {
       id: "parkwhiz+spothero",
       canReserve: false,
       async search({ lat, lng }) {
-        return {
-          ok: true,
-          fromCache: false,
-          options: [
-            { ...garageAt("sh-1", lat, lng, 200), provider: "spothero" },
-            { ...garageAt("pw-1", lat, lng, 250), provider: "parkwhiz" },
-          ],
-        };
+        return { ok: true, fromCache: false, options: options(lat, lng) };
       },
-      optionById: (id) =>
-        id === "sh-1"
-          ? { ...garageAt("sh-1", 42.3503, -71.0811, 200), provider: "spothero" }
-          : id === "pw-1"
-            ? { ...garageAt("pw-1", 42.3503, -71.0811, 250), provider: "parkwhiz" }
-            : null,
+      optionById: (id) => options(NEWBURY.lat, NEWBURY.lng).find((o) => o.id === id) ?? null,
       book: async () => {
         throw new Error("not used");
       },
     };
     const { tools } = toolsWith({ garage: merged });
-    await tools.execute(CTX, "search_garages", {
-      lat: 42.3503,
-      lng: -71.0811,
-      starts_at: "2026-09-23T15:00:00-04:00",
-      ends_at: "2026-09-23T17:00:00-04:00",
-    });
-    const out = await tools.execute(CTX, "propose_plan", {
-      plan: {
-        kind: "single_spot",
-        options: [
-          {
-            id: "g1",
-            type: "garage",
-            label: "Garage sh-1",
-            detail: "",
-            priceUsd: 15,
-            durationMinutes: 120,
-            garageOptionId: "sh-1",
-            recommended: true,
-          },
-        ],
-      },
+    const ctx: ToolContext = { ...CTX, location: NEWBURY };
+    await tools.execute(ctx, "update_request", window3pm(120));
+    await tools.execute(ctx, "search_garages", {});
+    const out = await tools.execute(ctx, "propose_plan", {
+      plan: { kind: "single_spot", options: [{ id: "v1-sh-1", recommended: true }] },
     });
     const plan = out.endTurn!.plan as { provenance?: { provider: string } };
     expect(plan.provenance?.provider).toBe("spothero");
 
     // Both shown → both credited, in a stable order.
-    const both = await tools.execute(CTX, "propose_plan", {
+    const both = await tools.execute(ctx, "propose_plan", {
       plan: {
         kind: "single_spot",
-        options: [
-          {
-            id: "g1",
-            type: "garage",
-            label: "Garage sh-1",
-            detail: "",
-            priceUsd: 15,
-            durationMinutes: 120,
-            garageOptionId: "sh-1",
-            recommended: true,
-          },
-          {
-            id: "g2",
-            type: "garage",
-            label: "Garage pw-1",
-            detail: "",
-            priceUsd: 16,
-            durationMinutes: 120,
-            garageOptionId: "pw-1",
-            recommended: false,
-          },
-        ],
+        options: [{ id: "v1-sh-1", recommended: true }, { id: "v1-pw-1" }],
       },
     });
     expect((both.endTurn!.plan as { provenance?: { provider: string } }).provenance?.provider).toBe(
@@ -332,27 +291,13 @@ describe("plan cards carry destination, coordinates, and provenance", () => {
         },
       ],
     });
-    await tools.execute(CTX, "quote_street", {
-      lat: 42.3503,
-      lng: -71.0811,
-      duration_minutes: 60,
-      when: "2026-09-23T15:00:00-04:00",
-    });
-    const out = await tools.execute(CTX, "propose_plan", {
+    const ctx: ToolContext = { ...CTX, location: NEWBURY };
+    await tools.execute(ctx, "update_request", window3pm(60));
+    await tools.execute(ctx, "quote_street", {});
+    const out = await tools.execute(ctx, "propose_plan", {
       plan: {
         kind: "single_spot",
-        options: [
-          {
-            id: "s1",
-            type: "street",
-            label: "Street — Zone 789",
-            detail: "",
-            priceUsd: 3.75,
-            durationMinutes: 60,
-            zoneId: "bos-newbury-a",
-            recommended: true,
-          },
-        ],
+        options: [{ id: "v1-bos-newbury-a", label: "Street — Zone 789", recommended: true }],
       },
     });
     const option = (out.endTurn!.plan as { options: { lat?: number; lng?: number }[] }).options[0]!;
@@ -362,25 +307,18 @@ describe("plan cards carry destination, coordinates, and provenance", () => {
 });
 
 describe("garage options for a named area are all within 600 m of it", () => {
-  test.each(Object.keys(PLACES))("%s: within_m 600 drops the far option", async (place) => {
+  test.each(Object.keys(PLACES))("%s: the far option is dropped", async (place) => {
     const { tools } = toolsWith({ geocoder: fakeGeocoder(), garage: fakeGarage() });
-    const geo = (await tools.execute(CTX, "geocode_place", { query: place })).result as {
-      results: GeocodeResult[];
-    };
-    const anchor = geo.results[0]!;
-    const out = await tools.execute(CTX, "search_garages", {
-      lat: anchor.lat,
-      lng: anchor.lng,
-      starts_at: "2026-09-23T15:00:00-04:00",
-      ends_at: "2026-09-23T17:00:00-04:00",
-      within_m: 600,
-    });
-    const result = out.result as { options: GarageOption[]; droppedForDistance?: number };
-    expect(result.options).toHaveLength(1);
-    expect(result.droppedForDistance).toBe(1);
+    // The 600 m guard is the server's for any named place: no argument
+    // turns it on, and none can turn it off.
+    await tools.execute(CTX, "geocode_place", { query: place });
+    await tools.execute(CTX, "update_request", window3pm(120));
+    const result = (await tools.execute(CTX, "search_garages", {})).result as Search;
+    expect(result.satisfying).toHaveLength(1);
+    expect(result.garage?.droppedForDistance).toBe(1);
     // The assertion Part C asks for, made explicit: EVERY surfaced option
     // is within 600 m of the named place.
-    for (const o of result.options) {
+    for (const o of result.satisfying) {
       expect(o.distanceM).toBeLessThanOrEqual(600);
     }
   });
@@ -403,37 +341,25 @@ describe("garage options for a named area are all within 600 m of it", () => {
       },
     };
     const { tools } = toolsWith({ geocoder: fakeGeocoder(), garage: farOnly });
-    const out = await tools.execute(CTX, "search_garages", {
-      lat: 42.3503,
-      lng: -71.0811,
-      starts_at: "2026-09-23T15:00:00-04:00",
-      ends_at: "2026-09-23T17:00:00-04:00",
-      within_m: 600,
-    });
-    const result = out.result as {
-      options: GarageOption[];
-      droppedForDistance?: number;
-      nearestBeyondM?: number;
-      instruction?: string;
-    };
-    expect(result.options).toHaveLength(0);
-    expect(result.droppedForDistance).toBe(2);
+    await tools.execute(CTX, "geocode_place", { query: "newbury street" });
+    await tools.execute(CTX, "update_request", window3pm(120));
+    const result = (await tools.execute(CTX, "search_garages", {})).result as Search;
+    expect(result.satisfying).toHaveLength(0);
+    expect(result.garage?.droppedForDistance).toBe(2);
     // ±1 m for the metres→degrees round trip.
-    expect(result.nearestBeyondM).toBeGreaterThanOrEqual(799);
-    expect(result.nearestBeyondM).toBeLessThanOrEqual(801);
+    expect(result.garage?.nearestBeyondM).toBeGreaterThanOrEqual(799);
+    expect(result.garage?.nearestBeyondM).toBeLessThanOrEqual(801);
     expect(result.instruction).toContain("nearest is about");
     expect(result.instruction).toContain("do not say none were found");
   });
 
-  test("without within_m the far option is kept (phone-location searches don't clip)", async () => {
+  test("with no place named the far option is kept (phone-location searches don't clip)", async () => {
     const { tools } = toolsWith({ geocoder: fakeGeocoder(), garage: fakeGarage() });
-    const out = await tools.execute(CTX, "search_garages", {
-      lat: 42.3503,
-      lng: -71.0811,
-      starts_at: "2026-09-23T15:00:00-04:00",
-      ends_at: "2026-09-23T17:00:00-04:00",
-    });
-    expect((out.result as { options: GarageOption[] }).options).toHaveLength(2);
+    const ctx: ToolContext = { ...CTX, location: NEWBURY };
+    await tools.execute(ctx, "update_request", window3pm(120));
+    const result = (await tools.execute(ctx, "search_garages", {})).result as Search;
+    expect(result.satisfying).toHaveLength(2);
+    expect(result.garage?.droppedForDistance).toBeUndefined();
   });
 });
 
@@ -458,18 +384,11 @@ describe("street quotes for a named area use provider-observed terms", () => {
     });
     // Ask for 200 minutes: the dataset would clamp to 120, the observed
     // term allows the full 200.
-    const out = await tools.execute(CTX, "quote_street", {
-      lat: 42.3503,
-      lng: -71.0811,
-      duration_minutes: 200,
-      when: "2026-09-23T15:00:00-04:00",
-    });
-    const found = out.result as {
-      found: boolean;
-      options: { maxStayMinutes: number; clampedMinutes: number; termsSource?: string }[];
-    };
-    const result = found.options[0]!;
-    expect(found.found).toBe(true);
+    const ctx: ToolContext = { ...CTX, location: NEWBURY };
+    await tools.execute(ctx, "update_request", window3pm(200));
+    const found = (await tools.execute(ctx, "quote_street", {})).result as Search;
+    const result = found.satisfying[0]!.facts!;
+    expect(found.satisfying).toHaveLength(1);
     expect(result.maxStayMinutes).toBe(300);
     expect(result.clampedMinutes).toBe(200);
     expect(result.termsSource).toBe("observed");
@@ -477,17 +396,10 @@ describe("street quotes for a named area use provider-observed terms", () => {
 
   test("without an observed row the dataset cap stands", async () => {
     const { tools } = toolsWith({ candidates: [BOYLSTON] });
-    const out = await tools.execute(CTX, "quote_street", {
-      lat: 42.3503,
-      lng: -71.0811,
-      duration_minutes: 200,
-      when: "2026-09-23T15:00:00-04:00",
-    });
-    const result = (
-      out.result as {
-        options: { maxStayMinutes: number; clampedMinutes: number; termsSource?: string }[];
-      }
-    ).options[0]!;
+    const ctx: ToolContext = { ...CTX, location: NEWBURY };
+    await tools.execute(ctx, "update_request", window3pm(200));
+    const result = ((await tools.execute(ctx, "quote_street", {})).result as Search).satisfying[0]!
+      .facts!;
     expect(result.maxStayMinutes).toBe(120);
     expect(result.clampedMinutes).toBe(120);
     expect(result.termsSource).toBeUndefined();

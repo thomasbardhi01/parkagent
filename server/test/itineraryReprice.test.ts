@@ -13,6 +13,7 @@ import type { GarageOption, GarageProvider } from "../src/services/garage/garage
 import type { ItineraryPlan } from "../src/services/assistant/plans.js";
 import { itineraryTotalUsd } from "../src/services/assistant/plans.js";
 import { AssistantTools } from "../src/services/assistant/tools.js";
+import type { ToolContext } from "../src/services/assistant/tools.js";
 import type { Candidate } from "../src/services/zoneLookup.js";
 import { API_KEY, NONADMIN_API_KEY, STEINWAY_A, makeTestApp } from "./helpers.js";
 
@@ -118,19 +119,19 @@ function app(
 }
 
 /** quote_street's own price for a street stay at PRICEY — the oracle a
- * re-priced street stop must match (one pricing path). */
+ * re-priced street stop must match (one pricing path). The search reads
+ * its place and window from a request (FR-43), so the oracle asks as a
+ * conversation of its own, standing where the stop is. */
 async function streetQuote(t: ReturnType<typeof makeTestApp>, when: string, minutes: number) {
-  const out = await t.deps.assistantTools!.execute(
-    { userId: "u1", conversationId: "c1" },
-    "quote_street",
-    {
-      lat: 40.77,
-      lng: -73.92,
-      duration_minutes: minutes,
-      when,
-    },
-  );
-  return (out.result as { options: { costUsd: number }[] }).options[0]!.costUsd;
+  const ctx: ToolContext = {
+    userId: "u1",
+    conversationId: "oracle",
+    location: { lat: 40.77, lng: -73.92 },
+  };
+  const tools = t.deps.assistantTools!;
+  await tools.execute(ctx, "update_request", { startsAt: when, durationMinutes: minutes });
+  const out = await tools.execute(ctx, "quote_street", {});
+  return (out.result as { satisfying: { priceUsd: number }[] }).satisfying[0]!.priceUsd;
 }
 
 /** The card's stops as the phone sends them: its costs are made up. */

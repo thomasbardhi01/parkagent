@@ -139,28 +139,50 @@ describe("tool schemas", () => {
         { anyOf?: Record<string, unknown>[] }
       >
     )["plan"]!;
-    const [single, itinerary] = plan.anyOf!;
+    const [single, itinerary, noneMeets] = plan.anyOf!;
     const props = (s: Record<string, unknown>) => s["properties"] as Record<string, unknown>;
     expect(props(single!)["kind"]).toMatchObject({ const: "single_spot" });
     expect(props(itinerary!)["kind"]).toMatchObject({ const: "itinerary" });
+    expect(props(noneMeets!)["kind"]).toMatchObject({ const: "none_meets" });
     const option = (props(single!)["options"] as { items: Record<string, unknown> }).items;
     expect(Object.keys(props(option))).toEqual(
-      expect.arrayContaining(["id", "type", "label", "priceUsd", "zoneId", "garageOptionId"]),
+      expect.arrayContaining(["id", "label", "detail", "recommended", "nearMiss"]),
     );
-    expect(option["required"]).toEqual(["id", "type", "label", "priceUsd", "durationMinutes"]);
+    // FR-43: an option is a search result named by its id. Everything
+    // else on it is the search's, so the id is all the model must send.
+    expect(option["required"]).toEqual(["id"]);
     // Server-attached fields are the server's: not offered to the model.
-    for (const serverOnly of ["payOnArrival", "provider", "deepLink", "lat", "lng"]) {
+    for (const serverOnly of [
+      "payOnArrival",
+      "provider",
+      "deepLink",
+      "lat",
+      "lng",
+      "violates",
+      "axis",
+      "secondary",
+      "fetchedAt",
+    ]) {
       expect(Object.keys(props(option))).not.toContain(serverOnly);
     }
     expect(Object.keys(props(single!))).not.toContain("provenance");
-    // The schema the model sees and the validator agree: its own example
-    // of a minimal plan parses.
+    // The "no" card is the server's to fill: the model names the kind, and
+    // at most which near-misses to show.
+    expect(Object.keys(props(noneMeets!)).sort()).toEqual(["kind", "nearMissIds"]);
+    expect(noneMeets!["required"]).toEqual(["kind"]);
+    // The stored shape is still the full one: a card always has its price.
     expect(
       planSchema.safeParse({
         kind: "single_spot",
         options: [{ id: "a", type: "street", label: "Meter", priceUsd: 4.1, durationMinutes: 60 }],
       }).success,
     ).toBe(true);
+    expect(
+      planSchema.safeParse({
+        kind: "single_spot",
+        options: [{ id: "a", type: "street", label: "Meter", durationMinutes: 60 }],
+      }).success,
+    ).toBe(false);
   });
 
   test("the system prompt pins the two jobs and the no-spend rule", () => {
@@ -170,44 +192,52 @@ describe("tool schemas", () => {
   });
 });
 
+/** The phone, at 30th Ave & Steinway: the place a request with no named
+ * place searches. */
+const STEINWAY = { lat: 40.7784, lng: -73.9819 };
+
+/** Search the request as it stands, then propose both results by id. */
+const SEARCH_BOTH: ModelResponse = {
+  content: [
+    { type: "text", text: "Let me check both. " },
+    { type: "tool_use", id: "t1", name: "quote_street", input: {} },
+    { type: "tool_use", id: "t2", name: "search_garages", input: {} },
+  ],
+  stopReason: "tool_use",
+};
+
+const proposeBoth = (version: number, text?: string): ModelResponse => ({
+  content: [
+    ...(text ? [{ type: "text" as const, text }] : []),
+    {
+      type: "tool_use",
+      id: "t3",
+      name: "propose_plan",
+      input: {
+        plan: {
+          kind: "single_spot",
+          options: [
+            { id: `v${version}-nyc-417371`, label: "Street: Zone 417371", recommended: true },
+            { id: `v${version}-g1`, label: "Underground Deck" },
+          ],
+        },
+      },
+    },
+  ],
+  stopReason: "tool_use",
+});
+
 describe("the loop", () => {
   test("tools run, propose_plan ends the turn, and the plan is stored", async () => {
     const model = scriptedModel([
       {
         content: [
-          { type: "text", text: "Let me check both. " },
-          {
-            type: "tool_use",
-            id: "t1",
-            name: "quote_street",
-            input: {
-              lat: 40.7784,
-              lng: -73.9819,
-              duration_minutes: 90,
-              when: "2026-01-05T14:00:00-05:00",
-            },
-          },
-          {
-            type: "tool_use",
-            id: "t2",
-            name: "search_garages",
-            input: {
-              lat: 40.7784,
-              lng: -73.9819,
-              starts_at: "2026-01-05T14:00:00-05:00",
-              ends_at: "2026-01-05T15:30:00-05:00",
-            },
-          },
+          { type: "tool_use", id: "t0", name: "update_request", input: { durationMinutes: 90 } },
         ],
         stopReason: "tool_use",
       },
-      {
-        content: [
-          { type: "text", text: "Here are your options." },
-          { type: "tool_use", id: "t3", name: "propose_plan", input: { plan: SINGLE_SPOT_PLAN } },
-        ],
-        stopReason: "tool_use",
-      },
+      SEARCH_BOTH,
+      proposeBoth(1, "Here are your options."),
       { content: [{ type: "text", text: "SHOULD NEVER RUN" }], stopReason: "end_turn" },
     ]);
     const t = makeTestApp({
@@ -219,7 +249,7 @@ describe("the loop", () => {
       method: "POST",
       url: "/assistant/message",
       headers: HEADERS,
-      payload: { text: "find me a spot near the museum for 90 minutes" },
+      payload: { text: "find me a spot here for 90 minutes", location: STEINWAY },
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
@@ -227,6 +257,18 @@ describe("the loop", () => {
     expect(body.reply).not.toContain("SHOULD NEVER RUN");
     expect(body.plan.plan.kind).toBe("single_spot");
     expect(planSchema.parse(body.plan.plan)).toBeTruthy();
+    // The card's facts are the searches': the street quote's price for 90
+    // minutes at $2/$3 plus the city's $0.15 fee, and the garage's own.
+    expect(
+      body.plan.plan.options.map((o: { id: string; type: string; priceUsd: number }) => [
+        o.id,
+        o.type,
+        o.priceUsd,
+      ]),
+    ).toEqual([
+      ["v1-nyc-417371", "street", 3.65],
+      ["v1-g1", "garage", 18],
+    ]);
     // Stored server-side for the confirm tap; decisions audit every call.
     expect(t.state.assistantPlans).toHaveLength(1);
     const kinds = t.state.decisions.map((d) => d.kind);
@@ -238,50 +280,74 @@ describe("the loop", () => {
 
   test("a plan proposed with no words gets a short reply, never an empty bubble", async () => {
     // Sonnet 5 proposes with tool calls alone; "" reached the app as "…".
-    const t = makeTestApp({
-      candidates: [STEINWAY_A],
-      assistantModel: scriptedModel([
+    const silentTurn = (text?: string) =>
+      scriptedModel([
         {
           content: [
-            { type: "tool_use", id: "t1", name: "propose_plan", input: { plan: SINGLE_SPOT_PLAN } },
+            { type: "tool_use", id: "t0", name: "update_request", input: { durationMinutes: 90 } },
           ],
           stopReason: "tool_use",
         },
-      ]),
+        { ...SEARCH_BOTH, content: SEARCH_BOTH.content.filter((b) => b.type !== "text") },
+        proposeBoth(1, text),
+      ]);
+    const t = makeTestApp({
+      candidates: [STEINWAY_A],
+      assistantModel: silentTurn(),
       garage: fakeGarage(),
     });
     const silent = await t.app.inject({
       method: "POST",
       url: "/assistant/message",
       headers: HEADERS,
-      payload: { text: "spot near the museum" },
+      payload: { text: "spot here", location: STEINWAY },
     });
     expect(silent.json().plan).not.toBeNull();
     // The one-liner states what the plan assumed: no start given → now,
-    // for the recommended option's 90 minutes.
+    // for the request's 90 minutes.
     expect(silent.json().reply).toBe("Here are your options (Now–3:30 PM) — tap one to go ahead.");
 
     // Words the model did say are kept as they are.
     const t2 = makeTestApp({
       candidates: [STEINWAY_A],
-      assistantModel: scriptedModel([
-        {
-          content: [
-            { type: "text", text: "Street is cheapest." },
-            { type: "tool_use", id: "t1", name: "propose_plan", input: { plan: SINGLE_SPOT_PLAN } },
-          ],
-          stopReason: "tool_use",
-        },
-      ]),
+      assistantModel: silentTurn("Street is cheapest."),
       garage: fakeGarage(),
     });
     const spoken = await t2.app.inject({
       method: "POST",
       url: "/assistant/message",
       headers: HEADERS,
-      payload: { text: "spot near the museum" },
+      payload: { text: "spot here", location: STEINWAY },
     });
     expect(spoken.json().reply).toBe("Street is cheapest.");
+  });
+
+  test("the loop never builds a plan the model didn't propose: a quoted turn that ends in prose has no card", async () => {
+    // Before FR-43 the loop synthesized a single_spot from whatever the
+    // turn had quoted, so the fallback could re-propose an option the
+    // user had just ruled out.
+    const model = scriptedModel([
+      SEARCH_BOTH,
+      { content: [{ type: "text", text: "Street or the garage?" }], stopReason: "end_turn" },
+    ]);
+    const t = makeTestApp({
+      candidates: [STEINWAY_A],
+      assistantModel: model,
+      garage: fakeGarage(),
+    });
+    const res = await t.app.inject({
+      method: "POST",
+      url: "/assistant/message",
+      headers: HEADERS,
+      payload: { text: "spot here", location: STEINWAY },
+    });
+    expect(res.json().plan).toBeNull();
+    expect(t.state.assistantPlans).toHaveLength(0);
+    // Reminded exactly once, then left alone.
+    const reminders = model.seen
+      .at(-1)!
+      .filter((m) => typeof m.content === "string" && m.content.startsWith("[system reminder]"));
+    expect(reminders).toHaveLength(1);
   });
 
   test("a malformed plan bounces back to the model as a readable error", async () => {
@@ -544,109 +610,68 @@ describe("history and explanations", () => {
 });
 
 describe("garage search failure vs empty (Seaport prod bug)", () => {
-  function askForGarage(garage: GarageProvider, replyText: string) {
-    const model = scriptedModel([
-      {
-        content: [
-          {
-            type: "tool_use",
-            id: "t1",
-            name: "search_garages",
-            input: {
-              lat: 42.3503,
-              lng: -71.04,
-              starts_at: "2026-09-21T18:00:00",
-              ends_at: "2026-09-21T22:00:00",
-              budget_usd: 30,
-            },
-          },
-        ],
-        stopReason: "tool_use",
-      },
-      { content: [{ type: "text", text: replyText }], stopReason: "end_turn" },
-    ]);
-    return makeTestApp({ assistantModel: model, garage });
-  }
+  const searchGarages = async (garage: GarageProvider) => {
+    const t = makeTestApp({ garage });
+    const out = await t.deps.assistantTools!.execute(
+      { userId: "u1", conversationId: "c1", location: { lat: 42.3503, lng: -71.04 } },
+      "search_garages",
+      {},
+    );
+    return { t, result: out.result as Record<string, unknown> };
+  };
 
-  test("a FAILED search reaches the model as garage_search_unavailable, audited with the error", async () => {
+  test("a FAILED search reaches the model as unavailable, audited with the error", async () => {
     const broken: GarageProvider = {
       id: "spothero",
       canReserve: false,
       search: async () => ({ ok: false, error: "parse_failed", detail: "HTTP 404" }),
+      optionById: () => null,
       book: async () => {
         throw new Error("unreachable");
       },
     };
-    const t = askForGarage(
-      broken,
-      "I couldn't check garages right now — street is still an option.",
-    );
-    const res = await t.app.inject({
-      method: "POST",
-      url: "/assistant/message",
-      headers: HEADERS,
-      payload: { text: "garage near the Seaport from 6 to 10 tonight, under $30" },
-    });
-    expect(res.statusCode).toBe(200);
+    const { t, result } = await searchGarages(broken);
     // The decision records the failure, typed.
     const audit = t.state.decisions.find((d) => d.rule === "garage_search_error");
     expect(audit?.outcome).toMatchObject({ error: "parse_failed", detail: "HTTP 404" });
     // The tool result the model saw distinguishes failure from empty.
-    const turns = JSON.stringify(t.state.conversations[0]!.turns);
-    expect(turns).toContain("garage_search_unavailable");
-    expect(turns).toContain("NOT 'no garages'");
-    expect(res.json().reply).toContain("couldn't check garages");
+    expect(result["garage"]).toMatchObject({ unavailable: true, reason: "parse_failed" });
+    expect(result["instruction"]).toContain("garage search is unavailable");
+    expect(result["instruction"]).toContain("NOT 'no garages'");
   });
 
-  test("a genuinely EMPTY search stays a plain empty options list", async () => {
+  test("a genuinely EMPTY search stays a plain empty result", async () => {
     const empty: GarageProvider = {
       id: "spothero",
       canReserve: false,
       search: async () => ({ ok: true, options: [], fromCache: false }),
+      optionById: () => null,
       book: async () => {
         throw new Error("unreachable");
       },
     };
-    const t = askForGarage(empty, "No garages matched that budget.");
-    await t.app.inject({
-      method: "POST",
-      url: "/assistant/message",
-      headers: HEADERS,
-      payload: { text: "garage under $1" },
-    });
+    const { t, result } = await searchGarages(empty);
     const audit = t.state.decisions.find((d) => d.kind === "assistant_tool" && d.rule === "ok");
-    expect(audit?.outcome).toMatchObject({ count: 0 });
-    const turns = JSON.stringify(t.state.conversations[0]!.turns);
-    expect(turns).toContain('\\"options\\":[]');
-    expect(turns).not.toContain("garage_search_unavailable");
+    expect(audit?.outcome).toMatchObject({ garageCount: 0 });
+    expect(result["satisfying"]).toEqual([]);
+    expect((result["garage"] as Record<string, unknown>)["unavailable"]).toBeUndefined();
+    expect(JSON.stringify(result)).not.toContain("unavailable");
   });
 });
 
 describe("garage deepLink delivery", () => {
-  test("propose_plan re-attaches the cached deepLink when the model dropped it", async () => {
+  test("a garage option's deepLink is the search's, on the card and on the stored row", async () => {
     const t = makeTestApp({ garage: fakeGarage() });
-    const outcome = await t.deps.assistantTools!.execute(
-      { userId: "u1", conversationId: "c1" },
-      "propose_plan",
-      {
-        plan: {
-          kind: "single_spot",
-          options: [
-            {
-              id: "opt-garage",
-              type: "garage",
-              label: "Underground Deck",
-              detail: "",
-              priceUsd: 18,
-              durationMinutes: 90,
-              garageOptionId: "g1",
-              // no deepLink — the model omitted it, as seen in prod
-              recommended: true,
-            },
-          ],
-        },
+    const tools = t.deps.assistantTools!;
+    const ctx: ToolContext = { userId: "u1", conversationId: "c1", location: STEINWAY };
+    await tools.execute(ctx, "search_garages", {});
+    const outcome = await tools.execute(ctx, "propose_plan", {
+      plan: {
+        kind: "single_spot",
+        // No deepLink — the model never has one to send.
+        options: [{ id: "v0-g1", label: "Underground Deck", recommended: true }],
       },
-    );
+    });
     const plan = outcome.endTurn!.plan as { options: { deepLink?: string }[] };
     expect(plan.options[0]!.deepLink).toBe(GARAGE.deepLink);
     // …and the stored row carries it too, so a late confirm never
@@ -1070,6 +1095,10 @@ describe("update_request, the tool (FR-42)", () => {
       for (const [key, value] of Object.entries(record)) walk(value, `${path}.${key}`);
     };
     walk(schema, "update_request");
+    // The searches are strict too (FR-43): held to the same subset.
+    for (const name of ["quote_street", "search_garages"]) {
+      walk(TOOL_DEFINITIONS.find((t) => t.name === name)!.input_schema, name);
+    }
     // The API's budgets across all strict tools: 20 tools, 24 optional
     // parameters.
     const strictTools = TOOL_DEFINITIONS.filter((t) => t.strict === true);
@@ -1079,8 +1108,12 @@ describe("update_request, the tool (FR-42)", () => {
       return sum + Object.keys(s.properties).length - (s.required?.length ?? 0);
     }, 0);
     expect(optional).toBeLessThanOrEqual(24);
-    // The other tools are unchanged by this PR: strict is update_request's alone.
-    expect(strictTools.map((t) => t.name)).toEqual(["update_request"]);
+    // Strict: the request's editor and the two searches that read it.
+    expect(strictTools.map((t) => t.name)).toEqual([
+      "update_request",
+      "search_garages",
+      "quote_street",
+    ]);
   });
 
   test("an unreadable time bounces with the time format and the current time", async () => {

@@ -1044,11 +1044,19 @@ place query unresolving its place, normalization, the capped log, the
 patch parser refusing the whole state and unknown field names, stored
 rows that are null or damaged, and user words that can't open a line of
 the system prompt. `assistantLoop.test.ts`, "request state (FR-42)" and
-"update_request, the tool (FR-42)" (11 tests): the round trip through the
-conversation row, the per-call block, `too_many_edits` across loop
-iterations, a failed turn leaving the stored state alone, a row from
-before request state, the strict schema checked against what the API
-compiles, and each refusal audited.
+"update_request, the tool (FR-42)" (13 tests):
+
+- the round trip through the conversation row;
+- the per-call block;
+- `too_many_edits` across loop iterations;
+- a failed turn leaving the stored state alone;
+- a row from before request state;
+- the strict schema checked against what the API compiles, with no
+  free-text field required (strict mode generates required properties
+  first, and a required `reason` swallowed the whole request in a live
+  run);
+- a call that sets no field said so;
+- each refusal audited.
 
 ### FR-43 — Options come from the latest search, and the assistant says no (#168, WS-1)
 **Accepted when** searches read the request instead of model arguments;

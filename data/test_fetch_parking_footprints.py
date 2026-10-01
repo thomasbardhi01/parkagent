@@ -21,6 +21,7 @@ from pathlib import Path
 
 from fetch_parking_footprints import (
     ATTRIBUTION,
+    _could_be_entrance_of,
     CITY_BOUNDS,
     STREET_PARKING,
     assign_ids,
@@ -161,10 +162,38 @@ def test_entrance_node_near_the_outline() -> None:
     (under,) = by_osm(features(), "way", 106)
     assert under["properties"]["entrance_source"] == "osm"
     assert [close(c, at(40, 300)) for c in under["properties"]["entrances"]["coordinates"]] == [True]
+    # An untagged one beside a lot is that lot's (node 2005, 5 m off 110).
+    (lot,) = by_osm(features(), "way", 110)
+    assert lot["properties"]["entrance_source"] == "osm"
+    assert [close(c, at(220, 500)) for c in lot["properties"]["entrances"]["coordinates"]] == [True]
     # Node 2003 is 800 m from everything: nobody's entrance.
     for f in features():
         for c in f["properties"]["entrances"]["coordinates"]:
             assert not close(c, at(900, 900))
+
+
+def test_another_garages_entrance_is_not_handed_to_the_lot_next_door() -> None:
+    # Node 2004 is 10 m from surface lot 102, but it names "Other Garage"
+    # and says underground: a garage OSM maps as a point, with no outline
+    # here. The lot keeps its own (guessed) entrance.
+    (lot,) = by_osm(features(), "way", 102)
+    assert lot["properties"]["entrance_source"] == "road_vertex"
+    for f in features():
+        for c in f["properties"]["entrances"]["coordinates"]:
+            assert not close(c, at(240, 0)), f["properties"]["garage_id"]
+    # The rule, case by case.
+    lot_tags = {"amenity": "parking", "parking": "surface"}
+    deck_tags = {"amenity": "parking", "parking": "underground", "name": "Under The Park Garage"}
+    plain = {"amenity": "parking_entrance"}
+    assert _could_be_entrance_of(plain, lot_tags) and _could_be_entrance_of(plain, deck_tags)
+    under = {"amenity": "parking_entrance", "parking": "underground"}
+    assert _could_be_entrance_of(under, deck_tags)
+    assert not _could_be_entrance_of(under, lot_tags)
+    assert _could_be_entrance_of(under, {"amenity": "parking"})  # outline of unknown kind
+    named = {"amenity": "parking_entrance", "name": "under the park garage"}
+    assert _could_be_entrance_of(named, deck_tags)
+    assert not _could_be_entrance_of({**plain, "name": "Other Garage"}, deck_tags)
+    assert not _could_be_entrance_of({**plain, "name": "Other Garage"}, lot_tags)
 
 
 def test_entrance_fallback_is_the_vertex_nearest_a_road() -> None:
@@ -338,7 +367,7 @@ def test_collection_metadata() -> None:
         "underground": 1,
         "unknown": 1,
     }
-    assert meta["counts"]["by_entrance_source"] == {"none": 3, "osm": 3, "road_vertex": 2}
+    assert meta["counts"]["by_entrance_source"] == {"none": 2, "osm": 4, "road_vertex": 2}
     assert all(f["properties"]["city"] == "bos" for f in collection["features"])
 
 

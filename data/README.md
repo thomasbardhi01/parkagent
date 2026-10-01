@@ -214,11 +214,22 @@ Also outlines that never close and ones under 10 m².
 
 **Entrances**, in order: nodes on the outline tagged `entrance=*`;
 `amenity=parking_entrance` nodes on or within 30 m of the outline (an
-underground garage's ramp is usually mapped beside it); failing both, the
-outline's vertex nearest a road centerline within 60 m — driveable roads
-only, and never the aisles inside a lot. That last one is a guess, and each
-feature says which it got in `entrance_source` (`osm`, `road_vertex`, or
-`none`). The build summary counts them.
+underground garage's ramp is usually mapped beside it), unless the node
+names a different place or says it leads to a different kind of parking;
+failing both, the outline's vertex nearest a road centerline within 60 m —
+driveable roads only, and never the aisles inside a lot. That last one is a
+guess, and each feature says which it got in `entrance_source` (`osm`,
+`road_vertex`, or `none`). The build summary counts them.
+
+**What OSM doesn't outline, this doesn't have.** A garage mapped as a
+single point (`amenity=parking` on a node), or only by its entrance nodes,
+has no polygon and isn't in the file. In Boston on 2026-10-01 that was 31
+multi-storey and underground garages — the Boston Common Garage, the
+Garage at Post Office Square, Copley Place, Center Plaza, and 60 State
+Street among them — against 207 that are outlined. Two ways to add one:
+draw its outline in OpenStreetMap (the next fetch picks it up), or load a
+hand-made file with its own `metadata.source` (say `manual`): the loader
+mirrors per city and per source, so an OSM reload never deletes those rows.
 
 **Ids** are `<city>-<slug>-<hash6>`: the slug from the name (the kind when
 unnamed, `parking` when the kind is unknown too), the hash from the

@@ -560,6 +560,17 @@
       }
     },
     {
+      "type": "node",
+      "id": 2004,
+      "lat": 42.35,
+      "lon": -71.0670828,
+      "tags": {
+        "amenity": "parking_entrance",
+        "parking": "underground",
+        "name": "Other Garage"
+      }
+    },
+    {
       "type": "way",
       "id": 501,
       "bounds": {

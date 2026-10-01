@@ -112,6 +112,15 @@
       "tags": {
         "entrance": "yes"
       }
+    },
+    {
+      "type": "node",
+      "id": 2005,
+      "lat": 42.3544916,
+      "lon": -71.0673259,
+      "tags": {
+        "amenity": "parking_entrance"
+      }
     }
   ]
 }

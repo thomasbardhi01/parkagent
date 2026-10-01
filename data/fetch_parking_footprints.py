@@ -7,11 +7,14 @@ city's bounding box, as one Polygon per outline, with `name`, `operator`,
 
 What it skips: parking along the street (`parking=street_side`, `lane`, and
 their kerb-side cousins). Those are our zones, never a footprint.
+Also anything OSM maps as a point: a garage with no outline there has none
+here (data/README.md says how many, and how to add one).
 
 Entrances, in this order:
   1. nodes on the outline tagged `entrance=*`;
   2. `amenity=parking_entrance` nodes on or within 30 m of the outline (an
-     underground garage's ramp is usually mapped beside it);
+     underground garage's ramp is usually mapped beside it), unless the
+     node names another place or another kind of parking;
   3. failing both, the outline's vertex nearest a road centerline within
      60 m (driveable roads; the aisles inside a lot don't count) — a guess,
      and marked as one (`entrance_source: "road_vertex"`).
@@ -467,6 +470,23 @@ def _is_entrance(tags: dict) -> bool:
     return "entrance" in tags or tags.get("amenity") == "parking_entrance"
 
 
+def _could_be_entrance_of(node_tags: dict, outline_tags: dict) -> bool:
+    """Whether a free-standing parking_entrance node may be this outline's.
+    Many garages are mapped as a point with entrance nodes and no outline;
+    their entrances must not be handed to the lot next door. A node that
+    names a different place, or says it leads to a different kind of
+    parking, is somebody else's."""
+    node_name = slugify(clean_text(node_tags.get("name")) or "")
+    outline_name = slugify(clean_text(outline_tags.get("name")) or "")
+    if node_name and node_name != outline_name:
+        return False
+    if "parking" in node_tags:
+        node_kind, outline_kind = kind_for(node_tags), kind_for(outline_tags)
+        if node_kind not in ("unknown", outline_kind) and outline_kind != "unknown":
+            return False
+    return True
+
+
 def build_features(city: str, responses: list[dict]) -> list[dict]:
     """GeoJSON features, one per outline, from Overpass answers. Pure: the
     same answers give the same features in the same order, whatever order
@@ -528,23 +548,30 @@ def build_features(city: str, responses: list[dict]) -> list[dict]:
         return []
 
     # Entrance nodes: on an outline's vertex, else within reach of the
-    # nearest outline.
+    # nearest outline they could belong to.
     vertex_owners: dict[tuple[float, float], list[int]] = {}
     for index, (*_, polygon, _flat) in enumerate(kept):
         for lon, lat in polygon.exterior.coords[:-1]:
             vertex_owners.setdefault(_key(lon, lat), []).append(index)
     mapped: dict[int, list[tuple[float, float]]] = {}
-    flat_tree = STRtree([flat for *_, flat in kept])
+    flats = [flat for *_, flat in kept]
+    flat_tree = STRtree(flats)
     for node_id in sorted(nodes):
         node = nodes[node_id]
+        node_tags = node.get("tags") or {}
         lon, lat = float(node["lon"]), float(node["lat"])
         owners = vertex_owners.get(_key(lon, lat))
-        if owners is None and (node.get("tags") or {}).get("amenity") == "parking_entrance":
-            nearest = flat_tree.query_nearest(
-                Point(projection.xy(lon, lat)), max_distance=ENTRANCE_NODE_REACH_M
-            )
-            # Equally near (inside two nested outlines): an entrance to both.
-            owners = sorted(int(i) for i in nearest) if len(nearest) > 0 else None
+        if owners is None and node_tags.get("amenity") == "parking_entrance":
+            point = Point(projection.xy(lon, lat))
+            in_reach = [
+                (round(flats[int(i)].distance(point), 3), int(i))
+                for i in flat_tree.query(point, predicate="dwithin", distance=ENTRANCE_NODE_REACH_M)
+                if _could_be_entrance_of(node_tags, kept[int(i)][3].get("tags") or {})
+            ]
+            if in_reach:
+                nearest_m = min(d for d, _ in in_reach)
+                # Equally near (inside two nested outlines): an entrance to both.
+                owners = sorted(i for d, i in in_reach if d == nearest_m)
         for owner in owners or []:
             mapped.setdefault(owner, []).append(_key(lon, lat))
 

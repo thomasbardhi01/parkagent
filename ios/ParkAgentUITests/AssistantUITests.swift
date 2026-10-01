@@ -530,6 +530,45 @@ final class AssistantUITests: ParkAgentUITestCase {
         )
     }
 
+    /// "Nothing meets this" is a card of its own (FR-43): the options that
+    /// came closest, each with the limit it breaks, and nothing to confirm.
+    /// The way forward is a chip that relaxes the request in the user's
+    /// own words.
+    func testNothingMeetsTheRequestShowsNearMissesAndNoConfirm() {
+        let app = openAssistant("noneMeets")
+        ask(app, "parking under $2 near Cambridge Common")
+
+        XCTAssertTrue(element(app, "assistant.noneMeetsPlan").waitForExistence(timeout: 10))
+        XCTAssertFalse(element(app, "assistant.singleSpotPlan").exists)
+        XCTAssertEqual(element(app, "assistant.noneMeets.title").label, "Nothing meets your request")
+
+        // Each near-miss says what it breaks, with the server's numbers.
+        let meter = element(app, "assistant.nearMiss.v3-bos-mass-ave-1")
+        XCTAssertTrue(meter.exists)
+        XCTAssertTrue(meter.label.contains("$2.50 over your $2.00 limit"), meter.label)
+        let garage = element(app, "assistant.nearMiss.v3-spothero-2323-ab12cd")
+        XCTAssertTrue(garage.label.contains("$14.99 over your $2.00 limit"), garage.label)
+        // A garage price says when it was fetched.
+        XCTAssertTrue(garage.label.contains("Price as of"), garage.label)
+
+        // Nothing on this card can be confirmed or chosen.
+        let actions = app.buttons.matching(NSPredicate(
+            format: "identifier BEGINSWITH 'assistant.confirm.' OR identifier BEGINSWITH 'assistant.choose.'"
+        ))
+        XCTAssertEqual(actions.count, 0, "A near-miss has no Confirm")
+
+        // Relaxing the limit is the user's tap, sent as their own words.
+        let relax = element(app, "assistant.suggestion.0")
+        XCTAssertTrue(relax.waitForExistence(timeout: 5))
+        XCTAssertEqual(relax.label, "Allow up to $7.00")
+        attachScreenshot(of: app, named: "assistant-none-meets")
+        relax.tap()
+        let sent = app.descendants(matching: .any).matching(NSPredicate(
+            format: "identifier == 'assistant.userMessage' AND label == %@", "Allow up to $7.00"
+        )).firstMatch
+        XCTAssertTrue(sent.waitForExistence(timeout: 5), "The chip sends its reply as the user's message")
+    }
+
     /// Saved conversations: newest first, titled by the first request, with
     /// what each came to; opening one shows its transcript and plans
     /// read-only, and the next message continues it; swipe deletes one;

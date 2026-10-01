@@ -2,11 +2,22 @@
  * The assistant's tool-use loop (Anthropic Messages API, manual loop —
  * we need propose_plan to hard-end the turn and a transport we can fake
  * byte-for-byte in tests). The model plans and phrases; tools.ts
- * enforces policy; this file only moves messages — and enforces one
- * conversational rule the prod test broke: a turn that quoted prices
- * MUST end in a plan card, never in prose inviting a verbal "confirm"
- * (chat text can't mint a confirmation token, so a verbal confirm is a
- * dead end that reads like authorization).
+ * enforces policy; this file only moves messages — and holds the turn to
+ * three conversational rules:
+ *
+ *  - a turn that searched owes the user a card, never a price in prose
+ *    inviting a verbal "confirm" (chat text can't mint a confirmation
+ *    token, so a verbal confirm is a dead end that reads like
+ *    authorization). The model is reminded once. The loop never builds a
+ *    plan the model didn't propose (FR-43): the one card it issues itself
+ *    is the "no", when the latest search found nothing that meets the
+ *    request — and that card is the server's verdict, through the same
+ *    validated tool;
+ *  - a "no" is said in the server's words: the reply on a none_meets or
+ *    no_data card is the card's own headline;
+ *  - every dollar amount in any other reply must be one the server stands
+ *    behind — a price on the card, or a number a tool reported this
+ *    conversation. A sentence carrying any other amount is dropped.
  */
 
 import type { AppDb } from "../../db.js";
@@ -21,13 +32,19 @@ import {
   titleFromTurns,
   trimTurns,
 } from "./history.js";
+import { suggestionsForPlan } from "./plans.js";
 import type { AssistantPlanBody } from "./plans.js";
 import { TOOL_DEFINITIONS } from "./tools.js";
-import type { StreetOption } from "./streetOptions.js";
-import type { AssistantTools, StreetQuote, Suggestion, ToolContext } from "./tools.js";
+import type { Ask, AssistantTools, Suggestion, ToolContext } from "./tools.js";
 import { requestedTimeChoices, requestedTimeIn, requestedTimeLine } from "./requestedTime.js";
-import { currentRequestBlock, emptyState, parseStoredState } from "./requestState.js";
+import {
+  currentRequestBlock,
+  emptyState,
+  parseStoredState,
+  resolveTappedCandidate,
+} from "./requestState.js";
 import type { RequestState } from "./requestState.js";
+import { lastSearchIn } from "./search.js";
 
 /** Overridden by ASSISTANT_MODEL (legacy fallback: ANTHROPIC_MODEL). */
 export const DEFAULT_ASSISTANT_MODEL = "claude-sonnet-5";
@@ -41,23 +58,25 @@ export const SYSTEM_PROMPT = `You are ParkAgent's parking assistant. You do exac
 
 ParkAgent pays meters in ${coveredCitiesSentence()}. The phone location line on a message names the covered city the phone is in or near — that is the user's city unless they name another, so never ask which city then. Without that line, don't assume a city. A place outside the covered cities is one we can't help with yet.
 
-Style: terse. One or two sentences between tool calls, no filler, and never repeat a sentence you already said this turn. Use dollars with two decimals.
+Style: terse. One or two sentences between tool calls, no filler, and never repeat a sentence you already said this turn. Don't narrate your tool steps ("Searching now", "The request is set") — say only what the user needs to read. Use dollars with two decimals.
 
 Rules you cannot break (the tools enforce them too):
-- You never book, pay, or spend. Whenever you have quoted a price — street or garage — you MUST present it by calling propose_plan; never leave a quote in prose. The user acts by TAPPING a card, never by saying or typing "confirm" — never invite a verbal confirmation, and if someone types "confirm", point them at the card.
-- How the tap works, so you phrase cards correctly: a garage option and a street option for RIGHT NOW get a Confirm button. A street option for a FUTURE time gets no button at all — set startsAt on the option and the card says "We'll pay automatically when you park here" (the detector pays at the curb) — that line is the card's own, so keep it out of the option's detail, which describes the spot. Don't promise to start future meters now; meters run from the moment they're paid.
+- You never book, pay, or spend. Whenever you have searched — street or garage — you MUST end the turn by calling propose_plan; never leave a price in prose. The user acts by TAPPING a card, never by saying or typing "confirm" — never invite a verbal confirmation, and if someone types "confirm", point them at the card.
+- How the tap works, so you phrase cards correctly: a garage option and a street option for RIGHT NOW get a Confirm button. A street option for a FUTURE time gets no button at all — the card says "We'll pay automatically when you park here" (the detector pays at the curb) — that line is the card's own, so keep it out of the option's detail, which describes the spot. Don't promise to start future meters now; meters run from the moment they're paid.
 - book_garage and start_session work only with a confirmation_token from a card tap. You normally never have one; if a call is refused, propose a plan instead.
-- Quote street prices with quote_street and garages with search_garages — never invent a price, address, or availability.
-- quote_street searches every metered block within a walk of the point and says what each is doing during the stay ("Free after 6 PM on Seaport Blvd — 4 min walk", "Metered until 8 PM, then free", "$3.75/hr, 2 hr max"). Offer the best street option (or two) using its summary. Say there's no street parking ONLY when quote_street returns found:false, and then say the radius it searched.
-- When the user names a PLACE rather than "here" — a restaurant, bar, venue, business, hotel, landmark, street, or neighborhood — call geocode_place FIRST with their words (keep the area they named: "Lola 42 Seaport"), then quote_street / search_garages at the place's coordinates — never silently use the phone's location for a named place. For garages at a named place, pass within_m: 600 so every option is walkable from it. When you geocoded a place, put it on the plan as destination {lat, lng, label} so the card can show it on a map. If geocode_place returns choices, ask which one with ask_user. If its match is "closest", the name wasn't found: say so and say what you're searching instead. If it finds nothing, say you couldn't find it and ask for the address — never substitute the current location or a neighborhood center.
+- The request is the server's — the "Current request" below. quote_street and search_garages take NO arguments: they search the request as it stands (its place, time, stay, limits, and ranking). To search another place, time, stay, or budget, change the request first, then search. Never invent a price, address, or availability.
+- Each search answers with \`satisfying\` (the options that meet every limit, already ranked — never reorder them), \`nearMisses\` (options that break a limit; \`violates\` says which and by how much), and a \`verdict\`. propose_plan takes options BY ID, exactly as the latest search returned them; the server attaches each option's price, walk, time, and link. After any change to the request, search again before proposing: ids from an earlier search are refused.
+- When nothing meets the request (verdict none_meets), say so: call propose_plan with {kind: "none_meets"}. Never present a near-miss as if it met the request, and never loosen a limit yourself — the card gives the user one-tap ways to relax it.
+- quote_street searches every metered block within a walk of the place and says what each is doing during the stay ("Free after 6 PM on Seaport Blvd — 4 min walk", "Metered until 8 PM, then free", "$3.75/hr, 2 hr max"). Say there's no street parking ONLY when the search says our data has none within its radius, and then say the radius.
+- When the user names a PLACE rather than "here" — a restaurant, bar, venue, business, hotel, landmark, street, or neighborhood — call geocode_place FIRST with their words (keep the area they named: "Lola 42 Seaport"). It makes that the request's place, and the searches then search THERE — never the phone's location for a named place. If geocode_place returns choices, ask which one with ask_user. If its match is "closest", the name wasn't found: say so and say what you're searching instead. If it finds nothing, say you couldn't find it and ask for the address — never substitute the current location or a neighborhood center.
 - To ask the user anything, call ask_user (one short question, 2–4 tappable suggestions) — never ask in prose. Ask only when you truly can't proceed: when the user gave no time, assume now; no duration, 2 hours — instead of asking. When you do ask, offer the common answers ("1 hour", "2 hours", "3 hours"; "Now", "Tonight at 7").
 - Always state your assumptions in one short line when you propose — the window and the place, e.g. "7:00–10:00 PM, near Lola 42, Seaport". The card shows the same line.
-- If search_garages returns garage_search_unavailable, the search FAILED — say "I couldn't check garages right now", never "no garages available", and still propose the street option. Only an empty options list means none were found. If every garage was dropped for distance, the result's nearestBeyondM says how far the closest one is — tell the user that distance ("the nearest garage is about 900 m away") rather than "none found".
+- If a search says the garage search is unavailable, the search FAILED — say "I couldn't check garages right now", never "no garages available", and still propose the street options. Only a search that found none means none were found. If every garage was dropped for distance, the result says how far the closest one is — tell the user that distance ("the nearest garage is about 900 m away") rather than "none found".
 - When the user changes anything about the request, call update_request with only what changed before searching.
-- A follow-up message edits the CURRENT plan: "cheaper?", "closer", "make it 5 instead", "add a stop at 3" refer to what you just proposed. Re-run only the tools whose inputs changed and propose the revised plan. Ask a clarifying question only when you truly cannot proceed; otherwise assume the sensible reading and say what you assumed in a few words.
+- A follow-up message edits the CURRENT plan: "cheaper?", "closer", "make it 5 instead", "add a stop at 3" refer to what you just proposed. Put the change on the request, search again, and propose the revised plan. Ask a clarifying question only when you truly cannot proceed; otherwise assume the sensible reading and say what you assumed in a few words.
 - An itinerary's total must fit the user's remaining daily budget (build_itinerary shows it). If it doesn't fit, say what to cut.
-- Garage checkout is a deep link to the site the option came from (each search_garages option names its provider — SpotHero or ParkWhiz): the user finishes the purchase there and the pass lives in that site's account. Say so when it matters, in a few words, naming the right site.
-- A clock time the user names is theirs: never move it to now or to any other time. When they name one with no day, their message carries a [requested time] line saying whether it is later today or has already passed; a time that has passed means its next occurrence — plan for that (the card says "Assuming tomorrow") or ask with ask_user ("Tomorrow at 7 PM" / "Now"). "Tonight" asked after midnight means this coming evening. The tools refuse a quote or plan that moves a requested time.
+- Garage checkout is a deep link to the site the option came from (each garage option names its provider — SpotHero or ParkWhiz): the user finishes the purchase there and the pass lives in that site's account. Say so when it matters, in a few words, naming the right site.
+- A clock time the user names is theirs: put it on the request (update_request startsAt) and never move it to now or to any other time. When they name one with no day, their message carries a [requested time] line saying whether it is later today or has already passed; a time that has passed means its next occurrence — plan for that (the card says "Assuming tomorrow") or ask with ask_user ("Tomorrow at 7 PM" / "Now"). "Tonight" asked after midnight means this coming evening. The tools refuse a search or plan that moves a requested time.
 - Every user message ends with the CURRENT date and time in brackets. Compute every date from it — "tonight", "tomorrow", "at 2pm" are relative to that timestamp. NEVER guess or recall a date; a window in the past is always a mistake, and the tools will bounce it back to you with the current time so you can retry.`;
 
 /** What each model call is told: the fixed prompt, then the request as it
@@ -67,11 +86,11 @@ export function systemPromptFor(state: RequestState): string {
   return `${SYSTEM_PROMPT}\n\n${currentRequestBlock(state)}`;
 }
 
-/** The one-shot correction when a turn quoted prices but never proposed. */
+/** The one-shot correction when a turn searched but never proposed. */
 const PROPOSE_PLAN_REMINDER =
-  "[system reminder] You quoted prices but did not call propose_plan. Call propose_plan NOW with the " +
-  "options you quoted (include startsAt on street options). Do not ask the user to say or type " +
-  "anything — they act by tapping the card.";
+  "[system reminder] You searched but did not call propose_plan. Call propose_plan NOW: a single_spot " +
+  'plan of option ids from the latest search, or {kind: "none_meets"} if nothing met the request. Do not ' +
+  "ask the user to say or type anything — they act by tapping the card.";
 
 /** Phrasing that invites a verbal confirm — scrubbed if it ever appears. */
 const VERBAL_CONFIRM_PATTERN =
@@ -213,29 +232,6 @@ export function currentTimeLine(at: Date): string {
   return `[current time: ${get("weekday")} ${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")} ET]`;
 }
 
-/** What this turn's quoting tools produced — the raw material for a
- * synthesized plan when the model won't call propose_plan itself. */
-interface QuoteContext {
-  street: {
-    zoneId: string;
-    zoneNumber: string | null;
-    street: string | null;
-    summary: string | null;
-    costUsd: number;
-    minutes: number;
-    startsAt: string;
-  } | null;
-  garages: {
-    id: string;
-    name: string;
-    priceUsd: number;
-    walkMinutes: number;
-    entryType: string;
-    deepLink: string;
-  }[];
-  minutes: number | null;
-}
-
 /**
  * Join per-iteration text segments, dropping repeats: models restate
  * their opener after tool results ("Let me check… Let me check… it's
@@ -277,17 +273,233 @@ export function scrubVerbalConfirm(reply: string, hasPlan: boolean): string {
     .trim();
 }
 
+/** A dollar amount in prose: "$4.50", "$20", "$1,000.00". */
+const AMOUNT_PATTERN = /\$\s?(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{1,2}))?/g;
+
+/** A reply cut into sentences, each keeping its own spacing. A sentence
+ * ends at . ! or ? followed by whitespace (so "$4.50" is not two), or at
+ * a line break. */
+function sentencesOf(text: string): string[] {
+  const out: string[] = [];
+  let start = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i]!;
+    const next = text[i + 1];
+    const ends =
+      ch === "\n" ||
+      ((ch === "." || ch === "!" || ch === "?") && (next === undefined || /\s/.test(next)));
+    if (ends) {
+      out.push(text.slice(start, i + 1));
+      start = i + 1;
+    }
+  }
+  if (start < text.length) out.push(text.slice(start));
+  return out;
+}
+
+/**
+ * V6 (FR-43): drop every sentence that states a dollar amount the server
+ * doesn't stand behind. `groundedCents` holds the amounts it does, in
+ * cents — "$20" and "$20.00" are the same amount. Returns the reply and
+ * the amounts dropped (dollars, in order, each once). A reply with nothing
+ * to drop comes back untouched.
+ */
+export function scrubUngroundedAmounts(
+  reply: string,
+  groundedCents: ReadonlySet<number>,
+): { text: string; dropped: number[] } {
+  const dropped: number[] = [];
+  const kept = sentencesOf(reply).filter((sentence) => {
+    const ungrounded = [...sentence.matchAll(AMOUNT_PATTERN)]
+      .map((m) =>
+        Math.round(Number(`${m[1]!.replace(/,/g, "")}.${(m[2] ?? "").padEnd(2, "0")}`) * 100),
+      )
+      .filter((cents) => !groundedCents.has(cents));
+    for (const cents of ungrounded) {
+      if (!dropped.includes(cents / 100)) dropped.push(cents / 100);
+    }
+    return ungrounded.length === 0;
+  });
+  if (dropped.length === 0) return { text: reply, dropped };
+  return {
+    text: kept
+      .join("")
+      .replace(/\s{2,}/g, " ")
+      .trim(),
+    dropped,
+  };
+}
+
+/** The tools whose results are the server's own numbers a reply may say:
+ * the request, a day's quotes and budget, past sessions, an explanation.
+ * A search's prices are not here — those are sayable only next to the
+ * card that carries them (groundedCents). */
+const AMOUNT_TOOLS = new Set([
+  "update_request",
+  "build_itinerary",
+  "get_history",
+  "explain_decision",
+  "book_garage",
+  "start_session",
+]);
+const MONEY_KEY = /usd|price|cost|cap|budget|total|amount|fee|rate/i;
+
+/** Every dollar amount in a tool result, in cents: numbers under a
+ * money-named key, and "$…" written out in its strings. */
+function amountsIn(value: unknown, into: Set<number>, key = ""): void {
+  if (typeof value === "number") {
+    if (Number.isFinite(value) && MONEY_KEY.test(key)) into.add(Math.round(value * 100));
+    return;
+  }
+  if (typeof value === "string") {
+    for (const m of value.matchAll(AMOUNT_PATTERN)) {
+      into.add(
+        Math.round(Number(`${m[1]!.replace(/,/g, "")}.${(m[2] ?? "").padEnd(2, "0")}`) * 100),
+      );
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) amountsIn(item, into, key);
+    return;
+  }
+  if (typeof value === "object" && value !== null) {
+    for (const [k, v] of Object.entries(value)) amountsIn(v, into, k);
+  }
+}
+
+/** Whether a tool's result holds amounts a reply may state on their own. */
+function reportsAmounts(tool: string, result: unknown): boolean {
+  if (AMOUNT_TOOLS.has(tool)) return true;
+  // A day refused for the cap comes back with the totals to explain it.
+  return (
+    tool === "propose_plan" && (result as { error?: unknown })?.error === "plan_over_daily_cap"
+  );
+}
+
+/** The amounts earlier turns' tools reported, read back from the stored
+ * transcript: "what did that come to again?" is answerable next turn. */
+function amountsReported(turns: readonly ModelTurn[]): Set<number> {
+  const tools = new Map<string, string>();
+  const into = new Set<number>();
+  for (const turn of turns) {
+    if (typeof turn.content === "string") continue;
+    for (const block of turn.content) {
+      if (block.type === "tool_use") tools.set(block.id, block.name);
+      if (block.type !== "tool_result") continue;
+      const tool = tools.get(block.tool_use_id);
+      if (!tool) continue;
+      try {
+        const result: unknown = JSON.parse(block.content);
+        if (reportsAmounts(tool, result)) amountsIn(result, into);
+      } catch {
+        // Not JSON: nothing reported.
+      }
+    }
+  }
+  return into;
+}
+
+/**
+ * The amounts this turn's reply may state, in cents:
+ *  - the request's own budget, and what relaxing it a step would make it;
+ *  - what the other tools reported (`reported`);
+ *  - a search's prices only where a card stands behind them: the prices
+ *    on this turn's card, plus the latest search's satisfying options —
+ *    unless this turn searched and ended with no card (a quote in prose).
+ * A near-miss's price is never here: the card says it, with what it
+ * breaks, and prose can't restate it as a fit.
+ */
+function groundedCents(
+  ctx: ToolContext,
+  plan: AssistantResult["plan"],
+  reported: ReadonlySet<number>,
+): Set<number> {
+  const cents = new Set<number>(reported);
+  const add = (usd: unknown) => {
+    if (typeof usd === "number" && Number.isFinite(usd)) cents.add(Math.round(usd * 100));
+  };
+  add(ctx.requestState?.hard.maxPriceUsd);
+  const last = ctx.lastSearch;
+  for (const relax of last?.relaxSuggestions ?? []) {
+    if (relax.field === "maxPriceUsd") add(relax.to);
+  }
+  const body = plan?.plan;
+  if (body?.kind === "itinerary") {
+    for (const stop of body.stops) add(stop.costUsd);
+    add(body.totalUsd);
+    add(body.capUsd);
+  }
+  if (body?.kind === "single_spot") {
+    for (const option of body.options) {
+      if (option.nearMiss) continue;
+      add(option.priceUsd);
+      add(option.priceBreakdown?.meterUsd);
+      add(option.priceBreakdown?.feeUsd);
+      add(option.ratePerHourUsd);
+    }
+  }
+  const quotedWithoutCard = plan === null && (ctx.searchesThisTurn ?? 0) > 0;
+  if (last && !quotedWithoutCard && body?.kind !== "itinerary") {
+    for (const option of last.satisfying) {
+      add(option.priceUsd);
+      add(option.facts?.meterUsd);
+      add(option.facts?.feeUsd);
+      add(option.facts?.ratePerHourUsd);
+    }
+  }
+  return cents;
+}
+
+/**
+ * The text deltas a client sees while a turn runs, held to whole sentences
+ * and gated: a sentence streams only while `open()` says so and only if it
+ * states no dollar amount. Everything withheld still reaches the reply
+ * check, and the final reply is what the client keeps.
+ */
+function amountFreeStream(
+  onText: (delta: string) => void,
+  open: () => boolean,
+): { push: (delta: string) => void; flush: () => void } {
+  let pending = "";
+  const emit = (text: string) => {
+    if (text.length > 0 && open() && !text.includes("$")) onText(text);
+  };
+  return {
+    push(delta) {
+      pending += delta;
+      const whole = sentencesOf(pending);
+      // The last piece may still be growing: keep it until it ends.
+      const last = whole[whole.length - 1] ?? "";
+      const ended = /[.!?\n]\s*$/.test(last) && /\s$/.test(pending);
+      const ready = ended ? whole : whole.slice(0, -1);
+      pending = ended ? "" : last;
+      for (const sentence of ready) emit(sentence);
+    },
+    flush() {
+      emit(pending);
+      pending = "";
+    },
+  };
+}
+
 export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> {
   const stored = await args.db.conversation.findUnique({ where: { id: args.conversationId } });
   const history: ModelTurn[] =
     stored && stored.userId === args.userId ? (stored.turns as ModelTurn[]) : [];
+  const at = args.now?.() ?? new Date();
   // The request this conversation has built so far, loaded before the
   // first model call; a new conversation (or a row from before request
-  // state) starts from the empty request.
-  const requestState =
-    stored && stored.userId === args.userId ? parseStoredState(stored.requestState) : emptyState();
+  // state) starts from the empty request. When this message is a tap on
+  // one of the places the last turn couldn't choose between, it is loaded
+  // with that place already chosen: the choice is the user's, so it is
+  // taken from the request, not left to the model.
+  const requestState = resolveTappedCandidate(
+    stored && stored.userId === args.userId ? parseStoredState(stored.requestState) : emptyState(),
+    args.text,
+    at,
+  );
 
-  const at = args.now?.() ?? new Date();
   // The clock time the message names, read here rather than left to the
   // model: a 7 PM that has passed today means tomorrow, never "now"
   // (requestedTime.ts). The tools hold the plan to it.
@@ -309,10 +521,12 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
     userId: args.userId,
     conversationId: args.conversationId,
     location: args.location,
-    // Earlier turns' grounding counts: "go ahead and propose" after a
-    // clarifying question proposes what the previous turn quoted, and a
-    // "make it 5 instead" plan keeps the place it was about.
-    ...groundingIn(history),
+    // The latest search at the request's current version counts: "go
+    // ahead and propose" after a clarifying question proposes what the
+    // previous turn found. Read back from the stored transcript, so it
+    // survives a restart and holds across machines (search.ts).
+    lastSearch: lastSearchIn(history, requestState.version) ?? undefined,
+    searchesThisTurn: 0,
     onModelUsage: (usage) => sideCalls.push(usage),
     timeRequest,
     requestState,
@@ -320,11 +534,21 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
     utterance: args.text,
   };
 
+  // What streams to the user while the turn runs is provisional (the
+  // `done` reply replaces it), but it is still seen: nothing with a dollar
+  // amount in it streams, and nothing at all once this turn has searched —
+  // what the model says about prices reaches the user only after the
+  // reply check below.
+  const stream = args.onText
+    ? amountFreeStream(args.onText, () => (ctx.searchesThisTurn ?? 0) === 0)
+    : null;
   const segments: string[] = [];
   let plan: AssistantResult["plan"] = null;
-  let asked: { question: string; suggestions: Suggestion[] } | null = null;
-  const quotes: QuoteContext = { street: null, garages: [], minutes: null };
+  let asked: Ask | null = null;
   let reminded = false;
+  // The amounts tools other than the searches have reported, this turn
+  // and before: what a reply may state without a card (V6).
+  const reported = amountsReported(history);
   // Per-turn accounting, logged on the assistant_turn decision row.
   const startedMs = Date.now();
   let inputTokens = 0;
@@ -345,8 +569,9 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
           tools: TOOL_DEFINITIONS,
           maxTokens: MAX_TOKENS,
         },
-        args.onText,
+        stream?.push,
       );
+      stream?.flush();
       modelCalls += 1;
       if (response.model) modelId = response.model;
       inputTokens += response.usage?.inputTokens ?? 0;
@@ -360,11 +585,9 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
       messages.push({ role: "assistant", content: response.content });
 
       if (response.stopReason !== "tool_use" || toolUses.length === 0) {
-        // The turn is ending in prose. If it quoted anything, that's the
-        // prod bug: first re-prompt once, then synthesize the plan from
-        // the tool results ourselves — a quote never stays un-actionable.
-        const hasQuotes = quotes.street !== null || quotes.garages.length > 0;
-        if (plan === null && hasQuotes && !reminded) {
+        // The turn is ending in prose. If it searched, the user is owed a
+        // card: re-prompt once, and only once.
+        if (plan === null && (ctx.searchesThisTurn ?? 0) > 0 && !reminded) {
           reminded = true;
           messages.push({ role: "user", content: PROPOSE_PLAN_REMINDER });
           continue;
@@ -375,7 +598,7 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
       const results: { type: "tool_result"; tool_use_id: string; content: string }[] = [];
       for (const use of toolUses) {
         const outcome = await args.tools.execute(ctx, use.name, use.input);
-        captureQuotes(quotes, use.name, use.input, outcome.result);
+        if (reportsAmounts(use.name, outcome.result)) amountsIn(outcome.result, reported);
         results.push({
           type: "tool_result",
           tool_use_id: use.id,
@@ -387,16 +610,25 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
       messages.push({ role: "user", content: results });
       // propose_plan ends the turn: the card carries the plan; anything
       // more the model wanted to say waits for the user's next message.
-      // ask_user ends it the same way — the question waits for a tap.
+      // ask_user ends it the same way — the question waits for a tap. So
+      // does a search that can't tell where to look (it asks), and a
+      // garage-only search whose source is down (it has its own card).
       if (plan || asked) break;
     }
 
-    // The model was reminded and still didn't propose: build the plan from
-    // its own quotes, through the same validated/audited tool.
-    if (plan === null && asked === null && (quotes.street !== null || quotes.garages.length > 0)) {
-      const synthesized = synthesizePlan(quotes);
-      if (synthesized) {
-        const outcome = await args.tools.execute(ctx, "propose_plan", { plan: synthesized });
+    // The model searched, was reminded, and still proposed nothing. The
+    // loop never builds a plan out of quotes (that fallback could
+    // re-propose what the user had just ruled out). The one card it does
+    // issue is the "no": when the latest search found nothing that meets
+    // the request, saying so is the server's call — through the same
+    // validated, audited tool, which first completes the search.
+    if (plan === null && asked === null && (ctx.searchesThisTurn ?? 0) > 0) {
+      const last = ctx.lastSearch;
+      const version = (ctx.requestState ?? requestState).version;
+      if (last && last.stateVersion === version && last.satisfying.length === 0) {
+        const outcome = await args.tools.execute(ctx, "propose_plan", {
+          plan: { kind: "none_meets" },
+        });
         if (outcome.endTurn) plan = outcome.endTurn;
       }
     }
@@ -428,6 +660,7 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
           latencyMs: Date.now() - startedMs,
           estimatedCostUsd,
           proposedPlan: plan !== null,
+          ...(plan ? { planKind: plan.plan.kind } : {}),
           stateEdits: ctx.requestEdits ?? 0,
           requestVersion: (ctx.requestState ?? requestState).version,
         },
@@ -436,34 +669,80 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
     });
   }
 
+  const body = plan?.plan;
+  // The turn searched and left no card: whatever it said about prices is
+  // a quote in prose.
+  const quotedWithoutCard = plan === null && asked === null && (ctx.searchesThisTurn ?? 0) > 0;
+  let said: string;
+  if (body?.kind === "none_meets" || body?.kind === "no_data") {
+    // A "no" is said in the server's words. The model's are dropped
+    // whole: no phrasing of its own can restate a near-miss as a fit.
+    said = body.headline;
+  } else {
+    // An ask_user question is part of the reply, said once. A question the
+    // SERVER asked (a search that couldn't tell where to look) is its own
+    // words and may quote the user's: it is added after the check.
+    const serverAsked = asked?.server ? asked.question : null;
+    const spoken = scrubVerbalConfirm(
+      joinReplySegments(asked && !serverAsked ? [...segments, asked.question] : segments),
+      plan !== null,
+    );
+    const scrub = scrubUngroundedAmounts(spoken, groundedCents(ctx, plan, reported));
+    if (scrub.dropped.length > 0) {
+      await args.db.decision.create({
+        data: {
+          kind: "assistant_reply",
+          inputs: { conversationId: args.conversationId },
+          rule: "ungrounded_number",
+          outcome: {
+            amounts: scrub.dropped,
+            hasPlan: plan !== null,
+            quotedWithoutCard,
+            requestVersion: (ctx.requestState ?? requestState).version,
+          },
+          userId: args.userId,
+        },
+      });
+    }
+    said = serverAsked
+      ? joinReplySegments([scrub.text, serverAsked])
+      : scrub.text.length > 0 || scrub.dropped.length === 0
+        ? scrub.text
+        : asked
+          ? "Which would you like?"
+          : plan
+            ? ""
+            : quotedWithoutCard
+              ? "I found options but couldn't put them on a card."
+              : "I couldn't back those numbers up, so I've left them out.";
+  }
   // Models often propose with tool calls alone (Sonnet 5 did on every
   // live run): an empty reply left the card under a bare "…" bubble — the
-  // one-liner states what the plan assumed. An ask_user question is part
-  // of the reply, said once.
-  const said = scrubVerbalConfirm(
-    joinReplySegments(asked ? [...segments, asked.question] : segments),
-    plan !== null,
-  );
-  const assumed = plan?.plan.assumptions;
+  // one-liner states what the plan assumed.
+  const assumed = body && "assumptions" in body ? body.assumptions : undefined;
   const reply =
-    said.length > 0 || plan === null
+    said.length > 0 || !body
       ? said
-      : plan.plan.kind === "itinerary"
+      : body.kind === "itinerary"
         ? `Here's a plan for your day${assumed ? ` (${assumed})` : ""} — review it, then Sign off.`
         : `Here are your options${assumed ? ` (${assumed})` : ""} — tap one to go ahead.`;
 
-  // The tappable answers: ask_user's own, else — when a place search this
-  // turn came back ambiguous and the model asked in prose anyway — those
-  // places, so the question is still one tap to answer.
+  // The tappable answers: ask_user's own (or the places a search couldn't
+  // choose between); a "no" card's ways to relax the request; else — when
+  // a place search this turn came back ambiguous and the model asked in
+  // prose anyway — those places, so the question is still one tap.
   // Else, a question asked in prose about the city, the time, or the
   // stay gets its usual answers (clarify.ts).
   // A question about a requested time that has passed ("tomorrow at 7, or
-  // now?") gets exactly those two answers.
+  // now?") gets exactly those two answers. And a turn that searched but
+  // left no card offers the one thing that can fix it.
   const suggestions =
-    asked?.suggestions ??
+    (asked && asked.suggestions.length > 0 ? asked.suggestions : null) ??
+    (body ? suggestionsForPlan(body) : null) ??
     (plan === null && (ctx.placeChoices?.length ?? 0) >= 2 ? ctx.placeChoices! : null) ??
     (plan === null && reply.trim().endsWith("?") ? requestedTimeChoices(timeRequest) : null) ??
-    (plan === null ? suggestionsForQuestion(reply) : null);
+    (plan === null ? suggestionsForQuestion(reply) : null) ??
+    (quotedWithoutCard ? [{ label: "Search again", reply: "Search again" }] : null);
 
   // The model's context, cut only where a user message starts; and the
   // readable transcript the history list shows, which is never trimmed
@@ -522,172 +801,4 @@ export function phoneLocationLine(location: { lat: number; lng: number }): strin
   return city
     ? `[phone location: ${coords} — in or near ${city}]`
     : `[phone location: ${coords} — outside the cities we cover]`;
-}
-
-/** What a stored transcript already grounded: every quote_street result
- * that found a zone (with the point it was asked about — the option's
- * pin), the latest geocode_place match, and the latest search_garages.
- * A result whose tool_use was trimmed away is skipped. Derived from the
- * transcript rather than held in memory, so it survives a restart and
- * holds across machines, and it is the conversation OWNER's by
- * construction (the loop only loads a transcript for its owner). */
-export function groundingIn(
-  turns: ModelTurn[],
-): Pick<ToolContext, "streetQuotes" | "geocode" | "garageSearch"> {
-  const calls = new Map<string, { name: string; input: Record<string, unknown> }>();
-  const streetQuotes: StreetQuote[] = [];
-  let geocode: ToolContext["geocode"];
-  let garageSearch: ToolContext["garageSearch"];
-  for (const turn of turns) {
-    if (typeof turn.content === "string") continue;
-    for (const block of turn.content) {
-      if (block.type === "tool_use") {
-        const input =
-          typeof block.input === "object" && block.input !== null
-            ? (block.input as Record<string, unknown>)
-            : {};
-        calls.set(block.id, { name: block.name, input });
-      }
-      if (block.type !== "tool_result") continue;
-      const call = calls.get(block.tool_use_id);
-      if (!call) continue;
-      let r: Record<string, unknown>;
-      try {
-        r = JSON.parse(block.content) as Record<string, unknown>;
-      } catch {
-        continue; // Not JSON — nothing grounded.
-      }
-      if (call.name === "quote_street" && r["found"] === true && Array.isArray(r["options"])) {
-        const window = r["window"] as { startsAt?: string } | undefined;
-        const stay = call.input["duration_minutes"];
-        for (const option of r["options"] as StreetOption[]) {
-          if (typeof option.zoneId !== "string") continue;
-          streetQuotes.push({
-            zoneId: option.zoneId,
-            costUsd: Number(option.costUsd ?? 0),
-            lat: option.lat,
-            lng: option.lng,
-            option,
-            ...(typeof window?.startsAt === "string" ? { startsAt: window.startsAt } : {}),
-            ...(typeof stay === "number" ? { stayMinutes: stay } : {}),
-          });
-        }
-      } else if (
-        call.name === "quote_street" &&
-        r["found"] === true &&
-        typeof r["zoneId"] === "string"
-      ) {
-        // A quote stored before street search: one zone at the quoted point.
-        const { lat, lng } = call.input;
-        streetQuotes.push({
-          zoneId: r["zoneId"],
-          costUsd: Number(r["costUsd"] ?? 0),
-          ...(typeof lat === "number" && typeof lng === "number" ? { lat, lng } : {}),
-        });
-      } else if (call.name === "geocode_place" && r["found"] === true && r["ambiguous"] !== true) {
-        const top =
-          (r["place"] as Record<string, unknown> | undefined) ??
-          (r["results"] as Record<string, unknown>[] | undefined)?.[0];
-        if (
-          top &&
-          typeof top["lat"] === "number" &&
-          typeof top["lng"] === "number" &&
-          typeof top["displayName"] === "string"
-        ) {
-          geocode = { lat: top["lat"], lng: top["lng"], label: top["displayName"] };
-        }
-      } else if (
-        call.name === "search_garages" &&
-        typeof r["provider"] === "string" &&
-        typeof r["searchedAt"] === "string"
-      ) {
-        garageSearch = { provider: r["provider"], searchedAt: r["searchedAt"] };
-      }
-    }
-  }
-  return { streetQuotes, geocode, garageSearch };
-}
-
-/** The street quotes in a stored transcript (see groundingIn). */
-export function streetQuotesIn(turns: ModelTurn[]): StreetQuote[] {
-  return groundingIn(turns).streetQuotes ?? [];
-}
-
-function captureQuotes(quotes: QuoteContext, tool: string, input: unknown, result: unknown): void {
-  const r = result as Record<string, unknown>;
-  const args = input as Record<string, unknown>;
-  const best = Array.isArray(r["options"]) ? (r["options"] as StreetOption[])[0] : undefined;
-  if (tool === "quote_street" && r["found"] === true && best) {
-    quotes.street = {
-      zoneId: best.zoneId,
-      zoneNumber: best.zoneNumber,
-      street: best.street,
-      summary: best.summary,
-      costUsd: best.costUsd,
-      minutes: best.clampedMinutes,
-      startsAt: String(args["when"] ?? ""),
-    };
-    quotes.minutes = Number(args["duration_minutes"] ?? best.clampedMinutes);
-  }
-  if (tool === "search_garages" && Array.isArray(r["options"])) {
-    quotes.garages = (r["options"] as Record<string, unknown>[]).slice(0, 2).map((o) => ({
-      id: String(o["id"]),
-      name: String(o["name"] ?? "Garage"),
-      priceUsd: Number(o["priceUsd"] ?? 0),
-      walkMinutes: Number(o["walkMinutes"] ?? 0),
-      entryType: String(o["entryType"] ?? "unknown"),
-      deepLink: String(o["deepLink"] ?? ""),
-    }));
-  }
-}
-
-/** A single_spot plan straight from the quotes; cheapest option gets the
- * badge. Only the single-spot job is synthesized — a malformed itinerary
- * is worse than a follow-up question. */
-function synthesizePlan(quotes: QuoteContext): Record<string, unknown> | null {
-  const options: Record<string, unknown>[] = [];
-  const minutes = quotes.minutes ?? 60;
-  if (quotes.street) {
-    options.push({
-      id: "street-1",
-      type: "street",
-      // The zone id is an internal slug ("bos-…") and never shown; a
-      // block with no known number says so on the meter instead.
-      label: quotes.street.street
-        ? `Street — ${quotes.street.street}`
-        : quotes.street.zoneNumber
-          ? `Street — Zone ${quotes.street.zoneNumber}`
-          : "Street — zone number on the meter",
-      detail: quotes.street.summary ?? "Metered street parking",
-      priceUsd: quotes.street.costUsd,
-      durationMinutes: quotes.street.minutes,
-      zoneId: quotes.street.zoneId,
-      ...(quotes.street.startsAt ? { startsAt: quotes.street.startsAt } : {}),
-      recommended: false,
-    });
-  }
-  for (const garage of quotes.garages) {
-    options.push({
-      id: `garage-${garage.id}`,
-      type: "garage",
-      label: garage.name,
-      detail: "Off-street garage",
-      priceUsd: garage.priceUsd,
-      durationMinutes: minutes,
-      walkMinutes: garage.walkMinutes,
-      entryType: garage.entryType,
-      garageOptionId: garage.id,
-      ...(garage.deepLink ? { deepLink: garage.deepLink } : {}),
-      recommended: false,
-    });
-  }
-  if (options.length === 0) return null;
-  let cheapest = 0;
-  options.forEach((option, index) => {
-    if ((option["priceUsd"] as number) < (options[cheapest]!["priceUsd"] as number)) {
-      cheapest = index;
-    }
-  });
-  options[cheapest]!["recommended"] = true;
-  return { kind: "single_spot", options: options.slice(0, 3) };
 }

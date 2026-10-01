@@ -3,11 +3,27 @@
  * model's propose_plan tool, the stored assistant_plans row, and the iOS
  * plan cards. Validated with zod at the tool boundary: a malformed plan
  * never reaches the client.
+ *
+ * Four kinds reach a card (FR-43): `single_spot` and `itinerary`, which
+ * the user can act on, and the two honest non-answers the server decides —
+ * `none_meets` (options exist, none meets the request's limits) and
+ * `no_data` (we have nothing there to offer). Neither can be confirmed.
  */
 
 import { z } from "zod";
 
 import { parseEasternTime } from "../hours.js";
+
+/** A value on either side of a broken limit: a price, a walk, a kind. */
+const limitValue = z.union([z.number(), z.string(), z.boolean(), z.array(z.string()), z.null()]);
+
+/** One limit an option breaks, and by how much: SERVER-COMPUTED from the
+ * request's hard constraints (search.ts); model input is discarded. */
+export const violationSchema = z.object({
+  field: z.enum(["maxPriceUsd", "maxWalkMinutes", "kinds", "entryType", "covered"]),
+  actual: limitValue,
+  limit: limitValue,
+});
 
 export const singleSpotOptionSchema = z.object({
   id: z.string().min(1),
@@ -57,6 +73,21 @@ export const singleSpotOptionSchema = z.object({
   hoursToday: z.array(z.object({ start: z.string(), end: z.string() })).optional(),
   maxStayMinutes: z.number().int().positive().nullable().optional(),
   exceedsMaxStay: z.boolean().optional(),
+  /** SERVER-ATTACHED from the search (model input ignored), decision 8:
+   * what the option is the best on among those that meet the request —
+   * the card's "Cheapest" / "Closest" label. */
+  axis: z.enum(["cheapest", "closest", "both"]).optional(),
+  /** SERVER-ATTACHED: the best option on the axis the user did NOT ask
+   * about. An alternative: never the recommended option. */
+  secondary: z.literal(true).optional(),
+  /** The option breaks a limit of the request. Shown for information, with
+   * `violates` saying which limit and by how much; it has no Confirm, and
+   * the confirm route refuses it. */
+  nearMiss: z.literal(true).optional(),
+  violates: z.array(violationSchema).max(5).optional(),
+  /** SERVER-ATTACHED: when this option's price was fetched (ISO) — a
+   * garage price is a claim about the past (decision 7). */
+  fetchedAt: z.string().optional(),
   recommended: z.boolean().default(false),
 });
 
@@ -75,7 +106,15 @@ export const singleSpotPlanSchema = z.object({
     .optional(),
   /** SERVER-ATTACHED: where garage results came from and when the search
    * ran, so the card can say "From SpotHero · checked 2:05 PM". */
-  provenance: z.object({ provider: z.string(), searchedAt: z.string() }).optional(),
+  provenance: z
+    .object({
+      provider: z.string(),
+      searchedAt: z.string(),
+      /** The garage search failed, so the card holds street options only:
+       * "couldn't check garages", never "no garages". */
+      garage: z.literal("unavailable").optional(),
+    })
+    .optional(),
   /** SERVER-ATTACHED: why the recommended option is the recommended one,
    * in one line from the options on the card ("Cheapest and closest —
    * free, 4 min walk"). */
@@ -129,59 +168,151 @@ export const itineraryPlanSchema = z.object({
   assumptions: z.string().max(200).optional(),
 });
 
-export const planSchema = z.discriminatedUnion("kind", [singleSpotPlanSchema, itineraryPlanSchema]);
+/** One limit of the request nothing met: the limit, and the nearest any
+ * option came to it. `garageSearch` / `unavailable` is the one failure
+ * that isn't a limit: a garage-only request whose garage search is down. */
+export const constraintFailedSchema = z.object({
+  field: z.string().min(1),
+  limit: limitValue.optional(),
+  nearestActual: limitValue.optional(),
+  reason: z.string().optional(),
+});
+
+/** What relaxing one limit a step would yield. `reply` is a plain
+ * sentence in the user's voice: a tap sends it like any message, so the
+ * USER changes the request (through update_request), never the assistant. */
+export const relaxSuggestionSchema = z.object({
+  field: z.enum(["maxPriceUsd", "maxWalkMinutes", "kinds"]),
+  to: z.union([z.number(), z.array(z.enum(["street", "garage"]))]),
+  wouldYield: z.number().int().nonnegative(),
+  label: z.string().min(1).max(60),
+  reply: z.string().min(1).max(200),
+});
 
 /**
- * What propose_plan's input_schema shows the MODEL: the same zod schemas
- * the tool validates with, minus the fields the server attaches itself
- * (payOnArrival, provider, deepLink, pins, provenance). The tool used to
- * describe `plan` as a bare object, so models guessed the shape — `kind:
- * "street"`, `title`, `costUsd`, `optionId` — and every guess cost a
- * bounced call (three per turn on a live Sonnet 5 run, 2026-09-24).
+ * "Nothing meets this" as a card of its own, decided by the server
+ * (tools.ts V4) and filled by it: the model only names the kind. Up to
+ * three near-misses, each with what it breaks.
  */
-const modelOptionSchema = singleSpotOptionSchema
-  .omit({
-    payOnArrival: true,
-    provider: true,
-    deepLink: true,
-    lat: true,
-    lng: true,
-    street: true,
-    zoneNumber: true,
-    streetState: true,
-    streetSummary: true,
-    priceBreakdown: true,
-    ratePerHourUsd: true,
-    hoursToday: true,
-    maxStayMinutes: true,
-    exceedsMaxStay: true,
-  })
-  .extend({
-    zoneId: z.string().optional().describe("street options: the zoneId quote_street returned"),
-    garageOptionId: z
-      .string()
-      .optional()
-      .describe("garage options: the option id search_garages returned"),
-    startsAt: z
-      .string()
-      .optional()
-      .describe("ISO 8601 start with the UTC offset, e.g. 2026-09-26T14:00:00-04:00"),
-    recommended: z.boolean().default(false).describe("exactly one option is recommended"),
-  });
+export const noneMeetsPlanSchema = z.object({
+  kind: z.literal("none_meets"),
+  /** The no, in one or two sentences ("Nothing under $2.00 near Cambridge
+   * Common. Closest: …"). It is the turn's reply, word for word: model
+   * text can't restate a near-miss as a fit. */
+  headline: z.string().min(1).max(400),
+  constraintsFailed: z.array(constraintFailedSchema).max(6),
+  nearMisses: z.array(singleSpotOptionSchema).max(3),
+  relaxSuggestions: z.array(relaxSuggestionSchema).max(3),
+  destination: singleSpotPlanSchema.shape.destination,
+  provenance: singleSpotPlanSchema.shape.provenance,
+  assumptions: z.string().max(200).optional(),
+  note: z.string().max(400).optional(),
+});
 
-const modelPlanSchema = z.discriminatedUnion("kind", [
-  singleSpotPlanSchema
-    .omit({ provenance: true, recommendedReason: true, assumptions: true })
-    .extend({ options: z.array(modelOptionSchema).min(1).max(3) }),
-  itineraryPlanSchema.omit({ assumptions: true }).extend({
-    stops: z
-      .array(itineraryStopSchema.omit({ deepLink: true }))
-      .min(1)
-      .max(12),
-  }),
+/**
+ * "We have nothing to offer there": both searches came back empty inside
+ * a covered city, with no limit set to blame. Not a refusal — a gap in
+ * the data — so it has its own kind and rule, and names the nearest zones
+ * we do have.
+ */
+export const noDataPlanSchema = z.object({
+  kind: z.literal("no_data"),
+  rule: z.literal("no_zone_here"),
+  headline: z.string().min(1).max(400),
+  /** How far the street search looked. */
+  radiusM: z.number().int().positive(),
+  nearestZones: z
+    .array(
+      z.object({
+        zoneId: z.string(),
+        street: z.string().nullable(),
+        zoneNumber: z.string().nullable(),
+        distanceM: z.number().int().nonnegative(),
+        walkMinutes: z.number().int().nonnegative(),
+        lat: z.number().gte(-90).lte(90).optional(),
+        lng: z.number().gte(-180).lte(180).optional(),
+      }),
+    )
+    .max(3),
+  destination: singleSpotPlanSchema.shape.destination,
+  provenance: singleSpotPlanSchema.shape.provenance,
+  assumptions: z.string().max(200).optional(),
+});
+
+export const planSchema = z.discriminatedUnion("kind", [
+  singleSpotPlanSchema,
+  itineraryPlanSchema,
+  noneMeetsPlanSchema,
+  noDataPlanSchema,
 ]);
 
-/** JSON Schema for propose_plan's `plan` argument (anyOf the two kinds). */
+/**
+ * What propose_plan takes from the MODEL (FR-43). A single-spot option is
+ * a result of the latest search, named by its id: the price, walk, zone,
+ * link, and window are the search's, so the id is all the model must send
+ * and the words are all it may add. (It used to send the whole option;
+ * every field it typed was one the server had to distrust.) A price it
+ * sends anyway is read only to record a mismatch. The "no" card is the
+ * server's to fill: the model names the kind.
+ */
+const modelOptionSchema = z.object({
+  id: z.string().min(1).describe("The option's id, exactly as the latest search returned it"),
+  label: z.string().min(1).max(120).optional().describe("A short name; the server has a default"),
+  detail: z.string().max(240).optional().describe("One line about the spot"),
+  recommended: z
+    .boolean()
+    .optional()
+    .describe("The server recommends the first option the search ranked; this is advisory"),
+  nearMiss: z
+    .boolean()
+    .optional()
+    .describe("Required true for an option from the search's nearMisses; never for one that meets"),
+});
+
+const modelSingleSpotSchema = z.object({
+  kind: z.literal("single_spot"),
+  options: z.array(modelOptionSchema).min(1).max(3),
+  note: z.string().max(400).optional(),
+});
+
+const modelNoneMeetsSchema = z.object({
+  kind: z.literal("none_meets"),
+  nearMissIds: z
+    .array(z.string().min(1))
+    .max(3)
+    .optional()
+    .describe("Which near-misses to show, by id; omit for the server's nearest three"),
+});
+
+const modelItinerarySchema = itineraryPlanSchema.omit({ assumptions: true }).extend({
+  stops: z
+    .array(itineraryStopSchema.omit({ deepLink: true }))
+    .min(1)
+    .max(12),
+});
+
+const modelPlanSchema = z.discriminatedUnion("kind", [
+  modelSingleSpotSchema,
+  modelItinerarySchema,
+  modelNoneMeetsSchema,
+]);
+
+/** The validator for propose_plan's input: the model's shape, plus the
+ * price a model may still type on an option (read for the mismatch audit
+ * and never used). */
+export const proposedPlanSchema = z.discriminatedUnion("kind", [
+  modelSingleSpotSchema.extend({
+    options: z
+      .array(modelOptionSchema.extend({ priceUsd: z.unknown().optional() }))
+      .min(1)
+      .max(3),
+  }),
+  modelItinerarySchema,
+  modelNoneMeetsSchema,
+]);
+
+/** JSON Schema for propose_plan's `plan` argument (anyOf the three kinds
+ * a model can send; `no_data` is only ever the server's). */
 export const MODEL_PLAN_JSON_SCHEMA: Record<string, unknown> = (() => {
   const schema = {
     ...(z.toJSONSchema(modelPlanSchema, { io: "input" }) as Record<string, unknown>),
@@ -193,12 +324,34 @@ export const MODEL_PLAN_JSON_SCHEMA: Record<string, unknown> = (() => {
   return schema;
 })();
 
+export type Violation = z.infer<typeof violationSchema>;
 export type SingleSpotOption = z.infer<typeof singleSpotOptionSchema>;
 export type SingleSpotPlan = z.infer<typeof singleSpotPlanSchema>;
 export type ItineraryStop = z.infer<typeof itineraryStopSchema>;
 export type EditedItineraryStop = z.infer<typeof editedItineraryStopSchema>;
 export type ItineraryPlan = z.infer<typeof itineraryPlanSchema>;
+export type ConstraintFailed = z.infer<typeof constraintFailedSchema>;
+export type RelaxSuggestion = z.infer<typeof relaxSuggestionSchema>;
+export type NoneMeetsPlan = z.infer<typeof noneMeetsPlanSchema>;
+export type NoDataPlan = z.infer<typeof noDataPlanSchema>;
+export type ProposedPlan = z.infer<typeof proposedPlanSchema>;
 export type AssistantPlanBody = z.infer<typeof planSchema>;
+
+/** The chips a "no" card offers: each relaxation that would yield
+ * something, or — when the garage search itself was down — trying again.
+ * Null for a plan the user acts on by tapping the card. */
+export function suggestionsForPlan(
+  plan: AssistantPlanBody,
+): { label: string; reply: string }[] | null {
+  if (plan.kind !== "none_meets") return null;
+  if (plan.constraintsFailed.some((c) => c.field === "garageSearch")) {
+    return [{ label: "Try again", reply: "Search garages again" }];
+  }
+  const chips = plan.relaxSuggestions
+    .filter((r) => r.wouldYield > 0)
+    .map(({ label, reply }) => ({ label, reply }));
+  return chips.length > 0 ? chips : null;
+}
 
 const money = (usd: number) => (usd === 0 ? "free" : `$${usd.toFixed(2)}`);
 

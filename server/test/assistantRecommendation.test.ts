@@ -9,8 +9,12 @@ import { describe, expect, test } from "vitest";
 import type { SingleSpotOption, SingleSpotPlan } from "../src/services/assistant/plans.js";
 import { recommendationReason } from "../src/services/assistant/plans.js";
 import { AssistantTools } from "../src/services/assistant/tools.js";
+import type { ToolContext } from "../src/services/assistant/tools.js";
 import type { GarageOption } from "../src/services/garage/garageProvider.js";
 import { makeFakeDb, makePolicyService } from "./helpers.js";
+
+/** The phone: where a request that names no place is searched. */
+const HERE = { lat: 42.3503, lng: -71.0811 };
 
 function option(
   id: string,
@@ -94,20 +98,18 @@ describe("propose_plan attaches it", () => {
         book: async () => ({ kind: "deeplink_handoff", option: GARAGE, deepLink: GARAGE.deepLink }),
       },
     });
-    const out = await tools.execute({ userId: "u1", conversationId: "c1" }, "propose_plan", {
+    const ctx: ToolContext = { userId: "u1", conversationId: "c1", location: HERE };
+    await tools.execute(ctx, "search_garages", {});
+    const out = await tools.execute(ctx, "propose_plan", {
       plan: {
         kind: "single_spot",
         recommendedReason: "Because I said so",
         options: [
           {
-            id: "garage-g1",
-            type: "garage",
+            id: "v0-g1",
             label: "Deck",
             // The model's price is replaced by the search's $18.
             priceUsd: 1,
-            durationMinutes: 90,
-            walkMinutes: 3,
-            garageOptionId: "g1",
             recommended: true,
           },
         ],
@@ -135,31 +137,16 @@ describe("independent review fixes", () => {
         book: async () => ({ kind: "deeplink_handoff", option: far, deepLink: far.deepLink }),
       },
     });
-    const out = await tools.execute({ userId: "u1", conversationId: "c1" }, "propose_plan", {
+    const ctx: ToolContext = { userId: "u1", conversationId: "c1", location: HERE };
+    await tools.execute(ctx, "search_garages", {});
+    const out = await tools.execute(ctx, "propose_plan", {
       plan: {
         kind: "single_spot",
         options: [
-          // The model claims the far garage is a 1-minute walk.
-          {
-            id: "a",
-            type: "garage",
-            label: "Far",
-            priceUsd: 18,
-            durationMinutes: 90,
-            walkMinutes: 1,
-            garageOptionId: "g-far",
-            recommended: true,
-          },
-          {
-            id: "b",
-            type: "garage",
-            label: "Near",
-            priceUsd: 24,
-            durationMinutes: 90,
-            walkMinutes: 2,
-            garageOptionId: "g-near",
-            recommended: false,
-          },
+          // The model claims the far garage is a 1-minute walk. A walk it
+          // types isn't even read: the option is the search's, by id.
+          { id: "v0-g-far", label: "Far", walkMinutes: 1, recommended: true },
+          { id: "v0-g-near", label: "Near", walkMinutes: 2 },
         ],
       },
     });

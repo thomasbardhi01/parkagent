@@ -351,6 +351,13 @@ struct AssistantSheetView: View {
                 // re-prices them and re-checks the cap before storing.
                 Task { await model.confirm(planId: plan.planId, optionId: nil, stops: stops) }
             }
+        case .noneMeets(let none):
+            // Nothing to confirm: the reply's chips change the request.
+            NoneMeetsPlanCard(plan: none)
+        case .noData(let gap):
+            NoDataPlanCard(plan: gap)
+        case .unsupported:
+            EmptyView()
         }
     }
 

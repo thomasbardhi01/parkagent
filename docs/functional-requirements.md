@@ -70,7 +70,7 @@ started at 11:55 ET). "—" means the FR has no live test.
 | FR-23 | Named-place search within 600 m | nightly + unit | ✅ passed | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantGeocode.test.ts`, `server/test/assistantAccuracy.test.ts` |
 | FR-24 | Past-date guard | nightly + unit | ✅ passed | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantAccuracy.test.ts` |
 | FR-25 | Confirm-token gate | nightly + unit | ✅ passed | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantPlanEnforcement.test.ts` |
-| FR-26 | No plan without a quote | unit | — | `server/test/assistantPlanEnforcement.test.ts`, `server/test/assistantAccuracy.test.ts` |
+| FR-26 | No plan without a search | unit | — | `server/test/assistantValidators.test.ts`, `server/test/assistantPlanEnforcement.test.ts`, `server/test/assistantGrounding.test.ts`, `server/test/assistantAccuracy.test.ts` |
 | FR-27 | Explanations | nightly + unit | ✅ passed | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantLoop.test.ts` |
 | FR-28 | Pushes | nightly + unit + device-manual | ✅ passed | `server/fr/50-ops.fr.test.ts`, `server/test/device.test.ts`, `server/test/apnsPush.test.ts`, `server/test/admin.test.ts`, `server/test/session.test.ts` (copy); live delivery needs a registered phone |
 | FR-29 | Admin summary | nightly + unit | ✅ passed | `server/fr/50-ops.fr.test.ts`, `server/test/admin.test.ts`, `server/test/providerMetrics.test.ts`, `server/test/authorization.test.ts` |
@@ -87,7 +87,7 @@ started at 11:55 ET). "—" means the FR has no live test.
 | FR-40 | Tappable questions, stated assumptions | nightly + unit | ✅ passed | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantClarify.test.ts`, `server/test/assistantRequestedTime.test.ts`; iOS `AssistantUITests` (duration chips, assumptions line) |
 | FR-41 | Requests that survive the network | nightly + unit | ✅ passed | `server/fr/55-reliability.fr.test.ts`, `server/test/idempotency.test.ts`, `server/test/outbound.test.ts`, `server/test/shutdown.test.ts`, `server/test/auth.test.ts`; iOS `LiveAPIRequestTests`, `ParkOutboxTests`; `scripts/boot-check.sh` (SIGTERM → exit 0) |
 | FR-42 | The request is server-owned, versioned state | unit | — | `server/test/requestState.test.ts`, `server/test/assistantLoop.test.ts` (request state, `update_request`) |
-| FR-43 | Options from the latest search; the assistant says no | pending | — | #168 |
+| FR-43 | Options from the latest search; the assistant says no | nightly + unit | — (first run after #168 deploys) | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantSayNo.test.ts`, `server/test/assistantValidators.test.ts`, `server/test/assistantLoop.test.ts`; iOS `AssistantPlanPresentationTests` (the two "no" cards and the labels on the wire) |
 | FR-44 | Place resolution with confidence and walking times | pending | — | #169 |
 | FR-45 | Three intents, request chips, near-miss cards | pending | — | #170 |
 | FR-46 | One ranking; map, list, directions; garages open in-app with their fetched time | pending | — | #171 |
@@ -549,25 +549,50 @@ unminted plan.
 Evidence: `assistantPlanEnforcement.test.ts` (every phrasing); live
 FR-25 test.
 
-### FR-26 — No plan without a quote
+### FR-26 — No plan without a search
 
-Plan options must originate from tool results — a street option carries
-the zone the `quote_street` tool actually quoted (observed terms
-applied; a zoneId the model dropped is re-attached from the
-conversation's quotes, and a street option with no quote to ground it
-is refused), a garage option the id `search_garages` returned; plans are
-zod-validated at the tool boundary and itinerary totals recomputed
-server-side, so an invented zone never reaches a card. Prices: a
-single-spot option's price and every EDITED itinerary stop's price come
-from the server's own quote (#131); an itinerary's first proposal still
-carries the per-stop prices the model read off `build_itinerary`, summed
-and capped server-side but not re-quoted yet (#132).
-**Accepted when** ungrounded plans are refused at the boundary.
+Plan options must originate from tool results, and since FR-43 that is a
+rule about ids: a single-spot option is a result of the conversation's
+latest search, named by the id that search gave it, or it isn't on the
+card. `propose_plan` holds the plan to it (server/API.md, "The
+validators"):
 
-Evidence: `assistantPlanEnforcement.test.ts`,
-`assistantAccuracy.test.ts` (observed-terms quoting), `plans.ts`; the
-live FR-21 assertions on zone ids and prices are the deployed-loop
-smoke of the same rule.
+- **V1.** An id that isn't in the latest search, or a search that isn't
+  for the request as it stands (the request was edited since, or the
+  search is more than ten minutes old), is refused
+  (`stale_or_unknown_option`). An invented option, one from an earlier
+  turn's request, and a real zone under the wrong id all fail here.
+- **V2.** The price, walk, stay, start, zone, street facts, garage link
+  and source, and pin are the search's. Nothing the model sends for them
+  is read; a price it typed that differs is recorded
+  (`model_price_mismatch`). Provider-observed terms apply as they do for
+  `/parked`.
+- **V3.** An option that breaks a limit of the request may be shown only
+  as a near-miss, with the server's account of what it breaks
+  (`hard_constraint_violation`), and can't be confirmed.
+- **V4.** With nothing that meets the request, the only plan is the "no"
+  (`must_say_no`), and with something that does, a "no" is refused
+  (`options_available`).
+- **V6.** A dollar amount in the reply that no card or tool stands behind
+  drops its sentence (`ungrounded_number`).
+
+Plans are zod-validated at the tool boundary and itinerary totals are
+recomputed server-side (V5), so an invented zone or price never reaches a
+card. One gap remains: an itinerary's FIRST proposal still carries the
+per-stop prices the model read off `build_itinerary`, summed and capped
+server-side but not re-quoted, so it is outside V2 (#132). Every edited
+itinerary stop is priced by the server (#131).
+**Accepted when** a plan with an option the latest search didn't return
+is refused at the boundary.
+
+Evidence: `assistantValidators.test.ts` (each rule, with the model doing
+the wrong thing: an invented id, a stale one, a zone under the wrong id,
+a wrong price, a near-miss dressed as an option);
+`assistantPlanEnforcement.test.ts`, `assistantGrounding.test.ts`
+(garage link and source; the latest search read back from a stored
+transcript), `assistantAccuracy.test.ts` (observed-terms quoting),
+`plans.ts`; the live FR-21 assertions on zone ids and prices are the
+deployed-loop smoke of the same rule.
 
 ### FR-27 — Explanations
 
@@ -1020,8 +1045,8 @@ more than 15 minutes out is `park_later`; anything else is `park_now`. A
 model intent that disagrees is overridden and reported. The model sees
 the state on every call (the "Current request" block in the system
 prompt) and may edit it at most twice a turn. Every call is a decisions
-row with the patch and what came of it. Nothing searches or plans from
-the state yet; that is FR-43.
+row with the patch and what came of it. The searches read the state
+(FR-43); nothing else decides what is searched.
 
 **Accepted when** each of these holds:
 
@@ -1059,13 +1084,98 @@ the system prompt. `assistantLoop.test.ts`, "request state (FR-42)" and
 - each refusal audited.
 
 ### FR-43 — Options come from the latest search, and the assistant says no (#168, WS-1)
-**Accepted when** searches read the request instead of model arguments;
-`propose_plan` accepts only options from the latest search at the current
-version, with prices from the search; nothing satisfying yields a
-`none_meets` card with near-misses and relax suggestions; no plan is ever
-synthesized; with no constraint both the closest and the cheapest are
-offered, and an explicit ask decides the primary option. Unit, plus one
-live case if the model-call budget allows.
+
+The searches read the request, the server decides what meets it, and
+"nothing meets this" is an answer of its own (server/API.md, "Searching
+the request, and saying no").
+
+- **The searches take no arguments.** `quote_street` and `search_garages`
+  read the place, the window, the limits, and the ranking from the
+  conversation's request (FR-42), so a constraint can't be dropped on the
+  way into a search. A named place that hasn't been looked up is looked up
+  by the search; one that matched several places, or none, ends the turn
+  asking the user, and is never replaced by the phone's location. A tap on
+  one of the places offered resolves it from the request itself.
+- **Each search says what meets the request and what doesn't.**
+  `satisfying` passes every set limit and is ordered by the server;
+  `nearMisses` are the nearest options that break one, with the limit and
+  the actual; when nothing satisfies, `relaxSuggestions` say what
+  loosening one limit a step would yield, counted over the options
+  already fetched.
+- **The order honors the ask (decision 8).** With no ask, the cheapest
+  and the closest options that meet the request both lead, each labeled.
+  With a rank, or a limit on price or on walk, the option that best
+  honors it comes first and the best on the other axis rides second as an
+  alternative; it is never the recommendation, and never an option the
+  limits exclude. The card puts the leading options on whatever the model
+  chose, and the first holds the badge.
+- **The server says no.** With nothing satisfying, the card is
+  `none_meets`: the limits that failed, up to three near-misses with what
+  each breaks, and the relaxations offered as chips the USER taps. The
+  verdict is taken only after everything the request allows has been
+  searched. Its reply is the card's own sentence, so the model can't
+  restate a near-miss as a fit. Neither a "no" card nor a near-miss can be
+  confirmed.
+- **No data is not a no.** Both searches empty inside a covered city with
+  no limit set is a `no_data` card (rule `no_zone_here`) naming the three
+  nearest zones; outside the covered cities it is a sentence and no card.
+- **Failures are said as failures.** A garage-only request whose garage
+  search is down ends on an "unavailable" card with no street substitute;
+  any other request keeps its street card, marked `provenance.garage:
+  "unavailable"`.
+- **No synthesized plan.** A turn that searched is reminded once to
+  propose. If it still doesn't, there is no card (unless nothing met the
+  request, which is the server's "no"), no price in the reply, and a
+  "Search again" chip.
+- **Every garage option says when its price was fetched** (`fetchedAt`,
+  decision 7), and checkout stays the provider's own page, opened in the
+  app by the user's tap; nothing automates it.
+
+There is no per-plan cap (decision 9): the itinerary's daily-cap
+recompute, against the caller's own cap, is the only cap on a proposal.
+
+**Accepted when** each of these holds:
+
+- A $2 cap near $4.50 and $6.00 blocks: no satisfying option, two
+  near-misses each breaking the price, "allow up to $7.00" would yield
+  two; a single-spot plan is refused and the `none_meets` card carries
+  the near-misses.
+- After "make it under $5" a turn-one option id is refused as stale, and
+  the final card's ids are all the new version's.
+- A model price of $3.00 for an option quoted $4.50 shows $4.50, with a
+  `model_price_mismatch` row.
+- A model that ends in prose "It's $4.50 on Mass Ave" is reminded once;
+  the reply then has no dollar amount, there is no card, and nothing was
+  synthesized.
+- The garage search failing gives the unavailable card on a garage-only
+  request and the street card otherwise.
+- A search with the place unresolved ends the turn asking, with the
+  candidates.
+- Empty results inside coverage with no limit give the `no_zone_here`
+  card.
+- Cheapest, closest, and balanced order a fixed fixture as documented; no
+  ask yields both axes; "cheapest" puts the closest second as
+  `secondary`; "under $20" never surfaces a secondary option over $20.
+- Live: a request for parking under $2 at Cambridge Common ends in a
+  `none_meets` card whose near-misses each break the price limit.
+
+Evidence: `assistantSayNo.test.ts` (38 tests: the argument-less strict
+tools, the "no" card and what feeds it, the loop saying no when the model
+won't, the SSE `plan` event, the confirm refusals, garage and place
+failures, `no_data`, the ranking fixture, decision 8 through the search
+and onto the card); `assistantValidators.test.ts` (26 tests: V1 to V6,
+each with the model doing the wrong thing, and the reply check's own
+cases — a near-miss price restated as a fit, the model's words on a card,
+what streams); `assistantLoop.test.ts` (the loop never builds a plan;
+the strict schemas against what the API compiles); the live FR-43 test.
+iOS `AssistantPlanPresentationTests` decode the two "no" cards and the
+new option fields. Device-manual: the cards on a phone (the PR's
+checklist).
+
+Not here: the request chips, the near-miss badges, and the relax chips
+as a designed card are FR-45; a stay longer than a meter's max is still
+offered with "(2 hr max)" rather than as a near-miss (the golden cases
+CS-09 and IM-03 in FR-48 need that first).
 
 ### FR-44 — Place resolution with a confidence score and walking times (#169, WS-1)
 **Accepted when** `geocode_place` returns a scored resolution the model

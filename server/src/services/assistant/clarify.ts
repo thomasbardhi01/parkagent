@@ -94,19 +94,43 @@ function dayPrefix(at: Date, now: Date): string {
 }
 
 /**
- * What the plan assumed, in one line: the window and the place.
- * Single spot: "Sat 7:00–10:00 PM, near LoLa 42, Seaport" (the start the
- * options were priced for — now when none is set — and the recommended
- * option's stay). A day the user didn't say is said out loud: a 7 PM that
- * had passed today reads "Assuming tomorrow, 7:00–10:00 PM", and
+ * A window and a place in one line: "Sat 7:00–10:00 PM, near LoLa 42,
+ * Seaport", "Now–3:30 PM". A day the user didn't say is said out loud: a
+ * 7 PM that had passed today reads "Assuming tomorrow, 7:00–10:00 PM", and
  * "tonight" asked after midnight "Assuming this evening, …"
- * (requestedTime.ts). Itinerary: "Mon 3 stops, 10:00 AM–4:30 PM".
+ * (requestedTime.ts). `start` null is a stay that starts now.
+ */
+export function windowAssumption(
+  window: { start: Date | null; minutes: number },
+  place: string | null | undefined,
+  now: Date,
+  request?: TimeRequest,
+): string {
+  const start = window.start ?? now;
+  const end = new Date(start.getTime() + window.minutes * 60_000);
+  const assumed = window.start ? assumedDay(request, start) : null;
+  const text = !window.start
+    ? `Now–${clockParts(end).join(" ")}`
+    : assumed
+      ? `${assumed}, ${windowText(start, end)}`
+      : `${dayPrefix(start, now)}${windowText(start, end)}`;
+  return place ? `${text}, near ${place}` : text;
+}
+
+/**
+ * What the plan assumed, in one line: the window and the place.
+ * Single spot: the start its options carry — now when none is set — for
+ * the recommended option's stay, and its destination (tools.ts builds the
+ * same line straight from the search, `windowAssumption`). Itinerary:
+ * "Mon 3 stops, 10:00 AM–4:30 PM". A "no" card keeps the line it was
+ * built with.
  */
 export function assumptionsFor(
   plan: AssistantPlanBody,
   now: Date,
   request?: TimeRequest,
 ): string | null {
+  if (plan.kind === "none_meets" || plan.kind === "no_data") return plan.assumptions ?? null;
   if (plan.kind === "itinerary") {
     const arrivals = plan.stops
       .map((s) => ({ at: parseEasternTime(s.arrival), minutes: s.durationMinutes }))
@@ -122,14 +146,10 @@ export function assumptionsFor(
   const rec = plan.options.find((o) => o.recommended) ?? plan.options[0];
   if (!rec) return null;
   const startsAt = plan.options.map((o) => o.startsAt).find((s): s is string => !!s);
-  const start = (startsAt ? parseEasternTime(startsAt) : null) ?? now;
-  const end = new Date(start.getTime() + rec.durationMinutes * 60_000);
-  const assumed = startsAt ? assumedDay(request, start) : null;
-  const window = !startsAt
-    ? `Now–${clockParts(end).join(" ")}`
-    : assumed
-      ? `${assumed}, ${windowText(start, end)}`
-      : `${dayPrefix(start, now)}${windowText(start, end)}`;
-  const place = plan.destination?.label;
-  return place ? `${window}, near ${place}` : window;
+  return windowAssumption(
+    { start: startsAt ? parseEasternTime(startsAt) : null, minutes: rec.durationMinutes },
+    plan.destination?.label,
+    now,
+    request,
+  );
 }

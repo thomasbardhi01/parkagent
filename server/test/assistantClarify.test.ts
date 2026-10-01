@@ -14,7 +14,9 @@ import {
   windowText,
 } from "../src/services/assistant/clarify.js";
 import type { AssistantPlanBody } from "../src/services/assistant/plans.js";
+import { applyPlaceResolution, emptyState } from "../src/services/assistant/requestState.js";
 import { AssistantTools } from "../src/services/assistant/tools.js";
+import type { ToolContext } from "../src/services/assistant/tools.js";
 import { makeFakeDb, makePolicyService } from "./helpers.js";
 
 /** Friday 25 Sep 2026, 3 PM ET. */
@@ -90,7 +92,22 @@ describe("the assumptions line", () => {
     const tools = new AssistantTools({
       db: makeFakeDb().db,
       policy: makePolicyService(),
-      findCandidates: async () => [],
+      // Seaport Blvd, free after 6 PM: one block within a walk.
+      findCandidates: async () => [
+        {
+          zoneId: "bos-seaport-blvd-de413d-01",
+          city: "bos",
+          providerZoneNumber: "",
+          rateFirstHourUsd: 3.75,
+          rateAdditionalHourUsd: 3.75,
+          maxStayMinutes: 240,
+          hours: [
+            { days: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"], start: "08:00", end: "18:00" },
+          ],
+          distanceM: 120,
+          containsPoint: false,
+        },
+      ],
       garage: {
         id: "none",
         canReserve: false,
@@ -102,28 +119,30 @@ describe("the assumptions line", () => {
       },
       now: () => FRIDAY_3PM,
     });
-    const ctx = {
+    // The request: three hours from 7 PM at a place already resolved.
+    const ctx: ToolContext = {
       userId: "u1",
       conversationId: "c1",
-      streetQuotes: [{ zoneId: "bos-seaport-blvd-de413d-01", costUsd: 0 }],
-      geocode: { lat: 42.3546, lng: -71.0453, label: "LoLa 42, Seaport" },
+      requestState: applyPlaceResolution(
+        emptyState(),
+        {
+          query: "Lola 42 Seaport",
+          resolved: { lat: 42.3546, lng: -71.0453, label: "LoLa 42, Seaport", city: "bos" },
+        },
+        "",
+        FRIDAY_3PM,
+      ).state,
     };
+    await tools.execute(ctx, "update_request", {
+      startsAt: "2026-09-25T19:00:00-04:00",
+      durationMinutes: 180,
+    });
+    await tools.execute(ctx, "quote_street", {});
     const out = await tools.execute(ctx, "propose_plan", {
       plan: {
         kind: "single_spot",
         assumptions: "whatever the model thought",
-        options: [
-          {
-            id: "street",
-            type: "street",
-            label: "Seaport Blvd",
-            priceUsd: 0,
-            durationMinutes: 180,
-            zoneId: "bos-seaport-blvd-de413d-01",
-            startsAt: "2026-09-25T19:00:00-04:00",
-            recommended: true,
-          },
-        ],
+        options: [{ id: "v2-bos-seaport-blvd-de413d-01", label: "Seaport Blvd" }],
       },
     });
     expect((out.endTurn!.plan as { assumptions: string }).assumptions).toBe(

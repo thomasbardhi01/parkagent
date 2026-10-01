@@ -21,6 +21,9 @@ enum AssistantMockScenario: String, Sendable {
     case placeChoices
     /// Asks how long (with duration chips); an answer gets the plan.
     case askDuration
+    /// Nothing under the budget: the server's "no" card with its
+    /// near-misses, and the ways to relax the request as chips.
+    case noneMeets
     /// The parking-only refusal sentence.
     case refuse
     case error
@@ -263,6 +266,41 @@ enum MockAssistantFixtures {
         )
     }
 
+    /// "Under $2 near Cambridge Common": nothing meets it. Two garages and a
+    /// meter came closest, each over the limit; none can be confirmed.
+    static var noneMeetsPlan: AssistantReply.ProposedPlan {
+        plan(
+            id: "mock-plan-none",
+            json: """
+            {
+              "kind": "none_meets",
+              "headline": "Nothing under $2.00 near Cambridge Common. Closest: Street — Mass Ave, $4.50, 5 min walk.",
+              "constraintsFailed": [{"field": "maxPriceUsd", "limit": 2, "nearestActual": 4.5}],
+              "destination": {"lat": 42.3765, "lng": -71.1190, "label": "Cambridge Common"},
+              "provenance": {"provider": "spothero", "searchedAt": "2026-01-05T14:00:00-05:00"},
+              "assumptions": "Now–4:00 PM, near Cambridge Common",
+              "nearMisses": [
+                {"id": "v3-bos-mass-ave-1", "type": "street", "label": "Street — Mass Ave",
+                 "detail": "$4.15/hr on Mass Ave — 5 min walk", "priceUsd": 4.50,
+                 "durationMinutes": 60, "walkMinutes": 5, "zoneId": "bos-mass-ave-1",
+                 "fetchedAt": "2026-01-05T19:00:00.000Z", "recommended": false, "nearMiss": true,
+                 "violates": [{"field": "maxPriceUsd", "actual": 4.5, "limit": 2}]},
+                {"id": "v3-spothero-2323-ab12cd", "type": "garage", "label": "University Rd Garage",
+                 "detail": "Off-street garage", "priceUsd": 16.99, "durationMinutes": 60,
+                 "walkMinutes": 6, "entryType": "self", "garageOptionId": "spothero-2323-ab12cd",
+                 "provider": "spothero", "fetchedAt": "2026-01-05T19:00:00.000Z",
+                 "recommended": false, "nearMiss": true,
+                 "violates": [{"field": "maxPriceUsd", "actual": 16.99, "limit": 2}]}
+              ],
+              "relaxSuggestions": [
+                {"field": "maxPriceUsd", "to": 7, "wouldYield": 1,
+                 "label": "Allow up to $7.00", "reply": "Allow up to $7.00"}
+              ]
+            }
+            """
+        )
+    }
+
     /// The two locations of one steakhouse, as the server's ambiguous
     /// place search offers them.
     static let mooChoices = [
@@ -379,6 +417,17 @@ extension MockAPI {
                     await finish(
                         reply: "Saturday at 7 near Fenway — the meter is cheapest.",
                         plan: MockAssistantFixtures.futureStreetPlan
+                    )
+                case .noneMeets:
+                    // Like the server: the reply is the card's own
+                    // headline, and relaxing is the user's tap.
+                    guard case .noneMeets(let none) = MockAssistantFixtures.noneMeetsPlan.plan else { return }
+                    await finish(
+                        reply: none.headline,
+                        plan: MockAssistantFixtures.noneMeetsPlan,
+                        suggestions: none.relaxSuggestions
+                            .filter { $0.wouldYield > 0 }
+                            .map { AssistantSuggestion(label: $0.label, reply: $0.reply) }
                     )
                 case .itinerary, .singleSpot, .auto, .placeChoices, .askDuration:
                     if scenario == .refuse { return }

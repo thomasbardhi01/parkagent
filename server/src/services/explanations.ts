@@ -58,6 +58,25 @@ const RULE_TEXT: Record<string, string> = {
     "the chosen way to pay wasn't ready — no card to hold against, a frozen card, or the card not yet on the parking account",
   hold_failed: "the hold on your card couldn't be placed, so nothing was paid",
   replayed: "a duplicate delivery was answered from the recorded decision",
+  none_meets: "nothing the search found met every limit of the request, so the card said so",
+  no_zone_here: "our data had no parking to offer at that place",
+  garage_search_unavailable:
+    "the garage search was down on a garage-only request, so there was nothing to show",
+  outside_coverage: "the place is outside the cities we cover",
+  place_unresolved: "the request's place couldn't be told, so the user was asked for it",
+  stale_or_unknown_option:
+    "a proposed option wasn't in the latest search of the request as it stands",
+  hard_constraint_violation:
+    "a proposed option broke a limit of the request and wasn't shown as a near-miss",
+  must_say_no: "nothing met the request, so only a card saying so could be proposed",
+  options_available: "options that met the request existed, so a card saying none did was refused",
+  model_price_mismatch:
+    "the model's price for an option differed from the search's, which the card shows",
+  ungrounded_number:
+    "the reply stated an amount no search or card stood behind, so that sentence was dropped",
+  nothing_to_confirm: "the card offered nothing to confirm",
+  near_miss_not_confirmable:
+    "the option breaks a limit of the request; it was shown for information and can't be confirmed",
 };
 
 const KIND_TEXT: Record<string, string> = {
@@ -73,6 +92,7 @@ const KIND_TEXT: Record<string, string> = {
   assistant_tool: "Assistant tool call",
   assistant_plan: "Assistant plan proposal",
   assistant_confirm: "Plan confirmation",
+  assistant_reply: "Assistant reply check",
 };
 
 export function explainDecision(row: DecisionRowForExplain): string {

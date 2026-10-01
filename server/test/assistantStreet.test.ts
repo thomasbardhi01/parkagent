@@ -7,8 +7,8 @@
  *
  * Pinned here: the words for a block's state during the window, the
  * walking-radius search over the REAL zones around LoLa 42 (fixture dumped
- * from the dev DB), the quote_street contract, and the facts a street card
- * carries.
+ * from the dev DB), the quote_street contract (since FR-43: the request's
+ * place and window, no arguments), and the facts a street card carries.
  */
 
 import { readFileSync } from "node:fs";
@@ -16,6 +16,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 
 import type { SingleSpotPlan } from "../src/services/assistant/plans.js";
+import { applyPlaceResolution, emptyState } from "../src/services/assistant/requestState.js";
 import {
   clockText,
   describeStreetWindow,
@@ -222,19 +223,19 @@ const D_STREET: NearbyZone = {
   ],
 };
 
-function toolsWith(zones: NearbyZone[], candidatesSeen: LookupQuery[] = []) {
+function toolsWith(zones: NearbyZone[], seen: LookupQuery[] = [], recordNearby = false) {
   return new AssistantTools({
     db: makeFakeDb().db,
     policy: makePolicyService(),
     // The old path: nearest zone within 25 m of the point.
     findCandidates: async (q) => {
-      candidatesSeen.push(q);
+      if (!recordNearby) seen.push(q);
       return zones.filter((z) => z.distanceM <= q.radiusM);
     },
-    findNearbyZones: async (q) => ({
-      zones: zones.filter((z) => z.distanceM <= q.radiusM),
-      truncated: false,
-    }),
+    findNearbyZones: async (q) => {
+      if (recordNearby) seen.push(q);
+      return { zones: zones.filter((z) => z.distanceM <= q.radiusM), truncated: false };
+    },
     garage: {
       id: "none",
       canReserve: false,
@@ -248,24 +249,60 @@ function toolsWith(zones: NearbyZone[], candidatesSeen: LookupQuery[] = []) {
   });
 }
 
-const ctx = (): ToolContext => ({ userId: "u1", conversationId: "c1" });
+/** A turn whose request is at the Seaport's centroid (version 1). */
+const ctx = (): ToolContext => ({
+  userId: "u1",
+  conversationId: "c1",
+  requestState: applyPlaceResolution(
+    emptyState(),
+    { query: "Seaport", resolved: { ...SEAPORT_CENTROID, label: "Seaport", city: "bos" } },
+    "",
+    new Date("2026-09-26T15:00:00-04:00"),
+  ).state,
+});
+
+interface Search {
+  stateVersion: number;
+  verdict: string;
+  satisfying: {
+    id: string;
+    priceUsd: number;
+    summary: string;
+    zoneId: string;
+    facts: StreetOption;
+  }[];
+  street: { radiusM: number; zonesInRadius: number };
+  instruction: string;
+}
+
+/** Put a window on the request (→ version 2), then search the street. */
+async function quote(
+  tools: AssistantTools,
+  c: ToolContext,
+  startsAt: string | null,
+  minutes: number,
+): Promise<Search> {
+  await tools.execute(c, "update_request", {
+    ...(startsAt ? { startsAt } : {}),
+    durationMinutes: minutes,
+  });
+  return (await tools.execute(c, "quote_street", {})).result as Search;
+}
+
+const SAT_7PM_ISO = "2026-09-26T19:00:00-04:00";
+const D_STREET_ID = "v2-bos-d-street-7e4e1b-00";
 
 describe("quote_street at a destination", () => {
   test("the Seaport centroid finds the block 33 m away (the bug: '25 m, none')", async () => {
-    const out = await toolsWith([D_STREET]).execute(ctx(), "quote_street", {
-      ...SEAPORT_CENTROID,
-      duration_minutes: 180,
-      when: "2026-09-26T19:00:00-04:00",
-    });
-    const result = out.result as { found: boolean; radiusM: number; options: StreetOption[] };
-    expect(result.found).toBe(true);
-    expect(result.radiusM).toBe(400);
-    expect(result.options[0]).toMatchObject({
+    const result = await quote(toolsWith([D_STREET]), ctx(), SAT_7PM_ISO, 180);
+    expect(result.verdict).toBe("meets");
+    expect(result.street.radiusM).toBe(400);
+    expect(result.satisfying[0]).toMatchObject({
+      id: D_STREET_ID,
       zoneId: "bos-d-street-7e4e1b-00",
-      street: "D Street",
-      state: "metered_then_free",
       summary: "Metered until 8 PM, then free on D Street — 1 min walk",
-      costUsd: 2.85,
+      priceUsd: 2.85,
+      facts: { street: "D Street", state: "metered_then_free", costUsd: 2.85 },
     });
   });
 
@@ -289,57 +326,48 @@ describe("quote_street at a destination", () => {
       },
       now: () => new Date("2026-09-26T15:00:00-04:00"),
     });
-    const out = await tools.execute(ctx(), "quote_street", {
-      ...SEAPORT_CENTROID,
-      duration_minutes: 60,
-      when: "2026-09-26T19:00:00-04:00",
-    });
+    const result = await quote(tools, ctx(), SAT_7PM_ISO, 60);
     expect(seen[0]!.radiusM).toBe(400);
-    expect((out.result as { found: boolean }).found).toBe(true);
+    expect(result.satisfying).toHaveLength(1);
   });
 
-  test("nothing in the radius is said with the radius", async () => {
-    const out = await toolsWith([]).execute(ctx(), "quote_street", {
-      ...SEAPORT_CENTROID,
-      duration_minutes: 180,
-      when: "2026-09-26T19:00:00-04:00",
-    });
-    const result = out.result as {
-      found: boolean;
-      radiusM: number;
-      reason: string;
-      instruction: string;
-    };
-    expect(result.found).toBe(false);
-    expect(result.reason).toBe(
-      "No metered street parking in our data within 400 m (about a 7-minute walk) of that point.",
+  test("nothing within the usual walk tries the widest one, and is said with that radius", async () => {
+    const seen: LookupQuery[] = [];
+    const result = await quote(toolsWith([], seen, true), ctx(), SAT_7PM_ISO, 180);
+    expect(seen.map((q) => q.radiusM)).toEqual([400, 800]);
+    expect(result.satisfying).toEqual([]);
+    expect(result.street).toEqual({ radiusM: 800, zonesInRadius: 0 });
+    expect(result.instruction).toContain(
+      "No metered street parking in our data within 800 m (about a 13-minute walk) of the place",
     );
     expect(result.instruction).toContain("say the radius");
+  });
+
+  test("a block past the usual walk is found by the wider one", async () => {
+    const far = { ...D_STREET, zoneId: "bos-far-st-1", street: "FAR ST", distanceM: 650 };
+    const result = await quote(toolsWith([far]), ctx(), SAT_7PM_ISO, 180);
+    expect(result.street.radiusM).toBe(800);
+    expect(result.satisfying.map((o) => o.zoneId)).toEqual(["bos-far-st-1"]);
   });
 
   test("the plan's street option carries the search's facts, not the model's", async () => {
     const tools = toolsWith([D_STREET]);
     const c = ctx();
-    await tools.execute(c, "quote_street", {
-      ...SEAPORT_CENTROID,
-      duration_minutes: 180,
-      when: "2026-09-26T19:00:00-04:00",
-    });
+    await quote(tools, c, SAT_7PM_ISO, 180);
     const out = await tools.execute(c, "propose_plan", {
       plan: {
         kind: "single_spot",
         options: [
           {
-            id: "street-d",
-            type: "street",
+            id: D_STREET_ID,
             label: "D Street",
             detail: "Meter",
-            // A model's guess at the price and walk: overwritten.
+            // A model's guess at the price, walk, stay, and start: none
+            // of them is read.
             priceUsd: 9.99,
             walkMinutes: 12,
-            durationMinutes: 180,
-            zoneId: "bos-d-street-7e4e1b-00",
-            startsAt: "2026-09-26T19:00:00-04:00",
+            durationMinutes: 30,
+            startsAt: "2026-09-26T15:00:00-04:00",
             recommended: true,
           },
         ],
@@ -350,6 +378,8 @@ describe("quote_street at a destination", () => {
       priceUsd: 2.85,
       walkMinutes: 1,
       durationMinutes: 180,
+      startsAt: SAT_7PM_ISO,
+      zoneId: "bos-d-street-7e4e1b-00",
       street: "D Street",
       streetState: "metered_then_free",
       streetSummary: "Metered until 8 PM, then free on D Street — 1 min walk",
@@ -363,34 +393,26 @@ describe("quote_street at a destination", () => {
     expect(option.lat).not.toBe(SEAPORT_CENTROID.lat);
   });
 
-  test("a stay the search didn't quote keeps the user's duration and the model's price", async () => {
+  test("a stay the search didn't quote can't be proposed: the new stay is searched, and the card is for it", async () => {
+    // Before FR-43 a plan could keep the user's new stay over an older
+    // quote, with the model's price. Now the stay is the request's, and
+    // an edit makes the search stale.
     const tools = toolsWith([D_STREET]);
     const c = ctx();
-    await tools.execute(c, "quote_street", {
-      ...SEAPORT_CENTROID,
-      duration_minutes: 60,
-      when: "2026-09-26T19:00:00-04:00",
+    await quote(tools, c, SAT_7PM_ISO, 60);
+    await tools.execute(c, "update_request", { durationMinutes: 90 });
+    const stale = await tools.execute(c, "propose_plan", {
+      plan: { kind: "single_spot", options: [{ id: D_STREET_ID, priceUsd: 2.85 }] },
     });
+    expect(stale.result).toMatchObject({ error: "stale_or_unknown_option", stateVersion: 3 });
+
+    await tools.execute(c, "quote_street", {});
     const out = await tools.execute(c, "propose_plan", {
-      plan: {
-        kind: "single_spot",
-        options: [
-          {
-            id: "street-d",
-            type: "street",
-            label: "D Street",
-            priceUsd: 2.85,
-            durationMinutes: 90,
-            zoneId: "bos-d-street-7e4e1b-00",
-            recommended: true,
-          },
-        ],
-      },
+      plan: { kind: "single_spot", options: [{ id: "v3-bos-d-street-7e4e1b-00" }] },
     });
     const option = (out.endTurn!.plan as SingleSpotPlan).options[0]!;
     expect(option.durationMinutes).toBe(90);
-    expect(option.streetSummary).toBeUndefined();
-    // Where the block is doesn't depend on the stay.
+    expect(option.streetSummary).toBe("Metered until 8 PM, then free on D Street — 1 min walk");
     expect(option.street).toBe("D Street");
   });
 });
@@ -408,7 +430,7 @@ describe("review fixes: street words and grounding", () => {
     });
   });
 
-  test("a street option without a zoneId is grounded by the street its label names", async () => {
+  test("two free blocks at one price are told apart by id — never by a label or a price", async () => {
     const blvd = {
       ...D_STREET,
       zoneId: "bos-seaport-blvd-1",
@@ -425,90 +447,74 @@ describe("review fixes: street words and grounding", () => {
     };
     const tools = toolsWith([blvd, northern]);
     const c = ctx();
-    await tools.execute(c, "quote_street", {
-      ...SEAPORT_CENTROID,
-      duration_minutes: 180,
-      when: "2026-09-26T19:00:00-04:00",
-    });
+    const search = await quote(tools, c, SAT_7PM_ISO, 180);
     // Both blocks are free at 7 PM: the price can't tell them apart.
+    expect(search.satisfying.map((o) => [o.zoneId, o.priceUsd])).toEqual([
+      ["bos-seaport-blvd-1", 0],
+      ["bos-northern-av-1", 0],
+    ]);
+    // The model names Northern Av's id under Seaport Blvd's words.
     const out = await tools.execute(c, "propose_plan", {
       plan: {
         kind: "single_spot",
-        options: [
-          {
-            id: "street-a",
-            type: "street",
-            label: "Seaport Blvd — free after 6 PM",
-            priceUsd: 0,
-            durationMinutes: 180,
-            startsAt: "2026-09-26T19:00:00-04:00",
-            recommended: true,
-          },
-        ],
+        options: [{ id: "v2-bos-northern-av-1", label: "Seaport Blvd — free after 6 PM" }],
       },
     });
-    expect((out.endTurn!.plan as SingleSpotPlan).options[0]!.zoneId).toBe("bos-seaport-blvd-1");
+    const options = (out.endTurn!.plan as SingleSpotPlan).options;
+    // The closest free block leads the card on its own (it is both the
+    // cheapest and the closest); the one the model named follows, as the
+    // block its id says it is.
+    expect(options.map((o) => [o.zoneId, o.street])).toEqual([
+      ["bos-seaport-blvd-1", "Seaport Blvd"],
+      ["bos-northern-av-1", "Northern Av"],
+    ]);
+    expect(options[1]!.streetSummary).toBe("Free after 6 PM on Northern Av — 2 min walk");
   });
 
-  test("a plan at the max stay the quote clamped to still gets the server's price", async () => {
+  test("a stay past the max is a card for the max: the search's price, and it says so", async () => {
     // Metered 3–8 PM with a 2-hour max: a 3-hour stay at 3 PM clamps to 2.
     const tools = toolsWith([{ ...D_STREET, hours: MON_SAT_8_TO_8 }]);
     const c = ctx();
-    await tools.execute(c, "quote_street", {
-      ...SEAPORT_CENTROID,
-      duration_minutes: 180,
-      when: "2026-09-26T15:00:00-04:00",
-    });
+    await quote(tools, c, "2026-09-26T15:00:00-04:00", 180);
     const out = await tools.execute(c, "propose_plan", {
-      plan: {
-        kind: "single_spot",
-        options: [
-          {
-            id: "street-d",
-            type: "street",
-            label: "D Street",
-            priceUsd: 99,
-            durationMinutes: 120,
-            zoneId: "bos-d-street-7e4e1b-00",
-            recommended: true,
-          },
-        ],
-      },
+      plan: { kind: "single_spot", options: [{ id: D_STREET_ID, priceUsd: 99 }] },
     });
     const option = (out.endTurn!.plan as SingleSpotPlan).options[0]!;
-    expect(option).toMatchObject({ priceUsd: 5.35, exceedsMaxStay: true });
+    // What the price buys is the two hours the meter allows.
+    expect(option).toMatchObject({ priceUsd: 5.35, durationMinutes: 120, exceedsMaxStay: true });
+    // The card's window is still the three hours asked for.
+    expect((out.endTurn!.plan as SingleSpotPlan).assumptions).toBe("3:00–6:00 PM, near Seaport");
   });
 });
 
 describe("independent review fixes", () => {
-  test("a 7 PM quote doesn't price or describe an option with no start (a Confirm-now option)", async () => {
+  test("an option's start is its search's: a 7 PM search can't become a Confirm-now option", async () => {
+    // Before FR-43 the model set each option's start, and one it left off
+    // made a 7 PM quote's option a Confirm-now one.
     const tools = toolsWith([D_STREET]);
     const c = ctx();
-    await tools.execute(c, "quote_street", {
-      ...SEAPORT_CENTROID,
-      duration_minutes: 180,
-      when: "2026-09-26T19:00:00-04:00",
-    });
+    await quote(tools, c, SAT_7PM_ISO, 180);
     const out = await tools.execute(c, "propose_plan", {
-      plan: {
-        kind: "single_spot",
-        options: [
-          {
-            id: "street-d",
-            type: "street",
-            label: "D Street",
-            priceUsd: 11.6,
-            durationMinutes: 180,
-            zoneId: "bos-d-street-7e4e1b-00",
-            recommended: true,
-          },
-        ],
-      },
+      plan: { kind: "single_spot", options: [{ id: D_STREET_ID, priceUsd: 11.6 }] },
     });
     const option = (out.endTurn!.plan as SingleSpotPlan).options[0]!;
+    expect(option.startsAt).toBe(SAT_7PM_ISO);
+    expect(option.payOnArrival).toBe(true);
+    expect(option.priceUsd).toBe(2.85);
+  });
+
+  test("a request with no start is a Confirm-now option, priced from now", async () => {
+    const tools = toolsWith([D_STREET]);
+    const c = ctx();
+    // 3 PM, three hours, two-hour max: two hours of meter from now.
+    await quote(tools, c, null, 180);
+    const out = await tools.execute(c, "propose_plan", {
+      plan: { kind: "single_spot", options: [{ id: D_STREET_ID }] },
+    });
+    const option = (out.endTurn!.plan as SingleSpotPlan).options[0]!;
+    expect(option.startsAt).toBeUndefined();
     expect(option.payOnArrival).toBe(false);
-    expect(option.streetSummary).toBeUndefined();
-    expect(option.priceUsd).toBe(11.6);
+    expect(option.priceUsd).toBe(5.35);
   });
 
   test("a stay that starts free and runs past the max is priced for the max of meter", async () => {

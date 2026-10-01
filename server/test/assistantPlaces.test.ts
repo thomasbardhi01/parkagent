@@ -446,7 +446,12 @@ describe("geocode_place", () => {
     // Outside the box: search around the city, not around Braintree.
     expect(queries[0]!.near).toBeUndefined();
     expect(out.result).toMatchObject({ found: true, match: "exact", place: { city: "bos" } });
-    expect(ctx.geocode).toEqual({ lat: SEAPORT_AREA.lat, lng: SEAPORT_AREA.lng, label: "Seaport" });
+    // The place is the request's now (FR-43): what the searches search.
+    expect(ctx.requestState?.place).toEqual({
+      query: "Seaport",
+      resolved: { lat: SEAPORT_AREA.lat, lng: SEAPORT_AREA.lng, label: "Seaport", city: "bos" },
+      candidates: null,
+    });
   });
 
   test("a phone inside the city searches around the phone", async () => {
@@ -466,7 +471,7 @@ describe("geocode_place", () => {
       match: "exact",
       place: { name: "LoLa 42", address: "22 Liberty Dr", area: "Seaport", kind: "poi" },
     });
-    expect(ctx.geocode?.label).toBe("LoLa 42, Seaport");
+    expect(ctx.requestState?.place.resolved?.label).toBe("LoLa 42, Seaport");
   });
 
   test("several matches → choices to tap, remembered for the loop", async () => {
@@ -488,8 +493,12 @@ describe("geocode_place", () => {
       "Mooo...., 49 Melcher St",
     ]);
     expect(ctx.placeChoices).toHaveLength(2);
-    // Nothing grounded yet: the card must not pin a guess.
-    expect(ctx.geocode).toBeUndefined();
+    // Nothing resolved yet: the request holds the choices, never a guess.
+    expect(ctx.requestState?.place.resolved).toBeNull();
+    expect(ctx.requestState?.place.candidates?.map((c) => c.reply)).toEqual([
+      "Mooo...., 15 Beacon St",
+      "Mooo...., 49 Melcher St",
+    ]);
   });
 
   test("only the neighborhood found → match 'closest' and an instruction to say so", async () => {

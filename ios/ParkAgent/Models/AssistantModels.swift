@@ -38,6 +38,15 @@ struct AssistantSuggestion: Decodable, Equatable, Hashable, Sendable {
 enum AssistantPlan: Decodable, Sendable {
     case singleSpot(SingleSpotPlan)
     case itinerary(ItineraryPlan)
+    /// Nothing the search found met the request: the server's "no", with
+    /// what came closest. Nothing on it can be confirmed.
+    case noneMeets(NoneMeetsPlan)
+    /// Nothing to offer at that place — a gap in the data, not a refusal.
+    case noData(NoDataPlan)
+    /// A kind this build doesn't know, shown as no card. It used to be a
+    /// decoding error, which cost the whole reply — and, in a saved
+    /// conversation, the whole conversation — for one card.
+    case unsupported(kind: String)
 
     private enum CodingKeys: String, CodingKey { case kind }
 
@@ -46,11 +55,9 @@ enum AssistantPlan: Decodable, Sendable {
         switch kind {
         case "single_spot": self = .singleSpot(try SingleSpotPlan(from: decoder))
         case "itinerary": self = .itinerary(try ItineraryPlan(from: decoder))
-        default:
-            throw DecodingError.dataCorrupted(.init(
-                codingPath: decoder.codingPath,
-                debugDescription: "Unknown plan kind \(kind)"
-            ))
+        case "none_meets": self = .noneMeets(try NoneMeetsPlan(from: decoder))
+        case "no_data": self = .noData(try NoDataPlan(from: decoder))
+        default: self = .unsupported(kind: kind)
         }
     }
 }
@@ -82,6 +89,9 @@ struct SingleSpotPlan: Decodable, Sendable {
     struct Provenance: Decodable, Sendable {
         let provider: String
         let searchedAt: String
+        /// "unavailable": the garage search failed, so the card holds
+        /// street options only — "couldn't check", never "none".
+        var garage: String?
     }
 
     /// The one option carrying the badge — the hero card. Falls back to
@@ -136,6 +146,18 @@ struct SingleSpotOption: Decodable, Identifiable, Sendable {
     var hoursToday: [HoursInterval]?
     var maxStayMinutes: Int?
     var exceedsMaxStay: Bool?
+    /// Server-attached from the search: what the option is the best on
+    /// among those that meet the request — "cheapest" | "closest" | "both".
+    var axis: String?
+    /// The best option on the axis the user did NOT ask about: an
+    /// alternative, never the recommendation.
+    var secondary: Bool?
+    /// The option breaks a limit of the request. Shown for information,
+    /// with `violates` saying which and by how much; it has no Confirm.
+    var nearMiss: Bool?
+    var violates: [PlanViolation]?
+    /// When this option's price was fetched (ISO).
+    var fetchedAt: String?
 
     struct PriceBreakdown: Decodable, Equatable, Sendable {
         let meterUsd: Double
@@ -156,6 +178,109 @@ struct SingleSpotOption: Decodable, Identifiable, Sendable {
     var coordinate: CLLocationCoordinate2D? {
         guard let lat, let lng else { return nil }
         return CLLocationCoordinate2D(latitude: lat, longitude: lng)
+    }
+}
+
+/// One limit of the request an option breaks: the limit and the actual,
+/// both the server's.
+struct PlanViolation: Decodable, Equatable, Sendable {
+    /// "maxPriceUsd" | "maxWalkMinutes" | "kinds" | "entryType" | "covered"
+    let field: String
+    let actual: PlanLimitValue
+    let limit: PlanLimitValue
+}
+
+/// A value on either side of a limit: a price or a walk (number), a kind
+/// or an entry type (text), covered (flag), the kinds allowed (list).
+enum PlanLimitValue: Decodable, Equatable, Sendable {
+    case number(Double)
+    case text(String)
+    case flag(Bool)
+    case list([String])
+    case none
+
+    init(from decoder: Decoder) throws {
+        let value = try decoder.singleValueContainer()
+        if value.decodeNil() {
+            self = .none
+        } else if let flag = try? value.decode(Bool.self) {
+            self = .flag(flag)
+        } else if let number = try? value.decode(Double.self) {
+            self = .number(number)
+        } else if let text = try? value.decode(String.self) {
+            self = .text(text)
+        } else if let list = try? value.decode([String].self) {
+            self = .list(list)
+        } else {
+            self = .none
+        }
+    }
+
+    var number: Double? {
+        if case .number(let value) = self { return value }
+        return nil
+    }
+
+    var text: String? {
+        if case .text(let value) = self { return value }
+        return nil
+    }
+}
+
+/// "Nothing meets this", decided and filled by the server (server/API.md
+/// "Searching the request, and saying no"). The reply is its `headline`.
+struct NoneMeetsPlan: Decodable, Sendable {
+    let headline: String
+    let constraintsFailed: [ConstraintFailed]
+    /// Up to three options that came closest, each with what it breaks.
+    let nearMisses: [SingleSpotOption]
+    let relaxSuggestions: [RelaxSuggestion]
+    let destination: SingleSpotPlan.Destination?
+    let provenance: SingleSpotPlan.Provenance?
+    var assumptions: String?
+
+    struct ConstraintFailed: Decodable, Sendable {
+        let field: String
+        let limit: PlanLimitValue?
+        let nearestActual: PlanLimitValue?
+        let reason: String?
+    }
+
+    /// What relaxing one limit a step would yield. The ones worth a tap
+    /// arrive as the reply's suggestions; a tap sends `reply`.
+    struct RelaxSuggestion: Decodable, Sendable {
+        let field: String
+        let wouldYield: Int
+        let label: String
+        let reply: String
+    }
+
+    /// The garage search itself was down on a garage-only request.
+    var garageSearchUnavailable: Bool {
+        constraintsFailed.contains { $0.field == "garageSearch" }
+    }
+}
+
+/// "We have nothing to offer there": the nearest zones we do have.
+struct NoDataPlan: Decodable, Sendable {
+    let rule: String
+    let headline: String
+    let radiusM: Int
+    let nearestZones: [NearestZone]
+    let destination: SingleSpotPlan.Destination?
+    let provenance: SingleSpotPlan.Provenance?
+    var assumptions: String?
+
+    struct NearestZone: Decodable, Identifiable, Sendable {
+        let zoneId: String
+        let street: String?
+        let zoneNumber: String?
+        let distanceM: Int
+        let walkMinutes: Int
+        let lat: Double?
+        let lng: Double?
+
+        var id: String { zoneId }
     }
 }
 

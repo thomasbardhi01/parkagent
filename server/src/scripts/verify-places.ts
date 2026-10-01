@@ -6,8 +6,9 @@
  * Braintree — just outside the Boston box, where the 2026-09-25 test was
  * sent. Where the real place is known, prints how far the answer landed
  * from it. With DATABASE_URL set, each found place then goes through
- * quote_street (the walking-radius zone search) for the stay, default next
- * Saturday 7–10 PM, and prints the street options in the card's words.
+ * quote_street (the walking-radius zone search, which reads the place and
+ * the window from the request) for the stay, default next Saturday
+ * 7–10 PM, and prints the street options in the card's words.
  *
  *   pnpm -C server verify:places
  *   pnpm -C server verify:places --places "Lola 42 Seaport,TD Garden"
@@ -31,12 +32,13 @@ import {
   NominatimGeocoder,
 } from "../services/assistant/geocoder.js";
 import type { GeocoderProvider } from "../services/assistant/geocoder.js";
+import type { SearchResult } from "../services/assistant/search.js";
 import { AssistantTools } from "../services/assistant/tools.js";
+import type { ToolContext } from "../services/assistant/tools.js";
 import type { AppDb } from "../db.js";
 import { asAppDb, createPrisma } from "../db.js";
 import { easternWallClock, nycWeekdayAndMinute, parseEasternTime } from "../services/hours.js";
 import { PolicyService } from "../services/policy.js";
-import type { StreetOption } from "../services/assistant/streetOptions.js";
 import { makeCandidateFetcher, makeNearbyZoneFetcher } from "../services/zoneLookup.js";
 
 config({ path: fileURLToPath(new URL("../../../.env", import.meta.url)), quiet: true });
@@ -146,7 +148,9 @@ async function main(): Promise<void> {
 
   for (const [index, place] of places.entries()) {
     if (index > 0) await new Promise((r) => setTimeout(r, COURTESY_DELAY_MS));
-    const ctx = { userId: "verify", conversationId: "verify", location: from };
+    // A fresh request per place: geocode_place makes the place the
+    // request's, and quote_street then searches the request.
+    const ctx: ToolContext = { userId: "verify", conversationId: "verify", location: from };
     const out = await tools.execute(ctx, "geocode_place", { query: place.query });
     const r = out.result as Record<string, unknown>;
     let line: string;
@@ -172,17 +176,21 @@ async function main(): Promise<void> {
     }
     console.log(`${place.query.padEnd(32)} ${line}`);
     if (prisma && r["found"] === true && r["ambiguous"] !== true) {
-      const p = r["place"] as { lat: number; lng: number };
-      const street = await tools.execute(ctx, "quote_street", {
-        lat: p.lat,
-        lng: p.lng,
-        duration_minutes: minutes,
-        when: parseEasternTime(when) ? when : `${when}:00`,
+      await tools.execute(ctx, "update_request", {
+        startsAt: parseEasternTime(when) ? when : `${when}:00`,
+        durationMinutes: minutes,
       });
-      const s = street.result as { found: boolean; reason?: string; options?: StreetOption[] };
-      if (!s.found) console.log(`${"".padEnd(32)}   street: ${s.reason ?? "none"}`);
-      for (const o of s.options ?? []) {
-        console.log(`${"".padEnd(32)}   street: ${o.summary} · $${o.costUsd.toFixed(2)}`);
+      const street = await tools.execute(ctx, "quote_street", {});
+      const s = street.result as Partial<SearchResult> & { error?: string };
+      const options = [...(s.satisfying ?? []), ...(s.nearMisses ?? []).map((n) => n.option)];
+      if (options.length === 0) {
+        const radius = s.street ? `none within ${s.street.radiusM} m` : (s.error ?? "none");
+        console.log(`${"".padEnd(32)}   street: ${radius}`);
+      }
+      for (const o of options) {
+        console.log(
+          `${"".padEnd(32)}   street: ${o.summary ?? o.label} · $${o.priceUsd.toFixed(2)}`,
+        );
       }
     }
   }

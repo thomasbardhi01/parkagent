@@ -43,38 +43,20 @@ function scriptedModel(
   };
 }
 
-const PLAN = {
+/** The phone, at 30th Ave & Steinway: where a request that names no
+ * place is searched. */
+const HERE = { lat: 40.7784, lng: -73.9819 };
+
+/** The one street block, by the id a search at `version` gives it. */
+const planAt = (version: number) => ({
   kind: "single_spot",
-  options: [
-    {
-      id: "opt-street",
-      type: "street",
-      label: "Street: Zone 417371",
-      detail: "Meter",
-      priceUsd: 3.65,
-      durationMinutes: 90,
-      zoneId: "nyc-417371",
-      recommended: true,
-    },
-  ],
-};
+  options: [{ id: `v${version}-nyc-417371`, label: "Street: Zone 417371", detail: "Meter" }],
+});
 
 function quoteThenPropose(overrides: Partial<ModelResponse> = {}): ModelResponse[] {
   return [
     {
-      content: [
-        {
-          type: "tool_use",
-          id: "t1",
-          name: "quote_street",
-          input: {
-            lat: 40.7784,
-            lng: -73.9819,
-            duration_minutes: 90,
-            when: "2026-01-05T14:00:00-05:00",
-          },
-        },
-      ],
+      content: [{ type: "tool_use", id: "t1", name: "quote_street", input: {} }],
       stopReason: "tool_use",
       model: "claude-sonnet-5",
       usage: { inputTokens: 900, outputTokens: 100 },
@@ -83,7 +65,7 @@ function quoteThenPropose(overrides: Partial<ModelResponse> = {}): ModelResponse
     {
       content: [
         { type: "text", text: "Here you go." },
-        { type: "tool_use", id: "t2", name: "propose_plan", input: { plan: PLAN } },
+        { type: "tool_use", id: "t2", name: "propose_plan", input: { plan: planAt(0) } },
       ],
       stopReason: "tool_use",
       model: "claude-sonnet-5",
@@ -139,7 +121,7 @@ describe("per-turn accounting on the decisions table", () => {
       method: "POST",
       url: "/assistant/message",
       headers: HEADERS,
-      payload: { text: "spot near the museum for 90 minutes" },
+      payload: { text: "spot near the museum for 90 minutes", location: HERE },
     });
     expect(res.statusCode).toBe(200);
     const turn = t.state.decisions.find((d) => d.kind === "assistant_turn")!;
@@ -169,12 +151,7 @@ describe("per-turn accounting on the decisions table", () => {
                 type: "tool_use",
                 id: "t1",
                 name: "quote_street",
-                input: {
-                  lat: 40.7784,
-                  lng: -73.9819,
-                  duration_minutes: 90,
-                  when: "2026-01-05T14:00:00-05:00",
-                },
+                input: {},
               },
             ],
             stopReason: "tool_use",
@@ -190,7 +167,7 @@ describe("per-turn accounting on the decisions table", () => {
       method: "POST",
       url: "/assistant/message",
       headers: { ...HEADERS, accept: "text/event-stream" },
-      payload: { text: "spot near the museum" },
+      payload: { text: "spot near the museum", location: HERE },
     });
     // The client is told the turn failed…
     expect(res.body).toContain("assistant_failed");
@@ -216,7 +193,7 @@ describe("per-turn accounting on the decisions table", () => {
         method: "POST",
         url: "/assistant/message",
         headers: HEADERS,
-        payload: { text: "spot near the museum" },
+        payload: { text: "spot near the museum", location: HERE },
       });
     // First turn runs (0 spent so far) and logs ~$0.007 — over the cap.
     expect((await send()).statusCode).toBe(200);
@@ -330,7 +307,7 @@ describe("SSE: the plan is its own event", () => {
       method: "POST",
       url: "/assistant/message",
       headers: { ...HEADERS, accept: "text/event-stream" },
-      payload: { text: "spot near the museum for 90 minutes" },
+      payload: { text: "spot near the museum for 90 minutes", location: HERE },
     });
     expect(res.statusCode).toBe(200);
     const body = res.body;
@@ -352,49 +329,45 @@ describe("SSE: the plan is its own event", () => {
 
 describe("multi-turn plan edits", () => {
   test("a follow-up ('make it 5 instead') sees the prior turn's history and proposes a revised plan", async () => {
-    const revised = {
-      ...PLAN,
-      options: [{ ...PLAN.options[0]!, id: "opt-street-2", durationMinutes: 300, priceUsd: 12.15 }],
-    };
     const model = scriptedModel([
       ...quoteThenPropose(),
+      // Turn two: the change goes on the request, then a new search, then
+      // the revised plan by the new search's id.
       {
         content: [
-          {
-            type: "tool_use",
-            id: "t3",
-            name: "quote_street",
-            input: {
-              lat: 40.7784,
-              lng: -73.9819,
-              duration_minutes: 300,
-              when: "2026-01-05T14:00:00-05:00",
-            },
-          },
+          { type: "tool_use", id: "t3", name: "update_request", input: { durationMinutes: 300 } },
         ],
+        stopReason: "tool_use",
+      },
+      {
+        content: [{ type: "tool_use", id: "t4", name: "quote_street", input: {} }],
         stopReason: "tool_use",
       },
       {
         content: [
           { type: "text", text: "Five hours it is." },
-          { type: "tool_use", id: "t4", name: "propose_plan", input: { plan: revised } },
+          { type: "tool_use", id: "t5", name: "propose_plan", input: { plan: planAt(1) } },
         ],
         stopReason: "tool_use",
       },
     ]);
-    const t = makeTestApp({ candidates: [STEINWAY_A], assistantModel: model });
+    // A block that allows the five hours (the fixture's own max is two).
+    const t = makeTestApp({
+      candidates: [{ ...STEINWAY_A, maxStayMinutes: 600 }],
+      assistantModel: model,
+    });
     const first = await t.app.inject({
       method: "POST",
       url: "/assistant/message",
       headers: HEADERS,
-      payload: { text: "spot near the museum for 90 minutes" },
+      payload: { text: "spot near the museum for 90 minutes", location: HERE },
     });
     const conversationId = first.json().conversationId as string;
     const second = await t.app.inject({
       method: "POST",
       url: "/assistant/message",
       headers: HEADERS,
-      payload: { text: "make it 5 instead", conversation_id: conversationId },
+      payload: { text: "make it 5 instead", conversation_id: conversationId, location: HERE },
     });
     expect(second.statusCode).toBe(200);
     const body = second.json();

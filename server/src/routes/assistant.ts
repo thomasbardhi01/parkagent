@@ -6,7 +6,9 @@
  * POST /assistant/confirm   the user's tap on a plan card: mints the
  *                           single-use confirmation token and executes
  *                           the confirmed option THROUGH the token-gated
- *                           tools — the same enforcement the model faces
+ *                           tools — the same enforcement the model faces.
+ *                           A "no" card and a near-miss have nothing to
+ *                           confirm, and are refused before a token exists
  * POST /assistant/plans/:planId/price   re-price an itinerary card's edited
  *                           stops on the server before sign-off
  * GET  /assistant/itineraries          today's / recent signed-off days
@@ -301,6 +303,26 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
       return reply.code(404).send({ error: "plan_not_found" });
     }
 
+    // A "no" card (none_meets, no_data) offers nothing to act on, and any
+    // kind this route doesn't know isn't an itinerary by default: refuse
+    // before anything is minted (FR-43).
+    if (planRow.kind !== "single_spot" && planRow.kind !== "itinerary") {
+      await deps.db.decision.create({
+        data: {
+          kind: "assistant_confirm",
+          inputs: {
+            planId: planRow.id,
+            optionId: parsed.data.optionId ?? null,
+            kind: planRow.kind,
+          },
+          rule: "nothing_to_confirm",
+          outcome: { allowed: false },
+          userId: user.id,
+        },
+      });
+      return reply.code(409).send({ error: "nothing_to_confirm" });
+    }
+
     // Itinerary edits made on the card come with the sign-off. They are
     // priced here, on the server — never at the prices the phone sends —
     // before anything is minted.
@@ -317,6 +339,21 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
     if (planRow.kind === "single_spot" && parsed.data.optionId !== undefined) {
       const plan = planRow.plan as SingleSpotPlan;
       const option = plan.options.find((o) => o.id === parsed.data.optionId);
+      // A near-miss breaks a limit the user set. It is on the card to be
+      // seen, not taken: the user changes the limit, and the next search
+      // offers it as an option that meets the request.
+      if (option?.nearMiss === true) {
+        await deps.db.decision.create({
+          data: {
+            kind: "assistant_confirm",
+            inputs: { planId: planRow.id, optionId: option.id },
+            rule: "near_miss_not_confirmable",
+            outcome: { allowed: false, violates: option.violates ?? [] },
+            userId: user.id,
+          },
+        });
+        return reply.code(409).send({ error: "near_miss_not_confirmable" });
+      }
       if (option?.type === "street" && option.payOnArrival === true) {
         await deps.db.decision.create({
           data: {

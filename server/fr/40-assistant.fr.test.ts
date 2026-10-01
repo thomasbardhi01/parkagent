@@ -1,6 +1,6 @@
 /**
- * FR-21 / FR-23 / FR-24 / FR-25 / FR-27 / FR-35 / FR-36 / FR-38 / FR-40 —
- * the assistant surface with REAL
+ * FR-21 / FR-23 / FR-24 / FR-25 / FR-27 / FR-35 / FR-36 / FR-38 / FR-40 /
+ * FR-43 — the assistant surface with REAL
  * model calls (the server's configured Anthropic model), counted against
  * the per-run budget in client.ts. These tests assert STRUCTURE and
  * GROUNDING — plan shape, option counts, numeric sanity, dates relative
@@ -41,6 +41,9 @@ const BOSTON_CENTER = { lat: 42.3554, lng: -71.0605 };
 /** The 2026-09-25 device test was sent from Braintree: outside the Boston
  * box, 15 km from its center. */
 const BRAINTREE = { lat: 42.2206, lng: -71.0041 };
+/** Cambridge Common: inside the Boston box, a kilometre from any meter
+ * we have data for, and nowhere near a $2 garage. */
+const CAMBRIDGE_COMMON = { lat: 42.3765, lng: -71.119 };
 /** The real places the device-test phrases name (OSM/Apple points). */
 const LOLA_42 = { lat: 42.35458, lng: -71.04526 }; // 22 Liberty Dr
 const MOOO_SEAPORT = { lat: 42.34945, lng: -71.05034 }; // 49 Melcher St
@@ -322,6 +325,80 @@ describe("FR-35 / FR-36 / FR-40 the device-test phrases", () => {
       off,
       `destination "${destination!.label}" is ${off} m from Mooo.... (49 Melcher St) — is APPLE_MAPS_* set on the target?`,
     ).toBeLessThanOrEqual(300);
+  }, 240_000);
+});
+
+describe("FR-43 nothing meets the request", () => {
+  // IM-01 (docs/research/1-assistant-spec.md §3): "under $2 near Cambridge
+  // Common for 2h". One turn and no follow-up — the run's whole assistant
+  // budget (FR_ASSISTANT_MAX_CALLS) is 12, and the tests above can use 11
+  // of it — so the phone IS at Cambridge Common and the request says
+  // "here": "Cambridge Common" by name is also a restaurant up the avenue,
+  // and the place search rightly asks which.
+  it("FR-43 'under $2 here for 2 hours' at Cambridge Common ends in a none_meets card, never an option over the limit", async () => {
+    const res = await assistantMessage(
+      me,
+      `Find me parking under $2 right here where I am ${DAY.phrase} at 2 PM, for 2 hours`,
+      { location: CAMBRIDGE_COMMON },
+    );
+    expect(res.status).toBe(200);
+    const said = `assistant said: ${JSON.stringify(res.body["reply"])}`;
+    const envelope = res.body["plan"] as Record<string, unknown> | null;
+    expect(envelope, `no card; ${said}`).not.toBeNull();
+    const plan = envelope!["plan"] as Record<string, unknown>;
+    const sent = `plan: ${JSON.stringify(plan)}`;
+    // The server's verdict: a "no", as its own kind — not a single_spot
+    // with the nearest thing dressed as an option.
+    expect(plan["kind"], sent).toBe("none_meets");
+
+    // The limit that failed is the one asked for.
+    const failed = plan["constraintsFailed"] as Record<string, unknown>[];
+    const price = failed.find((c) => c["field"] === "maxPriceUsd");
+    expect(price, sent).toBeDefined();
+    expect(price!["limit"], sent).toBe(2);
+
+    // Near-misses: at most three, each breaking the price limit, with the
+    // server's numbers saying by how much. None is confirmable.
+    const nearMisses = plan["nearMisses"] as Record<string, unknown>[];
+    expect(nearMisses.length, sent).toBeLessThanOrEqual(3);
+    for (const option of nearMisses) {
+      const shown = `near-miss: ${JSON.stringify(option)}`;
+      expect(option["nearMiss"], shown).toBe(true);
+      expect(option["priceUsd"] as number, shown).toBeGreaterThan(2);
+      const violates = option["violates"] as Record<string, unknown>[];
+      const over = violates.find((v) => v["field"] === "maxPriceUsd");
+      expect(over, shown).toBeDefined();
+      expect(over!["limit"], shown).toBe(2);
+      expect(over!["actual"], shown).toBe(option["priceUsd"]);
+      if (typeof option["startsAt"] === "string") {
+        expect(option["startsAt"] as string, shown).toMatch(new RegExp(`^${DAY.date}T14:00`));
+      }
+    }
+    if (nearMisses.length > 0) {
+      const confirm = await userFetch(me, "POST", "/assistant/confirm", {
+        planId: envelope!["planId"],
+        optionId: nearMisses[0]!["id"],
+      });
+      expect(confirm.status).toBe(409);
+      expect(confirm.body["error"]).toBe("nothing_to_confirm");
+    }
+
+    // Relaxing is offered as the user's tap, with what it would yield;
+    // when a near-miss exists, raising the price a step is among them.
+    const relax = plan["relaxSuggestions"] as Record<string, unknown>[];
+    for (const suggestion of relax) {
+      expect(typeof suggestion["wouldYield"], sent).toBe("number");
+      expect(typeof suggestion["reply"], sent).toBe("string");
+    }
+    if (nearMisses.length > 0) {
+      expect(
+        relax.find((r) => r["field"] === "maxPriceUsd"),
+        sent,
+      ).toMatchObject({ to: 7 });
+    }
+
+    // The reply is the card's own sentence: the server says the no.
+    expect(res.body["reply"], said).toBe(plan["headline"]);
   }, 240_000);
 });
 

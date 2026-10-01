@@ -1926,8 +1926,9 @@ the model, summed input/output tokens, model-call count, wall-clock
 latency, and an estimated cost from published per-model list prices —
 including any call a tool made on its own model (`explain_decision`'s
 phrasing lands in `otherModelCalls` and in the cost) — plus
-`stateEdits` (the turn's `update_request` calls) and `requestVersion`
-(the request's version when the turn ended; see "The request" below).
+`stateEdits` (the turn's `update_request` calls), `requestVersion`
+(the request's version when the turn ended; see "The request" below), and
+`planKind` when the turn ended on a card.
 `ASSISTANT_DAILY_SPEND_CAP_USD` (default `5`) caps each user's estimated
 daily model spend against those rows (midnight ET, the same boundary as
 the parking caps); a user over it gets `429 assistant_budget_exhausted`
@@ -1940,7 +1941,8 @@ plan card**, which is the only thing that mints the single-use
 confirmation token the consequential tools demand. Requires
 `ANTHROPIC_API_KEY` (else 503). Every tool call, plan, and confirmation
 writes a decisions row (kinds `assistant_tool`, `assistant_plan`,
-`assistant_confirm`).
+`assistant_confirm`), and a reply that had a sentence dropped writes one
+too (`assistant_reply`, see "Searching the request, and saying no").
 
 ### POST /assistant/message
 
@@ -1955,7 +1957,7 @@ payload. Otherwise plain JSON:
 {
   "conversationId": "conv_…",
   "reply": "Street is cheapest — here are your options.",
-  "plan": { "planId": "…", "plan": { "kind": "single_spot", "options": [ … ] } } | null,
+  "plan": { "planId": "…", "plan": { "kind": "single_spot" | "itinerary" | "none_meets" | "no_data", … } } | null,
   "suggestions": [ { "label": "Mooo.... · 49 Melcher St, Seaport", "reply": "Mooo...., 49 Melcher St" } ] | null
 }
 ```
@@ -1965,8 +1967,17 @@ app shows each `label` as a chip under the newest reply, and a tap sends
 `reply` as the user's next message, exactly as if they had typed it. They
 come from `ask_user` (below). When a place search this turn came back
 ambiguous and the model asked in prose anyway, the ambiguous places are
-offered instead, so the question is still one tap. The SSE `done` event
+offered instead, so the question is still one tap. A `none_meets` card's
+suggestions are its ways to relax the request, and a turn that searched
+but left no card offers "Search again" (both below). The SSE `done` event
 carries them too.
+
+**What streams is provisional.** `text` events are the model's words as
+they arrive; the `done` event's `reply` is the one to keep, and the app
+replaces the streamed text with it. Because streamed text is still seen,
+it is held to whole sentences, a sentence with a dollar amount in it never
+streams, and nothing streams once the turn has searched: what the model
+says about prices reaches the user only in the checked reply.
 
 Conversation state persists per user (last 20 turns) keyed by
 `conversation_id`; another user's id answers `404 conversation_not_found`
@@ -1975,8 +1986,8 @@ transcript). Ids are the server's: one that names no conversation (deleted,
 or past retention) starts a NEW conversation under a fresh id (returned
 as `conversationId`) rather than reviving the old id with the old plans. Rate-limited 20/min — each turn is a paid model call.
 
-**Times.** Every time a tool takes (`when`, `starts_at`/`ends_at`,
-`arrival`, a plan's `startsAt`) is read with an explicit offset honored
+**Times.** Every time a tool takes (`update_request`'s `startsAt`, an
+itinerary stop's `arrival`) is read with an explicit offset honored
 and an offset-less `YYYY-MM-DDTHH:mm[:ss]` read as ET wall-clock time —
 never the host's zone, which is UTC on Fly and ET on a dev Mac. An
 unreadable time bounces back to the model (`unreadable_time`), and times
@@ -1985,13 +1996,14 @@ are forwarded and stored in one canonical form with NYC's offset
 
 The model's tools: `update_request(patch)` records what the user asked
 for in the conversation's request (see "The request" below).
-`geocode_place(query, city?)` resolves a NAMED place
-to coordinates. That covers a restaurant, bar, venue, business, hotel,
+`geocode_place(query, city?)` looks a NAMED place up and **makes it the
+request's place** (`place.resolved`, or `place.candidates` when it matched
+several). That covers a restaurant, bar, venue, business, hotel,
 landmark, street, or neighborhood. The search is biased to the phone's
 city (see "Place search" below). The model calls it FIRST for any named
-place and quotes at the returned point, never at the phone's location.
+place; the searches then search there, never the phone's location.
 Results outside both metros' bounding boxes are dropped. It answers one
-of four ways:
+of four ways, each with the request's `stateVersion`:
 
 - `{found: true, match: "exact", place}` — the place the user named
   (`place` has `name`, `address`, `area`, `kind`, `lat`/`lng`, and a
@@ -2003,12 +2015,14 @@ of four ways:
   the place. This was the device test's silent "Seaport center" fallback.
 - `{found: true, ambiguous: true, choices: [{label, reply, lat, lng}]}` —
   several distinct places match (a chain's two locations). The model must
-  ask with `ask_user`; nothing is grounded until the user picks one.
+  ask with `ask_user`; nothing is resolved until the user picks one.
 - `{found: false, instruction}` — couldn't find it. The model asks for an
   address or cross street, and doesn't ask which city when the phone
   answers that.
 
-Without a geocoder the tool answers `geocoding_unavailable`.
+Found or not, the request now names that place (`place.query`), so a
+search after a failed lookup asks for it and never falls back to the
+phone. Without a geocoder the tool answers `geocoding_unavailable`.
 `ask_user(question, suggestions[2–4] of {label, reply})` is the only way
 the model asks the user anything. Like `propose_plan`, it ENDS the turn:
 the question becomes the reply and the suggestions ride along as chips.
@@ -2025,70 +2039,55 @@ A question that can be answered by assuming (now, 2 hours) should not be
 asked at all, and the prompt says so.
 
 **Assumptions.** Every plan carries a server-computed `assumptions` line,
-the window and the place (`clarify.ts` `assumptionsFor`): "Sat
-7:00–10:00 PM, near LoLa 42, Seaport", "Now–3:30 PM", "Mon 3 stops,
-10:00 AM–4:30 PM". A plan with no start is for now, for the recommended
-option's stay. The app shows it above the card ("Assuming …"). The
-one-line reply a silent proposal gets states it too: "Here are your
-options (Now–3:30 PM) — tap one to go ahead." `search_garages(area, window, budget, within_m?)`
-— pass `within_m: 600` for a named-area search so every option is
-walkable from the place; farther options are dropped and counted
-(`droppedForDistance`), the guard recomputing distance from each
-facility's own coordinates rather than trusting the provider's number.
-When everything is dropped the result carries `nearestBeyondM` so the
-reply says how far the closest one actually is instead of "none found",
-and `searchedAt` + the provider id ride along as the card's provenance.
-A multi-provider search where some providers failed reports them in
-`degraded` — partial coverage, said out loud. `quote_street(lat, lng,
-duration, when, radius_m?)` searches **every metered zone within a
-walking radius** of the point (default 400 m, about a 7-minute walk; up
-to 800 m), not the old "nearest zone within 25 m". A destination isn't a
-curb: on the device test the Seaport's centroid had no zone within 25 m
-but six within 400 m, and the assistant said there was no street parking
-(`services/assistant/streetOptions.ts`). Each zone is priced for the stay
-and described for THAT window (`state` is one of `free`, `metered`,
-`metered_then_free`, `free_then_metered`, or `mixed`, in ET wall clock):
+the window and the place (`clarify.ts` `windowAssumption`, from the search
+the card was built from): "Sat 7:00–10:00 PM, near LoLa 42, Seaport",
+"Now–3:30 PM", "Mon 3 stops, 10:00 AM–4:30 PM". A request with no start is
+for now, for the request's stay. The app shows it above the card
+("Assuming …"). The one-line reply a silent proposal gets states it too:
+"Here are your options (Now–3:30 PM) — tap one to go ahead."
+
+`quote_street()` and `search_garages()` take **no arguments** (an optional
+`note` aside): they search the request — see "Searching the request, and
+saying no" below. `build_itinerary(stops[])` prices a multi-stop day,
+each stop at its own point and time; `propose_plan(plan)` ends the turn
+with the structured plan; `book_garage(option_id, confirmation_token)`
+and `start_session(zone, duration, confirmation_token)` are REFUSED
+without a live token; `get_history(days)`; `explain_decision(id)` (a
+plain-language rendering of a decisions row via
+`services/explanations.ts`).
+
+**The street search** (`services/assistant/streetOptions.ts`) covers
+**every metered zone within a walking radius** of the place (400 m, about
+a 7-minute walk; 800 m when that holds none), not the old "nearest zone
+within 25 m". A destination isn't a curb: on the device test the
+Seaport's centroid had no zone within 25 m but six within 400 m, and the
+assistant said there was no street parking. Each zone is priced for the
+stay and described for THAT window (`state` is one of `free`, `metered`,
+`metered_then_free`, `free_then_metered`, or `mixed`, in ET wall clock).
+These are a street option's `facts`:
 
 ```json
-{ "found": true, "radiusM": 400,
-  "window": { "startsAt": "2026-09-26T19:00:00-04:00", "endsAt": "2026-09-26T22:00:00-04:00" },
-  "options": [ { "zoneId": "bos-seaport-blvd-de413d-01", "street": "Seaport Blvd", "zoneNumber": null,
-                 "lat": 42.3531, "lng": -71.0463, "distanceM": 271, "walkMinutes": 4,
-                 "state": "free", "stateText": "Free after 6 PM",
-                 "summary": "Free after 6 PM on Seaport Blvd — 4 min walk",
-                 "costUsd": 0, "meterUsd": 0, "feeUsd": 0, "ratePerHourUsd": 3.75, "rateAdditionalHourUsd": 3.75,
-                 "maxStayMinutes": 240, "clampedMinutes": 180, "enforcedMinutes": 0, "exceedsMaxStay": false,
-                 "hoursToday": [ { "start": "08:00", "end": "18:00" } ] }, … ] }
+{ "zoneId": "bos-seaport-blvd-de413d-01", "street": "Seaport Blvd", "zoneNumber": null,
+  "lat": 42.3531, "lng": -71.0463, "distanceM": 271, "walkMinutes": 4,
+  "state": "free", "stateText": "Free after 6 PM",
+  "summary": "Free after 6 PM on Seaport Blvd — 4 min walk",
+  "costUsd": 0, "meterUsd": 0, "feeUsd": 0, "ratePerHourUsd": 3.75, "rateAdditionalHourUsd": 3.75,
+  "maxStayMinutes": 240, "clampedMinutes": 180, "enforcedMinutes": 0, "exceedsMaxStay": false,
+  "hoursToday": [ { "start": "08:00", "end": "18:00" } ] }
 ```
 
 Zones of one street in the same state and price collapse to the nearest,
-so the two sides of a block are one choice. The cheapest option comes
-first, then the nearest; at most five are returned. Each option's pin is
-the curb point nearest the destination. The walk is straight-line
-distance × 1.3 at 80 m/min. A stay is priced whole when the meter allows
-it. When the meter runs past the max stay, the stay is priced to the max,
-and `exceedsMaxStay` plus "(2 hr max)" in the words say so. Provider-
-observed terms (`zone_terms_observed`) apply exactly as they do for
-`/parked` and session start (`termsSource: "observed"`). `found: false`
-comes back only when the radius holds no zone, and it names the radius:
-"No metered street parking in our data within 400 m (about a 7-minute
-walk) of that point." The model must repeat that radius. The same search
-prices itinerary stops (the first option) and their re-pricing.
-
-`propose_plan` attaches the search's facts to each street option from the
-latest quote of its zone, as server truth (model values are ignored).
-Always attached: the pin, `walkMinutes`, `street`, `zoneNumber`,
-`ratePerHourUsd`, `hoursToday`, and `maxStayMinutes`. Attached only when
-that quote was for this option's stay (same duration and start): the
-price, `streetState`, `streetSummary`, `priceBreakdown {meterUsd,
-feeUsd}`, and `exceedsMaxStay`. A "make it 90 minutes" proposed without
-re-quoting keeps the user's stay and doesn't borrow an older window's
-words. `build_itinerary(stops[])`,
-`propose_plan(plan)` (ends the turn with the structured plan),
-`book_garage(option_id, confirmation_token)` and
-`start_session(zone, duration, confirmation_token)` (REFUSED without a
-live token), `get_history(days)`, `explain_decision(id)` (plain-language
-rendering of a decisions row via `services/explanations.ts`).
+so the two sides of a block are one choice. Each option's pin is the curb
+point nearest the destination. The walk is straight-line distance × 1.3
+at 80 m/min. A stay is priced whole when the meter allows it. When the
+meter runs past the max stay, the stay is priced to the max: the option's
+`durationMinutes` is those minutes, and `exceedsMaxStay` plus "(2 hr
+max)" in the words say so. Provider-observed terms
+(`zone_terms_observed`) apply exactly as they do for `/parked` and
+session start (`termsSource: "observed"`). When the radius holds no zone
+the result's `street` says `{radiusM, zonesInRadius: 0}` and the model is
+told the radius to say. The same search prices itinerary stops (the
+cheapest option, then the nearest) and their re-pricing.
 
 **Place search.** `geocode_place` biases to the metro the phone is in
 **or near** when the model names no city. An explicit `city` still wins.
@@ -2141,33 +2140,40 @@ one-line reply ("Here are your options — tap one to go ahead.") instead
 of an empty bubble.
 
 Plan shapes (zod-validated at the tool boundary — see
-`services/assistant/plans.ts`): `single_spot` is ≤3 options (street or
-garage; price, walk minutes, entry type, exactly one `recommended`,
-optional `lat`/`lng` for the card's mini map) plus an optional
-`destination {lat,lng,label}` and server-attached
-`provenance {provider, searchedAt}` and `recommendedReason`: one line on
-why the recommended option is on top, computed from the final prices and
-walks on the card (`plans.ts` `recommendationReason`): "Cheapest and
-closest — free, 4 min walk", "Cheapest — …", "Closest — …", or "Best
-value — $12.00, 3 min walk; the cheapest is $4.10, 9 min walk". "Closest"
-is claimed only when every other option has a walk to compare. The app
-shows it under the recommended option. Choosing an option (a row tap or a
-map-pin tap, one shared selection) highlights its pin, recenters the map
-on it with a walking route from the destination, dims the other pins, and
-opens its detail card, built from these server fields alone. The server backfills all three from
-the conversation's grounding — derived from the stored transcript (every
-geocode, street quote, and garage search so far), so it survives a
-restart and holds across machines; models routinely drop optional
-fields, and the card needs them on the stored plan. A street option pins
-at the point its own zone was quoted. A garage option must be a
-search_garages result (else `garage_option_ungrounded` back to the
-model): its price, `deepLink`, `provider`, and pin are the search's,
-never model text;
-`itinerary` is 1–12 stops (address, arrival, duration, street|garage
-choice, cost) with `totalUsd` recomputed server-side and refused when it
-busts the remaining daily budget. Every proposed stop has an arrival
-(pricing needs one), and the stops are stored in arrival order whatever
-order the model listed them in.
+`services/assistant/plans.ts`). A plan is one of four kinds:
+
+- `single_spot`: ≤3 options (street or garage), exactly one
+  `recommended`, plus the server's `destination {lat,lng,label}` (the
+  request's place, when the user named one), `provenance {provider,
+  searchedAt, garage?}`, `assumptions`, and `recommendedReason`: one line
+  on why the recommended option is on top, computed from the final prices
+  and walks on the card (`plans.ts` `recommendationReason`): "Cheapest and
+  closest — free, 4 min walk", "Cheapest — …", "Closest — …", or "Best
+  value — $12.00, 3 min walk; the cheapest is $4.10, 9 min walk".
+  "Closest" is claimed only when every other option has a walk to compare.
+  The app shows it under the recommended option. Choosing an option (a row
+  tap or a map-pin tap, one shared selection) highlights its pin,
+  recenters the map on it with a walking route from the destination, dims
+  the other pins, and opens its detail card, built from these server
+  fields alone.
+- `itinerary`: 1–12 stops (address, arrival, duration, street|garage
+  choice, cost) with `totalUsd` recomputed server-side and refused when it
+  busts the remaining daily budget. Every proposed stop has an arrival
+  (pricing needs one), and the stops are stored in arrival order whatever
+  order the model listed them in.
+- `none_meets` and `no_data`: the two cards that say no. The server
+  decides and fills them; neither can be confirmed. See the next section
+  but one.
+
+`propose_plan`'s input schema is generated from zod schemas
+(`MODEL_PLAN_JSON_SCHEMA`), so the model sees real field names; with a
+bare `object` it guessed (`kind: "street"`, `title`, `costUsd`) and burned
+a bounced call per guess. What it may send is deliberately small: a
+single-spot option is `{id, label?, detail?, recommended?, nearMiss?}`
+(the id of a search result — everything else on the option is the
+search's), and a "no" is `{kind: "none_meets", nearMissIds?}`. A turn
+that proposes a plan without any text gets a one-line reply ("Here are
+your options — tap one to go ahead.") instead of an empty bubble.
 
 ### The request (server-owned state)
 
@@ -2202,7 +2208,12 @@ conversation (retention, `DELETE /assistant/conversations/…`, `DELETE
   `window.source` is `user` once the user has set or cleared a window
   field, `default` until then.
 - `place.resolved` and `place.candidates` are server-written (the model
-  can't set them). A new `placeQuery`, or clearing it, resets both.
+  can't set them), from a place lookup: `geocode_place`, or a search that
+  finds a named place unresolved and looks it up itself. A new
+  `placeQuery`, or clearing it, resets both. When a message IS one of the
+  candidates (a tapped chip sends its `reply` verbatim), the loop resolves
+  the place from that candidate before the model is called: the choice is
+  the user's, and no lookup or model step can lose it.
 - `intent` is **derived** after every patch: `hard.kinds` exactly
   `["garage"]` → `garage_or_lot` at any time; else a start more than 15
   minutes ahead → `park_later`; else `park_now`. The empty request is
@@ -2211,9 +2222,9 @@ conversation (retention, `DELETE /assistant/conversations/…`, `DELETE
   user's words that turn (capped at 200 characters); it keeps the latest
   100 entries.
 
-Nothing reads the request to search or plan yet: `quote_street`,
-`search_garages`, and `propose_plan` take and accept exactly what they
-did before (#168 moves the searches onto it).
+The searches read it, and nothing else decides what is searched:
+`quote_street` and `search_garages` take no place, time, stay, or budget
+of their own ("Searching the request, and saying no", below).
 
 **The model's view.** The system prompt ends with a "Current request"
 block, re-rendered for every model call so it is never behind an edit:
@@ -2270,6 +2281,251 @@ inputs `{tool: "update_request", patch, conversationId}` and outcome
 the refusal's error (rule `invalid_patch`,
 `conflicting_patch`, `unreadable_time`, or `too_many_edits`).
 
+### Searching the request, and saying no
+
+FR-43. The two searches read the request; the server decides what meets
+it and what doesn't; `propose_plan` accepts only what the latest search
+returned; and the loop no longer builds a plan the model didn't propose.
+The code is `services/assistant/search.ts` (pure), the search and
+validator methods in `tools.ts`, and the reply check in `loop.ts`.
+
+**What a search reads.** `quote_street` and `search_garages` are strict
+tools whose only input is an optional `note`. Anything else a model sends
+is ignored. They read from the conversation's request:
+
+- **the place**: `place.resolved`. A named place not yet looked up is
+  looked up by the search itself. With no place named, the phone's
+  location is the place (`place.source: "default"`), and the card states
+  it as an assumption. A place that matched several, or none, is never
+  guessed at: the search answers `{error: "place_unresolved", reason,
+  candidates?}` and **the turn ends asking the user**, with the candidates
+  as chips when there are any. The one fallback from a named place to the
+  phone is a `park_now` request whose lookup is *down* (the driver is at
+  the curb); the result says so and the model must too. A later request
+  with the lookup down asks for an address instead;
+- **the window**: `window.startsAt` (now when null) for
+  `window.durationMinutes` (two hours when null, said as an assumption).
+  A start more than an hour past is `window_in_the_past`, and a search
+  that would move a clock time the user named is `requested_time_moved`;
+  both tell the model to fix the start with `update_request`;
+- **the limits and the ranking**: `hard` and `soft`, below.
+
+A garage search for a NAMED place keeps only garages within 600 m of it
+(FR-23), measured from each facility's own coordinates; the rest are
+dropped and counted (`garage.droppedForDistance`, with `nearestBeyondM`
+so the reply can say how far the closest one is). A search from the
+phone's location doesn't clip. A garage offer with no usable price is
+dropped and counted too (`garage.droppedNoPrice`): it can't be held to a
+budget or shown on a card.
+
+**What a search answers.** The request's whole search so far at its
+current version — both kinds, once both tools have run:
+
+```json
+{ "stateVersion": 4, "verdict": "meets",
+  "searched": ["street", "garage"], "searchedAt": "2026-09-26T22:05:11.000Z",
+  "place": { "lat": 42.3546, "lng": -71.0453, "label": "LoLa 42, Seaport", "source": "user" },
+  "window": { "startsAt": "2026-09-26T19:00:00-04:00", "endsAt": "2026-09-26T22:00:00-04:00",
+              "durationMinutes": 180, "startsNow": false, "durationSource": "user" },
+  "satisfying": [
+    { "id": "v4-bos-seaport-blvd-de413d-01", "type": "street", "label": "Street — Seaport Blvd",
+      "priceUsd": 0, "walkMinutes": 4, "distanceM": 271, "durationMinutes": 180,
+      "fetchedAt": "2026-09-26T22:05:10.000Z", "axis": "cheapest",
+      "zoneId": "bos-seaport-blvd-de413d-01", "summary": "Free after 6 PM on Seaport Blvd — 4 min walk",
+      "facts": { … } },
+    { "id": "v4-parkwhiz-4521-ab12cd", "type": "garage", "label": "Seaport Garage",
+      "priceUsd": 18, "walkMinutes": 1, "distanceM": 80, "durationMinutes": 180,
+      "fetchedAt": "2026-09-26T22:05:11.000Z", "axis": "closest",
+      "garageOptionId": "parkwhiz-4521-ab12cd", "provider": "parkwhiz",
+      "deepLink": "https://…", "entryType": "self" } ],
+  "nearMisses": [
+    { "option": { "id": "v4-spothero-88-ab12cd", … "priceUsd": 32 },
+      "violates": [ { "field": "maxPriceUsd", "actual": 32, "limit": 30 } ] } ],
+  "street": { "radiusM": 400, "zonesInRadius": 6 },
+  "garage": { "provider": "parkwhiz+spothero", "found": 5 },
+  "instruction": "…" }
+```
+
+- `satisfying`: the options that pass **every set `hard` field**, in the
+  server's order (at most five are shown). The model never reorders.
+- `nearMisses`: the nearest three options that break a limit, each with
+  the server's `violates: [{field, actual, limit}]`.
+- `relaxSuggestions`: present only when `satisfying` is empty and a limit
+  is set. The same filter is re-run over the options already fetched —
+  **never another provider call** — with one limit loosened a step
+  (price +$5, walk +5 minutes, kinds → both), and each reports
+  `{field, to, wouldYield, label, reply}`. Every relaxable limit is
+  listed, zero included.
+- `verdict`: `meets`; `none_meets` (a limit is set and nothing passes);
+  `no_data` (no limit set, nothing found, inside a covered city);
+  `outside_coverage` (the same outside one).
+- every option id is `v{stateVersion}-{zone id | garage option id}`, so
+  an option from before an edit can never pass for a current one.
+- `fetchedAt` is when that option's price was fetched (decision 7).
+- `garage.unavailable: true` (with `reason`) is a FAILED garage search —
+  thrown or typed — and never "no garages".
+
+Which limits an option breaks (`search.ts` `violationsOf`): `maxPriceUsd`
+and `maxWalkMinutes` by comparison; `kinds` by the option's type;
+`entryType: "valet"` only by an offer that says valet, `"self"` only
+against one that says valet; `covered: true` by everything, since no
+source says whether a garage is covered. What can't be verified doesn't
+count as met.
+
+**The order (decision 8).** `streetOptions.ts` `rankOptions` is a pure
+sort keyed by `soft.rank`: `cheapest` is price then walk; `closest` is
+walk then price; `balanced` is price + $0.50 per minute of walk. A
+matched `soft.prefer` takes a fixed $1.00 off an option's score: it
+reorders, never filters, and never changes the price shown. Ties go to
+the cheaper, the nearer, then the id. `orderForRequest` puts the request's
+ask first:
+
+- **no ask** (no rank, and a limit on neither or both of price and walk):
+  the cheapest and the closest satisfying options lead, labeled
+  `axis: "cheapest"` and `axis: "closest"` — one entry, `axis: "both"`,
+  when one option is both — and the rest follow by balanced score;
+- **an ask** (a rank, or a limit on exactly one of price and walk): the
+  option that best honors it comes first, and the best satisfying option
+  on the other axis rides second with `secondary: true`. It is an
+  alternative, never the recommendation. A secondary option is chosen
+  among the satisfying ones only, so "under $20" never surfaces one over
+  $20.
+
+`axis` is what an option truly is by price and walk alone, so a label
+never says "cheapest" of an option a preference lifted over a cheaper
+one.
+
+**The latest search.** A search's result is the conversation's latest
+search: held for the turn, and read back on the next one from the stored
+transcript (`search.ts` `lastSearchIn`), so "go ahead and propose" after
+a question proposes what the last turn found, across restarts and
+machines. It is good to propose from only at the request's current
+version and for ten minutes (prices are for when they were fetched; the
+garage sources' own cache lasts as long).
+
+**The validators.** `propose_plan` holds a single-spot plan to these, in
+order. Each refusal is audited (`assistant_tool`) under its own rule and
+goes back to the model with what to do:
+
+| # | Rule | Refusal |
+|---|---|---|
+| V1 | Every option id is in the latest search, run at the request's current version and still fresh. No other field stands in for the id. | `stale_or_unknown_option` with `optionIds`, `validIds`, `stateVersion`, and a `hint` (search first; the request changed; the search is old) |
+| V2 | `priceUsd`, `walkMinutes`, `durationMinutes`, `startsAt`, `zoneId`, the street facts, a garage's `provider` and `deepLink`, and the pin are copied from the search. Nothing the model sends for them is read. | none: a price it typed that differs is recorded as `model_price_mismatch` `{optionId, modelPriceUsd, priceUsd}` |
+| V3 | An option from `nearMisses` may be on the card only with `nearMiss: true`; it then carries the server's `violates`. The model's are discarded. | `hard_constraint_violation` with `optionIds` and their `violates` |
+| V4 | With nothing satisfying, the only plan is the "no". With something satisfying, a "no" is refused. | `must_say_no` / `options_available` (with the search, so the model can propose from it) |
+| V5 | An itinerary's total is recomputed and held to the caller's own daily cap (`policyFor(user)`). There is no per-plan cap (decision 9). | `plan_over_daily_cap` |
+| V6 | Every dollar amount in the reply is one the server stands behind (below). | the sentence is dropped; `ungrounded_number` |
+
+The card is then built by the server. Its options are in the search's
+order, and **the option that honors the ask is always on it and first**:
+the first satisfying option is added if the model left it out, and with
+no ask both the cheapest and the closest are. The first option holds
+`recommended` whatever the model marked. A model's `label` or `detail`
+is kept only where it can't mislead: a near-miss is named by the server,
+and words quoting an amount that isn't that option's own fall back to
+the server's. The card's `note` is held to V6. An itinerary's first
+proposal is still outside V2: its per-stop prices are the ones the model
+read off `build_itinerary`, summed and capped but not re-quoted (#132).
+
+**`none_meets`: the server says no.** When the verdict is `none_meets`
+the model calls `propose_plan({kind: "none_meets"})`, and the server
+fills the card:
+
+```json
+{ "kind": "none_meets",
+  "headline": "Nothing under $2.00 near Cambridge Common. Closest: Street — Mass Ave, $4.50, 5 min walk.",
+  "constraintsFailed": [ { "field": "maxPriceUsd", "limit": 2, "nearestActual": 4.5 } ],
+  "nearMisses": [ { "id": "v3-bos-mass-ave-1", "type": "street", "priceUsd": 4.5, …,
+                    "nearMiss": true,
+                    "violates": [ { "field": "maxPriceUsd", "actual": 4.5, "limit": 2 } ] } ],
+  "relaxSuggestions": [ { "field": "maxPriceUsd", "to": 7, "wouldYield": 2,
+                          "label": "Allow up to $7.00", "reply": "Allow up to $7.00" } ],
+  "destination": { … }, "assumptions": "Now–4:00 PM, near Cambridge Common" }
+```
+
+- The verdict is never taken on half a search. Before it stands, the
+  server runs whichever search the request allows that hasn't run at this
+  version: street always (our own data, and what "street or garage is
+  fine" would yield), garages unless the request rules them out. If that
+  turns something up, the "no" is refused `options_available`.
+- Up to three near-misses (`nearMissIds` picks which; by default the
+  nearest), each with what it breaks. They are for information: the
+  confirm route refuses them.
+- `relaxSuggestions` with `wouldYield > 0` are the reply's `suggestions`.
+  A tap sends the plain sentence as the user's next message, so the USER
+  changes the request, through `update_request`. The assistant never
+  loosens a limit itself.
+- **The reply is the card's `headline`, word for word.** Whatever the
+  model wrote that turn is dropped, so no phrasing of its own can restate
+  a near-miss as a fit.
+- If the model searches, finds nothing, and still won't propose after the
+  one reminder, the loop issues this card itself — the only card it ever
+  issues on its own, through the same tool.
+- Stored as `assistant_plans.kind = "none_meets"`; its `assistant_plan`
+  decision has rule `none_meets`.
+
+**`no_data`: nothing there to refuse.** Both searches empty, inside a
+covered city, with no limit set, is a gap in the data, not a refusal, and
+gets its own card and rule (`no_zone_here`), so coverage gaps show up as
+themselves:
+
+```json
+{ "kind": "no_data", "rule": "no_zone_here",
+  "headline": "Our data has no street parking or garages within 800 m of you. The nearest metered block is on Brattle St, about 900 m away.",
+  "radiusM": 800,
+  "nearestZones": [ { "zoneId": "…", "street": "Brattle St", "zoneNumber": null,
+                      "distanceM": 900, "walkMinutes": 15, "lat": 42.37, "lng": -71.12 }, … ] }
+```
+
+`nearestZones` are the three nearest zones within 3 km. The same
+emptiness outside the covered cities is no card: the search's verdict is
+`outside_coverage`, a "no" proposed there is refused `outside_coverage`,
+and the model says it in a sentence.
+
+**Tool failures.**
+
+- *Garage search down on a garage-only request* (`intent:
+  "garage_or_lot"`): the search itself ends the turn on a `none_meets`
+  card with `constraintsFailed: [{field: "garageSearch", reason:
+  "unavailable"}]`, no near-misses, and **no street substitute** — the
+  user asked for a garage. The reply is "I couldn't check garages right
+  now." with one chip, "Try again". Its decision rule is
+  `garage_search_unavailable`.
+- *Garage search down otherwise*: the search result carries
+  `garage.unavailable`, the model proposes the street options, and the
+  card's `provenance.garage` is `"unavailable"` ("couldn't check
+  garages", never "no garages").
+- *Place lookup down*: as "the place" above.
+- Each failure is audited: `garage_search_error` (with the source's
+  `error` and `detail`), `place_unresolved` (with the `reason`).
+
+**No synthesized plan.** A turn that searched owes the user a card; the
+model is reminded once. If it still ends in prose and something *did*
+meet the request, there is **no card**: the loop used to build one from
+whatever the turn had quoted, which could re-propose an option the user
+had just ruled out. The reply is checked (next), and its suggestions are
+one chip, "Search again".
+
+**The reply check (V6).** After the loop, every sentence of the reply
+that states a dollar amount the server doesn't stand behind is dropped
+(`loop.ts` `scrubUngroundedAmounts`; "$20" and "$20.00" are the same
+amount), and an `assistant_reply` decision with rule `ungrounded_number`
+records the amounts. What the server stands behind:
+
+- the request's own budget, and what a relax suggestion would make it;
+- the prices on this turn's card (a single spot's options that meet the
+  request, with their meter/fee split and hourly rate; an itinerary's
+  stops, total, and cap);
+- the latest search's satisfying options — except in a turn that searched
+  and ended with no card, which is a quote in prose and keeps none;
+- amounts the other tools reported in this conversation (the request, a
+  day's quotes and budget, past sessions, an explanation).
+
+A near-miss's price is never among them: the card says it, with what it
+breaks. A question the SERVER asked (an unresolved place) is its own
+words and isn't checked. A `none_meets` or `no_data` reply needs no check:
+it is the headline.
+
 ### Saved conversations
 
 Every turn saves the conversation. Its model context (`turns`, the last
@@ -2293,7 +2549,9 @@ still holds. The confirm tap stamps the plan (`assistant_plans.confirmed_at`,
   to: the plan the user confirmed most recently (`kind` `garage` |
   `street` | `itinerary`, a `label` like "Garage — Underground Deck",
   `amountUsd`, `planId`), else the latest proposed plan (`kind:
-  "proposed"`, e.g. "3 options proposed, from $0.00"), else null.
+  "proposed"`, e.g. "3 options proposed, from $0.00"; a "no" card reads
+  "Nothing met the request" or "No parking data for that place"), else
+  null.
 - `GET /assistant/conversations/:id` → `{id, title, createdAt, updatedAt,
   messages, plans: [{planId, plan, confirmedAt, confirmedOptionId}],
   outcome}`. The app opens it read-only: earlier plans show without
@@ -2320,7 +2578,13 @@ the count. `DELETE /me` deletes them all at once, as before.
 
 `{planId, optionId?, stops?}` — the tap. Mints the single-use token
 (10-minute TTL) and executes the confirmed option through the same
-token-gated tools the model faces:
+token-gated tools the model faces. Two things have nothing to confirm and
+are refused `409` **before any token is minted**, each with its own
+decision: a `none_meets` or `no_data` card (`nothing_to_confirm` — and
+any plan kind this route doesn't know, which must never fall through to
+the itinerary sign-off), and a near-miss option on a single-spot card
+(`near_miss_not_confirmable`: the user changes the limit, and the next
+search offers it as an option that meets the request). Otherwise:
 
 - garage option → `{kind: "garage_handoff", deepLink, paymentSource,
   linkApproval, linkSkipped?, bookingId, note}` — the app opens the

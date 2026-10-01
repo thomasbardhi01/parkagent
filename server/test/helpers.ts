@@ -993,6 +993,7 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
           state.conversations.push({
             title: null,
             display: [],
+            requestState: null,
             ...create,
             createdAt: fakeRowClock(),
             updatedAt: fakeRowClock(),

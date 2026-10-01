@@ -19,6 +19,15 @@ import type { GeocodeResult, GeocoderProvider } from "./geocoder.js";
 import { homeMetroForPoint, metersBetween, metroForPoint } from "./geocoder.js";
 import { assumptionsFor } from "./clarify.js";
 import { requestedTimeProblem, type TimeRequest } from "./requestedTime.js";
+import {
+  MAX_REQUEST_EDITS_PER_TURN,
+  UPDATE_REQUEST_INPUT_SCHEMA,
+  applyPatch,
+  emptyState,
+  parsePatch,
+  stateForModel,
+  type RequestState,
+} from "./requestState.js";
 import { choiceLabel, choiceReply, classifyPlaceMatches, nameTokens } from "./placeMatch.js";
 import type { ModelClient, ModelUsage } from "./loop.js";
 import { easternIso, parseEasternTime } from "../hours.js";
@@ -123,6 +132,15 @@ export interface ToolContext {
   /** The clock time this turn's message asked for (requestedTime.ts):
    * quotes and single-spot plans must honor it, never move it to now. */
   timeRequest?: TimeRequest | undefined;
+  /** The conversation's request (requestState.ts), loaded from its row
+   * before the turn; update_request replaces it, and the loop saves it.
+   * Absent → the empty request. */
+  requestState?: RequestState | undefined;
+  /** update_request calls so far this turn — refused past the limit. */
+  requestEdits?: number | undefined;
+  /** This turn's user message: the words each request change is logged
+   * with. */
+  utterance?: string | undefined;
 }
 
 /** One tappable answer to a clarifying question: the chip's text and the
@@ -180,6 +198,13 @@ export const CONFIRMATION_TTL_MS = 10 * 60_000;
 /** Anthropic tool definitions (Messages API shape). Kept in one place so
  * the schema tests pin exactly what the model sees. */
 export const TOOL_DEFINITIONS = [
+  {
+    name: "update_request",
+    description:
+      'Record a change to the user\'s parking request — the server-owned state shown as "Current request". Send ONLY what changed, flat (e.g. {maxPriceUsd: 20, reason: "under $20"}), never the whole request: a value you send replaces the old one, `clear` removes one, and unmentioned fields keep their values. Call it before searching whenever the user states or changes the place, the time, the stay, a limit (price, walk, garage or street, valet, covered), or a preference (cheapest, closest). The server derives the intent from the time and the kinds; yours is advisory. The result is the full new request, what changed, and any intent the server overrode. At most two calls per turn.',
+    strict: true,
+    input_schema: UPDATE_REQUEST_INPUT_SCHEMA,
+  },
   {
     name: "geocode_place",
     description: `Resolve a NAMED place to coordinates — a restaurant, bar, venue, business, hotel, landmark, street, or neighborhood — biased to the phone's city among the cities ParkAgent covers (${coveredCitiesSentence()}). Call this FIRST whenever the user names a place instead of relying on their current location, passing their words including any area they named (e.g. 'Lola 42 Seaport'). Answers: found with match "exact" → use place.lat/lng; match "closest" → the NAME wasn't found, only the nearest thing (tell the user); ambiguous with choices → call ask_user with those choices; found:false → couldn't find it. Then pass the place's lat/lng to quote_street or search_garages.`,
@@ -517,6 +542,8 @@ export class AssistantTools {
   async execute(ctx: ToolContext, name: string, input: unknown): Promise<ToolOutcome> {
     try {
       switch (name) {
+        case "update_request":
+          return await this.updateRequest(ctx, input);
         case "geocode_place":
           return await this.geocodePlace(ctx, input as Record<string, unknown>);
         case "search_garages":
@@ -587,6 +614,95 @@ export class AssistantTools {
           '("Tomorrow at …" / "Now"). Never move a requested time to now.',
       },
     }));
+  }
+
+  /**
+   * update_request: apply the model's patch to the conversation's request
+   * (requestState.ts decides what it means). Every call is audited with
+   * the patch it sent and what came of it, refusals included, and counts
+   * toward the per-turn limit — a malformed call is a call.
+   */
+  private async updateRequest(ctx: ToolContext, input: unknown): Promise<ToolOutcome> {
+    const before = ctx.requestState ?? emptyState();
+    ctx.requestEdits = (ctx.requestEdits ?? 0) + 1;
+    const audit = (rule: string, outcome: Record<string, unknown>) =>
+      this.deps.db.decision.create({
+        data: {
+          kind: "assistant_tool",
+          inputs: { tool: "update_request", patch: input, conversationId: ctx.conversationId },
+          rule,
+          outcome,
+          userId: ctx.userId,
+        },
+      });
+    if (ctx.requestEdits > MAX_REQUEST_EDITS_PER_TURN) {
+      await audit("too_many_edits", { error: "too_many_edits", version: before.version });
+      return {
+        result: {
+          error: "too_many_edits",
+          instruction:
+            `The request was already edited ${MAX_REQUEST_EDITS_PER_TURN} times this turn. Don't edit it again: ` +
+            "go on with the request as it stands (the last update_request result), or ask the user with ask_user.",
+        },
+      };
+    }
+    const parsed = parsePatch(input);
+    if (!parsed.ok) {
+      await audit("invalid_patch", { error: "invalid_patch", issues: parsed.issues });
+      return {
+        result: {
+          error: "invalid_patch",
+          issues: parsed.issues,
+          instruction:
+            'Send only what changed, flat, e.g. {"maxPriceUsd": 20, "reason": "under $20"}. ' +
+            "Settable: intent, placeQuery, startsAt, durationMinutes, maxPriceUsd, maxWalkMinutes, kinds, entryType, covered, rank, prefer. " +
+            "To remove one, name it in clear.",
+        },
+      };
+    }
+    const at = this.now();
+    const applied = applyPatch(before, parsed.patch, ctx.utterance ?? "", at);
+    if (!applied.ok) {
+      if (applied.error === "unreadable_time") {
+        await audit("unreadable_time", { error: "unreadable_time", value: applied.value });
+        return {
+          result: {
+            error: "unreadable_time",
+            value: applied.value,
+            instruction: `Couldn't read that time. ${TIME_FORMAT_HINT} ${currentTimeLine(at)}`,
+          },
+        };
+      }
+      await audit("conflicting_patch", { error: "conflicting_patch", fields: applied.fields });
+      return {
+        result: {
+          error: "invalid_patch",
+          issues: applied.fields.map((f) => `${f} is both set and cleared`),
+          instruction: "Set a field or clear it, not both.",
+        },
+      };
+    }
+    ctx.requestState = applied.state;
+    const outcome = {
+      version: applied.state.version,
+      changed: applied.changed,
+      overrides: applied.overrides,
+    };
+    await audit(applied.changed.length > 0 ? "request_updated" : "request_unchanged", outcome);
+    return {
+      result: {
+        ...outcome,
+        state: stateForModel(applied.state),
+        ...(applied.changed.length === 0
+          ? { instruction: "Nothing changed: the request already says that." }
+          : {}),
+        ...(applied.overrides.length > 0
+          ? {
+              note: `The intent is ${applied.state.intent}: ${applied.overrides[0]!.why}. The server derives it; change startsAt or kinds to change it.`,
+            }
+          : {}),
+      },
+    };
   }
 
   /** Resolve a named place to coordinates, biased to NYC/Boston. The model

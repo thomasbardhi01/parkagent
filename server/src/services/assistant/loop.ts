@@ -26,6 +26,8 @@ import { TOOL_DEFINITIONS } from "./tools.js";
 import type { StreetOption } from "./streetOptions.js";
 import type { AssistantTools, StreetQuote, Suggestion, ToolContext } from "./tools.js";
 import { requestedTimeChoices, requestedTimeIn, requestedTimeLine } from "./requestedTime.js";
+import { currentRequestBlock, emptyState, parseStoredState } from "./requestState.js";
+import type { RequestState } from "./requestState.js";
 
 /** Overridden by ASSISTANT_MODEL (legacy fallback: ANTHROPIC_MODEL). */
 export const DEFAULT_ASSISTANT_MODEL = "claude-sonnet-5";
@@ -51,11 +53,19 @@ Rules you cannot break (the tools enforce them too):
 - To ask the user anything, call ask_user (one short question, 2–4 tappable suggestions) — never ask in prose. Ask only when you truly can't proceed: when the user gave no time, assume now; no duration, 2 hours — instead of asking. When you do ask, offer the common answers ("1 hour", "2 hours", "3 hours"; "Now", "Tonight at 7").
 - Always state your assumptions in one short line when you propose — the window and the place, e.g. "7:00–10:00 PM, near Lola 42, Seaport". The card shows the same line.
 - If search_garages returns garage_search_unavailable, the search FAILED — say "I couldn't check garages right now", never "no garages available", and still propose the street option. Only an empty options list means none were found. If every garage was dropped for distance, the result's nearestBeyondM says how far the closest one is — tell the user that distance ("the nearest garage is about 900 m away") rather than "none found".
+- When the user changes anything about the request, call update_request with only what changed before searching.
 - A follow-up message edits the CURRENT plan: "cheaper?", "closer", "make it 5 instead", "add a stop at 3" refer to what you just proposed. Re-run only the tools whose inputs changed and propose the revised plan. Ask a clarifying question only when you truly cannot proceed; otherwise assume the sensible reading and say what you assumed in a few words.
 - An itinerary's total must fit the user's remaining daily budget (build_itinerary shows it). If it doesn't fit, say what to cut.
 - Garage checkout is a deep link to the site the option came from (each search_garages option names its provider — SpotHero or ParkWhiz): the user finishes the purchase there and the pass lives in that site's account. Say so when it matters, in a few words, naming the right site.
 - A clock time the user names is theirs: never move it to now or to any other time. When they name one with no day, their message carries a [requested time] line saying whether it is later today or has already passed; a time that has passed means its next occurrence — plan for that (the card says "Assuming tomorrow") or ask with ask_user ("Tomorrow at 7 PM" / "Now"). "Tonight" asked after midnight means this coming evening. The tools refuse a quote or plan that moves a requested time.
 - Every user message ends with the CURRENT date and time in brackets. Compute every date from it — "tonight", "tomorrow", "at 2pm" are relative to that timestamp. NEVER guess or recall a date; a window in the past is always a mistake, and the tools will bounce it back to you with the current time so you can retry.`;
+
+/** What each model call is told: the fixed prompt, then the request as it
+ * stands at that call (requestState.ts) — re-rendered after an
+ * update_request, so the block is never behind the state. */
+export function systemPromptFor(state: RequestState): string {
+  return `${SYSTEM_PROMPT}\n\n${currentRequestBlock(state)}`;
+}
 
 /** The one-shot correction when a turn quoted prices but never proposed. */
 const PROPOSE_PLAN_REMINDER =
@@ -271,6 +281,11 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
   const stored = await args.db.conversation.findUnique({ where: { id: args.conversationId } });
   const history: ModelTurn[] =
     stored && stored.userId === args.userId ? (stored.turns as ModelTurn[]) : [];
+  // The request this conversation has built so far, loaded before the
+  // first model call; a new conversation (or a row from before request
+  // state) starts from the empty request.
+  const requestState =
+    stored && stored.userId === args.userId ? parseStoredState(stored.requestState) : emptyState();
 
   const at = args.now?.() ?? new Date();
   // The clock time the message names, read here rather than left to the
@@ -300,6 +315,9 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
     ...groundingIn(history),
     onModelUsage: (usage) => sideCalls.push(usage),
     timeRequest,
+    requestState,
+    requestEdits: 0,
+    utterance: args.text,
   };
 
   const segments: string[] = [];
@@ -321,7 +339,12 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
   try {
     for (let iteration = 0; iteration < MAX_LOOP_ITERATIONS; iteration += 1) {
       const response = await args.model.create(
-        { system: SYSTEM_PROMPT, messages, tools: TOOL_DEFINITIONS, maxTokens: MAX_TOKENS },
+        {
+          system: systemPromptFor(ctx.requestState ?? requestState),
+          messages,
+          tools: TOOL_DEFINITIONS,
+          maxTokens: MAX_TOKENS,
+        },
         args.onText,
       );
       modelCalls += 1;
@@ -405,6 +428,8 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
           latencyMs: Date.now() - startedMs,
           estimatedCostUsd,
           proposedPlan: plan !== null,
+          stateEdits: ctx.requestEdits ?? 0,
+          requestVersion: (ctx.requestState ?? requestState).version,
         },
         userId: args.userId,
       },
@@ -461,6 +486,9 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
       ...(suggestions ? { suggestions } : {}),
     },
   ]);
+  // Saved with the turn that made it: a turn that fails mid-flight saves
+  // neither, so the request never runs ahead of the transcript.
+  const savedState = ctx.requestState ?? requestState;
   await args.db.conversation.upsert({
     where: { id: args.conversationId },
     create: {
@@ -469,12 +497,14 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
       turns: trimmed,
       title: titleFrom(args.text),
       display,
+      requestState: savedState,
     },
     // A conversation saved before titles existed gets one now, from the
     // first request its context still holds.
     update: {
       turns: trimmed,
       display,
+      requestState: savedState,
       ...(owned && !owned.title ? { title: titleFromTurns(history) ?? titleFrom(args.text) } : {}),
     },
   });

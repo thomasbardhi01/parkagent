@@ -86,7 +86,7 @@ started at 11:55 ET). "—" means the FR has no live test.
 | FR-39 | Continuous dictation | unit + device-manual | — | iOS `DictationTranscriptTests`, `SpeechRecognizerTests`, `SpeechUITests` (scripted recognizer); the real recognizers need a phone |
 | FR-40 | Tappable questions, stated assumptions | nightly + unit | ✅ passed | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantClarify.test.ts`, `server/test/assistantRequestedTime.test.ts`; iOS `AssistantUITests` (duration chips, assumptions line) |
 | FR-41 | Requests that survive the network | nightly + unit | ✅ passed | `server/fr/55-reliability.fr.test.ts`, `server/test/idempotency.test.ts`, `server/test/outbound.test.ts`, `server/test/shutdown.test.ts`, `server/test/auth.test.ts`; iOS `LiveAPIRequestTests`, `ParkOutboxTests`; `scripts/boot-check.sh` (SIGTERM → exit 0) |
-| FR-42 | The request is server-owned, versioned state | pending | — | #167 |
+| FR-42 | The request is server-owned, versioned state | unit | — | `server/test/requestState.test.ts`, `server/test/assistantLoop.test.ts` (request state, `update_request`) |
 | FR-43 | Options from the latest search; the assistant says no | pending | — | #168 |
 | FR-44 | Place resolution with confidence and walking times | pending | — | #169 |
 | FR-45 | Three intents, request chips, near-miss cards | pending | — | #170 |
@@ -1002,10 +1002,53 @@ test where one is listed) by the PR that delivers it. Scope is in
 own FR-41 to FR-44 and FR-5x tags are renumbered to these.
 
 ### FR-42 — The request is server-owned, versioned state (#167, WS-1)
-**Accepted when** each constraint the user states is merged into a
-versioned `RequestState` by `update_request` (a later value supersedes an
-earlier one, every change is logged), the server derives the intent, and
-the state survives across turns of a conversation. Unit.
+
+Each conversation holds the user's parking request as one versioned
+`RequestState` on its row (`conversations.request_state`): the place, the
+window, the limits (`hard`), the preferences (`soft`), the derived intent,
+and a log of every change with the user's words. The model edits it only
+through `update_request`, a strict tool that takes a flat patch of what
+changed:
+
+- A later value supersedes an earlier one: "under $30" then "under $20"
+  is $20, never a range.
+- `clear` removes a value.
+- The version bumps once per patch that changes something.
+
+The server derives the intent. Garage-only is `garage_or_lot`; a start
+more than 15 minutes out is `park_later`; anything else is `park_now`. A
+model intent that disagrees is overridden and reported. The model sees
+the state on every call (the "Current request" block in the system
+prompt) and may edit it at most twice a turn. Every call is a decisions
+row with the patch and what came of it. Nothing searches or plans from
+the state yet; that is FR-43.
+
+**Accepted when** each of these holds:
+
+- Three supersedes in a row leave the last value, with three log entries,
+  at version 3.
+- "Tonight" flips the intent to `park_later`, and clearing the start
+  flips it back, both listed as changed.
+- A model intent that contradicts the start is overridden.
+- A third edit in one turn is refused (`too_many_edits`) and audited.
+- The state round-trips across turns, and a new conversation starts
+  empty.
+- An offset-less start is stored with ET's offset.
+
+Coverage is unit only, with no live model call: the live budget is
+already spent by FR-21 to FR-40.
+
+Evidence: `requestState.test.ts` (32 tests): supersede, clear, log, the
+derived intent and its overrides, equal values that aren't changes, the
+place query unresolving its place, normalization, the capped log, the
+patch parser refusing the whole state and unknown field names, stored
+rows that are null or damaged, and user words that can't open a line of
+the system prompt. `assistantLoop.test.ts`, "request state (FR-42)" and
+"update_request, the tool (FR-42)" (11 tests): the round trip through the
+conversation row, the per-call block, `too_many_edits` across loop
+iterations, a failed turn leaving the stored state alone, a row from
+before request state, the strict schema checked against what the API
+compiles, and each refusal audited.
 
 ### FR-43 — Options come from the latest search, and the assistant says no (#168, WS-1)
 **Accepted when** searches read the request instead of model arguments;

@@ -54,18 +54,33 @@ final class DetectorUITests: ParkAgentUITestCase {
         index = play(route, from: index, through: walkStart + 3)
 
         // The park is noticed on the walk away: pay from the sheet, and
-        // keep walking while the sheet is handled.
+        // keep walking while the sheet is handled. Paid means the sheet's
+        // Pay button is gone (the session started), not that it was
+        // tapped: on iOS 26 a synthesized tap can be dropped outright (CI
+        // run 37043356600's recording shows the sheet still up, unpaid, at
+        // the end of the walk, and so no location report ever sent). A tap
+        // that didn't take is made again, and the retry is recorded in the
+        // result bundle.
         let pay = element(app, "parkedSheet.payButton")
+        var payTaps = 0
         var paid = false
         let farEnd = try XCTUnwrap(route.points.lastIndex { $0.phase == "far" })
         while index <= farEnd {
             index = play(route, from: index, through: index)
-            if !paid, pay.exists, pay.isHittable {
-                pay.tap()
+            guard !paid else { continue }
+            if payTaps > 0, !pay.exists {
                 paid = true
+            } else if payTaps < 3, pay.exists, pay.isHittable {
+                if payTaps > 0 {
+                    XCTContext.runActivity(named: "The Pay tap was dropped; tapping it once more") { _ in }
+                }
+                pay.tap()
+                payTaps += 1
             }
         }
-        XCTAssertTrue(paid, "No park sheet appeared on the walk away (\(probe.label))")
+        XCTAssertGreaterThan(payTaps, 0, "No park sheet appeared on the walk away (\(probe.label))")
+        if !paid { paid = pay.waitForNonExistence(timeout: 5) }
+        XCTAssertTrue(paid, "Pay was tapped \(payTaps) time(s) and the session never started (\(probe.label))")
         XCTAssertTrue(probe.label.hasPrefix("parked=1 "), probe.label)
         let away = Self.values(probe.label)
         XCTAssertGreaterThanOrEqual(away["farthest"] ?? 0, 200, "The walk away never reached the server: \(probe.label)")

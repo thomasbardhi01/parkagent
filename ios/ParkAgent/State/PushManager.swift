@@ -1,3 +1,4 @@
+import CoreLocation
 import Foundation
 import Observation
 import UIKit
@@ -19,20 +20,37 @@ final class PushManager: NSObject, UNUserNotificationCenterDelegate {
     var onOpenWallet: (() -> Void)?
     /// Every other push about the car opens the Park tab.
     var onOpenPark: (() -> Void)?
+    /// A button on a place prompt (ParkedNotice.Action): which park it
+    /// answers about, and where that park was. Wired when detection arms,
+    /// so it is there for a background launch too.
+    var onPlaceAction: ((ParkedNotice.Action, String, CLLocationCoordinate2D?) async -> Void)? {
+        didSet { replayPendingPlaceAction() }
+    }
 
     private var api: (any APIClient)?
     private var pendingToken: String?
     /// A tap that arrived before AppModel wired the handlers above (a cold
     /// launch from the notification); replayed once they are.
     private var pendingOpen: (type: String, provider: String?, deepLink: String?)?
+    private var pendingPlaceAction: (action: ParkedNotice.Action, parkedEventId: String, coordinate: CLLocationCoordinate2D?)?
 
     private override init() {
         super.init()
     }
 
+    /// Every launch, before it finishes (AppServices): iOS hands a
+    /// notification's tapped button only to a delegate that is already
+    /// set, and may have launched the app in the background just for it.
+    /// Asks for nothing: permission is `activate`'s to request.
+    func attach() {
+        let center = UNUserNotificationCenter.current()
+        center.delegate = self
+        center.setNotificationCategories(ParkedNotice.notificationCategories)
+    }
+
     func activate(api: any APIClient) {
         self.api = api
-        UNUserNotificationCenter.current().delegate = self
+        attach()
         Task {
             let granted = try? await UNUserNotificationCenter.current()
                 .requestAuthorization(options: [.alert, .sound, .badge])
@@ -110,6 +128,40 @@ final class PushManager: NSObject, UNUserNotificationCenterDelegate {
         open(type: pending.type, provider: pending.provider, deepLink: pending.deepLink)
     }
 
+    /// A place prompt's button. The answer is recorded whether or not the
+    /// app is on screen; "Not a garage" also brings the Park tab up.
+    private func placeAction(_ action: ParkedNotice.Action, parkedEventId: String, coordinate: CLLocationCoordinate2D?) async {
+        guard let onPlaceAction else {
+            pendingPlaceAction = (action, parkedEventId, coordinate)
+            return
+        }
+        await onPlaceAction(action, parkedEventId, coordinate)
+    }
+
+    /// Which place button a notification response is, and the park it is
+    /// about (ParkedNotice.post puts the park's id and spot in userInfo).
+    /// nil for a tap on the notification itself, and for a button with no
+    /// park to answer about.
+    nonisolated static func placeAction(
+        identifier: String,
+        userInfo: [AnyHashable: Any]
+    ) -> (action: ParkedNotice.Action, parkedEventId: String, coordinate: CLLocationCoordinate2D?)? {
+        guard let action = ParkedNotice.Action(rawValue: identifier),
+              let parkedEventId = userInfo["parkedEventId"] as? String, !parkedEventId.isEmpty
+        else { return nil }
+        var coordinate: CLLocationCoordinate2D?
+        if let lat = userInfo["lat"] as? Double, let lng = userInfo["lng"] as? Double {
+            coordinate = CLLocationCoordinate2D(latitude: lat, longitude: lng)
+        }
+        return (action, parkedEventId, coordinate)
+    }
+
+    private func replayPendingPlaceAction() {
+        guard let onPlaceAction, let pending = pendingPlaceAction else { return }
+        pendingPlaceAction = nil
+        Task { await onPlaceAction(pending.action, pending.parkedEventId, pending.coordinate) }
+    }
+
     // MARK: - UNUserNotificationCenterDelegate
 
     nonisolated func userNotificationCenter(
@@ -131,6 +183,13 @@ final class PushManager: NSObject, UNUserNotificationCenterDelegate {
         let type = userInfo["type"] as? String
         let provider = userInfo["provider"] as? String
         let deepLink = userInfo["deepLink"] as? String
+        // A button on a place prompt, rather than the notification itself.
+        if let tapped = Self.placeAction(identifier: response.actionIdentifier, userInfo: userInfo) {
+            // iOS keeps a background launch alive until this returns.
+            await placeAction(tapped.action, parkedEventId: tapped.parkedEventId, coordinate: tapped.coordinate)
+            return
+        }
+        guard response.actionIdentifier == UNNotificationDefaultActionIdentifier else { return }
         if let type {
             await MainActor.run { self.open(type: type, provider: provider, deepLink: deepLink) }
         }

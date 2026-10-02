@@ -1,3 +1,4 @@
+import CoreLocation
 import XCTest
 @testable import ParkAgent
 
@@ -109,6 +110,58 @@ final class LiveAPIRequestTests: XCTestCase {
         let first = try XCTUnwrap(response.zones[0].polylines.first?.first)
         XCTAssertEqual(first.latitude, 42.350198, accuracy: 1e-9)
         XCTAssertEqual(first.longitude, -71.076681, accuracy: 1e-9)
+    }
+
+    /// A GET /garages/near body in the server's shape (routes/garages.ts,
+    /// pinned in garagesRoute.test.ts): a deck with a hole, an outline of a
+    /// kind this build has never heard of, and one row that isn't a garage
+    /// at all.
+    private static let nearbyGaragesBody = #"""
+    {"radiusM": 1416, "limit": 1000, "truncated": true, "attribution": "© OpenStreetMap contributors", "garages": [{"id": "bos-fixture-deck-0a1b2c", "city": "bos", "name": "Fixture Deck", "operator": "Fixture Parking Co", "kind": "multi_storey", "fee": true, "access": "customers", "capacity": 420, "website": "https://example.com/deck", "polygon": [[-71.0704, 42.3497], [-71.0696, 42.3497], [-71.0696, 42.3503], [-71.0704, 42.3503], [-71.0704, 42.3497]], "holes": [[[-71.0701, 42.3499], [-71.0699, 42.3499], [-71.0699, 42.3501], [-71.0701, 42.3501], [-71.0701, 42.3499]]], "entrances": [[-71.0696, 42.35]], "source": "osm", "sourceVersion": "2026-09-30T12:00:00Z", "containsPoint": true, "distanceM": 0, "nearestEntranceM": 20}, {"id": "bos-fixture-lot-3d4e5f", "city": "bos", "name": null, "operator": null, "kind": "carousel", "fee": null, "access": null, "capacity": null, "website": null, "polygon": [[-71.0714, 42.3497], [-71.0706, 42.3497], [-71.0706, 42.3503], [-71.0714, 42.3497]], "entrances": [], "source": "osm", "sourceVersion": "2026-09-30T12:00:00Z", "containsPoint": false, "distanceM": 12.4, "nearestEntranceM": null}, {"id": 7}]}
+    """#
+
+    /// The footprint cache's fetch: one 2 km cell is a 1,416 m circle
+    /// around its center and up to the route's 1,000 outlines.
+    func testNearbyGaragesAsksForAWholeCellAndDecodesTheServerShape() async throws {
+        StubURLProtocol.respond(json: Self.nearbyGaragesBody)
+        let response = try await api.nearbyGarages(lat: 42.3503, lng: -71.081, radiusM: 1415.3, limit: 1_000)
+
+        let request = try sentRequest()
+        XCTAssertEqual(request.httpMethod, "GET")
+        XCTAssertEqual(request.url?.path(), "/garages/near")
+        // Rounded up: a radius rounded down would miss the cell's corners.
+        XCTAssertEqual(query(request), ["lat": "42.3503", "lng": "-71.081", "radius": "1416", "limit": "1000"])
+        XCTAssertEqual(bearer(request), "Bearer access-1")
+
+        XCTAssertTrue(response.truncated)
+        XCTAssertEqual(response.attribution, "© OpenStreetMap contributors")
+        // The row that isn't a garage is skipped, not the whole cell.
+        XCTAssertEqual(response.garages.map(\.id), ["bos-fixture-deck-0a1b2c", "bos-fixture-lot-3d4e5f"])
+        let deck = response.garages[0]
+        XCTAssertEqual(deck.name, "Fixture Deck")
+        XCTAssertEqual(deck.kind, .multiStorey)
+        XCTAssertEqual(deck.fee, true)
+        XCTAssertEqual(deck.access, "customers")
+        XCTAssertEqual(deck.entrances, [[-71.0696, 42.35]])
+        XCTAssertEqual(deck.holes?.count, 1)
+        // GeoJSON is [lng, lat]: inside the deck, but not in its hole.
+        XCTAssertTrue(deck.contains(CLLocationCoordinate2D(latitude: 42.34985, longitude: -71.0703)))
+        XCTAssertFalse(deck.contains(CLLocationCoordinate2D(latitude: 42.35, longitude: -71.07)))
+        let lot = response.garages[1]
+        XCTAssertEqual(lot.kind, .unknown, "a kind this build doesn't know is unknown, not a failure")
+        XCTAssertNil(lot.fee)
+        XCTAssertNil(lot.name)
+        XCTAssertNil(lot.holes)
+    }
+
+    /// The radius is the route's to cap (1,500 m): a caller asking for more
+    /// is sent as asking for the cap, never refused with a 400.
+    func testNearbyGaragesNeverAsksPastTheRoutesLimits() async throws {
+        StubURLProtocol.respond(json: #"{"radiusM": 1500, "limit": 1000, "truncated": false, "attribution": "", "garages": []}"#)
+        _ = try await api.nearbyGarages(lat: 42.35, lng: -71.08, radiusM: 9_000, limit: 5_000)
+        let sent = query(try sentRequest())
+        XCTAssertEqual(sent["radius"], "1500")
+        XCTAssertEqual(sent["limit"], "1000")
     }
 
     func testDetectCityQueriesTheCityRoute() async throws {
@@ -266,6 +319,75 @@ final class LiveAPIRequestTests: XCTestCase {
         StubURLProtocol.respond(json: Self.parkedResponseBody)
         _ = try await api.parked(ParkedRequest(lat: 42.35, lng: -71.07, accuracy: 9, ts: at, signals: []), idempotencyKey: "park-2")
         XCTAssertNil(try body(try sentRequest())["placeHint"])
+    }
+
+    /// What /parked answers for a garage (server routes/parked.ts, pinned
+    /// in parkedPlace.test.ts): the new action, `place`, and the street's
+    /// candidates still there.
+    private static let garageResponseBody = #"""
+    {"action": "garage", "candidates": [], "quote": null, "rule": "place_garage", "dryRun": true, "needsZoneNumber": false, "provider": null, "place": {"class": "garage", "confidence": 0.9, "runnerUp": {"class": "street", "confidence": 0.6}, "garageId": "bos-fixture-deck-0a1b2c", "garageName": "Fixture Deck", "source": "footprint", "attribution": "© OpenStreetMap contributors"}, "parkedEventId": "pe1", "decisionId": "d1"}
+    """#
+
+    /// FR-54: the app says which place outcomes it can show, and reads the
+    /// place back. A server from before FR-54 sends no `place`, and its
+    /// answer still decodes.
+    func testParkedListsTheOutcomesItShowsAndReadsThePlace() async throws {
+        StubURLProtocol.respond(json: Self.garageResponseBody)
+        let at = Date(timeIntervalSince1970: 1_790_000_060)
+        let response = try await api.parked(
+            ParkedRequest(lat: 42.35, lng: -71.07, accuracy: 9, ts: at, signals: [], outcomes: ParkedRequest.shownOutcomes),
+            idempotencyKey: "park-1"
+        )
+        let sent = try body(try sentRequest())
+        XCTAssertEqual(sent["outcomes"] as? [String], ["garage", "nopay"])
+
+        XCTAssertEqual(response.action, .garage)
+        XCTAssertEqual(response.rule, "place_garage")
+        let place = try XCTUnwrap(response.place)
+        XCTAssertEqual(place.placeClass, "garage")
+        XCTAssertEqual(place.confidence, 0.9)
+        XCTAssertEqual(place.runnerUp?.placeClass, "street")
+        XCTAssertEqual(place.garageId, "bos-fixture-deck-0a1b2c")
+        XCTAssertEqual(place.garageName, "Fixture Deck")
+        XCTAssertEqual(place.source, "footprint")
+        XCTAssertEqual(place.attribution, "© OpenStreetMap contributors")
+
+        StubURLProtocol.respond(json: Self.parkedResponseBody)
+        let old = try await api.parked(ParkedRequest(lat: 42.35, lng: -71.07, accuracy: 9, ts: at, signals: []), idempotencyKey: "park-2")
+        XCTAssertNil(old.place)
+        XCTAssertNil(try body(try sentRequest())["outcomes"], "a park queued by the previous build lists none")
+
+        StubURLProtocol.respond(json: #"{"action": "nopay", "candidates": [], "quote": null, "rule": "place_nopay", "dryRun": true, "needsZoneNumber": false, "provider": null, "place": {"class": "nopay", "confidence": 0.95, "runnerUp": null, "garageId": null, "garageName": null, "source": "memory", "attribution": null}, "parkedEventId": "pe2", "decisionId": "d2"}"#)
+        let silent = try await api.parked(ParkedRequest(lat: 42.35, lng: -71.07, accuracy: 9, ts: at, signals: []), idempotencyKey: "park-3")
+        XCTAssertEqual(silent.action, .nopay)
+        XCTAssertNil(silent.place?.garageName)
+        // A stored park survives a relaunch with its place.
+        let restored = try JSONDecoder().decode(ParkedResponse.self, from: JSONEncoder().encode(response))
+        XCTAssertEqual(restored.place, response.place)
+    }
+
+    /// The driver's answer about a place: one keyed POST per answer.
+    func testThePlaceAnswerIsAKeyedPost() async throws {
+        let answered = #"{"ok": true, "parkedEventId": "pe 1", "class": "garage", "name": "Work", "was": {"class": "unknown", "confidence": 0, "source": "none", "garageId": null, "garageName": null}, "changed": true, "decisionId": "d9"}"#
+        StubURLProtocol.respond(json: answered)
+        let response = try await api.answerPlace(parkedEventId: "pe 1", placeClass: "garage", name: "Work")
+        let request = try sentRequest()
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.url?.path(percentEncoded: false), "/parked/pe 1/place")
+        XCTAssertEqual(bearer(request), "Bearer access-1")
+        XCTAssertNotNil(request.value(forHTTPHeaderField: "Idempotency-Key"))
+        let sent = try body(request)
+        XCTAssertEqual(sent["class"] as? String, "garage")
+        XCTAssertEqual(sent["name"] as? String, "Work")
+        XCTAssertEqual(response.placeClass, "garage")
+        XCTAssertEqual(response.decisionId, "d9")
+        XCTAssertTrue(response.changed)
+
+        StubURLProtocol.respond(json: answered)
+        _ = try await api.answerPlace(parkedEventId: "pe1", placeClass: "not_here", name: nil)
+        let bare = try body(try sentRequest())
+        XCTAssertEqual(bare["class"] as? String, "not_here")
+        XCTAssertNil(bare["name"], "no name is no key, not a null")
     }
 
     // MARK: - Limits

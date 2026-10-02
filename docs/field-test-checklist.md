@@ -78,6 +78,32 @@ and you pay the meter by hand as usual.
 6. Drive through at least one red light and one drive-through/pickup lane
    during the day — these must NOT fire a park. If a sheet appears, note
    the time and what you were doing.
+7. **A garage, a paid lot, and home** (FR-54). At each, note what you got
+   and when:
+   - **Garage**: a notification **"Looks like the <garage's name>"** (or
+     "Parked in a garage?" when no outline matched), saying ParkAgent
+     can't pay drive-up garages yet, with **Not here** and **Not a
+     garage**. It must not arrive while you're still rolling: it waits
+     until the car has been still for a minute. Underground with no
+     signal you get "Parked in a garage?" with no buttons first, and the
+     named sheet once the phone is back online.
+   - **Paid lot**: **"Parked at <lot's name>"**, with **Not here** and
+     **No payment**.
+   - **Somewhere the server can't place**: a quiet **"Parked?"** (no
+     sound, not time-sensitive) with **Street · Garage · Lot · No
+     payment**.
+   - **Home / a driveway**: nothing at all, the first time (no zone, no
+     outline). Never a "Pay" notice.
+   - Open the sheet and answer it truthfully each time. The **second**
+     time you park at the same place and give the same answer, it becomes
+     a saved place: the third park there is silent (or, for a saved street
+     spot, goes straight to the quote). Write down which park was which.
+   - Park at the same garage twice in one day: the second park says
+     nothing.
+   - **The one that must never happen:** a metered spot where the app
+     says nothing because it thinks there's nothing to pay. If you park at
+     a meter and get no notification within three minutes, note the time
+     and the block: that is the bug this whole step is looking for.
 
 ## What "working" looks like per signal (in the exported log)
 
@@ -128,9 +154,15 @@ paired that shouldn't have. Say exactly that when reporting the bug.
   `lot`, `nopay`, `street`, or `unknown`, with `footprint=`, `memory=`,
   `gps_loss=`, `baro=`, `crawl=`, `located=`. Diagnostics shows the last
   one under **Last place**. On a street park it's normally `unknown` (the
-  phone has no zone data; the server decides as always). Until WS-2 #174
-  lands the phone has no garage outlines, so a garage reads `garage 0.60`
-  (GPS lost, no footprint) at best.
+  phone has no zone data; the server decides as always).
+- `footprints_fetched n=<count> truncated=0` — the phone fetched the garage
+  and lot outlines for the 2 km cell it is driving through (`GET
+  /garages/near`), once a week per cell. `footprints_fetched failed` means
+  no signal or a refusal; it tries again five minutes later. A garage park
+  with no `footprint=` on its `place_classified` line had no outline for
+  that garage on the phone: either the cell never fetched (look for the
+  line earlier in the drive) or the garage isn't in the table, and it
+  reads `garage 0.60` (GPS lost, no footprint) at best.
 
 For each garage, lot, or home park, write down what the place really was
 (and the garage's name and level): that plus the exported log is a trace

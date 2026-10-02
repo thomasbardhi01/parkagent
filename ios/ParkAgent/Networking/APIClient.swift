@@ -38,6 +38,9 @@ protocol APIClient: Sendable {
     /// The same, under a key the caller holds — the offline outbox keeps one
     /// per park across launches, so a report delivered twice counts once.
     func parked(_ request: ParkedRequest, idempotencyKey: String) async throws -> ParkedResponse
+    /// The driver's own answer about a park's place (server/API.md "POST
+    /// /parked/:id/place"): street, garage, lot, nopay, or not_here.
+    func answerPlace(parkedEventId: String, placeClass: String, name: String?) async throws -> PlaceAnswerResponse
     /// The zone number the driver read off the meter (needsZoneNumber flow).
     func reportZoneNumber(zoneId: String, number: String) async throws -> ZoneNumberReportResponse
     func policy() async throws -> PolicyResponse
@@ -77,6 +80,11 @@ protocol APIClient: Sendable {
     /// The map's curb layer (server/API.md "GET /zones/near"). Radius is
     /// capped server-side at 400 m.
     func nearbyZones(lat: Double, lng: Double, radiusM: Double) async throws -> NearbyZonesResponse
+
+    /// Garage and lot outlines around a point (server/API.md "GET
+    /// /garages/near"), for the detector's footprint cache. The route caps
+    /// the radius at 1,500 m and the limit at 1,000.
+    func nearbyGarages(lat: Double, lng: Double, radiusM: Double, limit: Int) async throws -> NearbyGaragesResponse
 
     // City & provider accounts (server/API.md "GET /city", "Provider accounts").
     func detectCity(lat: Double, lng: Double) async throws -> CityDetectResponse
@@ -151,6 +159,12 @@ extension APIClient {
     }
 
     func deleteAllConversations() async throws -> Int {
+        throw APIError.notConfigured
+    }
+
+    /// Garage outlines: a test double that never drives inherits a refusal,
+    /// which the footprint cache treats like any failed fetch.
+    func nearbyGarages(lat: Double, lng: Double, radiusM: Double, limit: Int) async throws -> NearbyGaragesResponse {
         throw APIError.notConfigured
     }
 

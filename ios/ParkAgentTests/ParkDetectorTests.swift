@@ -1,3 +1,4 @@
+import CoreLocation
 import Foundation
 import Testing
 
@@ -242,6 +243,124 @@ struct ParkDetectorTests {
         #expect(detector.lastPlace == nil)
     }
 
+    // MARK: - Garage outlines (GET /garages/near)
+
+    @MainActor
+    final class FakeGarages {
+        var calls: [CLLocationCoordinate2D] = []
+        var answer: [Footprint] = [PlaceClassifierTests.garage]
+        func fetch(_ center: CLLocationCoordinate2D, _ radius: Double) async throws -> FootprintCellCache.Fetched {
+            calls.append(center)
+            return FootprintCellCache.Fetched(footprints: answer, truncated: false)
+        }
+    }
+
+    func tempCache() -> FootprintCellCache {
+        FootprintCellCache(directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+    }
+
+    func makeDetector(cache: FootprintCellCache, motion: FakeMotion = FakeMotion()) -> ParkDetector {
+        ParkDetector(
+            engine: ParkFusionEngine(), signalLog: SignalLog(directory: FileManager.default.temporaryDirectory),
+            store: tempStore(), motion: motion, altimeter: FakeAltimeter(), placeMemory: tempPlaces(), footprints: cache
+        )
+    }
+
+    /// The outlines have to be on the phone before the car goes
+    /// underground: every fix on the way asks for its cell, once.
+    @Test func fixesOnTheWayFetchTheGarageOutlinesAroundThem() async {
+        let cache = tempCache()
+        let garages = FakeGarages()
+        let detector = makeDetector(cache: cache)
+        // How AppModel wires it: after the detector exists, when it arms.
+        detector.footprintFetch = garages.fetch
+        detector.arm(capabilities: DetectionCapabilities())
+        await settle()
+
+        let here = PlaceClassifierTests.Geo.at(n: 200, e: 0)
+        for second in 0..<5 {
+            await detector.received([ParkFix(coordinate: here, accuracy: 30, at: Date.now.addingTimeInterval(Double(second)), speed: 12)])
+        }
+        await settle()
+        #expect(garages.calls.count == 1, "One cell, one fetch, however many fixes")
+        #expect(cache.footprints(near: PlaceClassifierTests.Geo.origin, radiusM: 100).map(\.id) == ["test-garage"])
+
+        // A fix iOS blurred by kilometers (Precise Location off) says
+        // nothing about which cell the car is in.
+        let farBlur = ParkFix(coordinate: PlaceClassifierTests.Geo.at(n: 9_000, e: 0), accuracy: 3_000, at: .now)
+        await detector.received([farBlur])
+        await settle()
+        #expect(garages.calls.count == 1)
+
+        // Nobody parks at highway speed: the cells along the way aren't
+        // worth their kilobytes. Slowing down in one is.
+        let highway = PlaceClassifierTests.Geo.at(n: 20_000, e: 0)
+        await detector.received([ParkFix(coordinate: highway, accuracy: 10, at: .now, speed: 29)])
+        await settle()
+        #expect(garages.calls.count == 1)
+        await detector.received([ParkFix(coordinate: highway, accuracy: 10, at: .now, speed: 14)])
+        await settle()
+        #expect(garages.calls.count == 2)
+    }
+
+    /// Disarmed (signed out, or never past onboarding) nothing is fetched.
+    @Test func nothingIsFetchedUntilTheDetectorIsArmed() async {
+        let cache = tempCache()
+        let garages = FakeGarages()
+        let detector = makeDetector(cache: cache)
+        detector.footprintFetch = garages.fetch
+        await detector.received([ParkFix(coordinate: PlaceClassifierTests.Geo.origin, accuracy: 10, at: .now)])
+        await settle()
+        #expect(garages.calls.isEmpty)
+    }
+
+    /// A park in a garage whose outline was fetched on the way in is
+    /// classified from it: the wiring end to end, short of the network.
+    @Test func aParkInAFetchedGarageIsClassifiedAsThatGarage() async throws {
+        let cache = tempCache()
+        let garages = FakeGarages()
+        let motion = FakeMotion()
+        let detector = makeDetector(cache: cache, motion: motion)
+        detector.footprintFetch = garages.fetch
+        var places: [PlaceClassification] = []
+        detector.onPark = { _, _, place in places.append(place) }
+        detector.arm(capabilities: DetectionCapabilities())
+        await settle()
+        let t = Date.now
+        motion.handler?(MotionSample(at: t, automotive: true))
+        await detector.received([ParkFix(coordinate: PlaceClassifierTests.Geo.at(n: 80, e: 0), accuracy: 10, at: t, speed: 9)])
+        await settle()
+        motion.handler?(MotionSample(at: t.addingTimeInterval(1), stationary: true))
+        await settle()
+        for _ in 0..<3 {
+            detector.engine.fixReceived(ParkFix(coordinate: PlaceClassifierTests.Geo.origin, accuracy: 5, at: .now))
+        }
+        motion.handler?(MotionSample(at: t.addingTimeInterval(2), walking: true))
+        await settle()
+        let place = try #require(places.first)
+        #expect(place.placeClass == .garage)
+        #expect(place.inputs.footprintId == "test-garage")
+        #expect(place.inputs.containsPoint)
+    }
+
+    /// The cell files are named by where the phone has been: signing out
+    /// leaves none of them behind.
+    @Test func signingOutForgetsTheFetchedOutlines() async throws {
+        let cache = tempCache()
+        let garages = FakeGarages()
+        let detector = makeDetector(cache: cache)
+        detector.footprintFetch = garages.fetch
+        detector.arm(capabilities: DetectionCapabilities())
+        await settle()
+        await detector.received([ParkFix(coordinate: PlaceClassifierTests.Geo.origin, accuracy: 10, at: .now, speed: 10)])
+        await settle()
+        #expect(try FileManager.default.contentsOfDirectory(atPath: cache.directory.path).count == 1)
+
+        detector.disarm()
+        #expect(cache.footprints(near: PlaceClassifierTests.Geo.origin, radiusM: 100).isEmpty)
+        #expect((try? FileManager.default.contentsOfDirectory(atPath: cache.directory.path))?.isEmpty ?? true)
+    }
+
     /// A park goes out with its place classification, and parking alone
     /// never writes the driver's place memory — only their confirmation
     /// will (#179).
@@ -272,28 +391,72 @@ struct ParkDetectorTests {
     }
 
     /// An unlocated park (GPS gone in a garage) is classified from where
-    /// the car went in; there's no /parked call for it yet.
-    @Test func anUnlocatedParkIsClassifiedFromItsEntryFix() {
+    /// the car went in, and handed on with that entry fix: it is what
+    /// /parked is told instead of the car's own position (FR-54).
+    @Test func anUnlocatedParkIsClassifiedFromItsEntryFix() throws {
         let clock = ParkFusionEngineTests.Harness.ClockBox()
         let engine = ParkFusionEngine(now: { clock.now })
         let detector = makeDetector(store: tempStore(), motion: FakeMotion(), engine: engine, footprints: [PlaceClassifierTests.garage])
-        var unlocated = 0
-        detector.onUnlocatedPark = { _ in unlocated += 1 }
+        var unlocated: [(preciseOff: Bool, outcome: ParkOutcome, place: PlaceClassification)] = []
+        detector.onUnlocatedPark = { preciseOff, outcome, place in unlocated.append((preciseOff, outcome, place)) }
         func advance(_ seconds: TimeInterval) { clock.now = clock.now.addingTimeInterval(seconds) }
         engine.motion(MotionSample(at: clock.now, automotive: true))
-        engine.fixReceived(ParkFix(coordinate: PlaceClassifierTests.Geo.at(n: 20, e: 5), accuracy: 8, at: clock.now, speed: 3))
+        let entry = ParkFix(coordinate: PlaceClassifierTests.Geo.at(n: 20, e: 5), accuracy: 8, at: clock.now, speed: 3)
+        engine.fixReceived(entry)
         advance(40)
         engine.motion(MotionSample(at: clock.now, automotive: true))
         advance(10)
+        let stoppedAt = clock.now
         engine.motion(MotionSample(at: clock.now, stationary: true))
         engine.audioDisconnected(port: .bluetooth)
         advance(20)
         engine.motion(MotionSample(at: clock.now, walking: true))
         advance(100)
         engine.tick()
-        #expect(unlocated == 1)
+        #expect(unlocated.count == 1)
         #expect(detector.lastPlace?.classification.placeClass == .garage)
         #expect(detector.lastPlace?.classification.inputs.footprintId == "test-garage")
         #expect(detector.lastPlace?.classification.inputs.located == false)
+
+        let park = try #require(unlocated.first)
+        #expect(park.outcome.fix == nil)
+        #expect(park.outcome.entryFix == entry)
+        #expect(park.outcome.stopAt == stoppedAt)
+        #expect(!park.outcome.signals.isEmpty)
+        #expect(park.place == detector.lastPlace?.classification)
+        // What rides to /parked: no fix at the spot, and the garage it entered.
+        let hint = PlaceHint(park.place)
+        #expect(hint.inputs.located == false)
+        #expect(hint.placeClass == "garage")
+        #expect(hint.garageId == "test-garage")
+    }
+
+    /// The app holds a place prompt back while the car was moving in the
+    /// last minute, and takes it back if the car drives on (FR-54): the
+    /// detector says when it last saw driving, and when driving resumes.
+    @Test func theDetectorSaysWhenTheCarLastMovedAndWhenItDrivesOn() async {
+        let clock = ParkFusionEngineTests.Harness.ClockBox()
+        let engine = ParkFusionEngine(now: { clock.now })
+        let detector = makeDetector(store: tempStore(), motion: FakeMotion(), engine: engine)
+        var resumed = 0
+        detector.onDrivingResumed = { resumed += 1 }
+        #expect(detector.lastAutomotiveAt == nil)
+
+        let drive = clock.now
+        engine.motion(MotionSample(at: drive, automotive: true))
+        #expect(detector.lastAutomotiveAt == drive)
+        #expect(resumed == 1, "A drive starting is driving resuming")
+        clock.now = drive.addingTimeInterval(30)
+        engine.motion(MotionSample(at: clock.now, automotive: true))
+        #expect(detector.lastAutomotiveAt == drive.addingTimeInterval(30))
+        #expect(resumed == 1, "Still the same drive")
+
+        clock.now = drive.addingTimeInterval(40)
+        engine.motion(MotionSample(at: clock.now, stationary: true))
+        #expect(detector.lastAutomotiveAt == drive.addingTimeInterval(30), "Stopping doesn't move it")
+        clock.now = drive.addingTimeInterval(50)
+        engine.motion(MotionSample(at: clock.now, automotive: true))
+        #expect(resumed == 2, "A red light, or a stop that wasn't a park")
+        #expect(detector.lastAutomotiveAt == drive.addingTimeInterval(50))
     }
 }

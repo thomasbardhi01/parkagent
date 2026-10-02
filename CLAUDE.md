@@ -253,10 +253,16 @@ Diagnostics all read it. The engine (`ParkFusionEngine`) is pure and
 replays signal logs (`SignalTrace`); `ios/Fixtures/drive-park-walk.gpx`
 (from `ios/Tools/make-route.py`) is the shared test route. Each park is
 then classified on the phone (`Detection/PlaceClassifier.swift`, FR-53:
-the driver's saved places in `State/PlaceMemory.swift`, garage outlines,
-the entry fix, GPS loss, and the barometer, which runs only in the stop
-window) and sent as `/parked`'s `placeHint`, which the server ignores
-until #179.
+the driver's saved places in `State/PlaceMemory.swift`, garage outlines
+fetched a 2 km cell at a time from `GET /garages/near`, the entry fix, GPS
+loss, and the barometer, which runs only in the stop window) and sent as
+`/parked`'s `placeHint`. The server weighs it with the zones and its own
+garage outlines (`services/placeClassification.ts`, FR-54) and answers
+`garage` or `nopay` only to an app that lists them in `outcomes`. A hint
+never makes a park `pay`, and a meter that would charge is never
+silenced. The driver's answer about a place goes to
+`POST /parked/:id/place` first, and to place memory only once that
+succeeds (`Detection/PlaceAnswers.swift`).
 
 **Release builds carry no debug code (FR-34).** Everything mock, scenario,
 launch-argument, UI-test-hook, preview, and Diagnostics is inside `#if

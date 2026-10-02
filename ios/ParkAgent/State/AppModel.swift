@@ -47,6 +47,9 @@ final class AppModel {
             if pendingParked == nil { ParkedNotice.withdraw() }
         }
     }
+    /// The park whose sheet should ask what the place is (the "Not a
+    /// garage" button on its notification).
+    var placeAskFor: String?
     var isPaying = false
     var paymentError: APIError?
     /// Set when session/start answered free_period: the provider says the
@@ -322,6 +325,7 @@ final class AppModel {
         reporter.stop()
         activeSession = nil
         pendingParked = nil
+        placeAskFor = nil
         wallet.reset()
         selectedTab = .park
         carCoordinate = nil
@@ -401,8 +405,24 @@ final class AppModel {
                 )
             }
         }
-        detector.onUnlocatedPark = { preciseOff in
-            Task { await ParkedNotice.postUnlocated(preciseOff: preciseOff) }
+        detector.onUnlocatedPark = { [weak self] preciseOff, outcome, place in
+            Task { await self?.handleUnlocatedPark(preciseOff: preciseOff, outcome: outcome, place: place) }
+        }
+        detector.onDrivingResumed = { [weak self] in
+            self?.drivingResumed()
+        }
+        // A button on a place notification (PushManager hands it over even
+        // when iOS relaunched the app in the background for it).
+        PushManager.shared.onPlaceAction = { [weak self] action, parkedEventId, coordinate in
+            await self?.handlePlaceAction(action, parkedEventId: parkedEventId, at: coordinate)
+        }
+        // Garage and lot outlines for the place classifier, a 2 km cell at
+        // a time as the car drives (FootprintCellCache).
+        detector.footprintFetch = { [api] center, radiusM in
+            let response = try await api.nearbyGarages(
+                lat: center.latitude, lng: center.longitude, radiusM: radiusM, limit: LiveAPI.garagesMaxLimit
+            )
+            return FootprintCellCache.Fetched(footprints: response.garages, truncated: response.truncated)
         }
         reporter.onDistance = { [weak self] meters in
             self?.distanceFromCarMeters = meters
@@ -453,15 +473,26 @@ final class AppModel {
 
     // MARK: - Park flow
 
+    /// What became of a park report.
+    enum ParkReport: Equatable, Sendable {
+        /// The server answered, and the answer was put in front of the driver.
+        case answered
+        /// No connection: it waits in the outbox.
+        case queued
+        /// The server won't take it, and a retry wouldn't change that.
+        case refused
+    }
+
     /// The real path: the detector saw a park (or a UI test simulated one),
     /// so report it and let the response drive the sheet.
+    @discardableResult
     func handleDetectedPark(
         coordinate: CLLocationCoordinate2D,
         accuracy: Double,
         signals: [String],
         detectedAt: Date? = nil,
         placeHint: PlaceHint? = nil
-    ) async {
+    ) async -> ParkReport {
         // Priced at when the car stopped, not when the report got out: a
         // park confirmed by walking away (or replayed after a relaunch)
         // happened a minute or more before this call.
@@ -471,41 +502,27 @@ final class AppModel {
             accuracy: accuracy,
             ts: detectedAt ?? AppClock.now,
             signals: signals,
-            placeHint: placeHint
+            placeHint: placeHint,
+            outcomes: ParkedRequest.shownOutcomes
         )
         // One key for this park, kept if it has to wait in the outbox, so
         // it's recorded once however many times it's delivered.
         let key = UUID().uuidString
         do {
             let response = try await api.parked(request, idempotencyKey: key)
-            await present(parked: response, at: coordinate)
+            await presentPark(response, for: request)
+            return .answered
         } catch {
             let failure = error as? APIError ?? .transport(error)
             carCoordinate = coordinate
             if ParkOutbox.isFinal(failure) {
                 paymentError = failure
-            } else {
-                // No signal (a garage, a tunnel): keep the report and send
-                // it when the connection is back — it used to be lost.
-                await parkOutbox.enqueue(request, key: key)
+                return .refused
             }
-        }
-    }
-
-    /// A park the server answered, live or from the outbox: the sheet, and
-    /// a notification when the app is in the background.
-    private func present(parked response: ParkedResponse, at coordinate: CLLocationCoordinate2D) async {
-        carCoordinate = coordinate
-        paymentError = nil
-        pendingParked = response
-        // Backgrounded (the usual case: the driver just walked away),
-        // the sheet waits unseen — say so with a notification.
-        if UIApplication.shared.applicationState != .active {
-            await ParkedNotice.post(for: response)
-        }
-        // A real park is the freshest city signal there is.
-        if let city = response.candidates.first?.city {
-            detectedCity = city
+            // No signal (a garage, a tunnel): keep the report and send
+            // it when the connection is back — it used to be lost.
+            await parkOutbox.enqueue(request, key: key)
+            return .queued
         }
     }
 
@@ -525,11 +542,7 @@ final class AppModel {
         guard let latest = delivered.last,
               AppClock.now.timeIntervalSince(latest.item.request.ts) < ParkedNotice.freshFor
         else { return }
-        let request = latest.item.request
-        await present(
-            parked: latest.response,
-            at: CLLocationCoordinate2D(latitude: request.lat, longitude: request.lng)
-        )
+        await presentPark(latest.response, for: latest.item.request, fromOutbox: true)
     }
 
     /// Flush whenever the network comes back.
@@ -611,6 +624,7 @@ final class AppModel {
 
     func dismissParkedSheet() {
         pendingParked = nil
+        placeAskFor = nil
         paymentError = nil
         freePeriodNotice = nil
         // Not paid here: the pin would outlive the park (see init).

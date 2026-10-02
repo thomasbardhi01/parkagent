@@ -3,11 +3,15 @@ import Foundation
 
 /// The driver's own places — home, work, a garage they use — for the place
 /// classifier's first and strongest answer (FR-53). It changes only when
-/// the driver confirms what a place is (#179's correction call, never a
-/// park on its own): a spot confirmed twice as the same class becomes a
-/// saved place. "Not my car" quiets a spot for two hours and teaches it
-/// nothing. It stays on the phone: /parked hears only that a saved place
-/// matched, never its name or where it is.
+/// the driver says what a place is and the server has recorded that answer
+/// (`PlaceAnswers.record`, FR-54; never a park on its own): a spot
+/// confirmed twice as the same class becomes a saved place. "Not here"
+/// quiets a spot for two hours and teaches it nothing. It stays on the
+/// phone: /parked hears only that a saved place matched, never its name
+/// or where it is.
+///
+/// It also remembers where a place prompt was already made, so the same
+/// garage isn't asked about twice in a day.
 struct PlaceMemory: Codable, Equatable, Sendable {
     struct Place: Codable, Equatable, Sendable, Identifiable {
         var id: UUID
@@ -30,13 +34,25 @@ struct PlaceMemory: Codable, Equatable, Sendable {
         var until: Date
     }
 
+    /// Where a place prompt (garage, lot, or "what is this place?") was made.
+    struct Prompt: Codable, Equatable, Sendable {
+        var latitude: Double
+        var longitude: Double
+        var at: Date
+    }
+
     static let radiusM = 60.0
     static let confirmationsToSave = 2
     static let notMyCarFor: TimeInterval = 2 * 3_600
     static let maxPlaces = 50
+    /// "Today" is at most a day old in any time zone; two covers the edge.
+    static let promptsKeptFor: TimeInterval = 2 * 24 * 3_600
 
     private(set) var places: [Place] = []
     private(set) var suppressions: [Suppression] = []
+    /// Optional: a file written before prompts were tracked has none, and
+    /// must still load with its saved places.
+    private(set) var prompts: [Prompt]?
 
     /// The nearest saved place (two confirmations) within its radius.
     func place(near point: CLLocationCoordinate2D) -> Place? {
@@ -99,6 +115,32 @@ struct PlaceMemory: Codable, Equatable, Sendable {
         }
     }
 
+    // MARK: - Prompts already made
+
+    /// A place prompt went out (or was scheduled) for this spot.
+    mutating func notePrompt(at point: CLLocationCoordinate2D, now: Date) {
+        var kept = (prompts ?? []).filter { now.timeIntervalSince($0.at) < Self.promptsKeptFor }
+        kept.append(Prompt(latitude: point.latitude, longitude: point.longitude, at: now))
+        prompts = kept
+    }
+
+    /// The prompt never reached the driver (the car drove on before it was
+    /// due): this spot can still be asked about.
+    mutating func forgetPrompt(at point: CLLocationCoordinate2D, since: Date) {
+        prompts?.removeAll { prompt in
+            prompt.at >= since
+                && Self.distance(CLLocationCoordinate2D(latitude: prompt.latitude, longitude: prompt.longitude), point) <= Self.radiusM
+        }
+    }
+
+    /// Whether this spot was already asked about on `now`'s calendar day.
+    func promptedSameDay(at point: CLLocationCoordinate2D, now: Date, calendar: Calendar = .current) -> Bool {
+        (prompts ?? []).contains { prompt in
+            calendar.isDate(prompt.at, inSameDayAs: now)
+                && Self.distance(CLLocationCoordinate2D(latitude: prompt.latitude, longitude: prompt.longitude), point) <= Self.radiusM
+        }
+    }
+
     private static func distance(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D) -> Double {
         CLLocation(latitude: a.latitude, longitude: a.longitude).distance(from: CLLocation(latitude: b.latitude, longitude: b.longitude))
     }
@@ -112,9 +154,13 @@ final class PlaceMemoryStore {
     let fileURL: URL
     private(set) var memory: PlaceMemory
 
+    private nonisolated static let fileName = "place-memory.json"
+    private nonisolated static var defaultDirectory: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+    }
+
     init(directory: URL? = nil) {
-        let dir = directory ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        fileURL = dir.appendingPathComponent("place-memory.json")
+        fileURL = (directory ?? Self.defaultDirectory).appendingPathComponent(Self.fileName)
         // A missing or damaged file is an empty memory, not a failed launch.
         memory = (try? Data(contentsOf: fileURL)).flatMap { try? JSONDecoder().decode(PlaceMemory.self, from: $0) } ?? PlaceMemory()
     }
@@ -131,4 +177,12 @@ final class PlaceMemoryStore {
         memory = PlaceMemory()
         try? FileManager.default.removeItem(at: fileURL)
     }
+
+    #if DEBUG
+    /// UI tests (`-resetState`, which runs before any actor is up): a
+    /// place asked about in one test must be askable in the next.
+    nonisolated static func clearDefault() {
+        try? FileManager.default.removeItem(at: defaultDirectory.appendingPathComponent(fileName))
+    }
+    #endif
 }

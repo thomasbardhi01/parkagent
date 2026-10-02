@@ -47,12 +47,20 @@ struct ParkedRequest: Codable, Sendable, Equatable {
     var signals: [String]
     /// The phone's own read of the place (FR-53); absent when there's none.
     var placeHint: PlaceHint? = nil
+    /// The place outcomes this build can show (FR-54). The server answers
+    /// `garage` and `nopay` only to an app that lists them; a park queued
+    /// by a build from before them lists none, and is answered as before.
+    var outcomes: [String]? = nil
+
+    /// What this build shows: the garage and lot prompt, and silence for
+    /// a place with nothing to pay.
+    static let shownOutcomes = [ParkedAction.garage.rawValue, ParkedAction.nopay.rawValue]
 }
 
 /// The phone's own read of where it parked (PlaceClassifier, FR-53), sent
-/// with /parked. The server ignores it until #179 (FR-54) reads it. Of the
-/// driver's saved places it says only whether one matched: never a name
-/// or a center.
+/// with /parked, where the server weighs it with the zones and garage
+/// outlines it has (FR-54). Of the driver's saved places it says only
+/// whether one matched: never a name or a center.
 struct PlaceHint: Codable, Sendable, Equatable {
     struct Scored: Codable, Sendable, Equatable {
         var placeClass: String
@@ -101,6 +109,51 @@ enum ParkedAction: String, Codable, Sendable {
     case confirm
     case ignore
     case unknownZone = "unknown_zone"
+    /// A garage, or a lot that charges: nothing ParkAgent pays in V1.
+    /// Only answered to a request that lists it in `outcomes`.
+    case garage
+    /// Nothing to pay here, and nothing in reach would charge.
+    case nopay
+}
+
+/// What kind of place /parked took the park for, and where that came from
+/// (server/API.md "The place").
+struct ParkedPlace: Codable, Sendable, Equatable {
+    /// street | garage | lot | nopay | unknown
+    var placeClass: String
+    var confidence: Double
+    /// The next best class; for `unknown`, the best guess, which fell short.
+    var runnerUp: PlaceHint.Scored?
+    /// The garage or lot in play, from the server's garages table.
+    var garageId: String?
+    var garageName: String?
+    /// memory | hint | footprint | zones | none
+    var source: String
+    /// The line the garage's source asks for wherever its name is shown.
+    var attribution: String?
+
+    enum CodingKeys: String, CodingKey {
+        case placeClass = "class", confidence, runnerUp, garageId, garageName, source, attribution
+    }
+
+    /// One of the driver's own saved places decided it.
+    var isSavedPlace: Bool { source == "memory" }
+}
+
+/// POST /parked/:id/place — the driver's own answer about a park.
+struct PlaceAnswerResponse: Codable, Sendable, Equatable {
+    var ok: Bool
+    var parkedEventId: String
+    /// street | garage | lot | nopay | not_here
+    var placeClass: String
+    var name: String?
+    /// The answer differs from what /parked said.
+    var changed: Bool
+    var decisionId: String
+
+    enum CodingKeys: String, CodingKey {
+        case ok, parkedEventId, placeClass = "class", name, changed, decisionId
+    }
 }
 
 struct ParkedResponse: Codable, Sendable, Identifiable {
@@ -116,6 +169,8 @@ struct ParkedResponse: Codable, Sendable, Identifiable {
     /// data has none); the app collects it from the meter via
     /// POST /zones/:zoneId/provider-number before paying.
     var needsZoneNumber: Bool
+    /// What kind of place this is (FR-54); nil from a server before it.
+    var place: ParkedPlace? = nil
     var parkedEventId: String
     var decisionId: String
 
@@ -922,6 +977,42 @@ struct CardPrepareResponse: Codable, Sendable {
         var stripeCardId: String
         var last4: String
         var status: String
+    }
+}
+
+// MARK: - Garage outlines (server/API.md "GET /garages/near")
+
+/// Garage and lot outlines around a point, for the phone's footprint cache
+/// (Detection/FootprintIndex.swift). A garage this build can't read is
+/// skipped rather than failing the cell it came in.
+struct NearbyGaragesResponse: Decodable, Sendable {
+    var radiusM: Double
+    var limit: Int
+    /// True → more outlines matched than `limit`: the cell is incomplete.
+    var truncated: Bool
+    /// The line the outlines' license asks for wherever they are shown.
+    var attribution: String
+    var garages: [Footprint]
+
+    init(radiusM: Double, limit: Int, truncated: Bool, attribution: String, garages: [Footprint]) {
+        self.radiusM = radiusM
+        self.limit = limit
+        self.truncated = truncated
+        self.attribution = attribution
+        self.garages = garages
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case radiusM, limit, truncated, attribution, garages
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        radiusM = try container.decode(Double.self, forKey: .radiusM)
+        limit = try container.decode(Int.self, forKey: .limit)
+        truncated = try container.decode(Bool.self, forKey: .truncated)
+        attribution = try container.decodeIfPresent(String.self, forKey: .attribution) ?? ""
+        garages = try container.decode([LossyFootprint].self, forKey: .garages).compactMap(\.footprint)
     }
 }
 

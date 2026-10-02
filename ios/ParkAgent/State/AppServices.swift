@@ -38,6 +38,9 @@ final class AppServices {
     /// relaunching us for a location event: re-arm detection (the event
     /// itself is delivered to the detector's fresh location manager).
     func applicationDidFinishLaunching(locationLaunch: Bool) {
+        // Before launch finishes: a tapped button on a parked notification
+        // may be why iOS launched us, in the background.
+        PushManager.shared.attach()
         restoreSessionOnce()
         model.resumeDetectionIfArmed(reason: locationLaunch ? .locationLaunch : .arm)
     }

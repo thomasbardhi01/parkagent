@@ -45,6 +45,8 @@ enum RawDetectorSignal: String, CaseIterable, Sendable {
     case burstStopped = "burst_stopped"
     case altimeterStarted = "altimeter_started"
     case altimeterStopped = "altimeter_stopped"
+    /// A 2 km cell of garage outlines came back from the server (or didn't).
+    case footprintsFetched = "footprints_fetched"
     case historyReplayed = "history_replayed"
     case preciseRequested = "precise_requested"
 }

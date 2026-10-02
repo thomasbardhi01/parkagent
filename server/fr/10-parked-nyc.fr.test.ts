@@ -47,6 +47,25 @@ describe("FR-1 park event → /parked", () => {
     expect(typeof res.body["decisionId"]).toBe("string");
     expect(res.body["dryRun"]).toBe(true);
     expect(["pay", "confirm", "ignore", "unknown_zone"]).toContain(res.body["action"]);
+    // Every answer says what kind of place it took the park for (FR-54).
+    const place = res.body["place"] as Record<string, unknown>;
+    expect(["street", "garage", "lot", "nopay", "unknown"]).toContain(place["class"]);
+  });
+
+  it("FR-1 an app that lists the place outcomes may also be answered garage or nopay", async () => {
+    const res = await userFetch(
+      me,
+      "POST",
+      "/parked",
+      parkedBody(NYC_AUTOPAY, { ts: AFTERNOON, outcomes: ["garage", "nopay"] }),
+    );
+    expect(res.status).toBe(200);
+    expect(["pay", "confirm", "ignore", "unknown_zone", "garage", "nopay"]).toContain(
+      res.body["action"],
+    );
+    expect(typeof res.body["parkedEventId"]).toBe("string");
+    expect(typeof res.body["decisionId"]).toBe("string");
+    expect(res.body["dryRun"]).toBe(true);
   });
 });
 

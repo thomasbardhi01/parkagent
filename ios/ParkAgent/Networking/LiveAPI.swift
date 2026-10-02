@@ -238,6 +238,22 @@ struct LiveAPI: APIClient {
         try await send("parked", method: "POST", body: request, idempotencyKey: idempotencyKey)
     }
 
+    private struct PlaceAnswerBody: Encodable {
+        var placeClass: String
+        var name: String?
+
+        enum CodingKeys: String, CodingKey {
+            case placeClass = "class", name
+        }
+    }
+
+    func answerPlace(parkedEventId: String, placeClass: String, name: String?) async throws -> PlaceAnswerResponse {
+        try await send(
+            "parked/\(parkedEventId)/place", method: "POST",
+            body: PlaceAnswerBody(placeClass: placeClass, name: name)
+        )
+    }
+
     func reportZoneNumber(zoneId: String, number: String) async throws -> ZoneNumberReportResponse {
         let escaped = zoneId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? zoneId
         return try await send(
@@ -362,6 +378,22 @@ struct LiveAPI: APIClient {
             URLQueryItem(name: "lat", value: String(lat)),
             URLQueryItem(name: "lng", value: String(lng)),
             URLQueryItem(name: "radius", value: String(Int(radiusM.rounded()))),
+        ])
+    }
+
+    /// The route's own ceilings (server routes/garages.ts): asking past
+    /// either is a 400, so a caller that wants more gets the most there is.
+    static let garagesMaxRadiusM = 1_500
+    static let garagesMaxLimit = 1_000
+
+    func nearbyGarages(lat: Double, lng: Double, radiusM: Double, limit: Int) async throws -> NearbyGaragesResponse {
+        // Up, not to nearest: a cell's corners are at the radius.
+        let radius = min(Self.garagesMaxRadiusM, max(1, Int(radiusM.rounded(.up))))
+        return try await send("garages/near", query: [
+            URLQueryItem(name: "lat", value: String(lat)),
+            URLQueryItem(name: "lng", value: String(lng)),
+            URLQueryItem(name: "radius", value: String(radius)),
+            URLQueryItem(name: "limit", value: String(min(Self.garagesMaxLimit, max(1, limit)))),
         ])
     }
 

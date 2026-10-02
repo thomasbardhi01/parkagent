@@ -1,8 +1,10 @@
 import SwiftUI
 
-/// The sheet that appears when /parked comes back. One view, four shapes:
-/// single quote (pay/confirm), two-candidate side selection, free period,
-/// and unknown zone. A payment failure replaces the content in place.
+/// The sheet that appears when /parked comes back. One view, several
+/// shapes: single quote (pay/confirm), two-candidate side selection, free
+/// period, unknown zone, and (FR-54) a garage or paid lot ParkAgent can't
+/// pay, and "what is this place?" when the server couldn't tell. A payment
+/// failure replaces the content in place.
 struct ParkingDetectedSheet: View {
     @Environment(AppModel.self) private var model
     let parked: ParkedResponse
@@ -22,6 +24,15 @@ struct ParkingDetectedSheet: View {
     /// Set when the link flow finishes so Pay comes back without waiting
     /// for a fresh /parked (whose provider block is now stale).
     @State private var linkedInSheet = false
+    /// The driver said this is a street park (the ask, or "Not a garage"
+    /// then "Street"): show what the street lookup found.
+    @State private var saidStreet = false
+    /// "Not a garage" / "Not a lot": ask what the place is instead.
+    @State private var askingInstead = false
+    /// An answer is on its way to the server.
+    @State private var answering = false
+    /// The answer didn't reach the server: nothing was recorded.
+    @State private var answerFailed = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.unit) {
@@ -98,8 +109,27 @@ struct ParkingDetectedSheet: View {
         return !provider.linked && !linkedInSheet
     }
 
+    /// The place is the question: the server couldn't tell (place_unknown),
+    /// or the driver said its guess was wrong, here or on the notification.
+    private var askingPlace: Bool {
+        guard !saidStreet else { return false }
+        return parked.rule == "place_unknown" || askingInstead || model.placeAskFor == parked.parkedEventId
+    }
+
     @ViewBuilder
     private var content: some View {
+        if askingPlace {
+            placeAsk
+        } else if parked.action == .garage, !saidStreet {
+            placeNotice
+        } else {
+            street
+        }
+    }
+
+    /// What the street lookup found: the shapes this sheet has always had.
+    @ViewBuilder
+    private var street: some View {
         switch parked.action {
         case .pay:
             singleQuote(reason: nil)
@@ -113,6 +143,168 @@ struct ParkingDetectedSheet: View {
             freePeriod
         case .unknownZone:
             unknownZone
+        case .garage:
+            // "Not a garage", then "Street": the quotes rode along.
+            if parked.candidates.count > 1 {
+                twoCandidates
+            } else if parked.quote?.totalUsd == 0 {
+                freePeriod
+            } else if parked.candidates.isEmpty {
+                unknownZone
+            } else {
+                singleQuote(reason: "Needs your confirmation")
+            }
+        case .nopay:
+            // Never presented (a no-pay park is silent); here for a sheet
+            // restored by a later build.
+            noPayment
+        }
+    }
+
+    // MARK: - Garage or paid lot (FR-54)
+
+    private var placeIsLot: Bool { parked.place?.placeClass == "lot" }
+
+    /// A garage or a lot that charges: nothing ParkAgent can pay in V1, so
+    /// say so, and let the driver confirm or correct what the place is.
+    @ViewBuilder
+    private var placeNotice: some View {
+        let content = ParkedNotice.placeContent(for: parked)
+            ?? ParkedNotice.garageContent(name: parked.place?.garageName)
+        header(content.title)
+        // Not a Label: its identifier would land on the icon.
+        HStack(alignment: .firstTextBaseline, spacing: Spacing.half) {
+            Image(systemName: placeIsLot ? "parkingsign.circle" : "building.2")
+                .foregroundStyle(Color.warningGold)
+                .accessibilityHidden(true)
+            Text(content.body)
+                .font(.secondaryText)
+                .foregroundStyle(Color.textSecondary)
+                // The buttons below must not squeeze this to one line.
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("parkedSheet.placeNotice")
+        }
+        if let attribution = parked.place?.attribution, !attribution.isEmpty, parked.place?.garageName != nil {
+            // The outline's license asks for this wherever its name shows.
+            Text("Garage data \(attribution)")
+                .font(.captionText)
+                .foregroundStyle(Color.textSecondary)
+                .accessibilityIdentifier("parkedSheet.placeAttribution")
+        }
+        answerFailure
+        Spacer(minLength: 0)
+        Button(placeIsLot ? "Yes, I'm parked in this lot" : "Yes, I'm parked in this garage") {
+            answer(placeIsLot ? .lot : .garage)
+        }
+        .buttonStyle(.primary)
+        .disabled(answering)
+        .accessibilityIdentifier("parkedSheet.placeConfirmButton")
+        Button(placeIsLot ? "Not a paid lot" : "Not a garage") {
+            answerFailed = false
+            askingInstead = true
+        }
+        .buttonStyle(.secondary)
+        .disabled(answering)
+        .accessibilityIdentifier("parkedSheet.placeWrongButton")
+        notHereButton
+    }
+
+    // MARK: - What is this place? (FR-54)
+
+    @ViewBuilder
+    private var placeAsk: some View {
+        header("What is this place?")
+        Text(ParkedNotice.askContent.body)
+            .font(.secondaryText)
+            .foregroundStyle(Color.textSecondary)
+            // The five buttons below must not squeeze this to one line.
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityIdentifier("parkedSheet.placeAsk")
+        answerFailure
+        Spacer(minLength: 0)
+        Button(streetChoiceTitle) { answer(.street) }
+            .buttonStyle(.primary)
+            .disabled(answering)
+            .accessibilityIdentifier("parkedSheet.placeChoice.street")
+        // What the sheet just said it wasn't is not offered again.
+        if !(askingInstead && parked.action == .garage && !placeIsLot) {
+            Button("Garage") { answer(.garage) }
+                .buttonStyle(.secondary)
+                .disabled(answering)
+                .accessibilityIdentifier("parkedSheet.placeChoice.garage")
+        }
+        if !(askingInstead && placeIsLot) {
+            Button("Parking lot") { answer(.lot) }
+                .buttonStyle(.secondary)
+                .disabled(answering)
+                .accessibilityIdentifier("parkedSheet.placeChoice.lot")
+        }
+        Button("No payment needed here") { answer(.nopay) }
+            .buttonStyle(.secondary)
+            .disabled(answering)
+            .accessibilityIdentifier("parkedSheet.placeChoice.nopay")
+        notHereButton
+    }
+
+    /// "Street parking — $3.65 for 1 hr 30 min" when there's a quote to pay.
+    private var streetChoiceTitle: String {
+        guard let quote = parked.quote, quote.totalUsd > 0, parked.candidates.count == 1 else {
+            return "Street parking"
+        }
+        return "Street parking — \(Format.money(quote.totalUsd)) for \(Format.minutes(quote.stayMinutes))"
+    }
+
+    @ViewBuilder
+    private var noPayment: some View {
+        header("No payment needed")
+        Label("Nothing to pay at this spot", systemImage: "checkmark.circle.fill")
+            .font(.bodyText)
+            .foregroundStyle(Color.success)
+        Spacer(minLength: 0)
+        Button("Done") { model.dismissParkedSheet() }
+            .buttonStyle(.secondary)
+    }
+
+    @ViewBuilder
+    private var answerFailure: some View {
+        if answerFailed {
+            Text("Couldn't save that. Check the connection and try again.")
+                .font(.captionText)
+                .foregroundStyle(Color.danger)
+                .accessibilityIdentifier("parkedSheet.placeAnswerFailed")
+        }
+    }
+
+    /// "Not parked here" on a place prompt is itself an answer: the spot
+    /// goes quiet for two hours.
+    private var notHereButton: some View {
+        Button("Not parked here") { answer(.notHere) }
+            .buttonStyle(.secondary)
+            .disabled(answering)
+            .accessibilityIdentifier("parkedSheet.dismissButton")
+    }
+
+    /// Send the driver's answer, then act on it: a street answer shows
+    /// what the street lookup found; anything else is all there is to say.
+    private func answer(_ answer: ParkedNotice.PlaceAnswer) {
+        guard !answering else { return }
+        answering = true
+        answerFailed = false
+        Task {
+            let recorded = await model.answerPlace(answer, for: parked)
+            answering = false
+            guard recorded else {
+                // "Not parked here" must always get the driver out.
+                if answer == .notHere { model.dismissParkedSheet() } else { answerFailed = true }
+                return
+            }
+            if answer == .street {
+                model.placeAskFor = nil
+                saidStreet = true
+            } else {
+                Haptics.light()
+                model.dismissParkedSheet()
+            }
         }
     }
 

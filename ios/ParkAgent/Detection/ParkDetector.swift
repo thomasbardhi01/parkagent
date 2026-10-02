@@ -47,8 +47,13 @@ final class ParkDetector: NSObject, CLLocationManagerDelegate {
     /// Fires with the resting fix, the signal names, and what kind of
     /// place it is, for /parked.
     @ObservationIgnored var onPark: ((ParkFix, [String], PlaceClassification) -> Void)?
-    /// A park with nowhere to point (Precise Location off, no GPS fix).
-    @ObservationIgnored var onUnlocatedPark: ((_ preciseOff: Bool) -> Void)?
+    /// A park with nowhere to point (Precise Location off, no GPS fix):
+    /// what the engine saw of it (its entry fix, when it stopped) and its
+    /// place classification, so it can still be reported from where GPS
+    /// last saw the car driving in (FR-54).
+    @ObservationIgnored var onUnlocatedPark: ((_ preciseOff: Bool, _ outcome: ParkOutcome, _ place: PlaceClassification) -> Void)?
+    /// A drive started, or picked up again after a stop that wasn't a park.
+    @ObservationIgnored var onDrivingResumed: (() -> Void)?
     /// Asks for full accuracy for this session (PermissionsManager).
     @ObservationIgnored var requestPrecise: (() async -> Bool)?
 
@@ -115,6 +120,10 @@ final class ParkDetector: NSObject, CLLocationManagerDelegate {
     /// A fix vaguer than this (Precise Location off blurs by kilometers)
     /// doesn't say which 2 km cell of garage outlines the car is in.
     static let footprintFixMaxAccuracyM = 1_000.0
+    /// Outlines are fetched where the car might park, not along the
+    /// highway: a cell is up to a few hundred kilobytes, and nobody parks
+    /// at 55 km/h or more.
+    static let footprintFetchMaxSpeedMps = 15.0
 
     init(
         engine: ParkFusionEngine = ParkFusionEngine(),
@@ -150,7 +159,7 @@ final class ParkDetector: NSObject, CLLocationManagerDelegate {
                 self.endTracking(reason: "parked")
                 self.onPark?(fix, outcome.signals, place)
             } else {
-                self.onUnlocatedPark?(!self.capabilities.preciseLocation)
+                self.onUnlocatedPark?(!self.capabilities.preciseLocation, outcome, place)
             }
         }
         engine.onStartBurst = { [weak self] in
@@ -163,6 +172,7 @@ final class ParkDetector: NSObject, CLLocationManagerDelegate {
         }
         engine.onRawSignal = { [weak self] signal, at, detail in
             self?.signalLog.append(signal, at: at, detail: detail)
+            if signal == .motionDriving { self?.onDrivingResumed?() }
         }
         engine.onStateChange = { [weak self] _ in
             self?.persist()
@@ -476,6 +486,10 @@ final class ParkDetector: NSObject, CLLocationManagerDelegate {
         engine.altitude(sample)
     }
 
+    /// When the car was last seen moving (CoreMotion says automotive, or a
+    /// fix at driving speed). A place prompt waits a minute past it.
+    var lastAutomotiveAt: Date? { engine.state.lastDrivingAt }
+
     /// The battery rule the self-test asserts: the altimeter never runs
     /// outside a stop's window.
     var altimeterWithinStopWindow: Bool {
@@ -607,7 +621,8 @@ final class ParkDetector: NSObject, CLLocationManagerDelegate {
     /// the way. Cheap when the cell is already there (the cache decides).
     private func prefetchFootprints(around fix: ParkFix) {
         guard isArmed, let cache = footprintCache, cache.fetch != nil,
-              fix.accuracy >= 0, fix.accuracy <= Self.footprintFixMaxAccuracyM
+              fix.accuracy >= 0, fix.accuracy <= Self.footprintFixMaxAccuracyM,
+              (fix.speed ?? 0) <= Self.footprintFetchMaxSpeedMps
         else { return }
         Task { [weak self] in
             switch await cache.prefetch(around: fix.coordinate) {

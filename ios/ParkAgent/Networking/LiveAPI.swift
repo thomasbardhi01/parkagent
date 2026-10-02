@@ -238,6 +238,22 @@ struct LiveAPI: APIClient {
         try await send("parked", method: "POST", body: request, idempotencyKey: idempotencyKey)
     }
 
+    private struct PlaceAnswerBody: Encodable {
+        var placeClass: String
+        var name: String?
+
+        enum CodingKeys: String, CodingKey {
+            case placeClass = "class", name
+        }
+    }
+
+    func answerPlace(parkedEventId: String, placeClass: String, name: String?) async throws -> PlaceAnswerResponse {
+        try await send(
+            "parked/\(parkedEventId)/place", method: "POST",
+            body: PlaceAnswerBody(placeClass: placeClass, name: name)
+        )
+    }
+
     func reportZoneNumber(zoneId: String, number: String) async throws -> ZoneNumberReportResponse {
         let escaped = zoneId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? zoneId
         return try await send(

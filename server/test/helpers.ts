@@ -1392,9 +1392,11 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
           .filter(({ d }) =>
             "sessionId" in where
               ? d.sessionId !== undefined && where.sessionId.in.includes(d.sessionId)
-              : "rule" in where
-                ? d.kind === where.kind && d.rule === where.rule
-                : (d.createdAt ?? new Date(MONDAY_2PM)) >= where.createdAt.gte,
+              : "parkedEventId" in where
+                ? d.parkedEventId === where.parkedEventId
+                : "rule" in where
+                  ? d.kind === where.kind && d.rule === where.rule
+                  : (d.createdAt ?? new Date(MONDAY_2PM)) >= where.createdAt.gte,
           )
           .map(({ d, i }) => ({
             kind: d.kind,

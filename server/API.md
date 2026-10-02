@@ -288,9 +288,9 @@ effective `dryRun` so the week-one dry run is auditable.
 
 ## POST /parked
 
-Phone-detected park. Runs zone lookup → policy check, writes a
-`parked_events` row and **always** writes a `decisions` row, then returns
-what the app should do.
+Phone-detected park. Runs zone lookup → policy check → place
+classification, writes a `parked_events` row and **always** writes a
+`decisions` row, then returns what the app should do.
 
 Request:
 
@@ -301,15 +301,24 @@ Request:
   "accuracy": 12.5,          // horizontal accuracy, meters
   "ts": "2026-09-20T14:03:22-04:00",   // optional: when the phone detected the park
   "signals": ["motion_stop", "bt_disconnect"],  // free-form detector evidence
-  "placeHint": { … }         // optional: the phone's own read of the place (below)
+  "placeHint": { … },        // optional: the phone's own read of the place (below)
+  "outcomes": ["garage", "nopay"]   // optional: the place outcomes this app can show
 }
 ```
 
+`outcomes` (FR-54) lists the actions beyond the street's four that the app
+knows how to show. **An app that lists none is answered exactly as before**:
+`action` stays one of `pay | confirm | ignore | unknown_zone` with the
+street rules below, hint or no hint. Shipped builds decode `action`
+strictly, so the new actions go only to an app that asks for them. Anything
+that isn't a list of the known outcomes is none listed.
+
 `placeHint` (FR-53) is what the app's on-device place classifier made of
-the park. **The server ignores it** (the body schema strips it, and the
-decision's `inputs.body` doesn't carry it) until #179 (FR-54) reads it, so
-it can't change what a park pays; an app that sends none, or a malformed
-one, gets the same answer.
+the park. The server weighs it with what only it knows (the metered zones
+in reach, the garage outlines as loaded today); see "The place" below. It
+is read leniently: a hint of the wrong shape is no hint, and never a 400.
+The decision records it under `inputs.place.hint` (`inputs.body` is the
+request without `placeHint` and `outcomes`).
 
 ```json
 "placeHint": {
@@ -320,7 +329,8 @@ one, gets the same answer.
   "entryFix": { "lat": 42.347, "lng": -71.082, "accuracy": 9, "ts": "2026-09-28T14:01:36Z" },
                              // the last good fix of the car driving in
   "inputs": {
-    "located": false,        // false: no fix at the spot (GPS gone)
+    "located": false,        // false: no fix at the spot (GPS gone); lat/lng are
+                             // then the entry fix, and no street is quoted for it
     "memoryHit": false,      // one of the driver's saved places matched —
                              // their names and locations never leave the phone
     "footprintId": "…",
@@ -345,9 +355,10 @@ Response `200`:
 
 ```json
 {
-  "action": "pay",           // "pay" | "confirm" | "ignore" | "unknown_zone"
+  "action": "pay",           // "pay" | "confirm" | "ignore" | "unknown_zone",
+                             // and "garage" | "nopay" for an app that lists them
   "candidates": [ Candidate, ... ],
-  "quote": Quote | null,     // null only for unknown_zone
+  "quote": Quote | null,     // null when no zone is in reach
   "rule": "auto_pay_ok",     // which rule produced the action (see below)
   "dryRun": true,
   "provider": {              // who runs this city's meters (null when the
@@ -360,6 +371,17 @@ Response `200`:
   },
   "needsZoneNumber": false,  // true → collect the posted zone number
                              // (POST /zones/:zoneId/provider-number) first
+  "place": {                 // what kind of place this is (FR-54, below)
+    "class": "street",       // street | garage | lot | nopay | unknown
+    "confidence": 0.9,       // the class's score, 0–1 (0 for unknown)
+    "runnerUp": null,        // the next best {class, confidence}; for
+                             // unknown, the best guess, which fell short
+    "garageId": null,        // the garage or lot in play, from the garages table
+    "garageName": null,
+    "source": "zones",       // memory | hint | footprint | zones | none
+    "attribution": null      // the line the garage's source asks for
+                             // wherever its name is shown
+  },
   "parkedEventId": "…",
   "decisionId": "…"
 }
@@ -452,11 +474,123 @@ agree.
 provider-covered zone has no stored number, whatever the rule); only an
 `auto_pay_ok` outcome is downgraded to `confirm` by it.
 
+### The place (FR-54)
+
+After the street rules, the park is classified
+(`src/services/placeClassification.ts`). Each class gets a score from 0 to
+1 and the top one is acted on only when it is at least 0.5 and beats the
+next by 0.3, the phone classifier's own rule and numbers (FR-53):
+
+| Class | Score |
+|---|---|
+| `street` | the zone lookup agrees 0.9, disagrees 0.6 |
+| `garage` | the fix inside a multi-storey, underground, or rooftop outline 0.9; 0.7 when it is nearer the outline's edge than its own accuracy (it may be the street beside it); no fix at the spot and the entry fix inside one or within reach of its entrance (`classifyByFootprint`) 0.9 |
+| `lot` | inside a surface (or untagged) outline that charges 0.85; one nobody tagged a fee on 0.6 |
+| `nopay` | inside a free or private lot 0.8; an untagged one 0.3 |
+| the hint's class | the phone's confidence. A saved place (`inputs.memoryHit`) scores 0.95 and replaces what the footprints say: it is the driver's own answer |
+
+The server runs its own footprint classification on every park, from the
+garages within 150 m; a located fix is in a garage or lot only by being
+inside its outline, and a hint of class `unknown` or `street` adds nothing.
+The garage a hint names is used for its name only if the garages table has
+it within 150 m of the fix. `place` reports the result on every response,
+whatever the app lists.
+
+For an app that lists the outcomes, the answer is then:
+
+| Place | Action / rule |
+|---|---|
+| `garage` | `garage` / `place_garage` |
+| `lot` that charges (or the driver's saved lot) | `garage` / `place_lot_fee` |
+| `lot` with no fee tagged | asked (below) |
+| `nopay`, and nothing in reach would charge | `nopay` / `place_nopay` (`ignore` / `free_period` stays as it is) |
+| `nopay`, but a candidate would charge | asked (below) |
+| `street` | the street answer, unchanged |
+| `unknown` with a garage, lot, or hint in play | asked (below) |
+| `unknown` with nothing but the zone lookup | the street answer, unchanged |
+
+**Asked** means `place_unknown`: a street answer of `pay` becomes `confirm`
+/ `place_unknown`, one of `unknown_zone` keeps its action with rule
+`place_unknown`, and a park that already needed a tap (`confirm`) or was
+free (`ignore`) keeps its own rule. `garage` and `nopay` are things
+ParkAgent doesn't pay; V1 has no ticket flow (#181).
+
+Two things hold whatever the hint says:
+
+- **No answer is `pay` unless the street rules alone said `pay`.** A hint
+  can only make an answer more careful.
+- **A meter that would charge is never silenced.** `nopay` needs every
+  candidate's quote to be zero, and with `garage` the `candidates` and
+  `quote` ride along unchanged, so the driver can still say "not a garage"
+  and pay the street.
+
+**No fix at the spot** (`placeHint.inputs.located: false`): `lat`/`lng`
+are the entry fix, the last place GPS saw the car driving in. The meters
+there are not where the car is, so `candidates` is `[]`, `quote` and
+`provider` are `null`, and the answer is `garage`, `nopay`, or
+`unknown_zone` (`place_unknown` when asked; plain `unknown_zone` for an app
+that lists no outcomes). The zones found at the entry fix are still on the
+decision (`candidateZoneIds`).
+
+Reading the garages never fails a park: with no footprint store, or a
+lookup that throws, the park is classified without footprints and the
+decision says so (`inputs.place.garageLookup`: `ok | unavailable | failed`).
+
 Every `/parked` call writes a `decisions` row: `inputs` (request body,
 pricing time and its source, radius, candidate zone ids, effective dry run,
-policy hash), `rule`, `outcome` (action + quote).
+policy hash, and `place`: the outcomes the app listed, `located`, the hint
+as read, the zone agreement, what the street rules alone answered, the
+footprint match, every class's score, and the garage lookup's state),
+`rule`, `outcome` (action, quote, candidates, `place`).
 
 Errors: `400` invalid body (zod details in `error`), `401` bad key.
+
+---
+
+## POST /parked/:id/place
+
+The driver's own answer about a park (FR-54): what the place is, or that
+they aren't parked there. It decides nothing and moves nothing. It is the
+record the classifier is scored against, and the app writes its place
+memory only after this has answered `200`.
+
+```json
+{ "class": "garage", "name": "Work garage" }
+```
+
+`class` is `street | garage | lot | nopay | not_here`. `not_here` is "I'm
+not parked here" (a passenger, a drive-through): recorded, and nothing is
+learned. `name` is optional, at most 80 characters, stored as one line.
+
+Response `200`:
+
+```json
+{
+  "ok": true,
+  "parkedEventId": "…",
+  "class": "garage",
+  "name": "Work garage",
+  "was": { "class": "unknown", "confidence": 0, "source": "footprint",
+           "garageId": "bos-…", "garageName": "…" },   // what /parked said; null for a park from before FR-54
+  "changed": true,           // the answer differs from what /parked said
+  "decisionId": "…"
+}
+```
+
+Writes a `decisions` row, kind `place_confirmation`, rule `place_confirmed`
+(the answer is what `/parked` said), `place_corrected`, or `place_not_here`.
+Its `inputs` carry the answer, the id of the park's own decision, what that
+decision classified, and the classification inputs it recorded.
+
+**Idempotent per user:** the same answer for the same park again returns
+the same `decisionId` and writes nothing. A different answer is a new row,
+and the last one stands. (An `Idempotency-Key` works as on every unsafe
+request.)
+
+Errors: `400` a class that isn't one of the five, or a `name` that isn't a
+string of at most 80 characters; `401`; `404 {"error":
+"parked_event_not_found"}` for a park that doesn't exist or is someone
+else's; `429` (the limit is shared with `POST /parked`: 30 a minute).
 
 ---
 
@@ -650,7 +784,8 @@ an id nobody loaded, and for anything that couldn't be an id.
 ### Classifying a point: `classifyByFootprint`
 
 `server/src/services/garageLookup.ts` exports the pure function `/parked`
-classifies with (FR-54, #179):
+classifies with (FR-54; "The place" under `POST /parked` says how its
+answer is used):
 
 ```ts
 classifyByFootprint(point: { lat, lng }, accuracyM: number, garages: GarageFootprint[])

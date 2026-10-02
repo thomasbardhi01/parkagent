@@ -321,6 +321,75 @@ final class LiveAPIRequestTests: XCTestCase {
         XCTAssertNil(try body(try sentRequest())["placeHint"])
     }
 
+    /// What /parked answers for a garage (server routes/parked.ts, pinned
+    /// in parkedPlace.test.ts): the new action, `place`, and the street's
+    /// candidates still there.
+    private static let garageResponseBody = #"""
+    {"action": "garage", "candidates": [], "quote": null, "rule": "place_garage", "dryRun": true, "needsZoneNumber": false, "provider": null, "place": {"class": "garage", "confidence": 0.9, "runnerUp": {"class": "street", "confidence": 0.6}, "garageId": "bos-fixture-deck-0a1b2c", "garageName": "Fixture Deck", "source": "footprint", "attribution": "© OpenStreetMap contributors"}, "parkedEventId": "pe1", "decisionId": "d1"}
+    """#
+
+    /// FR-54: the app says which place outcomes it can show, and reads the
+    /// place back. A server from before FR-54 sends no `place`, and its
+    /// answer still decodes.
+    func testParkedListsTheOutcomesItShowsAndReadsThePlace() async throws {
+        StubURLProtocol.respond(json: Self.garageResponseBody)
+        let at = Date(timeIntervalSince1970: 1_790_000_060)
+        let response = try await api.parked(
+            ParkedRequest(lat: 42.35, lng: -71.07, accuracy: 9, ts: at, signals: [], outcomes: ParkedRequest.shownOutcomes),
+            idempotencyKey: "park-1"
+        )
+        let sent = try body(try sentRequest())
+        XCTAssertEqual(sent["outcomes"] as? [String], ["garage", "nopay"])
+
+        XCTAssertEqual(response.action, .garage)
+        XCTAssertEqual(response.rule, "place_garage")
+        let place = try XCTUnwrap(response.place)
+        XCTAssertEqual(place.placeClass, "garage")
+        XCTAssertEqual(place.confidence, 0.9)
+        XCTAssertEqual(place.runnerUp?.placeClass, "street")
+        XCTAssertEqual(place.garageId, "bos-fixture-deck-0a1b2c")
+        XCTAssertEqual(place.garageName, "Fixture Deck")
+        XCTAssertEqual(place.source, "footprint")
+        XCTAssertEqual(place.attribution, "© OpenStreetMap contributors")
+
+        StubURLProtocol.respond(json: Self.parkedResponseBody)
+        let old = try await api.parked(ParkedRequest(lat: 42.35, lng: -71.07, accuracy: 9, ts: at, signals: []), idempotencyKey: "park-2")
+        XCTAssertNil(old.place)
+        XCTAssertNil(try body(try sentRequest())["outcomes"], "a park queued by the previous build lists none")
+
+        StubURLProtocol.respond(json: #"{"action": "nopay", "candidates": [], "quote": null, "rule": "place_nopay", "dryRun": true, "needsZoneNumber": false, "provider": null, "place": {"class": "nopay", "confidence": 0.95, "runnerUp": null, "garageId": null, "garageName": null, "source": "memory", "attribution": null}, "parkedEventId": "pe2", "decisionId": "d2"}"#)
+        let silent = try await api.parked(ParkedRequest(lat: 42.35, lng: -71.07, accuracy: 9, ts: at, signals: []), idempotencyKey: "park-3")
+        XCTAssertEqual(silent.action, .nopay)
+        XCTAssertNil(silent.place?.garageName)
+        // A stored park survives a relaunch with its place.
+        let restored = try JSONDecoder().decode(ParkedResponse.self, from: JSONEncoder().encode(response))
+        XCTAssertEqual(restored.place, response.place)
+    }
+
+    /// The driver's answer about a place: one keyed POST per answer.
+    func testThePlaceAnswerIsAKeyedPost() async throws {
+        let answered = #"{"ok": true, "parkedEventId": "pe 1", "class": "garage", "name": "Work", "was": {"class": "unknown", "confidence": 0, "source": "none", "garageId": null, "garageName": null}, "changed": true, "decisionId": "d9"}"#
+        StubURLProtocol.respond(json: answered)
+        let response = try await api.answerPlace(parkedEventId: "pe 1", placeClass: "garage", name: "Work")
+        let request = try sentRequest()
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.url?.path(percentEncoded: false), "/parked/pe 1/place")
+        XCTAssertEqual(bearer(request), "Bearer access-1")
+        XCTAssertNotNil(request.value(forHTTPHeaderField: "Idempotency-Key"))
+        let sent = try body(request)
+        XCTAssertEqual(sent["class"] as? String, "garage")
+        XCTAssertEqual(sent["name"] as? String, "Work")
+        XCTAssertEqual(response.placeClass, "garage")
+        XCTAssertEqual(response.decisionId, "d9")
+        XCTAssertTrue(response.changed)
+
+        StubURLProtocol.respond(json: answered)
+        _ = try await api.answerPlace(parkedEventId: "pe1", placeClass: "not_here", name: nil)
+        let bare = try body(try sentRequest())
+        XCTAssertEqual(bare["class"] as? String, "not_here")
+        XCTAssertNil(bare["name"], "no name is no key, not a null")
+    }
+
     // MARK: - Limits
 
     /// The server's own shape (routes/limits.ts, pinned in limits.test.ts).

@@ -149,6 +149,9 @@ enum LaunchOverrides {
             AuthUser.clearCache()
             // A stop the previous test left pending would fire in this one.
             DetectorStore.clearDefault()
+            // And a place the previous test was asked about (or answered)
+            // would be passed over in silence in this one.
+            PlaceMemoryStore.clearDefault()
         }
         // Scrub before the argument writes below, so UI-test launches still
         // get their scenario keys and everyone else starts clean.

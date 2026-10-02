@@ -1127,7 +1127,10 @@ export interface AppDb {
         /** Activity's explanation lines: a page's session decisions. */
         | { sessionId: { in: string[] } }
         /** The FR throwaway purge: every account create-fr-throwaway minted. */
-        | { kind: string; rule: string };
+        | { kind: string; rule: string }
+        /** POST /parked/:id/place: one park's decisions (its quote, and
+         * the driver's answers about the place). */
+        | { parkedEventId: string };
     }): Promise<
       {
         id: string;

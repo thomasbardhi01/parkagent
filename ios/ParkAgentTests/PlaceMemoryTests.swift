@@ -25,6 +25,60 @@ struct PlaceMemoryTests {
         #expect(place?.radiusM == 60)
     }
 
+    // MARK: - Prompts already made (FR-54: never twice for a place in a day)
+
+    private var utc: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        return calendar
+    }
+
+    @Test func aPromptIsRememberedForTheDayWithinSixtyMeters() {
+        var memory = PlaceMemory()
+        #expect(!memory.promptedSameDay(at: Geo.at(n: 0, e: 0), now: t0, calendar: utc))
+        memory.notePrompt(at: Geo.at(n: 0, e: 0), now: t0)
+        #expect(memory.promptedSameDay(at: Geo.at(n: 50, e: 0), now: t0.addingTimeInterval(3_600), calendar: utc))
+        #expect(!memory.promptedSameDay(at: Geo.at(n: 70, e: 0), now: t0.addingTimeInterval(3_600), calendar: utc))
+        #expect(!memory.promptedSameDay(at: Geo.at(n: 0, e: 0), now: t0.addingTimeInterval(86_400), calendar: utc))
+        // A prompt is not a place, and teaches nothing.
+        #expect(memory.places.isEmpty)
+        #expect(memory.place(near: Geo.at(n: 0, e: 0)) == nil)
+    }
+
+    /// A prompt held back and then cancelled (the car drove on) was never
+    /// seen: the place can still be asked about that day.
+    @Test func aCancelledPromptIsForgotten() {
+        var memory = PlaceMemory()
+        memory.notePrompt(at: Geo.at(n: 0, e: 0), now: t0)
+        memory.notePrompt(at: Geo.at(n: 0, e: 500), now: t0)
+        memory.forgetPrompt(at: Geo.at(n: 5, e: 0), since: t0.addingTimeInterval(-1))
+        #expect(!memory.promptedSameDay(at: Geo.at(n: 0, e: 0), now: t0, calendar: utc))
+        #expect(memory.promptedSameDay(at: Geo.at(n: 0, e: 500), now: t0, calendar: utc))
+    }
+
+    @Test func oldPromptsAreDroppedAndTheListStaysSmall() {
+        var memory = PlaceMemory()
+        for day in 0..<10 {
+            memory.notePrompt(at: Geo.at(n: Double(day) * 500, e: 0), now: t0.addingTimeInterval(Double(day) * 86_400))
+        }
+        // Only what could still matter: the last two days.
+        #expect((memory.prompts ?? []).count <= 3)
+        #expect(memory.promptedSameDay(at: Geo.at(n: 4_500, e: 0), now: t0.addingTimeInterval(9 * 86_400 + 60), calendar: utc))
+    }
+
+    /// A memory file written before prompts were tracked still loads, with
+    /// its saved places.
+    @Test func aFileFromThePreviousBuildStillLoads() throws {
+        var old = PlaceMemory()
+        old.confirm(.nopay, at: Geo.at(n: 0, e: 0), now: t0)
+        old.confirm(.nopay, at: Geo.at(n: 0, e: 0), now: t0)
+        var json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(old)) as? [String: Any])
+        json.removeValue(forKey: "prompts")
+        let loaded = try JSONDecoder().decode(PlaceMemory.self, from: JSONSerialization.data(withJSONObject: json))
+        #expect(loaded.place(near: Geo.at(n: 0, e: 0))?.placeClass == .nopay)
+        #expect(!loaded.promptedSameDay(at: Geo.at(n: 0, e: 0), now: t0, calendar: utc))
+    }
+
     @Test func confirmationsMoreThanSixtyMetersApartAreDifferentPlaces() {
         var memory = PlaceMemory()
         memory.confirm(.garage, at: Geo.at(n: 0, e: 0), now: t0)

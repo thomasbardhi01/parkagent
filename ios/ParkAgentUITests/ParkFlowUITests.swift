@@ -22,6 +22,127 @@ final class ParkFlowUITests: ParkAgentUITestCase {
         )
     }
 
+    // MARK: - Place outcomes (FR-54)
+
+    /// A garage: the sheet names it, says ParkAgent can't pay it and where
+    /// to pay, credits the outline's source, and never offers to pay or to
+    /// scan a ticket. Confirming it is all there is to do.
+    func testAGarageParkSaysItCantPayItAndTakesTheAnswer() {
+        let app = launchApp(scenario: "garage")
+        simulateParkFromHome(app)
+
+        XCTAssertTrue(app.staticTexts["Looks like the Fixture Deck"].waitForExistence(timeout: 5), "Garage name missing")
+        let notice = element(app, "parkedSheet.placeNotice")
+        XCTAssertTrue(notice.exists, "Garage notice missing")
+        XCTAssertTrue(notice.label.contains("can't pay drive-up garages yet"), notice.label)
+        XCTAssertTrue(notice.label.contains("Pay at the station"), notice.label)
+        let attribution = element(app, "parkedSheet.placeAttribution")
+        XCTAssertTrue(attribution.exists, "Outline attribution missing")
+        XCTAssertTrue(attribution.label.contains("OpenStreetMap"), attribution.label)
+        XCTAssertFalse(element(app, "parkedSheet.payButton").exists, "A garage must not offer Pay")
+        XCTAssertFalse(element(app, "parkedSheet.total").exists, "A garage has no quote")
+        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "label CONTAINS[c] 'scan'")).count, 0, "V1 has no ticket flow")
+        attachScreenshot(of: app, named: "parked-garage")
+
+        element(app, "parkedSheet.placeConfirmButton").tap()
+        XCTAssertTrue(
+            element(app, "parkedSheet.view").waitForNonExistence(timeout: 5),
+            "Sheet did not dismiss after the answer"
+        )
+    }
+
+    /// "Not a garage" asks what the place is, without offering "Garage"
+    /// again; "Street" then shows what the street lookup found (here, no
+    /// zone at all).
+    func testNotAGarageAsksWhatThePlaceIs() {
+        let app = launchApp(scenario: "garage")
+        simulateParkFromHome(app)
+
+        let wrong = element(app, "parkedSheet.placeWrongButton")
+        XCTAssertTrue(wrong.waitForExistence(timeout: 5), "\"Not a garage\" missing")
+        wrong.tap()
+        XCTAssertTrue(element(app, "parkedSheet.placeAsk").waitForExistence(timeout: 5), "The ask did not appear")
+        XCTAssertFalse(element(app, "parkedSheet.placeChoice.garage").exists, "It just said it isn't a garage")
+        XCTAssertTrue(element(app, "parkedSheet.placeChoice.lot").exists, "Lot choice missing")
+        XCTAssertTrue(element(app, "parkedSheet.placeChoice.nopay").exists, "No-payment choice missing")
+        attachScreenshot(of: app, named: "parked-not-a-garage")
+
+        element(app, "parkedSheet.placeChoice.street").tap()
+        XCTAssertTrue(
+            element(app, "parkedSheet.unknownZoneLive").waitForExistence(timeout: 5),
+            "A street answer with no zone in reach should say so"
+        )
+        XCTAssertFalse(element(app, "parkedSheet.placeAsk").exists, "Still asking after the answer")
+    }
+
+    func testAPaidLotSaysItCharges() {
+        let app = launchApp(scenario: "paidLot")
+        simulateParkFromHome(app)
+
+        XCTAssertTrue(app.staticTexts["Parked at Fixture Lot"].waitForExistence(timeout: 5), "Lot name missing")
+        let notice = element(app, "parkedSheet.placeNotice")
+        XCTAssertTrue(notice.label.contains("This lot charges"), notice.label)
+        XCTAssertFalse(element(app, "parkedSheet.payButton").exists, "A lot must not offer Pay")
+        attachScreenshot(of: app, named: "parked-paid-lot")
+
+        // "Not parked here" is an answer too, and always closes the sheet.
+        element(app, "parkedSheet.dismissButton").tap()
+        XCTAssertTrue(element(app, "parkedSheet.view").waitForNonExistence(timeout: 5), "Sheet did not dismiss")
+    }
+
+    /// The place is unclear and nothing is metered: the sheet asks, with
+    /// every choice; "No payment" closes it.
+    func testAnUnclearPlaceAsksWithEveryChoice() {
+        let app = launchApp(scenario: "placeUnknown")
+        simulateParkFromHome(app)
+
+        XCTAssertTrue(app.staticTexts["What is this place?"].waitForExistence(timeout: 5), "The ask is missing")
+        for choice in ["street", "garage", "lot", "nopay"] {
+            XCTAssertTrue(element(app, "parkedSheet.placeChoice.\(choice)").exists, "\(choice) choice missing")
+        }
+        XCTAssertFalse(element(app, "parkedSheet.payButton").exists, "Nothing to pay yet")
+        attachScreenshot(of: app, named: "parked-place-ask")
+
+        element(app, "parkedSheet.placeChoice.nopay").tap()
+        XCTAssertTrue(element(app, "parkedSheet.view").waitForNonExistence(timeout: 5), "Sheet did not dismiss")
+    }
+
+    /// The place is unclear but a meter in reach would charge: the street
+    /// choice carries the price, and choosing it lands on the quote with
+    /// its Pay button. Nothing was lost by asking.
+    func testAnUnclearPlaceWithAMeterInReachLeadsToTheQuote() {
+        let app = launchApp(scenario: "placeUnknownStreet")
+        simulateParkFromHome(app)
+
+        let street = element(app, "parkedSheet.placeChoice.street")
+        XCTAssertTrue(street.waitForExistence(timeout: 5), "Street choice missing")
+        XCTAssertTrue(street.label.contains("$"), "The street choice should say what it costs: \(street.label)")
+        XCTAssertFalse(element(app, "parkedSheet.payButton").exists, "No Pay before the driver says it's the street")
+        attachScreenshot(of: app, named: "parked-place-ask-street")
+
+        street.tap()
+        let pay = element(app, "parkedSheet.payButton")
+        XCTAssertTrue(pay.waitForExistence(timeout: 5), "The quote did not appear after \"Street\"")
+        XCTAssertTrue(pay.isEnabled)
+        XCTAssertTrue(app.staticTexts["Zone 110436"].exists, "Zone number missing")
+        XCTAssertTrue(element(app, "parkedSheet.total").label.hasPrefix("$"))
+    }
+
+    /// Nothing to pay: no sheet at all.
+    func testANoPayParkIsSilent() {
+        let app = launchApp(scenario: "noPayment")
+        selectTab(app, "Park")
+        let simulate = element(app, "home.simulateParkButton")
+        XCTAssertTrue(simulate.waitForExistence(timeout: 5), "Simulate park button missing")
+        simulate.tap()
+        XCTAssertFalse(
+            element(app, "parkedSheet.view").waitForExistence(timeout: 4),
+            "A no-pay park must not put up a sheet"
+        )
+        // The app is still on Home, and can still park.
+        XCTAssertTrue(simulate.exists)
+    }
+
     /// Two-candidate fixture: side selection appears, and paying is disabled
     /// until one side is chosen.
     func testTwoCandidatesRequireSelectionBeforePay() {

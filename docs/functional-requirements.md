@@ -98,7 +98,7 @@ started at 11:55 ET). "—" means the FR has no live test.
 | FR-51 | Boston zones from the City's CDS feed; restrictions; coverage gate | pending | — | #176 |
 | FR-52 | Garage price freshness | pending | — | #177 |
 | FR-53 | The phone classifies the place it parked | unit + device-manual (nightly: the `placeHint` contract) | — | iOS `PlaceClassifierTests`, `PlaceMemoryTests`, `FootprintIndexTests`, `ParkFusionEngineTests` (entry fix, GPS loss, barometer, crawl), `SignalTraceTests` (garage, home, and street traces with truth sidecars), `ParkDetectorTests` (the altimeter's window, sign-out), `LiveAPIRequestTests` (the hint and the `/garages/near` fetch on the wire); `server/test/parkedPlaceHint.test.ts`, `server/fr/90-park-now.fr.test.ts`; field test |
-| FR-54 | `/parked` answers garage and no-pay outcomes | pending | — | #179 |
+| FR-54 | `/parked` answers garage and no-pay outcomes | nightly (the garage case self-skips until the target is loaded) + unit | — (first run after #179 deploys) | `server/fr/90-park-now.fr.test.ts`, `server/fr/10-parked-nyc.fr.test.ts` (the action vocabulary), `server/test/parkedPlace.test.ts`, `server/test/parkedPlaceHint.test.ts`; iOS `ParkedNoticeTests` (each prompt variant, the minute's wait, once a day per place), `PlaceMemoryTests` (prompts already made), `ParkDetectorTests` (the unlocated hand-off), `LiveAPIRequestTests` (`outcomes`, `place`, the answer on the wire); UI `ParkFlowUITests` (the garage, lot, and ask sheets) |
 | FR-55 | A street session runs from walk-away to return, confirmed with the amount | pending | — | #180 |
 | FR-56 | YOLO beta mode | pending | — | #180 |
 | FR-57 | Ticket capture (V2) | pending | — | #181 |
@@ -115,8 +115,9 @@ The phone detects that the car parked (two-of-three fusion over motion
 stop, audio/BT disconnect, and a settled location fix) and POSTs the fix
 to `/parked` with its detector signals. **Accepted when** every `/parked`
 call writes a `parked_events` row and a `decisions` row and answers an
-action (`pay | confirm | ignore | unknown_zone`), a quote (or null), the
-effective dry-run flag, and both row ids.
+action (`pay | confirm | ignore | unknown_zone`, and `garage | nopay` for
+an app that lists them: FR-54), a quote (or null), the effective dry-run
+flag, what kind of place it took the park for, and both row ids.
 
 The detector keeps working with the app closed: iOS's significant-change
 and visit monitoring wake (or relaunch) the app, the app delegate re-arms
@@ -126,8 +127,9 @@ exactly once per park, never at a red light, and never on a fix too vague
 to pick the block (Precise Location off → it asks for full accuracy at
 park time, or says it couldn't tell).
 
-Evidence: live FR-1 test asserts the response contract (ids, dryRun,
-action vocabulary); `parked.test.ts` pins the row writes; the detector is
+Evidence: live FR-1 tests assert the response contract (ids, dryRun, the
+action vocabulary with and without the place outcomes listed, `place`);
+`parked.test.ts` pins the row writes; the detector is
 iOS `ParkFusionEngineTests` / `FixGateTests` / `SignalTraceTests`, and
 `DetectorUITests` drives `ios/Fixtures/drive-park-walk.gpx` through the
 real detector in the simulator (one park, not at the light; the walk
@@ -1299,7 +1301,8 @@ street park are never garages; the altimeter runs only in the stop window
 (asserted by the detector self-test); place memory changes only on the
 driver's confirmation and is cleared at sign-out; and `/parked` carries
 the classification as `placeHint`, with nothing from place memory but
-`memoryHit`, which the server ignores until FR-54.
+`memoryHit`. From an app that doesn't list the place outcomes (FR-54), the
+hint changes nothing the app acts on.
 
 Two detector changes ride along: an underground park with no fixes at
 all, entered with good GPS, is now reported unlocated (it used to be
@@ -1320,13 +1323,73 @@ Evidence: the unit tests in the table; trace replay of every
 `ios/Fixtures/Traces/*.truth.json` (an underground garage and a home
 driveway, synthesized by `ios/Fixtures/make-traces.py` until the field
 test records real ones, plus the simulator's street drive); live FR-53
-(`/parked` answers the same with a `placeHint` as without); device-manual:
-the field test (`docs/field-test-checklist.md`, "Where it parked").
+(from an app that lists no place outcomes, `/parked` answers the same
+action, rule, quote, and candidates with a `placeHint` as without);
+device-manual: the field test (`docs/field-test-checklist.md`, "Where it
+parked").
 
 ### FR-54 — `/parked` answers garage and no-pay outcomes (#179, WS-3)
-**Accepted when** a garage or paid-lot place answers `garage` (no ticket
-flow in V1), a no-pay place answers `nopay` silently, the user can correct
-the class, and street outcomes are unchanged. Unit and nightly.
+`/parked` says what kind of place a park is (`place`: street, garage, lot,
+no-pay, or unknown) by weighing the phone's `placeHint` (FR-53) with what
+only the server has: the metered zones in reach and the garage outlines
+(FR-49). Each class is scored and the top one is acted on only when it
+beats the next by 0.3, with the phone classifier's numbers
+(`server/src/services/placeClassification.ts`; server/API.md "The place").
+An app lists the place outcomes it can show (`outcomes`), and only such an
+app is answered the two new actions.
+
+**Accepted when**
+
+- a garage answers `garage` / `place_garage` with the garage's name from
+  the garages table, and a lot that charges answers `garage` /
+  `place_lot_fee`. V1 has no ticket flow: the prompt says ParkAgent can't
+  pay it and where to pay;
+- a place with nothing to pay (the driver's saved place, or a free or
+  private lot) answers `nopay` / `place_nopay` with no quote, and the app
+  says nothing: no sheet, no notification;
+- an unclear place answers `place_unknown`, and **no candidates are lost**:
+  `pay` becomes `confirm` with the same candidates and quote, a park with
+  no zone keeps `unknown_zone`, and the app asks what the place is;
+- **a hint never makes a park `pay`, and a meter that would charge is never
+  silenced**: `nopay` needs every candidate's quote to be zero, whoever
+  says no-pay, and with `garage` the candidates ride along so the driver
+  can still pay the street;
+- an app that lists no outcomes gets exactly the street answers it got
+  before (shipped builds decode `action` strictly), and a malformed hint or
+  list is never a 400;
+- a park with no fix at its spot is reported from its entry fix
+  (`placeHint.inputs.located: false`), answered for the place, and never
+  quoted the meters at that entry fix;
+- `POST /parked/:id/place` records the driver's answer (`street`, `garage`,
+  `lot`, `nopay`, or `not_here`) as a `place_confirmation` decision carrying
+  what the classifier said and saw; the same answer again is the same
+  decision; another user's park is a 404; and the app writes its place
+  memory only after the server has answered;
+- every `/parked` decision carries the classification inputs, and a garage
+  lookup that fails never fails a park;
+- on the phone, a garage, lot, or "what is this place?" prompt is never
+  posted while the car was moving in the last 60 seconds (it waits, and is
+  withdrawn if the car drives on), never made twice for the same place in a
+  day, and not made at all at one of the driver's saved places. A park with
+  a quote is never held back or skipped.
+
+Not in this FR: an Activity row for a no-pay park (the Activity ledger is
+the wallet's; the park is on the decisions ledger as `place_nopay`), and
+any ticket or garage payment (FR-57 to FR-59).
+
+Evidence: `parkedPlace.test.ts` (each rule above, including every hint
+class at three confidences against a payable, an ambiguous, and an
+unmetered block; the correction's decision, idempotence, and ownership);
+`parkedPlaceHint.test.ts` (the old-build contract); live FR-54 (a garage
+hint at a known Boston garage answers `garage` with its name, and so does
+no hint at all; a saved no-pay place off any meter answers `nopay` with no
+quote; the same hint on a metered block is asked about with the street's
+candidates and quote intact; the driver's answer is one decision per
+answer, 404 for anyone else's park); iOS `ParkedNoticeTests` (each variant's
+copy and buttons, nothing offers to scan a ticket, the minute's wait, once
+a day per place, saved places, a payable park never held or skipped, a
+street answer for an entry fix never shown), `PlaceAnswerTests` (place
+memory only after the server took the answer), `ParkFlowUITests`.
 
 ### FR-55 — A street session runs from walk-away to return (#180, WS-3)
 **Accepted when** nothing prompts, pays, or extends while the phone is at

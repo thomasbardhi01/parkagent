@@ -30,6 +30,18 @@ enum MockScenario: String, Sendable {
     /// like singleQuote. The detector's Boston route test uses it, so a
     /// Boston drive isn't answered with a New York zone.
     case bostonKnownZone
+    /// /parked answers `garage` with a named garage (FR-54): the sheet
+    /// says ParkAgent can't pay it, and offers the corrections.
+    case garage
+    /// `garage` under place_lot_fee: a lot that charges.
+    case paidLot
+    /// The place is unclear and nothing is metered: the sheet asks.
+    case placeUnknown
+    /// The place is unclear and a meter in reach would charge: the sheet
+    /// asks, and "Street" leads to the quote.
+    case placeUnknownStreet
+    /// `nopay`: silent. No sheet, no notification.
+    case noPayment
 
     static let defaultsKey = "mockScenario"
 }
@@ -81,6 +93,13 @@ enum AuthMockScenario: String, Sendable {
     case appleFails
 
     static let defaultsKey = "authScenario"
+}
+
+private extension ParkedRequest {
+    /// Whether the app said it can show this place outcome.
+    func lists(_ outcome: ParkedAction) -> Bool {
+        outcomes?.contains(outcome.rawValue) == true
+    }
 }
 
 /// In-memory fixtures shaped by server/API.md, for UI tests and previews
@@ -268,6 +287,20 @@ struct MockAPI: APIClient {
             return MockFixtures.freePeriod(provider: provider)
         case .unknownZone:
             return MockFixtures.unknownZone()
+        // Like the server: a place outcome is answered only to a request
+        // that lists it, and without one the park is a plain street answer.
+        case .garage:
+            return request.lists(.garage) ? MockFixtures.garage() : MockFixtures.unknownZone()
+        case .paidLot:
+            return request.lists(.garage) ? MockFixtures.paidLot() : MockFixtures.unknownZone()
+        case .placeUnknown:
+            return request.outcomes?.isEmpty == false ? MockFixtures.placeUnknown() : MockFixtures.unknownZone()
+        case .placeUnknownStreet:
+            return request.outcomes?.isEmpty == false
+                ? MockFixtures.placeUnknownWithQuote(provider: provider)
+                : MockFixtures.singleQuote(provider: provider)
+        case .noPayment:
+            return request.lists(.nopay) ? MockFixtures.noPayment() : MockFixtures.unknownZone()
         case .bostonKnownZone:
             let passportStatus = await providerStore.status(of: "passport", scenario: providerScenario)
             return MockFixtures.bostonQuote(
@@ -284,6 +317,15 @@ struct MockAPI: APIClient {
                 zoneNumber: reported
             )
         }
+    }
+
+    func answerPlace(parkedEventId: String, placeClass: String, name: String?) async throws -> PlaceAnswerResponse {
+        try await pause()
+        await MockDetectorProbe.shared.placeAnswered(placeClass)
+        return PlaceAnswerResponse(
+            ok: true, parkedEventId: parkedEventId, placeClass: placeClass, name: name, changed: true,
+            decisionId: "mock-decision-\(UUID().uuidString.prefix(8))"
+        )
     }
 
     func reportZoneNumber(zoneId: String, number: String) async throws -> ZoneNumberReportResponse {
@@ -886,6 +928,73 @@ enum MockFixtures {
 
     static func unknownZone() -> ParkedResponse {
         response(action: .unknownZone, rule: "unknown_zone", candidates: [], quote: nil, provider: nil)
+    }
+
+    // MARK: Place outcomes (server/API.md "The place", FR-54)
+
+    static let garageAttribution = "© OpenStreetMap contributors"
+
+    static func place(
+        _ placeClass: String,
+        confidence: Double,
+        garageId: String? = nil,
+        garageName: String? = nil,
+        source: String = "footprint",
+        runnerUp: PlaceHint.Scored? = nil
+    ) -> ParkedPlace {
+        ParkedPlace(
+            placeClass: placeClass, confidence: confidence, runnerUp: runnerUp,
+            garageId: garageId, garageName: garageName, source: source,
+            attribution: garageId == nil ? nil : garageAttribution
+        )
+    }
+
+    /// A garage the server's footprints name (`name: nil`: one only the
+    /// phone's sensors saw; `source: "memory"`: the driver's saved place).
+    static func garage(name: String? = "Fixture Deck", source: String = "footprint") -> ParkedResponse {
+        var parked = response(action: .garage, rule: "place_garage", candidates: [], quote: nil, provider: nil)
+        parked.place = place(
+            "garage", confidence: name == nil ? 0.6 : 0.9,
+            garageId: name == nil ? nil : "mock-fixture-deck-0a1b2c", garageName: name, source: source
+        )
+        return parked
+    }
+
+    static func paidLot(name: String? = "Fixture Lot") -> ParkedResponse {
+        var parked = response(action: .garage, rule: "place_lot_fee", candidates: [], quote: nil, provider: nil)
+        parked.place = place("lot", confidence: 0.85, garageId: "mock-fixture-lot-111111", garageName: name)
+        return parked
+    }
+
+    /// An outline nobody tagged a fee on, and no meter in reach.
+    static func placeUnknown() -> ParkedResponse {
+        var parked = response(action: .unknownZone, rule: "place_unknown", candidates: [], quote: nil, provider: nil)
+        parked.place = place(
+            "lot", confidence: 0.6, garageId: "mock-surface-222222",
+            runnerUp: PlaceHint.Scored(placeClass: "nopay", confidence: 0.3)
+        )
+        return parked
+    }
+
+    /// At a garage's edge with a payable block in reach: the street's own
+    /// quote, with the place in doubt.
+    static func placeUnknownWithQuote(
+        provider: ParkedProvider? = MockFixtures.parkedProvider(id: "parknyc", status: "linked")
+    ) -> ParkedResponse {
+        var parked = singleQuote(provider: provider)
+        parked.action = .confirm
+        parked.rule = "place_unknown"
+        parked.place = place(
+            "unknown", confidence: 0, garageId: "mock-fixture-deck-0a1b2c", garageName: "Fixture Deck",
+            runnerUp: PlaceHint.Scored(placeClass: "street", confidence: 0.9)
+        )
+        return parked
+    }
+
+    static func noPayment() -> ParkedResponse {
+        var parked = response(action: .nopay, rule: "place_nopay", candidates: [], quote: nil, provider: nil)
+        parked.place = place("nopay", confidence: 0.95, source: "memory")
+        return parked
     }
 
     /// The Boylston St Back Bay block from server/test fixtures: flat

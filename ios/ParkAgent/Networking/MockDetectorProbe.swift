@@ -25,6 +25,13 @@ final class MockDetectorProbe {
         car = CLLocationCoordinate2D(latitude: request.lat, longitude: request.lng)
     }
 
+    /// The driver's answers about a place (POST /parked/:id/place), in order.
+    private(set) var placeAnswers: [String] = []
+
+    func placeAnswered(_ placeClass: String) {
+        placeAnswers.append(placeClass)
+    }
+
     func located(_ report: LocationReport) {
         reportCount += 1
         guard let car else { return }

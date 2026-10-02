@@ -38,6 +38,9 @@ protocol APIClient: Sendable {
     /// The same, under a key the caller holds — the offline outbox keeps one
     /// per park across launches, so a report delivered twice counts once.
     func parked(_ request: ParkedRequest, idempotencyKey: String) async throws -> ParkedResponse
+    /// The driver's own answer about a park's place (server/API.md "POST
+    /// /parked/:id/place"): street, garage, lot, nopay, or not_here.
+    func answerPlace(parkedEventId: String, placeClass: String, name: String?) async throws -> PlaceAnswerResponse
     /// The zone number the driver read off the meter (needsZoneNumber flow).
     func reportZoneNumber(zoneId: String, number: String) async throws -> ZoneNumberReportResponse
     func policy() async throws -> PolicyResponse

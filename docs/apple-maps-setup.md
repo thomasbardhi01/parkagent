@@ -2,10 +2,12 @@
 
 The assistant finds the places people name — restaurants, bars, venues,
 shops, hotels, landmarks — with the **Apple Maps Server API**
-(`maps-api.apple.com`, the same search the Maps app runs). Without it the
-server falls back to Nominatim (OpenStreetMap), which knows streets and
-neighborhoods but few businesses: on the 2026-09-25 device test, "Lola 42"
-and "Moo steakhouse" both came back empty that way.
+(`maps-api.apple.com`, the same search the Maps app runs), and gets its
+walking times from it. Without it the server falls back to Nominatim
+(OpenStreetMap), which knows streets and neighborhoods but few
+businesses: on the 2026-09-25 device test, "Lola 42" and "Moo steakhouse"
+both came back empty that way. Walks are then straight-line estimates,
+and the card marks them.
 
 **Why Apple Maps** over Google Places or Mapbox: it comes with the Apple
 Developer membership we already pay for (a daily quota of 25,000 service
@@ -73,30 +75,67 @@ has thinner POI coverage.
    service those slots need, and wrong when the key ids differ.
 5. **For local runs**, add the same three lines to the repo-root `.env`.
    Literal newlines or `\n` escapes both work for the key.
-6. **Check it:** `pnpm -C server verify:places` (see below) should resolve
-   "Lola 42" to 22 Liberty Dr, Seaport. Then delete the downloaded `.p8`, or
-   store it in your password manager. Never commit it.
+6. **Check it:** `pnpm -C server verify:places` should resolve "Lola 42" to
+   22 Liberty Dr, Seaport by `apple_search`, and "lola42" to the same
+   place by `apple_autocomplete`; with `DATABASE_URL` set, the street
+   options under each place show a walking time with no "~" (Apple's)
+   rather than "~4 min" (the estimate). The same key and token serve all
+   three endpoints, so there is nothing more to enable. Then delete the
+   downloaded `.p8`, or store it in your password manager. Never commit it.
 
 ## How the server uses it
 
-- `services/assistant/appleMaps.ts` signs a Maps auth token (ES256 JWT:
-  header `{alg: ES256, kid: <key id>, typ: JWT}`, claims `{iss: <team id>,
-  iat, exp, scope: "server_api"}`). It trades that token at `GET /v1/token`
-  for a 30-minute access token, caches it, and refreshes once on a 401. It
-  then calls `GET /v1/search` with `limitToCountries=US`,
-  `resultTypeFilter=Poi,Address`, ONE of `searchLocation` (the phone when
-  it's in the city) or the city's `searchRegion` (Apple answers 400 when
-  both are sent, which broke every search until #152), and the phone as
-  `userLocation`.
+`services/assistant/appleMaps.ts` signs a Maps auth token (ES256 JWT:
+header `{alg: ES256, kid: <key id>, typ: JWT}`, claims `{iss: <team id>,
+iat, exp, scope: "server_api"}`). It trades that token at `GET /v1/token`
+for a 30-minute access token, caches it, and refreshes once on a 401. The
+access token authorizes three endpoints:
+
+| Endpoint | When | Calls |
+|---|---|---|
+| `GET /v1/search` | Every place lookup: `limitToCountries=US`, `resultTypeFilter=Poi,Address`, ONE of `searchLocation` (the phone when it's in the city) or the city's `searchRegion` (Apple answers 400 when both are sent, which broke every search until #152), and the phone as `userLocation`. | 1, or 2 when the biased city has no match and the other is tried |
+| `GET /v1/searchAutocomplete` | Only when the search is weak: nothing found, nothing carrying a word of the name, or a best score under 0.55 (`placeScore.ts` `searchIsWeak`). Same parameters as the search. Each completion is then one `GET` of its `completionUrl` (Apple's own relative `/v1/search?q=…&metadata=…`, with `lang=en-US` added). | 1, plus at most 3 completions, per city tried |
+| `GET /v1/etas` | Once per search of a named place, for the walk from the place to its ten nearest options: `origin`, `destinations` (up to ten `lat,lng` pairs joined with `\|`), `transportType=Walking`. | 1 per search, so 2 for a request that searches street and garages |
+
 - Results outside the covered metros are dropped. A biased search that
   finds nothing in its city tries the other cities, so the bias orders the
-  search but never blinds it.
+  search but never blinds it. A completion that says it is outside every
+  covered city isn't fetched.
+- Searches and their autocomplete results are cached for 10 minutes in
+  memory. Walking times aren't cached.
 - `FallbackGeocoder` tries Apple first and Nominatim second. A source that
   fails (network, quota, a revoked key) falls through to the next one.
   Only every source failing is a failure.
-- `geocode_place` records which source answered on its decision row
-  (`outcome.source`), so a quiet fallback to Nominatim shows up in the
-  ledger.
+- `geocode_place` records on its decision row which source answered
+  (`outcome.source`: `apple_search`, `apple_autocomplete`, or
+  `nominatim`), the confidence, the scored candidates, and any source that
+  failed (`outcome.failures`), so a quiet fallback to Nominatim shows up
+  in the ledger with its reason.
+
+## The quota
+
+Apple allows **25,000 service calls a day per team**, shared by every Maps
+Server API endpoint and MapKit JS, and answers **HTTP 429** past it. The
+one key on prod is also the push and Sign in with Apple key, but those
+services don't draw on this quota. A turn that names a place usually
+costs 3 calls (a search and two walking-time requests); a weak search
+adds an autocomplete request and up to three completions, and a city with
+no match adds a pass over the other. A request that names no place calls
+nothing.
+
+A 429 is handled, not fatal:
+
+- On a search it is the typed reason `"quota"`: Nominatim answers
+  instead, and the decision row records `failures: [{provider:
+  "apple_maps", reason: "quota"}]`.
+- On autocomplete, the search's own answer stands
+  (`{provider: "apple_autocomplete", reason: "quota"}`).
+- On walking times, the options keep their straight-line estimates,
+  marked `walkEstimate: true`.
+
+To see whether it is happening: `pnpm -C server decisions:recent` and look
+for `quota` on `assistant_tool` rows. A larger quota is a request to Apple
+through the developer account.
 
 Rotating the key: create a new one (step 2), set the secrets, then revoke
 the old key in the portal.

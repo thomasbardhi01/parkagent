@@ -1786,8 +1786,9 @@ either.
     extension's lock.
   - Stripe 20 s, with the SDK's own 2 retries under one idempotency key.
   - Resend 10 s, Nominatim/ParkWhiz/SpotHero 8 s, Link 15 s.
-  - Apple Maps, the Apple/Google JWKS, and Apple's token endpoint already
-    had their own.
+  - Apple Maps (6 s a call; 4 s for walking times, which are a refinement
+    not worth waiting on), the Apple/Google JWKS, and Apple's token
+    endpoint already had their own.
   - The database pool gives up on a connection after 10 s.
   - `test/outboundScan.test.ts` fails a bare `fetch`.
 - **Inbound:** a client has 30 s to finish *sending* a request (slow-drip
@@ -2003,22 +2004,28 @@ landmark, street, or neighborhood. The search is biased to the phone's
 city (see "Place search" below). The model calls it FIRST for any named
 place; the searches then search there, never the phone's location.
 Results outside both metros' bounding boxes are dropped. It answers one
-of four ways, each with the request's `stateVersion`:
+of four ways, each with the request's `stateVersion`, the server's
+`resolution`, and (except for "none") a 0–1 `confidence` — the place's
+score, see "Place search" below. The model reads both and sets neither:
 
-- `{found: true, match: "exact", place}` — the place the user named
-  (`place` has `name`, `address`, `area`, `kind`, `lat`/`lng`, and a
-  `displayName` like "LoLa 42, Seaport", which becomes the card's
-  destination label).
-- `{found: true, match: "closest", place, instruction}` — nothing carried
-  the NAME. `place` is only the nearest thing found (often the
-  neighborhood), and the model is told to say so rather than present it as
-  the place. This was the device test's silent "Seaport center" fallback.
-- `{found: true, ambiguous: true, choices: [{label, reply, lat, lng}]}` —
-  several distinct places match (a chain's two locations). The model must
-  ask with `ask_user`; nothing is resolved until the user picks one.
-- `{found: false, instruction}` — couldn't find it. The model asks for an
-  address or cross street, and doesn't ask which city when the phone
-  answers that.
+- `{found: true, match: "exact", resolution: "found", confidence, place}`
+  — the place the user named (`place` has `name`, `address`, `area`,
+  `kind`, `lat`/`lng`, and a `displayName` like "LoLa 42, Seaport", which
+  becomes the card's destination label).
+- `{found: true, match: "closest", resolution: "closest_only", confidence,
+  place, instruction}` — nothing carried the NAME. `place` is only the
+  closest thing found (often the neighborhood), and the model is told to
+  say so rather than present it as the place. This was the device test's
+  silent "Seaport center" fallback.
+- `{found: true, ambiguous: true, resolution: "ambiguous", confidence,
+  choices: [{label, reply, lat, lng}]}` — several distinct places match
+  (a chain's two locations). The model must ask with `ask_user`; nothing
+  is resolved until the user picks one.
+- `{found: false, resolution: "none", instruction}` — couldn't find it:
+  nothing came back, or nothing that shares a word with what the user
+  said. The model asks for an address or cross street, and doesn't ask
+  which city when the phone answers that. The answer never carries a
+  point: not the phone's, and not the result that was turned down.
 
 Found or not, the request now names that place (`place.query`), so a
 search after a failed lookup asks for it and never falls back to the
@@ -2079,7 +2086,9 @@ These are a street option's `facts`:
 Zones of one street in the same state and price collapse to the nearest,
 so the two sides of a block are one choice. Each option's pin is the curb
 point nearest the destination. The walk is straight-line distance × 1.3
-at 80 m/min. A stay is priced whole when the meter allows it. When the
+at 80 m/min, replaced by Apple's walking time when the request names a
+place (see "Walking times" below). A stay is priced whole when the meter
+allows it. When the
 meter runs past the max stay, the stay is priced to the max: the option's
 `durationMinutes` is those minutes, and `exceedsMaxStay` plus "(2 hr
 max)" in the words say so. Provider-observed terms
@@ -2108,28 +2117,84 @@ Sources, in order (`FallbackGeocoder`): the **Apple Maps Server API**
 `docs/apple-maps-setup.md` for the one-time portal steps), then
 **Nominatim**. Apple knows businesses by the names people use; Nominatim
 knows streets and neighborhoods but few businesses, and alone it returns
-nothing for "Lola 42". A source that fails falls through to the next.
-What was found is classified in `placeMatch.ts`:
+nothing for "Lola 42". Inside Apple there are two steps (FR-44):
 
-- Names match loosely: case, punctuation, and stretched letters don't
-  count ("Moo" is "Mooo...."). Generic words ("steakhouse") and an area
-  the user named ("in Seaport") aren't part of the name.
-- An exact name beats a longer one ("Seaport" the neighborhood, not
-  "Seaport Hotel").
-- A named area picks a chain's location there.
-- Matches more than 250 m apart are distinct places. A tapped choice's
-  reply ("Mooo...., 15 Beacon St") resolves to exactly that location,
-  because street addresses count as location words, not name words.
-- Only two or more businesses of one name (a chain's locations), or the
-  name in two cities, becomes choices. Street segments, a road and a
-  transit stop sharing a name, and choices that read the same resolve to
-  the best-ranked result.
-- The chain asks Nominatim too when Apple's results don't carry the name,
-  and classifies both sets together.
+1. `GET /v1/search`, biased as above.
+2. `GET /v1/searchAutocomplete` with the same bias, **only when the search
+   is weak**: it found nothing, nothing it found carries a word of the
+   name, or its best score is under 0.55. The search reads "lola42"
+   literally and returns the neighborhood; autocomplete completes it to
+   LoLa 42. Each completion is one more `GET` of its `completionUrl` — at
+   most three per city tried, only ones inside a covered city, and only
+   Apple's own relative `/v1/search?…` (the request carries the access
+   token, so a response can't name another host).
 
-The decision row records which source answered. `pnpm -C server
-verify:places` runs the device-test phrases through the real chain with
-no model.
+Each result says which step found it (`source`: `apple_search`,
+`apple_autocomplete`, or `nominatim`). A source that fails falls through
+to the next, and the answer names it (`failures: [{provider, reason}]`).
+Apple's HTTP 429 — the team's daily quota of 25,000 calls, shared by every
+Maps endpoint — is the typed reason `"quota"`. Autocomplete failing never
+fails a search that answered.
+
+**The score** (`placeScore.ts`, pure). Every result is scored 0–1 against
+the query:
+
+| Part | Value | From |
+|---|---|---|
+| name | 0–0.5 | the share of the query's name words the result's name carries |
+| area | +0.2 / −0.2 / 0 | the area the user named: carried, absent, or none named |
+| distance | 0–0.15 | full within 3 km of the bias point (the phone inside the city, else the city's center), linear to 0 at 15 km; full when there is no bias point at all |
+| poi | +0.1 | the query names something and the result is a business, venue, or landmark |
+| rank | +0.05 | its source listed it first |
+
+Names match loosely: case, punctuation, and stretched letters don't
+count ("Moo" is "Mooo...."), abbreviations are spelled out ("St"), and
+initials stand for a whole name ("MFA" is the Museum of Fine Arts).
+Generic words ("steakhouse") and an area the user named ("in Seaport")
+aren't part of the name; a street address counts as a location word, so a
+tapped choice's reply ("Mooo...., 15 Beacon St") resolves to exactly that
+location.
+
+**What the scores come to** (`placeMatch.ts` `classifyPlaceMatches`,
+against `RESOLUTION_THRESHOLDS = { found: 0.75, ambiguousFloor: 0.6,
+ambiguousGap: 0.2, closestFloor: 0.3, distinctM: 250 }`):
+
+- **none**: no result, or — with nothing carrying the whole name — no
+  result that both shares a word with the query and scores at least
+  `closestFloor`. A result that is only nearby and listed first is the
+  phone's location by another name, so it is never offered. The covered
+  cities' own names don't count as a shared word ("in Boston" says which
+  city, not which place).
+- **closest_only**: nothing carries the whole name; the best-scoring
+  result that shares a word with the query is offered as the closest
+  thing, and said as that.
+- **found**: one place carries the whole name. Among several, the name as
+  it was said wins ("Seaport Hotel" is the hotel), then an exact name
+  over a longer one ("Seaport" is the neighborhood, not "Seaport Hotel");
+  a named area picks a chain's location there; and results within
+  `distinctM` of each other, or that would read the same as choices, are
+  one place. If several places remain, the best is taken without a
+  question only when it scores `found` or better and every other is more
+  than `ambiguousGap` behind it — or when they are streets, neighborhoods,
+  and stops of one name in one city (fewer than two businesses), where a
+  question is noise.
+- **ambiguous**: otherwise — a chain's locations, or the name in two
+  cities. The choices are the places at `ambiguousFloor` or better and
+  within `ambiguousGap` of the best (every place carrying the name, when
+  fewer than two are that strong), nearest the bias point first, at most
+  three.
+
+The chain asks Nominatim too when Apple's results don't carry the name,
+and classifies both sets together.
+
+**The decision row.** Every `geocode_place` call (kind `assistant_tool`)
+records `{query, source, confidence, candidates: [{name, lat, lng,
+score}]}` — the five best-scored candidates, the winner's source, and any
+`failures` (`{provider: "apple_maps", reason: "quota"}`). A search that
+looks the place up itself leaves the same record under its own tool name
+(rule `place_lookup`). `pnpm -C server verify:places` runs the
+device-test phrases through the real chain with no model and prints each
+one's source and confidence.
 
 `propose_plan`'s input schema is generated from the same zod schemas it
 validates with (`MODEL_PLAN_JSON_SCHEMA`, minus the server-attached
@@ -2143,7 +2208,10 @@ Plan shapes (zod-validated at the tool boundary — see
 `services/assistant/plans.ts`). A plan is one of four kinds:
 
 - `single_spot`: ≤3 options (street or garage), exactly one
-  `recommended`, plus the server's `destination {lat,lng,label}` (the
+  `recommended`, each with `walkMinutes` and `walkEstimate` (false: an
+  Apple walking time from the destination to the pin; true: the
+  straight-line estimate, to be shown as "~7 min"), plus the server's
+  `destination {lat,lng,label}` (the
   request's place, when the user named one), `provenance {provider,
   searchedAt, garage?}`, `assumptions`, and `recommendedReason`: one line
   on why the recommended option is on top, computed from the final prices
@@ -2318,6 +2386,24 @@ phone's location doesn't clip. A garage offer with no usable price is
 dropped and counted too (`garage.droppedNoPrice`): it can't be held to a
 budget or shown on a card.
 
+**Walking times (FR-44).** A search of a NAMED place asks Apple for the
+real walk from that place to each option's pin before it reads the limits
+and the order off the walks: `GET /v1/etas`, `transportType=Walking`, one
+request per search for its ten nearest options (`MAX_WALK_TIMED`; Apple
+takes ten destinations a call). An option that gets one has `walkMinutes =
+ceil(seconds / 60)` (never under 1) and `walkEstimate: false`, and a
+street option's one-line summary is rebuilt to say that walk. Every other
+option keeps the estimate with `walkEstimate: true`: the options beyond
+the nearest ten, every option when no place was named (there is no
+destination to walk to) or no Apple key is set, and all of them when the
+call fails or Apple is out of quota — walking times never fail a search.
+Because the search carries them, `maxWalkMinutes` is judged on the real
+walk (an option the estimate would pass can come back a near-miss, with
+the real minutes as its `actual`), "closest" is the closest by it, and the
+card copies both fields from the search like every other fact. The
+search's decision row counts them (`walksTimed`). The `no_data` card's
+nearest zones and an itinerary's stops still use the estimate.
+
 **What a search answers.** The request's whole search so far at its
 current version — both kinds, once both tools have run:
 
@@ -2329,12 +2415,12 @@ current version — both kinds, once both tools have run:
               "durationMinutes": 180, "startsNow": false, "durationSource": "user" },
   "satisfying": [
     { "id": "v4-bos-seaport-blvd-de413d-01", "type": "street", "label": "Street — Seaport Blvd",
-      "priceUsd": 0, "walkMinutes": 4, "distanceM": 271, "durationMinutes": 180,
+      "priceUsd": 0, "walkMinutes": 4, "walkEstimate": false, "distanceM": 271, "durationMinutes": 180,
       "fetchedAt": "2026-09-26T22:05:10.000Z", "axis": "cheapest",
       "zoneId": "bos-seaport-blvd-de413d-01", "summary": "Free after 6 PM on Seaport Blvd — 4 min walk",
       "facts": { … } },
     { "id": "v4-parkwhiz-4521-ab12cd", "type": "garage", "label": "Seaport Garage",
-      "priceUsd": 18, "walkMinutes": 1, "distanceM": 80, "durationMinutes": 180,
+      "priceUsd": 18, "walkMinutes": 2, "walkEstimate": false, "distanceM": 80, "durationMinutes": 180,
       "fetchedAt": "2026-09-26T22:05:11.000Z", "axis": "closest",
       "garageOptionId": "parkwhiz-4521-ab12cd", "provider": "parkwhiz",
       "deepLink": "https://…", "entryType": "self" } ],
@@ -2410,7 +2496,7 @@ goes back to the model with what to do:
 | # | Rule | Refusal |
 |---|---|---|
 | V1 | Every option id is in the latest search, run at the request's current version and still fresh. No other field stands in for the id. | `stale_or_unknown_option` with `optionIds`, `validIds`, `stateVersion`, and a `hint` (search first; the request changed; the search is old) |
-| V2 | `priceUsd`, `walkMinutes`, `durationMinutes`, `startsAt`, `zoneId`, the street facts, a garage's `provider` and `deepLink`, and the pin are copied from the search. Nothing the model sends for them is read. | none: a price it typed that differs is recorded as `model_price_mismatch` `{optionId, modelPriceUsd, priceUsd}` |
+| V2 | `priceUsd`, `walkMinutes`, `walkEstimate`, `durationMinutes`, `startsAt`, `zoneId`, the street facts, a garage's `provider` and `deepLink`, and the pin are copied from the search. Nothing the model sends for them is read. | none: a price it typed that differs is recorded as `model_price_mismatch` `{optionId, modelPriceUsd, priceUsd}` |
 | V3 | An option from `nearMisses` may be on the card only with `nearMiss: true`; it then carries the server's `violates`. The model's are discarded. | `hard_constraint_violation` with `optionIds` and their `violates` |
 | V4 | With nothing satisfying, the only plan is the "no". With something satisfying, a "no" is refused. | `must_say_no` / `options_available` (with the search, so the model can propose from it) |
 | V5 | An itinerary's total is recomputed and held to the caller's own daily cap (`policyFor(user)`). There is no per-plan cap (decision 9). | `plan_over_daily_cap` |

@@ -88,7 +88,7 @@ started at 11:55 ET). "—" means the FR has no live test.
 | FR-41 | Requests that survive the network | nightly + unit | ✅ passed | `server/fr/55-reliability.fr.test.ts`, `server/test/idempotency.test.ts`, `server/test/outbound.test.ts`, `server/test/shutdown.test.ts`, `server/test/auth.test.ts`; iOS `LiveAPIRequestTests`, `ParkOutboxTests`; `scripts/boot-check.sh` (SIGTERM → exit 0) |
 | FR-42 | The request is server-owned, versioned state | unit | — | `server/test/requestState.test.ts`, `server/test/assistantLoop.test.ts` (request state, `update_request`) |
 | FR-43 | Options from the latest search; the assistant says no | nightly + unit | — (first run after #168 deploys) | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantSayNo.test.ts`, `server/test/assistantValidators.test.ts`, `server/test/assistantLoop.test.ts`; iOS `AssistantPlanPresentationTests` (the two "no" cards and the labels on the wire) |
-| FR-44 | Place resolution with confidence and walking times | pending | — | #169 |
+| FR-44 | Place resolution with confidence and walking times | unit | — | `server/test/placeScore.test.ts`, `server/test/assistantPlaceResolution.test.ts`, `server/test/assistantPlaces.test.ts`; `pnpm -C server verify:places` (the real chain, no model); live FR-35/36/40 stay green |
 | FR-45 | Three intents, request chips, near-miss cards | pending | — | #170 |
 | FR-46 | One ranking; map, list, directions; garages open in-app with their fetched time | pending | — | #171 |
 | FR-47 | Budget-aware search and saved preferences | pending | — | #172 |
@@ -1178,11 +1178,81 @@ offered with "(2 hr max)" rather than as a near-miss (the golden cases
 CS-09 and IM-03 in FR-48 need that first).
 
 ### FR-44 — Place resolution with a confidence score and walking times (#169, WS-1)
-**Accepted when** `geocode_place` returns a scored resolution the model
-can't override (found / ambiguous / closest-only / none), Apple
-autocomplete catches what search misses, Apple quota falls through to the
-next source, and plan walk times come from Apple walking ETAs with the
-straight-line estimate marked. Unit; FR-35/36/40 live stay green.
+
+How sure a place lookup is, is a number the server computes and the model
+can't change, and a walk is a walking time (server/API.md, "Place search"
+and "Walking times").
+
+- **Every result is scored 0–1** (`placeScore.ts`, pure): the share of the
+  name it carries (up to 0.5), the area the user named (±0.2), its
+  distance from where the search looked (up to 0.15), whether it is a
+  business (+0.1), and whether its source listed it first (+0.05).
+- **The scores decide the outcome** (`placeMatch.ts`, against
+  `RESOLUTION_THRESHOLDS`): one place (`found`), several to choose from
+  (`ambiguous`, at most three, nearest first), only the closest thing
+  (`closest_only`, said as that), or nothing (`none`). `geocode_place`
+  returns the outcome with its confidence; the request's place is set from
+  it by the server.
+- **Nothing found is said as nothing.** A result that shares no word with
+  what the user said is never offered as "the closest thing", however
+  near the phone it is, and the answer carries no point at all — the
+  phone's location is never substituted for a place that wasn't found.
+- **Autocomplete catches what the search misses.** Apple's search is
+  asked first; when it comes back weak, Apple's autocomplete is asked
+  with the same bias and its completions (at most three) are fetched. The
+  result says which of the two found it.
+- **Quota falls through.** Apple's HTTP 429 is the typed reason `quota`:
+  the next source answers, and the decision row says why the first didn't.
+- **Every lookup is on the record**: the query, the winning source, the
+  confidence, and the five best candidates with their scores.
+- **Walks are walking times.** A search of a named place asks Apple for
+  the walk from the place to its nearest options (one request per search,
+  ten options) before the request's walk limit and order are read off
+  them. The card says which walks are real (`walkEstimate: false`) and
+  which are the straight-line estimate (`true`), and a walking-time
+  failure never fails a search.
+
+**Accepted when** each of these holds:
+
+- "lola42", with a search that returns only the Seaport neighborhood and
+  an autocomplete that returns LoLa 42, is found with the name matched, by
+  `apple_autocomplete`, in exactly one search, one autocomplete, and one
+  completion request.
+- "Moo steakhouse" with its two locations is ambiguous, the two scores
+  within the gap of each other; "Moo steakhouse in Seaport" is the Melcher
+  St location with confidence at or above `found`.
+- "Starbucks" with six locations is ambiguous with at most three choices,
+  nearest the phone first.
+- "xyzzy restaurant" with an unrelated result nearby is none, and the tool
+  result contains neither the phone's coordinates nor that result.
+- Apple answering 429 gives `{ok: false, reason: "quota"}`; the chain
+  consults Nominatim, and the decision row records the quota.
+- A 420-second walking time puts 7 minutes on that option with
+  `walkEstimate: false`; the option with no walking time keeps its
+  estimate with `walkEstimate: true`.
+- A 5-minute walk limit is judged on the real walk: an option the
+  estimate would pass and the walk fails is a near-miss, with the real
+  minutes.
+
+Coverage is unit only; the live FR-35, FR-36, and FR-40 tests run the
+same code on prod with the Apple key.
+
+Evidence: `placeScore.test.ts` (20 tests: each part of the score, the four
+outcomes, the name as it was said, initials, the clear-winner rule, when
+a search is weak); `assistantPlaceResolution.test.ts` (32 tests:
+autocomplete and what it may fetch, quota through the chain and onto the
+decision row, `/v1/etas` requests and failures, the scored
+`geocode_place` answers and rows, walking times through the searches onto
+the card); `assistantPlaces.test.ts` (the classifier's earlier cases,
+unchanged in what they find). `pnpm -C server verify:places` prints each
+device-test phrase's source and confidence through the real chain.
+
+Not here: the autocomplete and walking-time requests were written against
+Apple's reference and fixtures and have not been run against Apple from a
+development machine (no Maps key locally) — `verify:places` with the key
+is the check. The "~7 min" rendering of an estimate is FR-46. A
+cross-street ("Boylston and Dartmouth") still depends on Apple's search:
+Nominatim returns nothing for one.
 
 ### FR-45 — Three intents, request chips, near-miss cards (#170, WS-1)
 **Accepted when** park-now, park-later, and garage-or-lot enable their own

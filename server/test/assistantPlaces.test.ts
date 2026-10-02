@@ -32,7 +32,11 @@ import {
 } from "../src/services/assistant/geocoder.js";
 import type { ModelClient, ModelResponse, ModelTurn } from "../src/services/assistant/loop.js";
 import { phoneLocationLine, runAssistantTurn } from "../src/services/assistant/loop.js";
-import { choiceReply, classifyPlaceMatches } from "../src/services/assistant/placeMatch.js";
+import {
+  carriesTheName,
+  choiceReply,
+  classifyPlaceMatches,
+} from "../src/services/assistant/placeMatch.js";
 import { AssistantTools } from "../src/services/assistant/tools.js";
 import type { ToolContext } from "../src/services/assistant/tools.js";
 import { API_KEY, makeFakeDb, makePolicyService, makeTestApp } from "./helpers.js";
@@ -122,7 +126,12 @@ describe("near a covered city", () => {
 describe("what a place search found", () => {
   test("the named restaurant, among near-misses and the area it's in", () => {
     const match = classifyPlaceMatches("Lola 42 Seaport", [SEAPORT_AREA, LOLA_42, SEAPORT_HOTEL]);
-    expect(match).toEqual({ kind: "found", place: LOLA_42, nameMatched: true });
+    expect(match).toEqual({
+      kind: "found",
+      place: LOLA_42,
+      nameMatched: true,
+      confidence: expect.any(Number),
+    });
   });
 
   test("a stretched spelling is the same name, and the named area picks the location", () => {
@@ -130,7 +139,12 @@ describe("what a place search found", () => {
       MOOO_BEACON_HILL,
       MOOO_SEAPORT,
     ]);
-    expect(match).toEqual({ kind: "found", place: MOOO_SEAPORT, nameMatched: true });
+    expect(match).toEqual({
+      kind: "found",
+      place: MOOO_SEAPORT,
+      nameMatched: true,
+      confidence: expect.any(Number),
+    });
   });
 
   test("a tapped choice resolves to exactly that location (its reply round-trips)", () => {
@@ -144,6 +158,7 @@ describe("what a place search found", () => {
         kind: "found",
         place: picked,
         nameMatched: true,
+        confidence: expect.any(Number),
       });
     }
   });
@@ -156,12 +171,22 @@ describe("what a place search found", () => {
 
   test("an area name is the area, not a hotel that contains it", () => {
     const match = classifyPlaceMatches("Seaport", [SEAPORT_HOTEL, SEAPORT_AREA]);
-    expect(match).toEqual({ kind: "found", place: SEAPORT_AREA, nameMatched: true });
+    expect(match).toEqual({
+      kind: "found",
+      place: SEAPORT_AREA,
+      nameMatched: true,
+      confidence: expect.any(Number),
+    });
   });
 
   test("a search that only found the neighborhood says so (the silent 'Seaport center' fallback)", () => {
     const match = classifyPlaceMatches("Lola 42 Seaport", [SEAPORT_AREA]);
-    expect(match).toEqual({ kind: "found", place: SEAPORT_AREA, nameMatched: false });
+    expect(match).toEqual({
+      kind: "found",
+      place: SEAPORT_AREA,
+      nameMatched: false,
+      confidence: expect.any(Number),
+    });
   });
 
   test("the same place listed twice is one place", () => {
@@ -171,6 +196,7 @@ describe("what a place search found", () => {
       kind: "found",
       place: LOLA_42,
       nameMatched: true,
+      confidence: expect.any(Number),
     });
   });
 });
@@ -282,7 +308,8 @@ describe("Apple Maps Server API adapter", () => {
       area: "Seaport",
       kind: "poi",
       city: "bos",
-      source: "apple_maps",
+      source: "apple_search",
+      rank: 0,
     });
     expect(second.ok).toBe(true);
     // One token exchange serves both searches.
@@ -352,12 +379,12 @@ describe("Apple Maps Server API adapter", () => {
   });
 
   test("a failure is a typed ok:false, never a throw", async () => {
-    const { fetchFn } = fakeApple(() => ({ status: 429, body: { error: { message: "quota" } } }));
+    const { fetchFn } = fakeApple(() => ({ status: 503, body: { error: { message: "down" } } }));
     const outcome = await new AppleMapsGeocoder(CONFIG, { fetchFn }).geocode({
       query: "Lola 42",
       city: "bos",
     });
-    expect(outcome).toEqual({ ok: false, reason: "apple maps 429" });
+    expect(outcome).toEqual({ ok: false, reason: "apple maps 503" });
   });
 });
 
@@ -365,13 +392,20 @@ describe("the geocoder chain", () => {
   const answers = (results: GeocodeResult[]): GeocoderProvider => ({
     geocode: async () => ({ ok: true, results }),
   });
-  const fails: GeocoderProvider = { geocode: async () => ({ ok: false, reason: "down" }) };
+  const fails: GeocoderProvider = {
+    id: "first",
+    geocode: async () => ({ ok: false, reason: "down" }),
+  };
 
-  test("Apple down → Nominatim answers", async () => {
+  test("Apple down → Nominatim answers, and the failure is on the answer", async () => {
     const outcome = await new FallbackGeocoder([fails, answers([SEAPORT_AREA])]).geocode({
       query: "Seaport",
     });
-    expect(outcome).toEqual({ ok: true, results: [SEAPORT_AREA] });
+    expect(outcome).toEqual({
+      ok: true,
+      results: [SEAPORT_AREA],
+      failures: [{ provider: "first", reason: "down" }],
+    });
   });
 
   test("Apple found nothing → Nominatim is still asked", async () => {
@@ -389,6 +423,7 @@ describe("the geocoder chain", () => {
     expect(await new FallbackGeocoder([fails, answers([])]).geocode({ query: "x" })).toEqual({
       ok: true,
       results: [],
+      failures: [{ provider: "first", reason: "down" }],
     });
   });
 });
@@ -708,6 +743,7 @@ describe("review fixes: names people type", () => {
       kind: "found",
       place: NEWBURY,
       nameMatched: true,
+      confidence: expect.any(Number),
     });
   });
 
@@ -731,6 +767,7 @@ describe("review fixes: names people type", () => {
       kind: "found",
       place: neighborhood,
       nameMatched: true,
+      confidence: expect.any(Number),
     });
     // The same name in two cities is still a question.
     const elsewhere = {
@@ -751,6 +788,7 @@ describe("review fixes: names people type", () => {
       kind: "found",
       place: segments[0],
       nameMatched: true,
+      confidence: expect.any(Number),
     });
   });
 
@@ -778,6 +816,7 @@ describe("review fixes: names people type", () => {
       kind: "found",
       place: park,
       nameMatched: true,
+      confidence: expect.any(Number),
     });
   });
 });
@@ -790,10 +829,9 @@ describe("independent review fixes: the chain", () => {
         { geocode: async () => ({ ok: true, results: [fuzzy] }) },
         { geocode: async () => ({ ok: true, results: [LOLA_42] }) },
       ],
-      (query, results) => {
-        const match = classifyPlaceMatches(query, results);
-        return match.kind !== "found" || match.nameMatched;
-      },
+      // The chain's own rule (index.ts): stop at a source whose results
+      // carry the name.
+      carriesTheName,
     );
     const outcome = await chain.geocode({ query: "Lola 42" });
     expect(outcome.ok && outcome.results).toEqual([fuzzy, LOLA_42]);
@@ -801,6 +839,7 @@ describe("independent review fixes: the chain", () => {
       kind: "found",
       place: LOLA_42,
       nameMatched: true,
+      confidence: expect.any(Number),
     });
   });
 

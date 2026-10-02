@@ -263,6 +263,23 @@ export function walkMinutesFor(distanceM: number): number {
   return Math.max(1, Math.round((distanceM * DETOUR_FACTOR) / WALK_M_PER_MIN));
 }
 
+/** A block in one line: "Free after 6 PM on Seaport Blvd — 4 min walk".
+ * Rebuilt by the search when a walking time replaces the estimate, so the
+ * line never states a walk the option doesn't carry. */
+export function streetSummary(block: {
+  stateText: string;
+  street: string | null;
+  zoneNumber: string | null;
+  walkMinutes: number;
+}): string {
+  const where = block.street
+    ? `on ${block.street}`
+    : block.zoneNumber
+      ? `in zone ${block.zoneNumber}`
+      : "on this block";
+  return `${block.stateText} ${where} — ${block.walkMinutes} min walk`;
+}
+
 /** One block's stay: its state for the window, and its price — the whole
  * stay when the meter allows it; when the meter runs past the max stay,
  * the max stay's worth of metered time from the first metered minute (the
@@ -342,24 +359,20 @@ export async function streetOptionsNear(
     const { window, exceedsMaxStay, clampedMinutes, price } = priced;
     const pin = zone.centerline ? nearestPointOn(zone.centerline, q.lat, q.lng) : null;
     const street = displayStreet(zone.street);
+    const zoneNumber = zone.providerZoneNumber || null;
     const walkMinutes = walkMinutesFor(zone.distanceM);
-    const where = street
-      ? `on ${street}`
-      : zone.providerZoneNumber
-        ? `in zone ${zone.providerZoneNumber}`
-        : "on this block";
     return {
       zoneId: zone.zoneId,
       city: zone.city,
       street,
-      zoneNumber: zone.providerZoneNumber || null,
+      zoneNumber,
       lat: pin?.lat ?? q.lat,
       lng: pin?.lng ?? q.lng,
       distanceM: Math.round(zone.distanceM),
       walkMinutes,
       state: window.state,
       stateText: window.stateText,
-      summary: `${window.stateText} ${where} — ${walkMinutes} min walk`,
+      summary: streetSummary({ stateText: window.stateText, street, zoneNumber, walkMinutes }),
       costUsd: price.totalUsd,
       meterUsd: price.meterUsd,
       feeUsd: price.feeUsd,

@@ -45,7 +45,7 @@ import { makeParkWhizProvider } from "./services/garage/parkwhiz.js";
 import { makeSpotHeroProvider } from "./services/garage/spotheroDeepLink.js";
 import { AppleMapsGeocoder } from "./services/assistant/appleMaps.js";
 import { FallbackGeocoder, NominatimGeocoder } from "./services/assistant/geocoder.js";
-import { classifyPlaceMatches } from "./services/assistant/placeMatch.js";
+import { carriesTheName } from "./services/assistant/placeMatch.js";
 import { makeLinkHttpClient } from "./services/link/linkClient.js";
 import { LinkWallet } from "./services/link/linkWallet.js";
 import { makeItineraryWorker } from "./jobs/itineraryTick.js";
@@ -237,10 +237,7 @@ const geocoder = new FallbackGeocoder(
     new NominatimGeocoder(),
   ],
   // Ask the next source when this one's results don't carry the name.
-  (query, results) => {
-    const match = classifyPlaceMatches(query, results);
-    return match.kind !== "found" || match.nameMatched;
-  },
+  carriesTheName,
 );
 const assistantTools = new AssistantTools({
   db,

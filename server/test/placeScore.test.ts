@@ -353,6 +353,168 @@ describe("one place, several, the closest thing, or nothing", () => {
   });
 });
 
+describe("a fragment of a word is not the word", () => {
+  /** "W XYZ Bar": what autocomplete offered for "xyzzy restaurant" on
+   * prod (2026-10-02), resolved at 0.80 because "XYZ" spells the start of
+   * "xyzzy". */
+  const W_XYZ = poi("W XYZ Bar", 42.3517, -71.0645, "100 Stuart St", "Bay Village");
+  const PRUDENTIAL = poi("Prudential Center", 42.3471, -71.0825, "800 Boylston St", "Back Bay");
+  const MASS_AVE: GeocodeResult = {
+    lat: 42.3466,
+    lng: -71.0887,
+    displayName: "Massachusetts Avenue, Back Bay",
+    city: "bos",
+    name: "Massachusetts Avenue",
+    area: "Back Bay",
+    areaNames: ["Boston", "Back Bay"],
+    kind: "area",
+  };
+
+  test("'xyzzy restaurant' is not W XYZ Bar: not found, at no confidence", () => {
+    const [scored] = scoreCandidates("xyzzy restaurant", [W_XYZ], SEAPORT_PHONE);
+    expect(scored!.parts.name).toBe(0);
+    expect(scored!.nameMatched).toBe(false);
+    expect(scored!.evidence).toBe(false);
+    expect(classifyPlaceMatches("xyzzy restaurant", [W_XYZ], SEAPORT_PHONE)).toEqual({
+      kind: "none",
+    });
+    expect(carriesTheName("xyzzy restaurant", [W_XYZ], SEAPORT_PHONE)).toBe(false);
+  });
+
+  test("a word that is only the start of a name word counts half, and alone is never the place", () => {
+    const [pru] = scoreCandidates("Pru", [PRUDENTIAL], BOSTON);
+    expect(pru!.parts.name).toBe(0.25);
+    expect(pru!.nameMatched).toBe(false);
+    expect(pru!.evidence).toBe(false);
+    expect(classifyPlaceMatches("Pru", [PRUDENTIAL], BOSTON)).toEqual({ kind: "none" });
+    // With a whole word beside it, it is the place, and less sure than a
+    // name said in full.
+    const mass = classifyPlaceMatches("Mass Ave", [MASS_AVE], BOSTON);
+    const full = classifyPlaceMatches("Massachusetts Ave", [MASS_AVE], BOSTON);
+    expect(mass).toMatchObject({ kind: "found", place: MASS_AVE, nameMatched: true });
+    expect(full).toMatchObject({ kind: "found", place: MASS_AVE, nameMatched: true });
+    const confidence = (m: typeof mass) => (m.kind === "found" ? m.confidence : NaN);
+    expect(confidence(mass)).toBeLessThan(confidence(full));
+  });
+
+  test("words run together are the words: 'lola42', 'Trader Joes', 'Legal Seafoods'", () => {
+    expect(classifyPlaceMatches("lola42", [LOLA_42], BOSTON)).toMatchObject({
+      kind: "found",
+      nameMatched: true,
+    });
+    const joes = poi("Trader Joe's", 42.3489, -71.0889, "899 Boylston St", "Back Bay");
+    expect(classifyPlaceMatches("Trader Joes", [joes], BOSTON)).toMatchObject({
+      kind: "found",
+      place: joes,
+      nameMatched: true,
+    });
+    const legal = poi("Legal Sea Foods", 42.3519, -71.0447, "270 Northern Ave", "Seaport");
+    expect(classifyPlaceMatches("Legal Seafoods", [legal], BOSTON)).toMatchObject({
+      kind: "found",
+      place: legal,
+      nameMatched: true,
+    });
+    // Run together, but not what the name says: no match.
+    expect(scoreCandidates("lola43", [LOLA_42], BOSTON)[0]!.parts.name).toBe(0);
+  });
+});
+
+describe("a neighborhood's name is the neighborhood", () => {
+  // What a place search returns for a bare neighborhood name: businesses
+  // and streets named after it, each saying it lies in that neighborhood.
+  const SEAPORT_HOTEL = poi("Seaport Hotel", 42.3487, -71.0415, "1 Seaport Ln", "Seaport");
+  const WTC = poi("Seaport World Trade Center", 42.3485, -71.0391, "200 Seaport Blvd", "Seaport");
+  const BACK_BAY_STATION = poi(
+    "Back Bay Station",
+    42.3473,
+    -71.0755,
+    "145 Dartmouth St",
+    "Back Bay",
+    { category: "PublicTransport" },
+  );
+  const BACK_BAY_HOTEL = poi("The Back Bay Hotel", 42.3502, -71.0729, "350 Stuart St", "Back Bay");
+  const BACK_BAY: GeocodeResult = {
+    lat: 42.3503,
+    lng: -71.081,
+    displayName: "Back Bay, Boston",
+    city: "bos",
+    name: "Back Bay",
+    areaNames: ["Boston"],
+    kind: "area",
+  };
+  const FENWAY_STOP = poi("Fenway", 42.3451, -71.1043, "Park Dr", "Fenway", {
+    category: "PublicTransport",
+  });
+  const FENWAY_PARK = poi("Fenway Park", 42.3467, -71.0972, "4 Jersey St", "Fenway");
+  const FENWAY: GeocodeResult = {
+    lat: 42.3429,
+    lng: -71.1003,
+    displayName: "Fenway, Boston",
+    city: "bos",
+    name: "Fenway",
+    areaNames: ["Boston"],
+    kind: "area",
+  };
+
+  test("'Seaport' with only businesses named after it: not one of them", () => {
+    const results = [SEAPORT_HOTEL, WTC];
+    const match = classifyPlaceMatches("Seaport", results, BOSTON);
+    expect(match.kind === "found" && match.nameMatched).toBe(false);
+    // So the chain keeps asking: the next source has the neighborhood.
+    expect(carriesTheName("Seaport", results, BOSTON)).toBe(false);
+    // With it: the area, ahead of the hotel that lists first.
+    const withArea = classifyPlaceMatches("Seaport", [...results, SEAPORT_AREA], BOSTON);
+    expect(withArea).toMatchObject({ kind: "found", place: SEAPORT_AREA, nameMatched: true });
+    expect(carriesTheName("Seaport", [...results, SEAPORT_AREA], BOSTON)).toBe(true);
+  });
+
+  test("'Back Bay' and 'Back Bay Boston': the area, not the station or the hotel", () => {
+    const results = [BACK_BAY_STATION, BACK_BAY_HOTEL, BACK_BAY];
+    for (const query of ["Back Bay", "back bay boston", "the Back Bay"]) {
+      expect(classifyPlaceMatches(query, results, BOSTON), query).toMatchObject({
+        kind: "found",
+        place: BACK_BAY,
+        nameMatched: true,
+      });
+    }
+    expect(carriesTheName("Back Bay", [BACK_BAY_STATION, BACK_BAY_HOTEL], BOSTON)).toBe(false);
+  });
+
+  test("'Fenway': the neighborhood over the T stop of the same name; the stop when nothing else is called that", () => {
+    expect(
+      classifyPlaceMatches("Fenway", [FENWAY_STOP, FENWAY_PARK, FENWAY], BOSTON),
+    ).toMatchObject({ kind: "found", place: FENWAY });
+    // No source had the area: the stop called exactly that will do...
+    expect(classifyPlaceMatches("Fenway", [FENWAY_STOP, FENWAY_PARK], BOSTON)).toMatchObject({
+      kind: "found",
+      place: FENWAY_STOP,
+      nameMatched: true,
+    });
+    // ...but the next source is asked for the area first.
+    expect(carriesTheName("Fenway", [FENWAY_STOP, FENWAY_PARK], BOSTON)).toBe(false);
+  });
+
+  test("being in a neighborhood earns a business nothing when the query is that neighborhood", () => {
+    const [hotel] = scoreCandidates("Seaport", [SEAPORT_HOTEL], BOSTON);
+    expect(hotel!.parts.poi).toBe(0);
+    // A business asked for by its own name keeps the bonus.
+    expect(scoreCandidates("Seaport Hotel", [SEAPORT_HOTEL], BOSTON)[0]!.parts.poi).toBe(0.1);
+  });
+
+  test("names that contain a neighborhood stay what they name", () => {
+    expect(
+      classifyPlaceMatches("Seaport Hotel", [SEAPORT_AREA, SEAPORT_HOTEL], BOSTON),
+    ).toMatchObject({ kind: "found", place: SEAPORT_HOTEL });
+    expect(classifyPlaceMatches("Fenway Park", [FENWAY, FENWAY_PARK], BOSTON)).toMatchObject({
+      kind: "found",
+      place: FENWAY_PARK,
+    });
+    expect(
+      classifyPlaceMatches("Moo steakhouse in Seaport", [MOOO_BEACON_HILL, MOOO_SEAPORT], BOSTON),
+    ).toMatchObject({ kind: "found", place: MOOO_SEAPORT });
+  });
+});
+
 describe("when a search is too weak to stand on", () => {
   test("nothing found, nothing carrying the name, or a best under the line", () => {
     expect(searchIsWeak("lola42", [], BOSTON)).toBe(true);

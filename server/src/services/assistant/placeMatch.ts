@@ -31,13 +31,13 @@ import {
   areaTokensOf,
   bestOf,
   nameOf,
+  phraseOf,
   readQuery,
   scoreCandidates,
 } from "./placeScore.js";
+import { nameTokens } from "./placeTokens.js";
 
-import { isFillerWord, nameTokens } from "./placeTokens.js";
-
-export { nameTokens, tokenMatches } from "./placeTokens.js";
+export { nameTokens } from "./placeTokens.js";
 
 /** Two results closer than this are the same place listed twice. */
 export const DISTINCT_M = RESOLUTION_THRESHOLDS.distinctM;
@@ -89,6 +89,14 @@ export function classifyPlaceMatches(
   if (reading.name.length === 0) return found(scored[0]!, true);
 
   let matched = scored.filter((s) => s.nameMatched);
+  // A neighborhood's name ("Seaport", "Back Bay") is the neighborhood: a
+  // result called exactly that, the area itself first. A business named
+  // after it ("Seaport Hotel") only carries the name.
+  if (reading.areaName) {
+    const named = matched.filter((s) => phraseOf(nameOf(s.result)) === reading.areaName);
+    const areas = named.filter((s) => s.result.kind === "area");
+    matched = areas.length > 0 ? areas : named;
+  }
   if (matched.length === 0) {
     // Nothing carries the name. The closest thing is offered as exactly
     // that — and only if it shares a word with what the user said: a
@@ -103,9 +111,8 @@ export function classifyPlaceMatches(
   // neighborhood, not "Seaport Hotel") — the name as the user said it
   // first, kind words included: "Seaport Hotel" is the hotel, and only
   // then the name without them ("Moo steakhouse" is "Mooo....").
-  const spoken = (tokens: string[]) => tokens.filter((t) => !isFillerWord(t)).join(" ");
-  const said = spoken(nameTokens(query).filter((t) => !reading.area.includes(t)));
-  const asSaid = matched.filter((s) => spoken(nameOf(s.result)) === said);
+  const said = phraseOf(nameTokens(query).filter((t) => !reading.area.includes(t)));
+  const asSaid = matched.filter((s) => phraseOf(nameOf(s.result)) === said);
   const exact =
     asSaid.length > 0
       ? asSaid
@@ -181,7 +188,14 @@ export function carriesTheName(
   bias?: { lat: number; lng: number } | null,
 ): boolean {
   const match = classifyPlaceMatches(query, results, bias);
-  return match.kind === "ambiguous" || (match.kind === "found" && match.nameMatched);
+  if (match.kind === "none" || (match.kind === "found" && !match.nameMatched)) return false;
+  // A neighborhood's name is carried only by the neighborhood: a T stop or
+  // a park called exactly that will do if no source has the area, but the
+  // next source is asked for it first.
+  const { areaName } = readQuery(query, results);
+  return (
+    areaName === null || results.some((r) => r.kind === "area" && phraseOf(nameOf(r)) === areaName)
+  );
 }
 
 /** A choice's button text: the name, then where it is. */

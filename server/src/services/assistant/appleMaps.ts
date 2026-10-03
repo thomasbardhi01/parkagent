@@ -106,7 +106,7 @@ const CACHE_MAX = 500;
 export const MAX_COMPLETIONS = 3;
 /** Apple's limit on /v1/etas destinations. */
 export const MAX_ETA_DESTINATIONS = 10;
-/** An echoed destination this close to the one asked about is that one. */
+/** The same name this close is one place found twice. */
 const SAME_POINT_M = 30;
 
 /** Apple refused for the daily service-call quota (HTTP 429). */
@@ -235,8 +235,7 @@ export class AppleMapsGeocoder implements GeocoderProvider {
         });
         const res = await this.authorizedGet(`/v1/etas?${params.toString()}`, ETA_TIMEOUT_MS);
         const body = (await res.json()) as { etas?: AppleEta[] };
-        const etas = Array.isArray(body.etas) ? body.etas : [];
-        out.push(...chunk.map((destination, index) => etaFor(destination, index, etas)));
+        out.push(...etasFor(chunk, Array.isArray(body.etas) ? body.etas : []));
       }
     } catch {
       return null;
@@ -480,27 +479,48 @@ function coordinatePair(point: { lat: number; lng: number }): string {
   return `${Number(point.lat.toFixed(6))},${Number(point.lng.toFixed(6))}`;
 }
 
-/** The ETA for one destination: the entry at its own index when that
- * entry echoes it (or echoes nothing), else whichever entry does. */
-function etaFor(
-  destination: { lat: number; lng: number },
-  index: number,
-  etas: AppleEta[],
-): WalkingEta | null {
-  const isFor = (eta: AppleEta | undefined): boolean => {
-    const lat = eta?.destination?.latitude;
-    const lng = eta?.destination?.longitude;
-    return (
-      typeof lat === "number" &&
-      typeof lng === "number" &&
-      metersBetween(lat, lng, destination.lat, destination.lng) < SAME_POINT_M
-    );
-  };
-  const atIndex = etas[index];
-  const eta = isFor(atIndex) || (atIndex && !atIndex.destination) ? atIndex : etas.find(isFor);
-  const seconds = eta?.expectedTravelTimeSeconds ?? eta?.staticTravelTimeSeconds;
+/** How far Apple may echo a destination from the pin it was asked about
+ * (it can move a pin onto the walkway) and still be answering for it. */
+const ECHO_SLACK_M = 200;
+
+/**
+ * Apple's answers, one per destination asked about, in order: each answer
+ * goes to the destination its echoed coordinate is nearest (within
+ * ECHO_SLACK_M), so an answer left out, or moved onto the walkway, never
+ * lends its time to another pin. An answer that echoes nothing — or whose
+ * nearest destination already has one — takes its own place in the list.
+ */
+function etasFor(
+  destinations: readonly { lat: number; lng: number }[],
+  etas: readonly AppleEta[],
+): (WalkingEta | null)[] {
+  const out: (WalkingEta | null)[] = destinations.map(() => null);
+  etas.forEach((eta, index) => {
+    const walk = walkOf(eta);
+    if (!walk) return;
+    const lat = eta.destination?.latitude;
+    const lng = eta.destination?.longitude;
+    let target = -1;
+    if (typeof lat === "number" && typeof lng === "number") {
+      let nearest = ECHO_SLACK_M;
+      destinations.forEach((d, i) => {
+        const m = metersBetween(lat, lng, d.lat, d.lng);
+        if (m <= nearest && out[i] === null) {
+          nearest = m;
+          target = i;
+        }
+      });
+    }
+    if (target < 0 && index < destinations.length && out[index] === null) target = index;
+    if (target >= 0) out[target] = walk;
+  });
+  return out;
+}
+
+function walkOf(eta: AppleEta): WalkingEta | null {
+  const seconds = eta.expectedTravelTimeSeconds ?? eta.staticTravelTimeSeconds;
   if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0) return null;
-  const meters = eta?.distanceMeters;
+  const meters = eta.distanceMeters;
   return {
     seconds,
     meters: typeof meters === "number" && Number.isFinite(meters) && meters >= 0 ? meters : 0,

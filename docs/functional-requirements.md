@@ -1195,10 +1195,15 @@ and "Walking times").
   (`closest_only`, said as that), or nothing (`none`). `geocode_place`
   returns the outcome with its confidence; the request's place is set from
   it by the server.
-- **Nothing found is said as nothing.** A result that shares no word with
-  what the user said is never offered as "the closest thing", however
-  near the phone it is, and the answer carries no point at all — the
-  phone's location is never substituted for a place that wasn't found.
+- **Nothing found is said as nothing.** A result that shares no whole
+  word with what the user said is never offered as "the closest thing",
+  however near the phone it is, and the answer carries no point at all —
+  the phone's location is never substituted for a place that wasn't
+  found. A fragment of a word is not the word: "xyzzy restaurant" is not
+  "W XYZ Bar", and "Pru" alone is not the Prudential Center.
+- **A neighborhood's name is the neighborhood.** "Seaport", "Back Bay",
+  and "Fenway" resolve to the area, never a business named after it; when
+  the first source has only businesses, the next is asked.
 - **Autocomplete catches what the search misses.** Apple's search is
   asked first; when it comes back weak, Apple's autocomplete is asked
   with the same bias and its completions (at most three) are fetched. The
@@ -1208,8 +1213,9 @@ and "Walking times").
 - **Every lookup is on the record**: the query, the winning source, the
   confidence, and the five best candidates with their scores.
 - **Walks are walking times.** A search of a named place asks Apple for
-  the walk from the place to its nearest options (one request per search,
-  ten options) before the request's walk limit and order are read off
+  the walk from the place to the options it will show, then the nearest
+  (ten a request, a second request only for options the real walks bring
+  into view), before the request's walk limit and order are read off
   them. The card says which walks are real (`walkEstimate: false`) and
   which are the straight-line estimate (`true`), and a walking-time
   failure never fails a search.
@@ -1226,7 +1232,10 @@ and "Walking times").
 - "Starbucks" with six locations is ambiguous with at most three choices,
   nearest the phone first.
 - "xyzzy restaurant" with an unrelated result nearby is none, and the tool
-  result contains neither the phone's coordinates nor that result.
+  result contains neither the phone's coordinates nor that result; so is
+  "xyzzy restaurant" answered by autocomplete with "W XYZ Bar".
+- "Seaport", "Back Bay", and "Fenway" are the area when the first source
+  answers with businesses named after them and the next has the area.
 - Apple answering 429 gives `{ok: false, reason: "quota"}`; the chain
   consults Nominatim, and the decision row records the quota.
 - A 420-second walking time puts 7 minutes on that option with
@@ -1235,24 +1244,30 @@ and "Walking times").
 - A 5-minute walk limit is judged on the real walk: an option the
   estimate would pass and the walk fails is a near-miss, with the real
   minutes.
+- The options a search shows carry real walks however far down the
+  nearest list they sit (the Saturday free blocks).
 
 Coverage is unit only; the live FR-35, FR-36, and FR-40 tests run the
 same code on prod with the Apple key.
 
-Evidence: `placeScore.test.ts` (20 tests: each part of the score, the four
-outcomes, the name as it was said, initials, the clear-winner rule, when
-a search is weak); `assistantPlaceResolution.test.ts` (32 tests:
+Evidence: `placeScore.test.ts` (28 tests: each part of the score, the four
+outcomes, the name as it was said, initials, words run together,
+fragments, neighborhoods, the clear-winner rule, when a search is weak);
+`assistantPlaceResolution.test.ts` (38 tests:
 autocomplete and what it may fetch, quota through the chain and onto the
 decision row, `/v1/etas` requests and failures, the scored
-`geocode_place` answers and rows, walking times through the searches onto
-the card); `assistantPlaces.test.ts` (the classifier's earlier cases,
-unchanged in what they find). `pnpm -C server verify:places` prints each
-device-test phrase's source and confidence through the real chain.
+`geocode_place` answers and rows, the W XYZ Bar and neighborhood cases
+through the chain, walking times through the searches onto the card);
+`assistantPlaces.test.ts` (the classifier's earlier cases, unchanged in
+what they find). `pnpm -C server verify:places` prints each device-test
+phrase's source and confidence through the real chain, checks each
+against what it should come to, and exits 1 when one doesn't.
 
-Not here: the autocomplete and walking-time requests were written against
-Apple's reference and fixtures and have not been run against Apple from a
-development machine (no Maps key locally) — `verify:places` with the key
-is the check. The "~7 min" rendering of an estimate is FR-46. A
+Run against Apple on prod with `verify:places` (#198, 2026-10-02):
+autocomplete and walking times work. The three things that run found — "W
+XYZ Bar" taken for "xyzzy restaurant", the Seaport Hotel for "Seaport",
+and Saturday free blocks left with estimates — are fixed and pinned
+above. Not here: the "~7 min" rendering of an estimate is FR-46. A
 cross-street ("Boylston and Dartmouth") still depends on Apple's search:
 Nominatim returns nothing for one.
 

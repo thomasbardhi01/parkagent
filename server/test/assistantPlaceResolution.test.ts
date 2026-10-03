@@ -37,7 +37,11 @@ import {
 import { carriesTheName, classifyPlaceMatches } from "../src/services/assistant/placeMatch.js";
 import { RESOLUTION_THRESHOLDS } from "../src/services/assistant/placeScore.js";
 import type { SearchResult } from "../src/services/assistant/search.js";
-import { AssistantTools, MAX_WALK_TIMED } from "../src/services/assistant/tools.js";
+import {
+  AssistantTools,
+  MAX_WALK_REQUESTS,
+  MAX_WALK_TIMED,
+} from "../src/services/assistant/tools.js";
 import type { ToolContext } from "../src/services/assistant/tools.js";
 import type { GarageOption, GarageProvider } from "../src/services/garage/garageProvider.js";
 import type { Candidate } from "../src/services/zoneLookup.js";
@@ -510,6 +514,37 @@ describe("Apple walking times (/v1/etas)", () => {
     expect(etas).toEqual([{ seconds: 300, meters: 390 }, null, { seconds: 600, meters: 780 }]);
   });
 
+  test("an answer Apple moved onto the walkway, or sent out of order, still lands on its own pin", async () => {
+    // 60 m north of each pin, and in reverse order.
+    const apple = fakeApple({
+      etas: (url) => {
+        const destinations = url.searchParams.get("destinations")!.split("|");
+        return ok({
+          etas: destinations
+            .map((pair, index) => {
+              const [latitude, longitude] = pair.split(",").map(Number);
+              return {
+                destination: { latitude: latitude! + 60 / 111_195, longitude },
+                distanceMeters: 100 * (index + 1),
+                expectedTravelTimeSeconds: 100 * (index + 1),
+              };
+            })
+            .reverse(),
+        });
+      },
+    });
+    const etas = await new AppleMapsGeocoder(CONFIG, { fetchFn: apple.fetchFn }).walkingEtas(
+      ORIGIN,
+      // 300 m apart: each moved answer is still nearest its own pin.
+      [0, 1, 2].map((i) => ({ lat: ORIGIN.lat + (i * 300) / 111_195, lng: ORIGIN.lng })),
+    );
+    expect(etas).toEqual([
+      { seconds: 100, meters: 100 },
+      { seconds: 200, meters: 200 },
+      { seconds: 300, meters: 300 },
+    ]);
+  });
+
   test("no more than ten destinations a request", async () => {
     const apple = fakeApple({ etas: (url) => echo(url, () => 60) });
     const etas = await new AppleMapsGeocoder(CONFIG, { fetchFn: apple.fetchFn }).walkingEtas(
@@ -661,6 +696,99 @@ describe("geocode_place returns a scored resolution, and records how it was scor
       label: "LoLa 42, Seaport",
     });
   });
+
+  test("'xyzzy restaurant' answered by autocomplete with W XYZ Bar: not found, and nothing of it in the answer", async () => {
+    // Prod, 2026-10-02: this resolved to W XYZ Bar at 0.80.
+    const wXyz: GeocodeResult = {
+      ...UNRELATED,
+      name: "W XYZ Bar",
+      address: "100 Stuart St",
+      area: "Bay Village",
+      areaNames: ["Boston", "Bay Village"],
+      lat: 42.3517,
+      lng: -71.0645,
+    };
+    const apple = fakeApple({
+      search: () => ok({ results: [] }),
+      autocomplete: () => ok({ results: [completionFor(wXyz, "wxyz")] }),
+      completion: () => ok({ results: [applePlace(wXyz)] }),
+    });
+    const nominatim = nominatimWith([]);
+    const { tools, rows } = toolsWith({
+      geocoder: new FallbackGeocoder(
+        [new AppleMapsGeocoder(CONFIG, { fetchFn: apple.fetchFn }), nominatim],
+        carriesTheName,
+      ),
+    });
+    const out = await tools.execute(ctx, "geocode_place", { query: "xyzzy restaurant" });
+    expect(apple.count("completion")).toBe(1);
+    expect(out.result).toMatchObject({ found: false, resolution: "none" });
+    const sent = JSON.stringify(out.result);
+    expect(sent).not.toContain("XYZ");
+    expect(sent).not.toContain(String(wXyz.lat));
+    // It isn't the place, so the next source was asked too.
+    expect(nominatim.asked).toBe(1);
+    const row = rows("geocode_place")[0]!;
+    expect(row).toMatchObject({ rule: "no_match", outcome: { confidence: null } });
+    const [candidate] = row.outcome["candidates"] as { name: string; score: number }[];
+    expect(candidate).toMatchObject({ name: "W XYZ Bar" });
+    expect(candidate!.score).toBeLessThan(T.ambiguousFloor);
+  });
+
+  test.each([
+    ["Seaport", SEAPORT_AREA],
+    [
+      "Back Bay",
+      {
+        lat: 42.3503,
+        lng: -71.081,
+        displayName: "Back Bay, Boston",
+        city: "bos" as const,
+        name: "Back Bay",
+        areaNames: ["Boston"],
+        kind: "area" as const,
+      },
+    ],
+  ])(
+    "'%s' when Apple only knows businesses named after it: the neighborhood, from the next source",
+    async (query, area) => {
+      const named = (name: string, lat: number, lng: number): GeocodeResult => ({
+        ...LOLA_42,
+        name,
+        address: `1 ${name} Way`,
+        area: query,
+        areaNames: ["Boston", query],
+        lat,
+        lng,
+      });
+      const apple = fakeApple({
+        search: () =>
+          ok({
+            results: [
+              applePlace(named(`${query} Hotel`, area.lat + 0.002, area.lng)),
+              applePlace(named(`${query} Station`, area.lat - 0.002, area.lng)),
+            ],
+          }),
+      });
+      const nominatim = nominatimWith([area]);
+      const { tools, rows } = toolsWith({
+        geocoder: new FallbackGeocoder(
+          [new AppleMapsGeocoder(CONFIG, { fetchFn: apple.fetchFn }), nominatim],
+          carriesTheName,
+        ),
+      });
+      const out = await tools.execute(ctx, "geocode_place", { query });
+      expect(nominatim.asked).toBe(1);
+      expect(out.result).toMatchObject({
+        found: true,
+        match: "exact",
+        resolution: "found",
+        place: { name: query, kind: "area", lat: area.lat, lng: area.lng },
+      });
+      expect(rows("geocode_place")[0]!.outcome).toMatchObject({ source: "nominatim" });
+      expect(ctx.requestState?.place.resolved).toMatchObject({ label: query });
+    },
+  );
 
   test("closest only: said as that, with a confidence under the line for a match", async () => {
     const { tools, rows } = toolsWith({
@@ -964,26 +1092,77 @@ describe("walking times in the searches and on the card", () => {
     });
   });
 
-  test("only the nearest options of a search are timed: one request, however many there are", async () => {
+  test("the options a search shows are the ones timed, however far down the nearest list they sit", async () => {
+    // The 2026-10-02 run on prod: on a Saturday evening the free blocks a
+    // search leads with were the 12th, 13th, and 15th nearest, and kept
+    // "~" while ten nearer ones were timed. Here: fourteen garages 100 m to
+    // 490 m out, the three farthest the cheapest.
+    const metres = Array.from({ length: 14 }, (_, i) => 100 + i * 30);
     const etas = etasByDistance(
-      Object.fromEntries(Array.from({ length: 14 }, (_, i) => [100 + i * 30, 60 * (i + 2)])),
+      Object.fromEntries(metres.map((m) => [m, Math.round(((m * 1.3) / 80) * 60)])),
     );
     const { tools } = toolsWith({
       geocoder: tableGeocoder({ "lola 42": [LOLA_42] }, etas.walkingEtas),
-      // Fourteen garages, 100 m to 490 m out, listed farthest first.
-      garage: garages(
-        Array.from({ length: 14 }, (_, i) => garageNorth(`g${i}`, 100 + i * 30)).reverse(),
-      ),
+      garage: garages(metres.map((m) => garageNorth(`g${m}`, m, m >= 430 ? { priceUsd: 5 } : {}))),
     });
     await tools.execute(ctx, "geocode_place", { query: "Lola 42" });
     await tools.execute(ctx, "update_request", window3pm);
-    await tools.execute(ctx, "search_garages", {});
+    const search = (await tools.execute(ctx, "search_garages", {})).result as SearchResult;
+    const shown = [...search.satisfying, ...search.nearMisses.map((n) => n.option)];
+    // The cheap far ones lead the list.
+    expect(shown.map((o) => o.id)).toEqual(
+      expect.arrayContaining([`v${search.stateVersion}-g430`, `v${search.stateVersion}-g460`]),
+    );
+    // Every option on view has its real walk.
+    expect(shown.filter((o) => o.walkEstimate !== false)).toEqual([]);
+    // One request did it, within Apple's ten.
     expect(etas.calls).toHaveLength(1);
     const asked = etas.calls[0]!.destinations.map((d) =>
       Math.round((d.lat - LOLA_42.lat) * 111_195),
     );
-    expect(asked).toHaveLength(MAX_WALK_TIMED);
-    expect(asked).toEqual(Array.from({ length: MAX_WALK_TIMED }, (_, i) => 100 + i * 30));
+    expect(asked.length).toBeLessThanOrEqual(MAX_WALK_TIMED);
+    expect(asked).toEqual(expect.arrayContaining([430, 460, 490]));
+  });
+
+  test("an option the real walks bring into view is timed by a second request — and there is no third", async () => {
+    // Twelve garages of one price. The ten the first request times all turn
+    // out a half-hour walk away, so the two it didn't time are now the
+    // closest on view.
+    const metres = Array.from({ length: 12 }, (_, i) => 100 + i * 30);
+    const etas = etasByDistance({
+      ...Object.fromEntries(metres.slice(0, 10).map((m) => [m, 1800])),
+      [400]: 420,
+      [430]: 450,
+    });
+    const { tools, rows } = toolsWith({
+      geocoder: tableGeocoder({ "lola 42": [LOLA_42] }, etas.walkingEtas),
+      garage: garages(metres.map((m) => garageNorth(`g${m}`, m))),
+    });
+    await tools.execute(ctx, "geocode_place", { query: "Lola 42" });
+    await tools.execute(ctx, "update_request", window3pm);
+    const search = (await tools.execute(ctx, "search_garages", {})).result as SearchResult;
+    expect(etas.calls).toHaveLength(MAX_WALK_REQUESTS);
+    const second = etas.calls[1]!.destinations.map((d) =>
+      Math.round((d.lat - LOLA_42.lat) * 111_195),
+    );
+    expect(second).toEqual([400, 430]);
+    const shown = [...search.satisfying, ...search.nearMisses.map((n) => n.option)];
+    expect(shown.filter((o) => o.walkEstimate !== false)).toEqual([]);
+    expect(search.satisfying[0]).toMatchObject({ walkMinutes: 7, walkEstimate: false });
+    expect(rows("search_garages")[0]!.outcome).toMatchObject({ walksTimed: 12 });
+  });
+
+  test("a destination Apple gave no time for is not asked about again", async () => {
+    const etas = etasByDistance({});
+    const { tools } = toolsWith({
+      geocoder: tableGeocoder({ "lola 42": [LOLA_42] }, etas.walkingEtas),
+      garage: garages([garageNorth("near", 300), garageNorth("far", 500)]),
+    });
+    await tools.execute(ctx, "geocode_place", { query: "Lola 42" });
+    await tools.execute(ctx, "update_request", window3pm);
+    const search = (await tools.execute(ctx, "search_garages", {})).result as SearchResult;
+    expect(etas.calls).toHaveLength(1);
+    expect(search.satisfying.every((o) => o.walkEstimate === true)).toBe(true);
   });
 });
 

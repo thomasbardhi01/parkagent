@@ -13,6 +13,11 @@
  * the card's words — with Apple's walking time where it has one ("~" marks
  * a straight-line estimate).
  *
+ * Each default place says what it should come to (`expect`), and the run
+ * ends with how many came out otherwise — and, with Apple configured, how
+ * many street options on view kept an estimate. Exit status 1 when any
+ * did. Places only Apple can find are judged only when its key is set.
+ *
  *   pnpm -C server verify:places
  *   pnpm -C server verify:places --places "Lola 42 Seaport,TD Garden"
  *   pnpm -C server verify:places --from 42.3505,-71.0495
@@ -37,6 +42,7 @@ import {
 import type { GeocoderProvider } from "../services/assistant/geocoder.js";
 import type { SearchResult } from "../services/assistant/search.js";
 import { carriesTheName } from "../services/assistant/placeMatch.js";
+import { RESOLUTION_THRESHOLDS } from "../services/assistant/placeScore.js";
 import { AssistantTools } from "../services/assistant/tools.js";
 import type { ToolContext } from "../services/assistant/tools.js";
 import type { AppDb } from "../db.js";
@@ -47,23 +53,90 @@ import { makeCandidateFetcher, makeNearbyZoneFetcher } from "../services/zoneLoo
 
 config({ path: fileURLToPath(new URL("../../../.env", import.meta.url)), quiet: true });
 
-/** The places, and where they really are (for the distance check). */
-const DEFAULT_PLACES: { query: string; real?: { lat: number; lng: number; what: string } }[] = [
-  { query: "Lola 42 Seaport", real: { lat: 42.35458, lng: -71.04526, what: "22 Liberty Dr" } },
-  { query: "Lola 42", real: { lat: 42.35458, lng: -71.04526, what: "22 Liberty Dr" } },
+/**
+ * What a lookup should come to:
+ *  - found: the place, by its name;
+ *  - area: the neighborhood itself (a result of kind "area"), never a
+ *    business named after it;
+ *  - ambiguous: a question with choices;
+ *  - unsure: nothing found, or a question whose best choice is under the
+ *    `found` threshold — never a place taken with confidence.
+ */
+type Expectation = "found" | "area" | "ambiguous" | "unsure";
+
+/** The places, what they should come to, and where they really are (for
+ * the distance check). `apple`: only Apple's search can find it, so it is
+ * judged only when the key is set. */
+const DEFAULT_PLACES: {
+  query: string;
+  expect?: Expectation;
+  apple?: boolean;
+  real?: { lat: number; lng: number; what: string };
+}[] = [
+  {
+    query: "Lola 42 Seaport",
+    expect: "found",
+    apple: true,
+    real: { lat: 42.35458, lng: -71.04526, what: "22 Liberty Dr" },
+  },
+  {
+    query: "Lola 42",
+    expect: "found",
+    apple: true,
+    real: { lat: 42.35458, lng: -71.04526, what: "22 Liberty Dr" },
+  },
   // What the search reads literally and autocomplete completes (FR-44).
-  { query: "lola42", real: { lat: 42.35458, lng: -71.04526, what: "22 Liberty Dr" } },
+  {
+    query: "lola42",
+    expect: "found",
+    apple: true,
+    real: { lat: 42.35458, lng: -71.04526, what: "22 Liberty Dr" },
+  },
   {
     query: "Moo steakhouse Seaport Boston",
+    expect: "found",
+    apple: true,
     real: { lat: 42.34945, lng: -71.05034, what: "49 Melcher St" },
   },
-  { query: "Moo steakhouse" },
-  { query: "Seaport" },
-  { query: "TD Garden", real: { lat: 42.36621, lng: -71.06216, what: "100 Legends Way" } },
-  { query: "MFA", real: { lat: 42.3394, lng: -71.094, what: "465 Huntington Ave" } },
-  { query: "Boylston and Dartmouth" },
-  { query: "xyzzy restaurant" },
+  { query: "Moo steakhouse", expect: "ambiguous", apple: true },
+  // Neighborhoods: the area, not the Seaport Hotel (prod, 2026-10-02).
+  { query: "Seaport", expect: "area" },
+  { query: "Back Bay", expect: "area" },
+  { query: "Fenway", expect: "area" },
+  {
+    query: "TD Garden",
+    expect: "found",
+    real: { lat: 42.36621, lng: -71.06216, what: "100 Legends Way" },
+  },
+  {
+    query: "MFA",
+    expect: "found",
+    real: { lat: 42.3394, lng: -71.094, what: "465 Huntington Ave" },
+  },
+  { query: "Boylston and Dartmouth", expect: "found", apple: true },
+  // Autocomplete offered "W XYZ Bar", taken at 0.80 (prod, 2026-10-02).
+  { query: "xyzzy restaurant", expect: "unsure" },
 ];
+
+/** Whether a geocode_place answer is what was expected. */
+function meets(expect: Expectation, r: Record<string, unknown>): boolean {
+  const place = r["place"] as { kind?: string | null } | undefined;
+  switch (expect) {
+    case "found":
+      return r["found"] === true && r["match"] === "exact";
+    case "area":
+      return r["found"] === true && r["match"] === "exact" && place?.kind === "area";
+    case "ambiguous":
+      return r["ambiguous"] === true;
+    case "unsure":
+      return (
+        r["found"] === false ||
+        (r["ambiguous"] === true &&
+          typeof r["confidence"] === "number" &&
+          r["confidence"] < RESOLUTION_THRESHOLDS.found)
+      );
+  }
+}
 
 const BRAINTREE = { lat: 42.2206, lng: -71.0041 };
 const COURTESY_DELAY_MS = 1200;
@@ -164,6 +237,8 @@ async function main(): Promise<void> {
     geocoder: new FallbackGeocoder(chain, carriesTheName),
   });
 
+  const apple = chain.length > 1;
+  const misses: string[] = [];
   for (const [index, place] of places.entries()) {
     if (index > 0) await new Promise((r) => setTimeout(r, COURTESY_DELAY_MS));
     // A fresh request per place: geocode_place makes the place the
@@ -197,10 +272,21 @@ async function main(): Promise<void> {
         `${r["match"] === "exact" ? "FOUND" : "CLOSEST ONLY"} ${p.displayName} (${p.kind ?? "?"}) ` +
         `${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}` +
         (off !== null ? ` — ${off} m from ${place.real!.what}${off <= 300 ? " ✓" : " ✗"}` : "");
+      if (off !== null && off > 300 && (apple || !place.apple)) {
+        misses.push(`${place.query}: ${off} m from ${place.real!.what}`);
+      }
     } else {
       line = `NOT FOUND (${String(r["error"] ?? r["instruction"] ?? "")})`.slice(0, 160);
     }
-    console.log(`${place.query.padEnd(32)} ${line}${how}`);
+    let verdict = "";
+    if (place.expect && (apple || !place.apple)) {
+      const ok = meets(place.expect, r);
+      verdict = ok ? `  ✓ ${place.expect}` : `  ✗ expected ${place.expect}`;
+      if (!ok) misses.push(`${place.query}: expected ${place.expect}`);
+    } else if (place.expect) {
+      verdict = "  (not judged: needs Apple)";
+    }
+    console.log(`${place.query.padEnd(32)} ${line}${how}${verdict}`);
     if (prisma && r["found"] === true && r["ambiguous"] !== true) {
       await tools.execute(ctx, "update_request", {
         startsAt: parseEasternTime(when) ? when : `${when}:00`,
@@ -219,9 +305,21 @@ async function main(): Promise<void> {
           `${"".padEnd(32)}   street: ${o.summary ?? o.label} · $${o.priceUsd.toFixed(2)} · ${walk}`,
         );
       }
+      // With Apple, every option on view is timed (it is what the search
+      // asks Apple about first): a "~" here means Apple gave no route.
+      const untimed = options.filter((o) => o.walkEstimate !== false);
+      if (apple && untimed.length > 0) {
+        misses.push(`${place.query}: ${untimed.length} street option(s) kept an estimate`);
+      }
     }
   }
   await prisma?.$disconnect();
+  console.log(
+    misses.length === 0
+      ? "\nEvery check passed."
+      : `\n${misses.length} check(s) failed:\n${misses.map((m) => `  ✗ ${m}`).join("\n")}`,
+  );
+  if (misses.length > 0) process.exitCode = 1;
 }
 
 await main();

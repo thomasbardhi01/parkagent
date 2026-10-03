@@ -2,7 +2,7 @@
  * How place names are compared: the word tokens of a query and of a
  * result's name, and when one stands for the other. Shared by the scorer
  * (placeScore.ts) and the classifier (placeMatch.ts), which re-exports
- * `nameTokens` and `tokenMatches`.
+ * `nameTokens`.
  */
 
 /** Words that only join a phrase together. */
@@ -76,15 +76,6 @@ export function nameTokens(text: string): string[] {
     .map(collapseStretched);
 }
 
-export function tokenMatches(queryToken: string, nameToken: string): boolean {
-  if (queryToken === nameToken) return true;
-  // A partial word counts only past two letters ("lol" ≠ "lola 42").
-  return (
-    Math.min(queryToken.length, nameToken.length) >= 3 &&
-    (nameToken.startsWith(queryToken) || queryToken.startsWith(nameToken))
-  );
-}
-
 /** Words a set of initials skips: "MFA" is the Museum of Fine Arts. */
 const CONNECTORS = new Set(["of", "the", "and", "at", "for", "in", "on", "a"]);
 
@@ -104,7 +95,55 @@ function isInitialsOf(queryToken: string, name: readonly string[]): boolean {
   );
 }
 
-/** Whether a result's name (as tokens) carries one word of the query. */
-export function nameCarries(name: readonly string[], queryToken: string): boolean {
-  return name.some((n) => tokenMatches(queryToken, n)) || isInitialsOf(queryToken, name);
+/**
+ * How a result's name carries one word of the query, or null when it
+ * doesn't:
+ *
+ *  - "exact": the name has the word;
+ *  - "joined": the word is two or more of the name's words run together
+ *    ("lola42" is "LoLa 42", "joes" is "Joe's", "seafoods" is "Sea Foods");
+ *  - "initials": the word is the name's initials ("MFA");
+ *  - "fragment": the word is only the start of a longer name word ("Pru"
+ *    of "Prudential", "Mass" of "Massachusetts") — three letters at least.
+ *
+ * A name word that is only the start of the QUERY word is no match:
+ * "xyzzy" is not "W XYZ Bar", however much of it "XYZ" spells.
+ */
+export type NameMatch = "exact" | "joined" | "initials" | "fragment";
+
+export function nameMatch(name: readonly string[], queryToken: string): NameMatch | null {
+  if (name.includes(queryToken)) return "exact";
+  if (joinsWords(name, queryToken)) return "joined";
+  if (isInitialsOf(queryToken, name)) return "initials";
+  if (
+    queryToken.length >= 3 &&
+    name.some((n) => n.length > queryToken.length && n.startsWith(queryToken))
+  ) {
+    return "fragment";
+  }
+  return null;
+}
+
+/** Whether a word is two or more consecutive name words run together. */
+function joinsWords(name: readonly string[], queryToken: string): boolean {
+  for (let start = 0; start < name.length - 1; start += 1) {
+    let joined = name[start]!;
+    for (let end = start + 1; end < name.length && joined.length < queryToken.length; end += 1) {
+      joined += name[end]!;
+      if (joined === queryToken) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Whether a name carries the whole of a query's name: every word, and at
+ * least one of them as more than a fragment. "Pru" alone is not
+ * "Prudential Center" — a word's first letters are too little to stand
+ * on — while "Mass Ave" is "Massachusetts Avenue" ("Ave" is whole).
+ */
+export function carriesAll(name: readonly string[], queryTokens: readonly string[]): boolean {
+  if (queryTokens.length === 0) return false;
+  const matches = queryTokens.map((t) => nameMatch(name, t));
+  return matches.every((m) => m !== null) && matches.some((m) => m !== "fragment");
 }

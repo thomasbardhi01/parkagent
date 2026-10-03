@@ -20,6 +20,10 @@ final class SpeechUITests: ParkAgentUITestCase {
             "-fixedNow", Self.fixedNow,
             "-assistantScenario", "singleSpot",
             "-speechScenario", speechScenario,
+            // Every permission granted, whatever an earlier test left on the
+            // simulator: a revoked location puts Home's "Open Settings"
+            // banner behind the sheet (#200).
+            "-capabilities", "granted",
         ] + (pauseSeconds.map { ["-dictationPauseSeconds", String($0)] } ?? [])
         app.launch()
         element(app, "home.askAssistantButton").tap()
@@ -150,7 +154,7 @@ final class SpeechUITests: ParkAgentUITestCase {
 
         let notice = element(app, "assistant.speechDeniedNotice")
         XCTAssertTrue(notice.waitForExistence(timeout: 5), "Denied notice missing")
-        XCTAssertTrue(app.buttons["Open Settings"].exists, "Settings path missing")
+        XCTAssertTrue(notice.buttons["Open Settings"].exists, "Settings path missing")
         XCTAssertFalse(element(app, "assistant.liveTranscript").exists)
 
         // Dismiss works and the keyboard path is unaffected.
@@ -189,8 +193,14 @@ final class SpeechUITests: ParkAgentUITestCase {
 
         let notice = element(app, "assistant.speechUnavailableNotice")
         XCTAssertTrue(notice.waitForExistence(timeout: 5), "Unavailable notice missing")
-        XCTAssertFalse(app.buttons["Open Settings"].exists, "Settings can't fix unavailability")
-        app.buttons["Dismiss"].tap()
+        // Asked of the notice itself (#200): the app elsewhere may well offer
+        // Settings — a location banner behind the sheet — and that's not
+        // this notice's business. The Dismiss button is found in the same
+        // scope first, so the scope is real and the "no" below can't be
+        // true by default.
+        XCTAssertTrue(notice.buttons["Dismiss"].exists, "The notice's own Dismiss is missing")
+        XCTAssertFalse(notice.buttons["Open Settings"].exists, "Settings can't fix unavailability")
+        notice.buttons["Dismiss"].tap()
         XCTAssertTrue(notice.waitForNonExistence(timeout: 5))
     }
 }

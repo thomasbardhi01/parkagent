@@ -161,6 +161,7 @@ merges.
 | `ios/project.yml`, `ios/Tools/release-denylist.txt` | Your own entries only; run `xcodegen generate` after pulling. |
 | `ios/ParkAgent/Networking/APIClient.swift`, `LiveAPI.swift`, `MockAPI.swift`, `ios/ParkAgent/Models/**`, `ios/ParkAgentTests/LiveAPIRequestTests.swift` | New endpoints and types only. |
 | `server/test/helpers.ts` (the fake DB) | New tables and helpers only. |
+| `ios/ParkAgent/State/AppModel.swift`, `server/src/db.ts`, `ios/ParkAgent/Support/LaunchOverrides.swift`, `ios/ParkAgentTests/HangingAPI.swift` | Small additive edits only; announce in the PR. |
 | `server/fr/pool.mjs`, `server/fr/client.ts` | A new label for a new FR file; new fixtures only. |
 | `CLAUDE.md`, `README.md` | Only when your PR changes what they describe. |
 

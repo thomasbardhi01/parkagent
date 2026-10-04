@@ -2,8 +2,9 @@
  * The assistant's tool-use loop (Anthropic Messages API, manual loop —
  * we need propose_plan to hard-end the turn and a transport we can fake
  * byte-for-byte in tests). The model plans and phrases; tools.ts
- * enforces policy; this file only moves messages — and holds the turn to
- * three conversational rules:
+ * enforces policy; this file only moves messages — offering the model, on
+ * every call, the tools the request's intent leaves on (intentRouter.ts) —
+ * and holds the turn to three conversational rules:
  *
  *  - a turn that searched owes the user a card, never a price in prose
  *    inviting a verbal "confirm" (chat text can't mint a confirmation
@@ -37,14 +38,16 @@ import type { AssistantPlanBody } from "./plans.js";
 import { TOOL_DEFINITIONS } from "./tools.js";
 import type { Ask, AssistantTools, Suggestion, ToolContext } from "./tools.js";
 import { requestedTimeChoices, requestedTimeIn, requestedTimeLine } from "./requestedTime.js";
+import { intentOf, toolsForIntent } from "./intentRouter.js";
 import {
+  applyPatch,
   currentRequestBlock,
   emptyState,
   parseStoredState,
   resolveTappedCandidate,
 } from "./requestState.js";
 import type { RequestState } from "./requestState.js";
-import { lastSearchIn } from "./search.js";
+import { lastSearchIn, relaxationTapped } from "./search.js";
 
 /** Overridden by ASSISTANT_MODEL (legacy fallback: ANTHROPIC_MODEL). */
 export const DEFAULT_ASSISTANT_MODEL = "claude-sonnet-5";
@@ -65,14 +68,17 @@ Rules you cannot break (the tools enforce them too):
 - How the tap works, so you phrase cards correctly: a garage option and a street option for RIGHT NOW get a Confirm button. A street option for a FUTURE time gets no button at all — the card says "We'll pay automatically when you park here" (the detector pays at the curb) — that line is the card's own, so keep it out of the option's detail, which describes the spot. Don't promise to start future meters now; meters run from the moment they're paid.
 - book_garage and start_session work only with a confirmation_token from a card tap. You normally never have one; if a call is refused, propose a plan instead.
 - The request is the server's — the "Current request" below. quote_street and search_garages take NO arguments: they search the request as it stands (its place, time, stay, limits, and ranking). To search another place, time, stay, or budget, change the request first, then search. Never invent a price, address, or availability.
+- The request's intent is the server's too — park_now, park_later, or garage_or_lot, derived from its start and its kinds — and it decides which tools you have. A garage-only request has no quote_street: answer it with garages (if a meter is cheaper, the search adds it as one near-miss and the card shows it). build_itinerary is there only for a request that starts later: to plan a day of several stops, first put the day's first arrival on the request (update_request startsAt). A tool that is off answers tool_not_available_for_intent — don't retry it, and change the request only if the user asked for something else.
 - Each search answers with \`satisfying\` (the options that meet every limit, already ranked — never reorder them), \`nearMisses\` (options that break a limit; \`violates\` says which and by how much), and a \`verdict\`. propose_plan takes options BY ID, exactly as the latest search returned them; the server attaches each option's price, walk, time, and link. After any change to the request, search again before proposing: ids from an earlier search are refused.
 - When nothing meets the request (verdict none_meets), say so: call propose_plan with {kind: "none_meets"}. Never present a near-miss as if it met the request, and never loosen a limit yourself — the card gives the user one-tap ways to relax it.
 - quote_street searches every metered block within a walk of the place and says what each is doing during the stay ("Free after 6 PM on Seaport Blvd — 4 min walk", "Metered until 8 PM, then free", "$3.75/hr, 2 hr max"). Say there's no street parking ONLY when the search says our data has none within its radius, and then say the radius.
 - When the user names a PLACE rather than "here" — a restaurant, bar, venue, business, hotel, landmark, street, or neighborhood — call geocode_place FIRST with their words (keep the area they named: "Lola 42 Seaport"). It makes that the request's place, and the searches then search THERE — never the phone's location for a named place. If geocode_place returns choices, ask which one with ask_user. If its match is "closest", the name wasn't found: say so and say what you're searching instead. If it finds nothing, say you couldn't find it and ask for the address — never substitute the current location or a neighborhood center.
-- To ask the user anything, call ask_user (one short question, 2–4 tappable suggestions) — never ask in prose. Ask only when you truly can't proceed: when the user gave no time, assume now; no duration, 2 hours — instead of asking. When you do ask, offer the common answers ("1 hour", "2 hours", "3 hours"; "Now", "Tonight at 7").
+- To ask the user anything, call ask_user (one short question, 2–4 tappable suggestions) — never ask in prose. Ask only when you truly can't proceed: when the user gave no time, assume now instead of asking. Never invent a stay, and don't ask for one yourself: when the user gave none, leave durationMinutes unset and search — a search for right now assumes one hour and says so, and a search for later or for a garage only asks the user how long itself, with the usual answers (duration_needed). When you do ask, offer the common answers ("1 hour", "2 hours", "4 hours"; "Now", "Tonight at 7").
 - Always state your assumptions in one short line when you propose — the window and the place, e.g. "7:00–10:00 PM, near Lola 42, Seaport". The card shows the same line.
 - If a search says the garage search is unavailable, the search FAILED — say "I couldn't check garages right now", never "no garages available", and still propose the street options. Only a search that found none means none were found. If every garage was dropped for distance, the result says how far the closest one is — tell the user that distance ("the nearest garage is about 900 m away") rather than "none found".
 - When the user changes anything about the request, call update_request with only what changed before searching.
+- The app shows the request as chips, and a tap on one sends a short message naming what to change with no new value: "Change the budget", "Change the time", "Change the place". Ask for the new value with ask_user, offering the common answers (for a limit, one of them removes it); never guess it.
+- A message carrying a [request updated by this tap: …] line is a tap on a card's chip that the server has already applied to the request. Don't call update_request: search the request as it stands, and propose.
 - A follow-up message edits the CURRENT plan: "cheaper?", "closer", "make it 5 instead", "add a stop at 3" refer to what you just proposed. Put the change on the request, search again, and propose the revised plan. Ask a clarifying question only when you truly cannot proceed; otherwise assume the sensible reading and say what you assumed in a few words.
 - An itinerary's total must fit the user's remaining daily budget (build_itinerary shows it). If it doesn't fit, say what to cut.
 - Garage checkout is a deep link to the site the option came from (each garage option names its provider — SpotHero or ParkWhiz): the user finishes the purchase there and the pass lives in that site's account. Say so when it matters, in a few words, naming the right site.
@@ -494,11 +500,36 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
   // one of the places the last turn couldn't choose between, it is loaded
   // with that place already chosen: the choice is the user's, so it is
   // taken from the request, not left to the model.
-  const requestState = resolveTappedCandidate(
+  const loaded = resolveTappedCandidate(
     stored && stored.userId === args.userId ? parseStoredState(stored.requestState) : emptyState(),
     args.text,
     at,
   );
+  // A tap on a "no" card's relax chip sends the chip's words, and those
+  // words ARE one of the latest search's relaxations: the field and the
+  // value are the server's own, so it applies them here, before the model
+  // runs, and the model is told it was done (FR-45). "Walk up to 15 min"
+  // is then never a model's to read as a 15-minute stay.
+  const relaxed = relaxationTapped(lastSearchIn(history, loaded.version), args.text);
+  const relaxation = relaxed ? applyPatch(loaded, relaxed.patch, args.text, at) : null;
+  const tapped = relaxation?.ok && relaxation.changed.length > 0 ? relaxation : null;
+  const requestState = tapped ? tapped.state : loaded;
+  if (relaxed && tapped) {
+    await args.db.decision.create({
+      data: {
+        kind: "assistant_tool",
+        inputs: {
+          tool: "update_request",
+          patch: relaxed.patch,
+          source: "relax_chip",
+          conversationId: args.conversationId,
+        },
+        rule: "relax_applied",
+        outcome: { version: tapped.state.version, changed: tapped.changed, overrides: [] },
+        userId: args.userId,
+      },
+    });
+  }
 
   // The clock time the message names, read here rather than left to the
   // model: a 7 PM that has passed today means tomorrow, never "now"
@@ -510,6 +541,9 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
     // hallucinated 2024 date and SpotHero 400ed the past window.
     currentTimeLine(at),
     timeRequest ? requestedTimeLine(timeRequest, at) : null,
+    tapped
+      ? `[request updated by this tap: ${tapped.changed.join(", ")} — already applied. Don't call update_request; search the request as it stands.]`
+      : null,
   ].filter((line): line is string => line !== null);
   const userText = `${args.text}\n\n${envelope.join("\n")}`;
   const messages: ModelTurn[] = [...history, { role: "user", content: userText }];
@@ -531,6 +565,9 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
     timeRequest,
     requestState,
     requestEdits: 0,
+    // The tap changed exactly these fields: nothing else edits the
+    // request this turn.
+    requestLock: tapped ? { changed: tapped.changed } : undefined,
     utterance: args.text,
   };
 
@@ -562,11 +599,14 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
   // escaping it.
   try {
     for (let iteration = 0; iteration < MAX_LOOP_ITERATIONS; iteration += 1) {
+      // Recomputed for every call: an edit earlier in this turn may have
+      // moved the intent, and with it what the model may do next.
+      const current = ctx.requestState ?? requestState;
       const response = await args.model.create(
         {
-          system: systemPromptFor(ctx.requestState ?? requestState),
+          system: systemPromptFor(current),
           messages,
-          tools: TOOL_DEFINITIONS,
+          tools: toolsForIntent(TOOL_DEFINITIONS, intentOf(current)),
           maxTokens: MAX_TOKENS,
         },
         stream?.push,
@@ -663,6 +703,7 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
           ...(plan ? { planKind: plan.plan.kind } : {}),
           stateEdits: ctx.requestEdits ?? 0,
           requestVersion: (ctx.requestState ?? requestState).version,
+          intent: intentOf(ctx.requestState ?? requestState),
         },
         userId: args.userId,
       },
@@ -683,8 +724,18 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
     // SERVER asked (a search that couldn't tell where to look) is its own
     // words and may quote the user's: it is added after the check.
     const serverAsked = asked?.server ? asked.question : null;
+    // One question a reply: when the server asks, a question the model
+    // also put in prose is dropped — the chips answer the server's.
+    const prose = joinReplySegments(
+      asked && !serverAsked ? [...segments, asked.question] : segments,
+    );
     const spoken = scrubVerbalConfirm(
-      joinReplySegments(asked && !serverAsked ? [...segments, asked.question] : segments),
+      serverAsked
+        ? sentencesOf(prose)
+            .filter((sentence) => !sentence.trim().endsWith("?"))
+            .join("")
+            .trim()
+        : prose,
       plan !== null,
     );
     const scrub = scrubUngroundedAmounts(spoken, groundedCents(ctx, plan, reported));

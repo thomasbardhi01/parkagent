@@ -113,7 +113,11 @@ struct AssistantSheetView: View {
                         }
                         ForEach(model.messages) { message in
                             MessageBubble(message: message)
-                            if message.id == model.messages.last?.id, !model.activeSuggestions.isEmpty {
+                            // A "no" card holds its own chips (the ways to
+                            // relax the request): they aren't shown twice.
+                            if message.id == model.messages.last?.id,
+                               !model.activeSuggestions.isEmpty,
+                               !relaxChipsAreOnTheCard(model, message) {
                                 suggestionChips(model)
                             }
                             if let plan = model.proposedPlan, message.planId == plan.planId {
@@ -287,29 +291,32 @@ struct AssistantSheetView: View {
     /// The question's answers as chips: a tap sends that answer as the
     /// user's own message, exactly as if they'd typed it.
     private func suggestionChips(_ model: AssistantModel) -> some View {
-        FlowLayout(spacing: Spacing.half) {
-            ForEach(Array(model.activeSuggestions.enumerated()), id: \.offset) { index, suggestion in
-                Button {
-                    inputFocused = false
-                    Task { await model.send(suggestion.reply) }
-                } label: {
-                    Text(suggestion.label)
-                        .font(.captionTextSemibold)
-                        .foregroundStyle(Color.actionCoralLink)
-                        .padding(.horizontal, Spacing.unit)
-                        .padding(.vertical, Spacing.half)
-                        .background(Color.surface)
-                        .clipShape(Capsule())
-                        .overlay(Capsule().strokeBorder(Color.actionCoralLink.opacity(0.5), lineWidth: 1))
-                        .contentShape(Capsule())
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("assistant.suggestion.\(index)")
-                .accessibilityHint("Sends this answer")
-            }
+        SuggestionChips(suggestions: model.activeSuggestions) { suggestion in
+            inputFocused = false
+            Task { await model.send(suggestion.reply) }
         }
         .padding(.leading, Spacing.half)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Whether this message's card is the "no" card on screen, which shows
+    /// the reply's suggestions itself.
+    private func relaxChipsAreOnTheCard(_ model: AssistantModel, _ message: AssistantMessage) -> Bool {
+        guard let plan = model.proposedPlan, message.planId == plan.planId else { return false }
+        if case .noneMeets = plan.plan { return true }
+        return false
+    }
+
+    /// The request the card answered, as chips above it. A tap sends a
+    /// short message naming what to change; the server owns the request.
+    @ViewBuilder
+    private func requestChips(_ model: AssistantModel, _ request: RequestSummary?) -> some View {
+        if let request {
+            RequestChipsView(request: request, disabled: model.phase != .idle) { chip in
+                inputFocused = false
+                Task { await model.send(chip.message) }
+            }
+        }
     }
 
     private func errorRow(_ text: String) -> some View {
@@ -330,6 +337,7 @@ struct AssistantSheetView: View {
     private func planCards(_ model: AssistantModel, plan: AssistantReply.ProposedPlan) -> some View {
         switch plan.plan {
         case .singleSpot(let single):
+            requestChips(model, single.requestSummary?.value)
             SingleSpotPlanCards(
                 plan: single,
                 confirming: model.phase == .confirming,
@@ -352,9 +360,19 @@ struct AssistantSheetView: View {
                 Task { await model.confirm(planId: plan.planId, optionId: nil, stops: stops) }
             }
         case .noneMeets(let none):
-            // Nothing to confirm: the reply's chips change the request.
-            NoneMeetsPlanCard(plan: none)
+            requestChips(model, none.requestSummary?.value)
+            // Nothing to confirm: the chips on the card change the request,
+            // each sent as the user's own words.
+            NoneMeetsCardView(
+                plan: none,
+                relaxChips: model.activeSuggestions,
+                disabled: model.phase != .idle
+            ) { suggestion in
+                inputFocused = false
+                Task { await model.send(suggestion.reply) }
+            }
         case .noData(let gap):
+            requestChips(model, gap.requestSummary?.value)
             NoDataPlanCard(plan: gap)
         case .unsupported:
             EmptyView()

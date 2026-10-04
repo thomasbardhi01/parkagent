@@ -17,7 +17,21 @@ import { explainDecision } from "../explanations.js";
 import type { GarageProvider } from "../garage/garageProvider.js";
 import type { GeocodeFailure, GeocodeQuery, GeocodeResult, GeocoderProvider } from "./geocoder.js";
 import { biasPointFor, homeMetroForPoint, metersBetween, metroForPoint } from "./geocoder.js";
-import { assumptionsFor, windowAssumption } from "./clarify.js";
+import {
+  STAY_QUESTION,
+  STAY_SUGGESTIONS,
+  asksAboutStay,
+  assumptionsFor,
+  windowAssumption,
+} from "./clarify.js";
+import {
+  TIME_IN_PAST_MS,
+  heldToItsStart,
+  intentOf,
+  stayFor,
+  toolAllowed,
+  toolOffInstruction,
+} from "./intentRouter.js";
 import { requestedTimeProblem, type TimeRequest } from "./requestedTime.js";
 import {
   MAX_REQUEST_EDITS_PER_TURN,
@@ -37,6 +51,7 @@ import { bestOf, candidateRecord, scoreCandidates } from "./placeScore.js";
 import type { ModelClient, ModelUsage } from "./loop.js";
 import { easternIso, parseEasternTime } from "../hours.js";
 import type { LinkWallet } from "../link/linkWallet.js";
+import { confirmWarnUsd } from "../policy.js";
 import type { PolicyService } from "../policy.js";
 import { spentToday } from "../sessions.js";
 import type { CandidateFetcher, NearbyZoneFetcher } from "../zoneLookup.js";
@@ -62,15 +77,16 @@ import type {
 } from "./plans.js";
 import type { GarageOption } from "../garage/garageProvider.js";
 import {
-  DEFAULT_STAY_MINUTES,
   buildSearchResult,
   constraintsFailedFor,
   garageSearchOption,
   isFresh,
+  isGarageOnly,
   kindsToSearch,
   noneMeetsHeadline,
   poolFromResult,
   poolOptions,
+  requestSummaryFor,
   streetSearchOption,
 } from "./search.js";
 import type {
@@ -153,6 +169,10 @@ export interface ToolContext {
   requestState?: RequestState | undefined;
   /** update_request calls so far this turn — refused past the limit. */
   requestEdits?: number | undefined;
+  /** Set when this turn's message was a tap the server applied to the
+   * request itself (a relax chip, FR-45): the tap changed exactly these
+   * fields, so update_request is refused for the rest of the turn. */
+  requestLock?: { changed: string[] } | undefined;
   /** This turn's user message: the words each request change is logged
    * with. */
   utterance?: string | undefined;
@@ -332,20 +352,20 @@ export const TOOL_DEFINITIONS = [
   {
     name: "search_garages",
     description:
-      "Off-street garages for the CURRENT REQUEST. Takes no arguments: it reads the place, the time, the stay, the limits, and the ranking from the request — to search another place, time, stay, or budget, change the request first (update_request, geocode_place). Sources: SpotHero and ParkWhiz, merged; each option names its provider, and checkout is a deep link to that site (the user finishes the purchase there). Returns {stateVersion, verdict, satisfying, nearMisses, relaxSuggestions?}: `satisfying` options meet every limit and are already ranked (keep the order); each of `nearMisses` breaks a limit, and its `violates` says which and by how much; the result covers street too once quote_street has run for this request. Propose options by `id`.",
+      "Off-street garages for the CURRENT REQUEST. Takes no arguments: it reads the place, the time, the stay, the limits, and the ranking from the request — to search another place, time, stay, or budget, change the request first (update_request, geocode_place). Sources: SpotHero and ParkWhiz, merged; each option names its provider, and checkout is a deep link to that site (the user finishes the purchase there). Returns {stateVersion, verdict, satisfying, nearMisses, relaxSuggestions?}: `satisfying` options meet every limit and are already ranked (keep the order); each of `nearMisses` breaks a limit, and its `violates` says which and by how much; the result covers street too once quote_street has run for this request. A garage-only request is answered with garages; the server may add ONE street option to `nearMisses` — a cheaper meter — which is never an option that meets the request. Propose options by `id`.",
     strict: true,
     input_schema: SEARCH_INPUT_SCHEMA,
   },
   {
     name: "quote_street",
-    description: `Street parking for the CURRENT REQUEST: every metered block within a walk of the request's place (${DEFAULT_STREET_RADIUS_M} m, about a ${walkMinutesFor(DEFAULT_STREET_RADIUS_M)}-minute walk; wider when that holds none), each priced for the request's window and described for THAT window — free (e.g. "Free after 6 PM"), metered then free, or metered with its rate and max stay. Takes no arguments: it reads the place, the time, the stay, the limits, and the ranking from the request — to search another place, time, stay, or budget, change the request first (update_request, geocode_place). Uses the same zone data and pricing as automatic payments. Returns {stateVersion, verdict, satisfying, nearMisses, relaxSuggestions?}: \`satisfying\` options meet every limit and are already ranked (keep the order); each of \`nearMisses\` breaks a limit, and its \`violates\` says which and by how much; the result covers garages too once search_garages has run for this request. Propose options by \`id\`.`,
+    description: `Street parking for the CURRENT REQUEST: every metered block within a walk of the request's place (${DEFAULT_STREET_RADIUS_M} m, about a ${walkMinutesFor(DEFAULT_STREET_RADIUS_M)}-minute walk; wider when that holds none), each priced for the request's window and described for THAT window — free (e.g. "Free after 6 PM"), metered then free, or metered with its rate and max stay. Takes no arguments: it reads the place, the time, the stay, the limits, and the ranking from the request — to search another place, time, stay, or budget, change the request first (update_request, geocode_place). Uses the same zone data and pricing as automatic payments. Not available for a garage-only request. Returns {stateVersion, verdict, satisfying, nearMisses, relaxSuggestions?}: \`satisfying\` options meet every limit and are already ranked (keep the order); each of \`nearMisses\` breaks a limit, and its \`violates\` says which and by how much; the result covers garages too once search_garages has run for this request. Propose options by \`id\`.`,
     strict: true,
     input_schema: SEARCH_INPUT_SCHEMA,
   },
   {
     name: "build_itinerary",
     description:
-      "Price a multi-stop day: for each stop, quote street parking AND the best garage, and check the day total against the user's daily cap. Use the result to decide street vs garage per stop before proposing the plan.",
+      "Price a multi-stop day: for each stop, quote street parking AND the best garage, and check the day total against the user's daily cap. Use the result to decide street vs garage per stop before proposing the plan. Available for a request that starts later: put the day's first arrival on the request first (update_request startsAt).",
     input_schema: {
       type: "object" as const,
       additionalProperties: false,
@@ -592,6 +612,20 @@ export class AssistantTools {
    * model can read, never as throws that kill the turn. */
   async execute(ctx: ToolContext, name: string, input: unknown): Promise<ToolOutcome> {
     try {
+      // The request's intent decides which tools are on (intentRouter.ts).
+      // The loop only offers the model those; one called anyway is refused
+      // here, before it runs, and the refusal is on the record.
+      const intent = intentOf(this.stateOf(ctx));
+      if (!toolAllowed(intent, name)) {
+        await this.audit(ctx, name, input, "tool_not_available_for_intent", { intent });
+        return {
+          result: {
+            error: "tool_not_available_for_intent",
+            intent,
+            instruction: toolOffInstruction(intent, name),
+          },
+        };
+      }
       switch (name) {
         case "update_request":
           return await this.updateRequest(ctx, input);
@@ -637,6 +671,9 @@ export class AssistantTools {
     /** How to fix it, appended to the instruction: a search reads its
      * start from the request, so the fix is an update_request. */
     fix = "",
+    /** V7 (FR-45): the start is one the user set on a later or garage-only
+     * request, and is held to five minutes rather than an hour. */
+    held = false,
   ) {
     const at = this.now();
     const starts = parseEasternTime(startsAt);
@@ -657,6 +694,20 @@ export class AssistantTools {
     if (moved) {
       return this.audit(ctx, tool, input, "requested_time_moved", { startsAt }).then(() => ({
         result: { error: "requested_time_moved", startsAt, instruction: `${moved}${fix}` },
+      }));
+    }
+    if (held) {
+      if (at.getTime() - starts.getTime() <= TIME_IN_PAST_MS) return null;
+      return this.audit(ctx, tool, input, "time_in_past", { startsAt }).then(() => ({
+        result: {
+          error: "time_in_past",
+          startsAt,
+          nowEastern: easternIso(at),
+          instruction:
+            `The request's start has passed. ${currentTimeLine(at)} ` +
+            "If the user means now, clear window.startsAt; if they mean that clock time on a later day, set the new startsAt; " +
+            `if you can't tell, ask with ask_user ("Now" / "Tomorrow at …"). Never pick one for them.${fix}`,
+        },
       }));
     }
     if (at.getTime() - starts.getTime() <= 60 * 60_000) return null;
@@ -683,7 +734,6 @@ export class AssistantTools {
    */
   private async updateRequest(ctx: ToolContext, input: unknown): Promise<ToolOutcome> {
     const before = ctx.requestState ?? emptyState();
-    ctx.requestEdits = (ctx.requestEdits ?? 0) + 1;
     const audit = (rule: string, outcome: Record<string, unknown>) =>
       this.deps.db.decision.create({
         data: {
@@ -694,6 +744,27 @@ export class AssistantTools {
           userId: ctx.userId,
         },
       });
+    // This turn's message was a relax chip, and the server applied it: the
+    // user changed exactly that. An edit on top of it could only be the
+    // chip's words read as some other field.
+    if (ctx.requestLock) {
+      await audit("request_already_updated", {
+        error: "request_already_updated",
+        version: before.version,
+        changed: ctx.requestLock.changed,
+      });
+      return {
+        result: {
+          error: "request_already_updated",
+          changed: ctx.requestLock.changed,
+          state: stateForModel(before),
+          instruction:
+            "The user's tap already changed the request this turn (`changed`), and nothing else about it changed. " +
+            "Don't edit it: search the request as it stands.",
+        },
+      };
+    }
+    ctx.requestEdits = (ctx.requestEdits ?? 0) + 1;
     if (ctx.requestEdits > MAX_REQUEST_EDITS_PER_TURN) {
       await audit("too_many_edits", { error: "too_many_edits", version: before.version });
       return {
@@ -987,6 +1058,20 @@ export class AssistantTools {
         },
       };
     }
+    // "How long?" has one wording and one set of answers, whoever asks
+    // (FR-45): a model that asks it itself — instead of searching and
+    // letting the search ask — still gets the server's question and its
+    // four chips, not answers of its own.
+    if (asksAboutStay(parsed.data.question)) {
+      await this.audit(ctx, "ask_user", input, "asked", {
+        suggestions: STAY_SUGGESTIONS.length,
+        stay: true,
+      });
+      return {
+        result: { presented: true },
+        ask: { question: STAY_QUESTION, suggestions: [...STAY_SUGGESTIONS], server: true },
+      };
+    }
     await this.audit(ctx, "ask_user", input, "asked", {
       suggestions: parsed.data.suggestions.length,
     });
@@ -1011,16 +1096,14 @@ export class AssistantTools {
     return isFresh(last, this.now()) ? last : null;
   }
 
-  /** The window the request asks for: its start (now when it names none)
-   * and its stay (two hours when it names none, said as an assumption).
-   * Refused when the start is in the past or moves a time the user named. */
-  private async searchWindow(
+  /** When the request starts: its start, or now when it names none.
+   * Refused when the start is in the past (V7 holds a later or garage-only
+   * request to five minutes) or moves a time the user named. */
+  private async searchStart(
     ctx: ToolContext,
     tool: string,
     input: unknown,
-  ): Promise<
-    { ok: true; window: SearchWindow; start: Date } | { ok: false; outcome: ToolOutcome }
-  > {
+  ): Promise<{ ok: true; start: Date } | { ok: false; outcome: ToolOutcome }> {
     const state = this.stateOf(ctx);
     const at = this.now();
     const startsAt = state.window.startsAt ?? easternIso(at);
@@ -1030,20 +1113,57 @@ export class AssistantTools {
       input,
       startsAt,
       " The search reads its start from the request: set it with update_request (startsAt), then search again.",
+      heldToItsStart(state),
     );
     if (refused) return { ok: false, outcome: refused };
     // Readable by construction: pastWindowError bounced anything else.
-    const start = parseEasternTime(startsAt)!;
-    const minutes = state.window.durationMinutes ?? DEFAULT_STAY_MINUTES;
+    return { ok: true, start: parseEasternTime(startsAt)! };
+  }
+
+  /**
+   * The window a search covers: the start, for the request's stay — or,
+   * when it names none, the hour a search for right now assumes (said as
+   * an assumption). A later or garage-only request with no stay has no
+   * window: nothing is searched, and the turn ends asking the user how
+   * long, with the usual answers as chips (intentRouter.ts `stayFor`).
+   */
+  private async searchWindow(
+    ctx: ToolContext,
+    tool: string,
+    input: unknown,
+    start: Date,
+  ): Promise<{ ok: true; window: SearchWindow } | { ok: false; outcome: ToolOutcome }> {
+    const state = this.stateOf(ctx);
+    const stay = stayFor(state);
+    if (!stay) {
+      const intent = intentOf(state);
+      await this.audit(ctx, tool, input, "duration_needed", {
+        intent,
+        stateVersion: state.version,
+      });
+      return {
+        ok: false,
+        outcome: {
+          result: {
+            error: "duration_needed",
+            intent,
+            stateVersion: state.version,
+            instruction:
+              "Nothing was searched: a request for later, or for a garage only, needs the stay, and this one names none. " +
+              "The user is being asked how long. Put their answer on the request (update_request durationMinutes), then search. Never pick a stay for them.",
+          },
+          ask: { question: STAY_QUESTION, suggestions: [...STAY_SUGGESTIONS], server: true },
+        },
+      };
+    }
     return {
       ok: true,
-      start,
       window: {
         startsAt: easternIso(start),
-        endsAt: easternIso(new Date(start.getTime() + minutes * 60_000)),
-        durationMinutes: minutes,
+        endsAt: easternIso(new Date(start.getTime() + stay.minutes * 60_000)),
+        durationMinutes: stay.minutes,
         startsNow: state.window.startsAt === null,
-        durationSource: state.window.durationMinutes === null ? "default" : "user",
+        durationSource: stay.source,
       },
     };
   }
@@ -1381,13 +1501,18 @@ export class AssistantTools {
    */
   private async runSearch(ctx: ToolContext, kind: Kind, input: unknown): Promise<ToolOutcome> {
     const tool = kind === "street" ? "quote_street" : "search_garages";
-    const windowed = await this.searchWindow(ctx, tool, input);
-    if (!windowed.ok) return windowed.outcome;
+    const started = await this.searchStart(ctx, tool, input);
+    if (!started.ok) return started.outcome;
     const placed = await this.placeFor(ctx, tool, input);
     if (!placed.ok) return placed.outcome;
+    // Where first, then how long: a stay asked about a place the search
+    // can't find would be a question wasted.
+    const windowed = await this.searchWindow(ctx, tool, input, started.start);
+    if (!windowed.ok) return windowed.outcome;
     // Read after the place: resolving it may have bumped the version.
     const state = this.stateOf(ctx);
-    const { window, start } = windowed;
+    const { start } = started;
+    const { window } = windowed;
     const { place } = placed;
     const fetchedAt = this.now().toISOString();
     const pool = this.poolFor(ctx, state.version, place, window);
@@ -1404,6 +1529,13 @@ export class AssistantTools {
       // substitute — the user asked for a garage.
       if (garage.meta.unavailable && state.intent === "garage_or_lot") {
         return this.garageUnavailableCard(ctx, state, place, window, garage.meta, fetchedAt);
+      }
+      // A garage-only request has no street quote of its own: the tool is
+      // off. The server runs one here, for two things only — the cheaper
+      // meter the result may show as a near-miss (search.ts), and what
+      // "street or garage is fine" would yield.
+      if (isGarageOnly(state.hard) && !pool.street) {
+        pool.street = await this.streetPool(place, start, window, state.version, fetchedAt);
       }
     }
     const at = { searchedAt: fetchedAt, inCoverage: this.inCoverage(place) };
@@ -1424,6 +1556,12 @@ export class AssistantTools {
       placeSource: place.source,
       // How many of this search's options carry a real walking time.
       walksTimed,
+      ...(isGarageOnly(state.hard)
+        ? {
+            cheaperStreet:
+              result.nearMisses.find((n) => n.option.type === "street")?.option.id ?? null,
+          }
+        : {}),
       ...(kind === "street"
         ? { streetCount: pool.street!.options.length, ...pool.street!.meta }
         : {
@@ -1442,8 +1580,11 @@ export class AssistantTools {
   private searchInstruction(result: SearchResult, state: RequestState, placeNote?: string): string {
     const parts: string[] = [];
     if (placeNote) parts.push(placeNote);
-    const missing = kindsToSearch(state.hard).filter((k) => !result.searched.includes(k));
     const other = (k: Kind) => (k === "street" ? "quote_street" : "search_garages");
+    // Only a search the model can run is one it is told to run.
+    const missing = kindsToSearch(state.hard)
+      .filter((k) => !result.searched.includes(k))
+      .filter((k) => toolAllowed(intentOf(state), other(k)));
     if (result.verdict === "meets") {
       parts.push(
         "Propose with propose_plan: a single_spot plan of up to 3 options from `satisfying`, each by its id. The order is the server's and the first is the recommendation.",
@@ -1461,6 +1602,11 @@ export class AssistantTools {
       if (result.nearMisses.length > 0) {
         parts.push(
           "An option from `nearMisses` breaks a limit: it may ride along only with nearMiss: true, and never as if it met the request.",
+        );
+      }
+      if (isGarageOnly(state.hard) && result.nearMisses.some((n) => n.option.type === "street")) {
+        parts.push(
+          "The street option among `nearMisses` is a cheaper meter the server found: the card shows it as an alternative that isn't a garage. The user asked for a garage — recommend one.",
         );
       }
     } else if (missing.length > 0) {
@@ -1495,8 +1641,9 @@ export class AssistantTools {
       );
     }
     if (result.window.durationSource === "default") {
+      const hours = result.window.durationMinutes / 60;
       parts.push(
-        `The request names no stay, so this assumed ${result.window.durationMinutes / 60} hours — say so.`,
+        `The request names no stay, so this assumed ${hours === 1 ? "1 hour" : `${hours} hours`} — say so.`,
       );
     }
     return parts.join(" ");
@@ -1946,15 +2093,33 @@ export class AssistantTools {
 
     // The card's options, in the search's order (the model never
     // reorders). Decision 8: the option that honors the ask is always on
-    // the card and first; with no ask, the cheapest and the closest both
-    // lead. Then what the model chose, then any flagged near-miss.
+    // the card and first — with no ask, the cheapest and the closest both
+    // lead — and the best on the other axis is always shown as the
+    // secondary alternative. Then what the model chose, then any flagged
+    // near-miss.
+    const state = this.stateOf(ctx);
     const chosen = new Set(proposed.options.map((o) => o.id));
     const [first, second] = last.satisfying;
     const coPrimary = first?.axis === "cheapest" && second?.axis === "closest" && !second.secondary;
-    const picked = [
-      ...last.satisfying.filter((o, i) => i === 0 || (i === 1 && coPrimary) || chosen.has(o.id)),
-      ...last.nearMisses.filter((n) => chosen.has(n.option.id)).map((n) => n.option),
-    ].slice(0, 3);
+    const leading = new Set(
+      [first?.id, coPrimary ? second?.id : undefined].filter((id): id is string => !!id),
+    );
+    // A garage-only request's cheaper meter (search.ts) is the server's to
+    // show: once, last, whatever the model chose — never as a fit.
+    const cheaperStreet = isGarageOnly(state.hard)
+      ? last.nearMisses.find((n) => n.option.type === "street")?.option
+      : undefined;
+    const fits = [
+      ...last.satisfying.filter(
+        (o) => leading.has(o.id) || o.secondary === true || chosen.has(o.id),
+      ),
+      ...last.nearMisses
+        .filter((n) => chosen.has(n.option.id) && n.option.id !== cheaperStreet?.id)
+        .map((n) => n.option),
+    ];
+    const picked = cheaperStreet ? [...fits.slice(0, 2), cheaperStreet] : fits.slice(0, 3);
+    // The approval threshold: an amount, not a cap (policy.ts).
+    const warnOverUsd = confirmWarnUsd(await policyFor(this.deps, ctx.userId));
 
     const words = new Map(proposed.options.map((o) => [o.id, o]));
     for (const option of picked) {
@@ -1984,6 +2149,8 @@ export class AssistantTools {
           label: said(words.get(option.id)?.label),
           detail: said(words.get(option.id)?.detail),
           violates: nearMiss?.violates,
+          primary: leading.has(option.id),
+          warnOverUsd,
         }),
         // The first option is the one that honors the ask: it holds the
         // badge whatever the model marked.
@@ -2002,6 +2169,8 @@ export class AssistantTools {
       options,
       ...this.cardFrame(last, options, now, ctx.timeRequest),
       ...(note.length > 0 ? { note } : {}),
+      verdict: "meets",
+      requestSummary: requestSummaryFor(state, last),
     };
     const reason = recommendationReason(plan.options);
     if (reason) plan.recommendedReason = reason;
@@ -2027,6 +2196,10 @@ export class AssistantTools {
       label?: string | undefined;
       detail?: string | undefined;
       violates?: Violation[] | undefined;
+      /** The option leads the card (decision 8). */
+      primary?: boolean | undefined;
+      /** The approval threshold: a price over it is marked `warn`. */
+      warnOverUsd?: number | undefined;
     },
   ): SingleSpotOption {
     const starts = window.startsNow ? null : parseEasternTime(window.startsAt);
@@ -2054,6 +2227,12 @@ export class AssistantTools {
         : {}),
       ...(option.axis ? { axis: option.axis } : {}),
       ...(option.secondary ? { secondary: true as const } : {}),
+      ...(extra.primary && !extra.violates?.length ? { primary: true as const } : {}),
+      // Compared in cents: a price AT the threshold doesn't warn.
+      ...(extra.warnOverUsd !== undefined &&
+      Math.round(option.priceUsd * 100) > Math.round(extra.warnOverUsd * 100)
+        ? { warn: true as const }
+        : {}),
       ...(extra.violates?.length ? { nearMiss: true as const, violates: extra.violates } : {}),
       ...(option.type === "street"
         ? {
@@ -2089,7 +2268,8 @@ export class AssistantTools {
 
   /** What every single-place card carries besides its options, all from
    * the search: the place it was searched at, where garage prices came
-   * from and when, and what the plan assumed in one line. */
+   * from and when, and what the plan assumed in one line ("Now–3:00 PM,
+   * near you" when the place is the phone's location). */
   private cardFrame(
     search: SearchResult,
     shown: SingleSpotOption[],
@@ -2126,7 +2306,9 @@ export class AssistantTools {
           start: window.startsNow ? null : parseEasternTime(window.startsAt),
           minutes: window.durationMinutes,
         },
-        place.source === "user" ? place.label : null,
+        // The phone's location standing in for a place is an assumption
+        // like any other: it is said.
+        place.source === "user" ? place.label : "you",
         now,
         request,
       ),
@@ -2182,7 +2364,7 @@ export class AssistantTools {
       return this.presentPlan(
         ctx,
         input,
-        await this.noDataPlan(last, now, ctx.timeRequest),
+        await this.noDataPlan(last, state, now, ctx.timeRequest),
         "no_zone_here",
       );
     }
@@ -2197,8 +2379,9 @@ export class AssistantTools {
         ? last.nearMisses.filter((n) => named.includes(n.option.id))
         : last.nearMisses
     ).slice(0, 3);
+    const warnOverUsd = confirmWarnUsd(await policyFor(this.deps, ctx.userId));
     const nearMisses = shown.map((n) =>
-      this.cardOption(n.option, last.window, now, { violates: n.violates }),
+      this.cardOption(n.option, last.window, now, { violates: n.violates, warnOverUsd }),
     );
     const pool =
       ctx.searchPool?.stateVersion === last.stateVersion
@@ -2214,6 +2397,8 @@ export class AssistantTools {
       nearMisses,
       relaxSuggestions: (last.relaxSuggestions ?? []).slice(0, 3),
       ...this.cardFrame(last, nearMisses, now, ctx.timeRequest),
+      verdict: "none_meets",
+      requestSummary: requestSummaryFor(state, last),
     };
     return this.presentPlan(ctx, input, plan, "none_meets");
   }
@@ -2221,6 +2406,7 @@ export class AssistantTools {
   /** The "we have nothing there" card: the nearest zones we do have. */
   private async noDataPlan(
     search: SearchResult,
+    state: RequestState,
     now: Date,
     request: TimeRequest | undefined,
   ): Promise<NoDataPlan> {
@@ -2262,6 +2448,7 @@ export class AssistantTools {
       radiusM,
       nearestZones,
       ...this.cardFrame(search, [], now, request),
+      requestSummary: requestSummaryFor(state, search),
     };
   }
 
@@ -2296,6 +2483,8 @@ export class AssistantTools {
       nearMisses: [],
       relaxSuggestions: [],
       ...this.cardFrame(search, [], this.now(), ctx.timeRequest),
+      verdict: "none_meets",
+      requestSummary: requestSummaryFor(state, search),
     };
     ctx.searchesThisTurn = (ctx.searchesThisTurn ?? 0) + 1;
     return this.presentPlan(ctx, { tool: "search_garages" }, plan, "garage_search_unavailable");

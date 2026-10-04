@@ -1759,6 +1759,7 @@ give the audit trail either way.
   "shadow_mode": false,
   "session_cap_usd": 45,
   "daily_cap_usd": 60,
+  "confirm_warn_usd": 15,
   "auto_pay_max_rate_per_hour": 8.0,
   "default_stay_minutes": 90,
   "auto_extend": {
@@ -1775,6 +1776,14 @@ give the audit trail either way.
   }
 }
 ```
+
+`confirm_warn_usd` (optional, a number ≥ 0, default `15`; WS-1, FR-45) is
+the assistant's **approval threshold**, not a cap: an option on an
+assistant card priced above it carries `warn: true`, and the app asks for
+a long-press where a tap would otherwise confirm. Nothing is refused for
+it, and no cap check reads it. `PUT /policy` validates it like every other
+field; a document without it means 15 (`services/policy.ts`
+`confirmWarnUsd`). It has no env default.
 
 `city_overrides` is optional, keyed by `"nyc"`/`"bos"`, and each field is
 optional. `parking_fee_usd` is the city provider's pay-by-app fee and lives
@@ -2063,7 +2072,8 @@ latency, and an estimated cost from published per-model list prices —
 including any call a tool made on its own model (`explain_decision`'s
 phrasing lands in `otherModelCalls` and in the cost) — plus
 `stateEdits` (the turn's `update_request` calls), `requestVersion`
-(the request's version when the turn ended; see "The request" below), and
+(the request's version when the turn ended; see "The request" below),
+`intent` (the request's intent then; see "Intents" below), and
 `planKind` when the turn ended on a card.
 `ASSISTANT_DAILY_SPEND_CAP_USD` (default `5`) caps each user's estimated
 daily model spend against those rows (midnight ET, the same boundary as
@@ -2103,10 +2113,11 @@ app shows each `label` as a chip under the newest reply, and a tap sends
 `reply` as the user's next message, exactly as if they had typed it. They
 come from `ask_user` (below). When a place search this turn came back
 ambiguous and the model asked in prose anyway, the ambiguous places are
-offered instead, so the question is still one tap. A `none_meets` card's
-suggestions are its ways to relax the request, and a turn that searched
-but left no card offers "Search again" (both below). The SSE `done` event
-carries them too.
+offered instead, so the question is still one tap. A search that needs
+the stay asks for it itself, with four answers ("Intents" below). A
+`none_meets` card's suggestions are its ways to relax the request, and a
+turn that searched but left no card offers "Search again" (both below).
+The SSE `done` event carries them too.
 
 **What streams is provisional.** `text` events are the model's words as
 they arrive; the `done` event's `reply` is the one to keep, and the app
@@ -2174,24 +2185,32 @@ per place. The three questions a parking request needs get their common
 answers:
 
 - which city: the covered cities, from the registry;
-- how long: 1, 2, or 3 hours;
+- how long: 1 hour, 2 hours, 4 hours, or all day (twelve hours, the
+  longest stay a request holds) — one set of answers whoever asks, the
+  model or a search (`clarify.ts` `STAY_SUGGESTIONS`);
 - what time: now, in 30 minutes, or tonight at 7.
 
-A question that can be answered by assuming (now, 2 hours) should not be
-asked at all, and the prompt says so.
+A question that can be answered by assuming should not be asked at all,
+and the prompt says so: no time is now, and no stay on a request for
+right now is one hour. A stay is never invented for a later or
+garage-only request; that one is asked ("Intents" below).
 
 **Assumptions.** Every plan carries a server-computed `assumptions` line,
 the window and the place (`clarify.ts` `windowAssumption`, from the search
 the card was built from): "Sat 7:00–10:00 PM, near LoLa 42, Seaport",
-"Now–3:30 PM", "Mon 3 stops, 10:00 AM–4:30 PM". A request with no start is
-for now, for the request's stay. The app shows it above the card
-("Assuming …"). The one-line reply a silent proposal gets states it too:
-"Here are your options (Now–3:30 PM) — tap one to go ahead."
+"Now–3:30 PM, near you", "Mon 3 stops, 10:00 AM–4:30 PM". A request with
+no start is for now, for the request's stay. A search at the phone's
+location, because the user named no place, says "near you": that place is
+an assumption like any other, and never silent. The app shows the line
+above the card ("Assuming …"). The one-line reply a silent proposal gets
+states it too: "Here are your options (Now–3:30 PM, near you) — tap one to
+go ahead."
 
 `quote_street()` and `search_garages()` take **no arguments** (an optional
 `note` aside): they search the request — see "Searching the request, and
 saying no" below. `build_itinerary(stops[])` prices a multi-stop day,
-each stop at its own point and time; `propose_plan(plan)` ends the turn
+each stop at its own point and time, and is offered only for a request
+that starts later ("Intents" below); `propose_plan(plan)` ends the turn
 with the structured plan; `book_garage(option_id, confirmation_token)`
 and `start_session(zone, duration, confirmation_token)` are REFUSED
 without a live token; `get_history(days)`; `explain_decision(id)` (a
@@ -2374,7 +2393,10 @@ Plan shapes (zod-validated at the tool boundary — see
   tap or a map-pin tap, one shared selection) highlights its pin,
   recenters the map on it with a walking route from the destination, dims
   the other pins, and opens its detail card, built from these server
-  fields alone.
+  fields alone. It also says what it answered (FR-45, "The card says what
+  it answered" below): `verdict: "meets"`, the `requestSummary`, and on
+  its options `primary` (what leads) and `warn` (a price over the
+  approval threshold).
 - `itinerary`: 1–12 stops (address, arrival, duration, street|garage
   choice, cost) with `totalUsd` recomputed server-side and refused when it
   busts the remaining daily budget. Every proposed stop has an arrival
@@ -2523,10 +2545,14 @@ is ignored. They read from the conversation's request:
   the curb); the result says so and the model must too. A later request
   with the lookup down asks for an address instead;
 - **the window**: `window.startsAt` (now when null) for
-  `window.durationMinutes` (two hours when null, said as an assumption).
-  A start more than an hour past is `window_in_the_past`, and a search
-  that would move a clock time the user named is `requested_time_moved`;
-  both tell the model to fix the start with `update_request`;
+  `window.durationMinutes`. With no stay, a request for right now is
+  searched for one hour, said as an assumption, and a later or
+  garage-only one isn't searched at all — the turn asks how long
+  ("Intents" below). A start more than an hour past is
+  `window_in_the_past` (five minutes, and `time_in_past`, on a later or
+  garage-only request: V7), and a search that would move a clock time the
+  user named is `requested_time_moved`; all three tell the model to fix
+  the start with `update_request`;
 - **the limits and the ranking**: `hard` and `soft`, below.
 
 A garage search for a NAMED place keeps only garages within 600 m of it
@@ -2661,12 +2687,15 @@ goes back to the model with what to do:
 | V4 | With nothing satisfying, the only plan is the "no". With something satisfying, a "no" is refused. | `must_say_no` / `options_available` (with the search, so the model can propose from it) |
 | V5 | An itinerary's total is recomputed and held to the caller's own daily cap (`policyFor(user)`). There is no per-plan cap (decision 9). | `plan_over_daily_cap` |
 | V6 | Every dollar amount in the reply is one the server stands behind (below). | the sentence is dropped; `ungrounded_number` |
+| V7 | A later or garage-only request whose start is more than five minutes past isn't searched ("Intents" below). | `time_in_past` with `startsAt` and `nowEastern` |
 
 The card is then built by the server. Its options are in the search's
 order, and **the option that honors the ask is always on it and first**:
 the first satisfying option is added if the model left it out, and with
-no ask both the cheapest and the closest are. The first option holds
-`recommended` whatever the model marked. A model's `label` or `detail`
+no ask both the cheapest and the closest are. Those carry `primary: true`.
+With an ask, the best option on the other axis is always on the card too,
+as the `secondary` alternative. The first option holds `recommended`
+whatever the model marked. A model's `label` or `detail`
 is kept only where it can't mislead: a near-miss is named by the server,
 and words quoting an amount that isn't that option's own fall back to
 the server's. The card's `note` is held to V6. An itinerary's first
@@ -2771,6 +2800,126 @@ A near-miss's price is never among them: the card says it, with what it
 breaks. A question the SERVER asked (an unresolved place) is its own
 words and isn't checked. A `none_meets` or `no_data` reply needs no check:
 it is the headline.
+
+### Intents: tools, defaults, and what the card says
+
+FR-45. The request's intent is the server's (`requestState.ts` derives it
+after every patch): `park_now`, `park_later`, or `garage_or_lot`. Three
+things follow from it (`services/assistant/intentRouter.ts`, pure).
+
+**Which tools the model has.** The loop offers the model the intent's
+tools on **every model call** (an edit mid-turn can move the intent), and
+a call to a tool that is off is refused before it runs:
+
+| Intent | Off | Why |
+|---|---|---|
+| `park_now` | `build_itinerary` | A day of stops is planned for a request that starts later: the model puts the day's first arrival on the request first (`update_request` `startsAt`). |
+| `park_later` | — | |
+| `garage_or_lot` | `quote_street`, `build_itinerary` | The user asked for a garage. |
+
+The refusal is `{error: "tool_not_available_for_intent", intent,
+instruction}`, audited under that rule. The tools that aren't about what
+to search stay on under every intent: `update_request`, `geocode_place`,
+`search_garages`, `propose_plan`, `ask_user`, `get_history`,
+`explain_decision`, and the two token-gated tools. "Garage", then "or
+street is fine", moves the intent back (`hard.kinds` cleared, or both
+kinds) and `quote_street` is on again at the next model call.
+
+**The stay a search uses** (`stayFor`), when the request names none:
+
+- `park_now`: one hour. The search's `window` says `durationMinutes: 60,
+  durationSource: "default"`, the model is told to say so, and the card
+  says it (`requestSummary.assumed`). The default is the search's alone:
+  it is never written to the stored request, so it can't follow the
+  request into a later time.
+- `park_later` and `garage_or_lot`: there is none. The search answers
+  `{error: "duration_needed", intent, stateVersion}` (rule
+  `duration_needed`), nothing is searched — no garage source is called —
+  and **the turn ends asking the user** "How long will you park?" with
+  four chips: 1 hour, 2 hours, 4 hours, All day (`reply`: "For 1 hour" …
+  "For 12 hours"). The answer reaches the request through
+  `update_request`. A place that isn't resolved is asked about first.
+  The question has one wording and one set of answers whoever asks: a
+  model that asks about the stay itself with `ask_user` — the live model
+  did, with chips of its own — gets the same question and the same four
+  (`clarify.ts` `asksAboutStay`; "how long a walk?" is not this
+  question). When the server asks, a question the model also put in prose
+  is dropped from the reply: one question, the one the chips answer.
+
+**V7: a start that has passed.** A later or garage-only request whose
+`window.startsAt` is more than five minutes past isn't searched:
+`{error: "time_in_past", startsAt, nowEastern}` (rule `time_in_past`),
+`nowEastern` being the current time in ET with its offset. The model
+clears the start (now), sets the next occurrence, or asks. A `park_now`
+request is not held to it: a start that derives as now keeps the
+hour-wide rule for a mistaken date (`window_in_the_past`). The intent is
+re-derived on a patch, not on the clock, so a request made for 7 PM and
+picked up at 7:10 is still `park_later`, and is refused.
+
+**A garage-only request and the cheaper meter.** What meets a garage-only
+request is garages. Street reaches its result one way: the server runs
+the street search itself, alongside `search_garages`, and the cheapest
+block whose **only** broken limit is the kind is added to `nearMisses`
+when it costs less than every garage found — once
+(`search.ts` `cheaperStreet`). A block that breaks another limit too is no
+alternative. The card carries that one near-miss whatever the model chose
+(it keeps the last of the three slots), with `nearMiss: true` and
+`violates: [{field: "kinds", actual: "street", limit: ["garage"]}]`; it is
+never `recommended`, and the confirm route refuses it. The same street
+search is what "Street or garage is fine" is counted over.
+
+**The card says what it answered.** A `single_spot`, `none_meets`, or
+`no_data` card carries:
+
+```json
+{ "verdict": "meets",
+  "requestSummary": {
+    "version": 0, "intent": "park_now",
+    "place": { "query": null, "resolved": null, "candidates": null },
+    "window": { "startsAt": null, "durationMinutes": null, "source": "default" },
+    "hard": { "maxPriceUsd": null, "maxWalkMinutes": null, "kinds": null, "entryType": null, "covered": null },
+    "soft": { "rank": null, "prefer": null },
+    "assumed": { "place": "phone_location", "durationMinutes": 60 } },
+  "options": [ { "id": "v0-bos-mass-ave-1", …, "axis": "cheapest", "primary": true },
+               { "id": "v0-g-a", …, "axis": "closest", "primary": true, "warn": true } ] }
+```
+
+- `verdict`: `"meets"` on a `single_spot` card, `"none_meets"` on a
+  `none_meets` one.
+- `requestSummary`: the request without its log, as it stood at the
+  search the card was built from, plus `assumed` — what the server filled
+  in that the request doesn't say: `place: "phone_location"` (the search
+  was at the phone, because no place was named or, parking now, the
+  lookup of the one named was down) and `durationMinutes` (the stay a
+  search for right now assumed). The app shows it as chips above the card
+  and never edits it.
+- `primary: true` on the options that lead (decision 8): the one that
+  honors the ask, or both the cheapest and the closest when the user
+  asked for neither. A near-miss never leads.
+- `warn: true` on **any** option, near-misses included, whose `priceUsd`
+  is above `confirm_warn_usd` (policy; a price at the threshold doesn't
+  warn). The app asks for a long-press on it. `POST /assistant/confirm`
+  is unchanged: the tap, however long, mints the token.
+
+**Request chips.** A tap on one of the app's request chips sends a short
+message naming what to change and no value ("Change the budget", "Change
+the time", "Change the place"). It is an ordinary message: the model asks
+for the new value with `ask_user`. Nothing about the request is edited on
+the phone.
+
+**A relax chip is applied by the server.** A `none_meets` card's chips
+send their `reply` verbatim. When a message **is** one of the latest
+search's relaxations (at the request's current version; case and spacing
+aside), the loop applies its patch itself before the model runs —
+`maxPriceUsd` or `maxWalkMinutes` to the chip's value, or `hard.kinds`
+cleared — writes an `assistant_tool` decision (`rule: "relax_applied"`,
+`inputs.source: "relax_chip"`, outcome `{version, changed}`), and tells
+the model in the message's envelope: `[request updated by this tap:
+hard.maxPriceUsd — already applied. …]`. For the rest of that turn
+`update_request` is refused (`request_already_updated`): the user changed
+exactly that, so "Walk up to 15 min" can never be read as a 15-minute
+stay. Words that only resemble a chip, or a chip from before the request
+changed, apply nothing and are the model's to read.
 
 ### Saved conversations
 

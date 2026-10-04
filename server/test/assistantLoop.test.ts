@@ -304,8 +304,10 @@ describe("the loop", () => {
     });
     expect(silent.json().plan).not.toBeNull();
     // The one-liner states what the plan assumed: no start given → now,
-    // for the request's 90 minutes.
-    expect(silent.json().reply).toBe("Here are your options (Now–3:30 PM) — tap one to go ahead.");
+    // for the request's 90 minutes; no place named → the phone's location.
+    expect(silent.json().reply).toBe(
+      "Here are your options (Now–3:30 PM, near you) — tap one to go ahead.",
+    );
 
     // Words the model did say are kept as they are.
     const t2 = makeTestApp({

@@ -177,7 +177,8 @@ final class AssistantPlanPresentationTests: XCTestCase {
         XCTAssertEqual(plan.relaxSuggestions.map(\.wouldYield), [1, 0])
         XCTAssertEqual(plan.constraintsFailed.first?.nearestActual, .number(4.5))
         XCTAssertFalse(plan.garageSearchUnavailable)
-        XCTAssertEqual(NoCardPresentation.title(plan), "Nothing meets your request")
+        // The headline is the limit nothing met, in words (FR-45).
+        XCTAssertEqual(NoCardPresentation.headline(plan), "Nothing under $2.00")
     }
 
     func testANearMissSaysWhichLimitItBreaksAndByHowMuch() throws {
@@ -187,7 +188,7 @@ final class AssistantPlanPresentationTests: XCTestCase {
         XCTAssertEqual(NoCardPresentation.badges(plan.nearMisses[0]), "$2.50 over your $2.00 limit")
         XCTAssertEqual(
             NoCardPresentation.badges(plan.nearMisses[1]),
-            "4 min past your 10 min walk · A garage, not street parking"
+            "4 min past your 10-min walk · A garage, not street parking"
         )
         // Only a garage's price says when it was fetched.
         XCTAssertNil(NoCardPresentation.fetchedText(plan.nearMisses[0]))
@@ -214,7 +215,7 @@ final class AssistantPlanPresentationTests: XCTestCase {
                         "garage": "unavailable"}}
         """) else { return XCTFail("expected the none_meets card") }
         XCTAssertTrue(plan.garageSearchUnavailable)
-        XCTAssertEqual(NoCardPresentation.title(plan), "Couldn't check garages")
+        XCTAssertEqual(NoCardPresentation.headline(plan), "Couldn't check garages")
         XCTAssertTrue(plan.nearMisses.isEmpty, "No street substitute on a garage-only request")
     }
 

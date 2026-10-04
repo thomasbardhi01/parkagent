@@ -18,6 +18,13 @@
  * many street options on view kept an estimate. Exit status 1 when any
  * did. Places only Apple can find are judged only when its key is set.
  *
+ * Two kinds of control keep the name rule honest in both directions. The
+ * negative control is a name no place has ("Blorptastic Noodle House"): it
+ * must come back not found, or as the closest thing only and under the
+ * line a place is taken at. The positive controls are a real bar said by
+ * its own words ("XYZ bar", "W XYZ"): they must be W XYZ Bar, taken as the
+ * place at or above that line.
+ *
  *   pnpm -C server verify:places
  *   pnpm -C server verify:places --places "Lola 42 Seaport,TD Garden"
  *   pnpm -C server verify:places --from 42.3505,-71.0495
@@ -41,8 +48,13 @@ import {
 } from "../services/assistant/geocoder.js";
 import type { GeocoderProvider } from "../services/assistant/geocoder.js";
 import type { SearchResult } from "../services/assistant/search.js";
+import {
+  NEGATIVE_CONTROL,
+  POSITIVE_CONTROLS,
+  meetsExpectation,
+} from "../services/assistant/placeControls.js";
+import type { Expectation } from "../services/assistant/placeControls.js";
 import { carriesTheName } from "../services/assistant/placeMatch.js";
-import { RESOLUTION_THRESHOLDS } from "../services/assistant/placeScore.js";
 import { AssistantTools } from "../services/assistant/tools.js";
 import type { ToolContext } from "../services/assistant/tools.js";
 import type { AppDb } from "../db.js";
@@ -53,24 +65,16 @@ import { makeCandidateFetcher, makeNearbyZoneFetcher } from "../services/zoneLoo
 
 config({ path: fileURLToPath(new URL("../../../.env", import.meta.url)), quiet: true });
 
-/**
- * What a lookup should come to:
- *  - found: the place, by its name;
- *  - area: the neighborhood itself (a result of kind "area"), never a
- *    business named after it;
- *  - ambiguous: a question with choices;
- *  - unsure: nothing found, or a question whose best choice is under the
- *    `found` threshold — never a place taken with confidence.
- */
-type Expectation = "found" | "area" | "ambiguous" | "unsure";
-
 /** The places, what they should come to, and where they really are (for
  * the distance check). `apple`: only Apple's search can find it, so it is
- * judged only when the key is set. */
+ * judged only when the key is set. `named`: words the answer's name must
+ * hold — the place, not merely a place. What each `expect` means is
+ * placeControls.ts. */
 const DEFAULT_PLACES: {
   query: string;
   expect?: Expectation;
   apple?: boolean;
+  named?: string;
   real?: { lat: number; lng: number; what: string };
 }[] = [
   {
@@ -114,29 +118,21 @@ const DEFAULT_PLACES: {
     real: { lat: 42.3394, lng: -71.094, what: "465 Huntington Ave" },
   },
   { query: "Boylston and Dartmouth", expect: "found", apple: true },
-  // Autocomplete offered "W XYZ Bar", taken at 0.80 (prod, 2026-10-02).
-  { query: "xyzzy restaurant", expect: "unsure" },
+  // The negative control: a name that exists nowhere. (It was "xyzzy
+  // restaurant", which autocomplete answered with W XYZ Bar at 0.80 on
+  // prod, 2026-10-02 — but W XYZ Bar is a real bar, in Boston and in New
+  // York, so "not W XYZ Bar" was no control for "not found".)
+  { query: NEGATIVE_CONTROL, expect: "unsure" },
+  // The positive controls: that bar, said by its own words ("XYZ bar",
+  // "W XYZ"). A whole word is the word, so each is the place, at full
+  // confidence.
+  ...POSITIVE_CONTROLS.queries.map((query) => ({
+    query,
+    expect: "sure" as const,
+    apple: true,
+    named: POSITIVE_CONTROLS.named,
+  })),
 ];
-
-/** Whether a geocode_place answer is what was expected. */
-function meets(expect: Expectation, r: Record<string, unknown>): boolean {
-  const place = r["place"] as { kind?: string | null } | undefined;
-  switch (expect) {
-    case "found":
-      return r["found"] === true && r["match"] === "exact";
-    case "area":
-      return r["found"] === true && r["match"] === "exact" && place?.kind === "area";
-    case "ambiguous":
-      return r["ambiguous"] === true;
-    case "unsure":
-      return (
-        r["found"] === false ||
-        (r["ambiguous"] === true &&
-          typeof r["confidence"] === "number" &&
-          r["confidence"] < RESOLUTION_THRESHOLDS.found)
-      );
-  }
-}
 
 const BRAINTREE = { lat: 42.2206, lng: -71.0041 };
 const COURTESY_DELAY_MS = 1200;
@@ -280,7 +276,7 @@ async function main(): Promise<void> {
     }
     let verdict = "";
     if (place.expect && (apple || !place.apple)) {
-      const ok = meets(place.expect, r);
+      const ok = meetsExpectation(place.expect, r, place.named);
       verdict = ok ? `  ✓ ${place.expect}` : `  ✗ expected ${place.expect}`;
       if (!ok) misses.push(`${place.query}: expected ${place.expect}`);
     } else if (place.expect) {

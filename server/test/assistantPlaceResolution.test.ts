@@ -34,6 +34,11 @@ import {
   METRO_CENTER,
   biasPointFor,
 } from "../src/services/assistant/geocoder.js";
+import {
+  NEGATIVE_CONTROL,
+  POSITIVE_CONTROLS,
+  meetsExpectation,
+} from "../src/services/assistant/placeControls.js";
 import { carriesTheName, classifyPlaceMatches } from "../src/services/assistant/placeMatch.js";
 import { RESOLUTION_THRESHOLDS } from "../src/services/assistant/placeScore.js";
 import type { SearchResult } from "../src/services/assistant/search.js";
@@ -74,6 +79,11 @@ const SEAPORT_AREA: GeocodeResult = {
   areaNames: ["Boston", "Suffolk County"],
   kind: "area",
 };
+/** The negative control: a name no place has, in any city — the one
+ * verify:places runs. (It used to be "xyzzy restaurant" against W XYZ Bar,
+ * which is a real bar and so no control for "not found"; W XYZ Bar is a
+ * positive control below.) */
+const NOWHERE = NEGATIVE_CONTROL;
 const UNRELATED: GeocodeResult = {
   lat: 42.3489,
   lng: -71.0379,
@@ -697,8 +707,47 @@ describe("geocode_place returns a scored resolution, and records how it was scor
     });
   });
 
-  test("'xyzzy restaurant' answered by autocomplete with W XYZ Bar: not found, and nothing of it in the answer", async () => {
-    // Prod, 2026-10-02: this resolved to W XYZ Bar at 0.80.
+  test("a name that exists nowhere, answered by autocomplete with a place that only starts like it: not found, and nothing of it in the answer", async () => {
+    // The shape of prod's mismatch (2026-10-02, "xyzzy restaurant" taken
+    // for W XYZ Bar at 0.80), with names no place has on either side: the
+    // control for "not found" is a name that exists nowhere.
+    const blorp: GeocodeResult = {
+      ...UNRELATED,
+      name: "Blorp Bar",
+      address: "100 Stuart St",
+      area: "Bay Village",
+      areaNames: ["Boston", "Bay Village"],
+      lat: 42.3517,
+      lng: -71.0645,
+    };
+    const apple = fakeApple({
+      search: () => ok({ results: [] }),
+      autocomplete: () => ok({ results: [completionFor(blorp, "blorp")] }),
+      completion: () => ok({ results: [applePlace(blorp)] }),
+    });
+    const nominatim = nominatimWith([]);
+    const { tools, rows } = toolsWith({
+      geocoder: new FallbackGeocoder(
+        [new AppleMapsGeocoder(CONFIG, { fetchFn: apple.fetchFn }), nominatim],
+        carriesTheName,
+      ),
+    });
+    const out = await tools.execute(ctx, "geocode_place", { query: NOWHERE });
+    expect(apple.count("completion")).toBe(1);
+    expect(out.result).toMatchObject({ found: false, resolution: "none" });
+    const sent = JSON.stringify(out.result);
+    expect(sent).not.toContain("Blorp Bar");
+    expect(sent).not.toContain(String(blorp.lat));
+    // It isn't the place, so the next source was asked too.
+    expect(nominatim.asked).toBe(1);
+    const row = rows("geocode_place")[0]!;
+    expect(row).toMatchObject({ rule: "no_match", outcome: { confidence: null } });
+    const [candidate] = row.outcome["candidates"] as { name: string; score: number }[];
+    expect(candidate).toMatchObject({ name: "Blorp Bar" });
+    expect(candidate!.score).toBeLessThan(T.ambiguousFloor);
+  });
+
+  describe("W XYZ Bar is a real bar: said by its words, it is found, as sure as its whole name", () => {
     const wXyz: GeocodeResult = {
       ...UNRELATED,
       name: "W XYZ Bar",
@@ -708,31 +757,180 @@ describe("geocode_place returns a scored resolution, and records how it was scor
       lat: 42.3517,
       lng: -71.0645,
     };
-    const apple = fakeApple({
-      search: () => ok({ results: [] }),
-      autocomplete: () => ok({ results: [completionFor(wXyz, "wxyz")] }),
-      completion: () => ok({ results: [applePlace(wXyz)] }),
+    /** A business near where the search looked, listed first, with every
+     * name word carried: the most a query naming no area can score. */
+    const FULL = 0.8;
+
+    test.each([...POSITIVE_CONTROLS.queries, "W XYZ Bar"])(
+      "'%s', answered by the search: found, at full confidence, and nothing else is asked",
+      async (query) => {
+        const apple = fakeApple({ search: () => ok({ results: [applePlace(wXyz)] }) });
+        const nominatim = nominatimWith([]);
+        const { tools, rows } = toolsWith({
+          geocoder: new FallbackGeocoder(
+            [new AppleMapsGeocoder(CONFIG, { fetchFn: apple.fetchFn }), nominatim],
+            carriesTheName,
+          ),
+        });
+        const out = await tools.execute(ctx, "geocode_place", { query });
+        expect(out.result).toMatchObject({
+          found: true,
+          match: "exact",
+          resolution: "found",
+          confidence: FULL,
+          place: { name: "W XYZ Bar", address: "100 Stuart St" },
+        });
+        expect(FULL).toBeGreaterThanOrEqual(T.found);
+        // The search carried the name: no autocomplete, no second source.
+        expect(apple.count("autocomplete")).toBe(0);
+        expect(nominatim.asked).toBe(0);
+        expect(rows("geocode_place")[0]).toMatchObject({
+          rule: "ok",
+          outcome: { source: "apple_search", confidence: FULL },
+        });
+        expect(ctx.requestState?.place.resolved).toMatchObject({
+          lat: wXyz.lat,
+          lng: wXyz.lng,
+          label: "W XYZ Bar, Bay Village",
+        });
+      },
+    );
+
+    test.each([...POSITIVE_CONTROLS.queries])(
+      "'%s', found only by autocomplete — as prod's search answered — is still the place, at full confidence",
+      async (query) => {
+        const apple = fakeApple({
+          search: () => ok({ results: [] }),
+          autocomplete: () => ok({ results: [completionFor(wXyz, "wxyz")] }),
+          completion: () => ok({ results: [applePlace(wXyz)] }),
+        });
+        const nominatim = nominatimWith([]);
+        const { tools, rows } = toolsWith({
+          geocoder: new FallbackGeocoder(
+            [new AppleMapsGeocoder(CONFIG, { fetchFn: apple.fetchFn }), nominatim],
+            carriesTheName,
+          ),
+        });
+        const out = await tools.execute(ctx, "geocode_place", { query });
+        expect(out.result).toMatchObject({
+          found: true,
+          match: "exact",
+          resolution: "found",
+          confidence: FULL,
+          place: { name: "W XYZ Bar" },
+        });
+        expect(apple.count("completion")).toBe(1);
+        expect(nominatim.asked).toBe(0);
+        expect(rows("geocode_place")[0]).toMatchObject({
+          rule: "ok",
+          outcome: { source: "apple_autocomplete", confidence: FULL },
+        });
+      },
+    );
+  });
+
+  describe("how verify:places judges an answer (placeControls.ts)", () => {
+    const wXyz: GeocodeResult = {
+      ...UNRELATED,
+      name: "W XYZ Bar",
+      address: "100 Stuart St",
+      area: "Bay Village",
+      areaNames: ["Boston", "Bay Village"],
+      lat: 42.3517,
+      lng: -71.0645,
+    };
+    const noodles: GeocodeResult = {
+      ...UNRELATED,
+      name: "Pho Noodle House",
+      address: "8 Tyler St",
+      area: "Chinatown",
+      areaNames: ["Boston", "Chinatown"],
+      lat: 42.3512,
+      lng: -71.0603,
+    };
+    /** geocode_place's own answer for a query, given what the search
+     * returns. A turn of its own each time: a lookup is remembered for
+     * the turn it was made in. */
+    const answerFor = async (query: string, results: GeocodeResult[]) => {
+      const { tools } = toolsWith({
+        geocoder: tableGeocoder({ [query.toLowerCase()]: results }),
+      });
+      const turn: ToolContext = { userId: "u1", conversationId: "c1", location: BRAINTREE };
+      const out = await tools.execute(turn, "geocode_place", { query });
+      return out.result as Record<string, unknown>;
+    };
+
+    test("the controls are the ones the script runs: a made-up name, and a real bar by its own words", () => {
+      expect(NEGATIVE_CONTROL).toBe("Blorptastic Noodle House");
+      expect([...POSITIVE_CONTROLS.queries]).toEqual(["XYZ bar", "W XYZ"]);
     });
-    const nominatim = nominatimWith([]);
-    const { tools, rows } = toolsWith({
-      geocoder: new FallbackGeocoder(
-        [new AppleMapsGeocoder(CONFIG, { fetchFn: apple.fetchFn }), nominatim],
-        carriesTheName,
-      ),
+
+    test("the positive controls are 'sure' only as W XYZ Bar, by name, at or above the found line", async () => {
+      for (const query of POSITIVE_CONTROLS.queries) {
+        const answer = await answerFor(query, [wXyz, UNRELATED]);
+        expect(meetsExpectation("sure", answer, POSITIVE_CONTROLS.named), query).toBe(true);
+        expect(answer["confidence"], query).toBeGreaterThanOrEqual(T.found);
+        // The same answer is no pass for the negative control.
+        expect(meetsExpectation("unsure", answer), query).toBe(false);
+        // Some other place found by name is not the bar.
+        expect(meetsExpectation("sure", answer, "Lobster"), query).toBe(false);
+      }
+      // Not found, the closest thing only, and a question are none of them "sure".
+      const none = await answerFor(POSITIVE_CONTROLS.queries[0], [UNRELATED]);
+      expect(none).toMatchObject({ found: false });
+      expect(meetsExpectation("sure", none, POSITIVE_CONTROLS.named)).toBe(false);
+      const closest = await answerFor("XYZ lounge downstairs", [wXyz]);
+      expect(closest).toMatchObject({ found: true, match: "closest" });
+      expect(meetsExpectation("sure", closest, POSITIVE_CONTROLS.named)).toBe(false);
+      // Found by name, but under the line: not sure.
+      expect(
+        meetsExpectation(
+          "sure",
+          {
+            found: true,
+            match: "exact",
+            confidence: T.found - 0.001,
+            place: { name: "W XYZ Bar" },
+          },
+          "XYZ",
+        ),
+      ).toBe(false);
+      expect(
+        meetsExpectation(
+          "sure",
+          { found: true, match: "exact", confidence: T.found, place: { name: "W XYZ Bar" } },
+          "XYZ",
+        ),
+      ).toBe(true);
     });
-    const out = await tools.execute(ctx, "geocode_place", { query: "xyzzy restaurant" });
-    expect(apple.count("completion")).toBe(1);
-    expect(out.result).toMatchObject({ found: false, resolution: "none" });
-    const sent = JSON.stringify(out.result);
-    expect(sent).not.toContain("XYZ");
-    expect(sent).not.toContain(String(wXyz.lat));
-    // It isn't the place, so the next source was asked too.
-    expect(nominatim.asked).toBe(1);
-    const row = rows("geocode_place")[0]!;
-    expect(row).toMatchObject({ rule: "no_match", outcome: { confidence: null } });
-    const [candidate] = row.outcome["candidates"] as { name: string; score: number }[];
-    expect(candidate).toMatchObject({ name: "W XYZ Bar" });
-    expect(candidate!.score).toBeLessThan(T.ambiguousFloor);
+
+    test("the negative control is 'unsure' when nothing is found, or only the closest thing under the found line", async () => {
+      const none = await answerFor(NEGATIVE_CONTROL, [UNRELATED]);
+      expect(none).toMatchObject({ found: false, resolution: "none" });
+      expect(meetsExpectation("unsure", none)).toBe(true);
+
+      // A real noodle house shares its common words: the closest thing
+      // only, said as that, under the line.
+      const closest = await answerFor(NEGATIVE_CONTROL, [noodles]);
+      expect(closest).toMatchObject({ found: true, match: "closest", resolution: "closest_only" });
+      expect(closest["confidence"]).toBeLessThan(T.found);
+      expect(meetsExpectation("unsure", closest)).toBe(true);
+
+      // A place taken by name is never a pass, however low it scored; nor
+      // is the closest thing AT the line.
+      expect(meetsExpectation("unsure", { found: true, match: "exact", confidence: 0.4 })).toBe(
+        false,
+      );
+      expect(
+        meetsExpectation("unsure", { found: true, match: "closest", confidence: T.found }),
+      ).toBe(false);
+      expect(
+        meetsExpectation("unsure", { found: true, ambiguous: true, confidence: T.found - 0.01 }),
+      ).toBe(true);
+      expect(
+        meetsExpectation("unsure", { found: true, ambiguous: true, confidence: T.found }),
+      ).toBe(false);
+    });
   });
 
   test.each([
@@ -839,13 +1037,13 @@ describe("geocode_place returns a scored resolution, and records how it was scor
     expect(outcome.confidence).toBe(Math.max(...outcome.scores));
   });
 
-  test("'xyzzy restaurant': nothing — and nothing of the phone's location in the answer", async () => {
+  test("a name that exists nowhere: nothing — and nothing of the phone's location in the answer", async () => {
     const phone = { lat: 42.3519, lng: -71.0446 };
     const { tools, rows } = toolsWith({
-      geocoder: tableGeocoder({ "xyzzy restaurant": [UNRELATED] }),
+      geocoder: tableGeocoder({ [NOWHERE.toLowerCase()]: [UNRELATED] }),
     });
     const at: ToolContext = { ...ctx, location: phone };
-    const out = await tools.execute(at, "geocode_place", { query: "xyzzy restaurant" });
+    const out = await tools.execute(at, "geocode_place", { query: NOWHERE });
     expect(out.result).toMatchObject({ found: false, resolution: "none" });
     const sent = JSON.stringify(out.result);
     for (const coordinate of [phone.lat, phone.lng, UNRELATED.lat, UNRELATED.lng]) {
@@ -855,13 +1053,13 @@ describe("geocode_place returns a scored resolution, and records how it was scor
     // The request names the place and holds no point: the next search
     // asks for it, and never searches around the phone.
     expect(at.requestState?.place).toEqual({
-      query: "xyzzy restaurant",
+      query: NOWHERE,
       resolved: null,
       candidates: null,
     });
     const search = await tools.execute(at, "quote_street", {});
     expect(search.result).toMatchObject({ error: "place_unresolved" });
-    expect(search.ask?.question).toContain("xyzzy restaurant");
+    expect(search.ask?.question).toContain(NOWHERE);
     // What was turned down, and how it scored, is on the record.
     expect(rows("geocode_place")[0]).toMatchObject({
       rule: "no_match",

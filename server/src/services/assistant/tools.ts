@@ -286,9 +286,11 @@ const SEARCH_INPUT_SCHEMA = {
 /** Garage options farther than this from a NAMED place are dropped: every
  * option surfaced for a place is walkable from it (FR-23). */
 export const NAMED_PLACE_GARAGE_RADIUS_M = 600;
-/** Options per search that get a real walking time: the nearest ones,
- * as many as one ETA request carries. */
+/** Options a walking-time request carries (Apple's limit). */
 export const MAX_WALK_TIMED = 10;
+/** Walking-time requests a search may make: the options it shows and the
+ * nearest, then whatever the real walks brought into view. */
+export const MAX_WALK_REQUESTS = 2;
 /** How far the "no data" card looks for the nearest zones we do have. */
 const NEAREST_ZONE_RADIUS_M = 3000;
 /** A start more than this far ahead is paid on arrival, not confirmed now
@@ -1283,46 +1285,71 @@ export class AssistantTools {
   }
 
   /**
-   * Real walking times for a search's options (FR-44), before the request's
-   * limits and order are read off them: from the place the user named to
-   * each option's pin, for the nearest MAX_WALK_TIMED options — one call.
-   * `walkMinutes` becomes ceil(seconds / 60), at least 1, with
-   * `walkEstimate: false`; every other option keeps its straight-line
-   * estimate, marked `walkEstimate: true`. So does every option when the
-   * request names no
-   * place (the card has no destination to walk to), no source has walking
-   * times, or the call fails. A street option's one-line summary is
-   * rebuilt, so it never states a walk the option doesn't carry.
+   * Real walking times for this search's options (FR-44), before the
+   * request's limits and order are read off them: from the place the user
+   * named to each option's pin. The options the result will SHOW are timed
+   * first, then the nearest, MAX_WALK_TIMED a request: what a search shows
+   * is decided by the request's order, not by distance — on a Saturday
+   * evening the free blocks it leads with were the 12th to 15th nearest,
+   * and kept their estimates while ten nearer ones were timed. If the real
+   * walks reorder the list so that an untimed option comes into view, one
+   * more request times it (MAX_WALK_REQUESTS). `walkMinutes` becomes
+   * ceil(seconds / 60), at least 1, with `walkEstimate: false`; every other
+   * option keeps its straight-line estimate, marked `walkEstimate: true`.
+   * So does every option when the request names no place (the card has no
+   * destination to walk to), no source has walking times, or the call
+   * fails. A street option's one-line summary is rebuilt, so it never
+   * states a walk the option doesn't carry. Returns how many were timed.
    */
-  private async withWalkingTimes(
+  private async timeWalks(
+    kind: Kind,
+    pool: SearchPool,
+    state: RequestState,
     place: SearchPlace,
-    options: SearchOption[],
-  ): Promise<{ options: SearchOption[]; timed: number }> {
-    const estimated = options.map((o) => ({ ...o, walkEstimate: true }));
+    at: { searchedAt: string; inCoverage: boolean },
+  ): Promise<number> {
+    const held = pool[kind];
+    if (!held) return 0;
+    held.options = held.options.map((o) => ({ ...o, walkEstimate: true }));
     const geocoder = this.deps.geocoder;
-    if (!geocoder?.walkingEtas || place.source !== "user") return { options: estimated, timed: 0 };
-    const pinned = estimated
-      .filter(
-        (o): o is typeof o & { lat: number; lng: number } =>
-          o.lat !== undefined && o.lng !== undefined,
-      )
-      .sort((a, b) => a.distanceM - b.distanceM)
-      .slice(0, MAX_WALK_TIMED);
-    if (pinned.length === 0) return { options: estimated, timed: 0 };
-    const etas = await geocoder.walkingEtas(
-      { lat: place.lat, lng: place.lng },
-      pinned.map((o) => ({ lat: o.lat, lng: o.lng })),
-    );
-    if (!etas) return { options: estimated, timed: 0 };
-    const minutes = new Map<string, number>();
-    pinned.forEach((o, i) => {
-      const eta = etas[i];
-      // Never under a minute, like the estimate: "0 min walk" reads as none.
-      if (eta) minutes.set(o.id, Math.max(1, Math.ceil(eta.seconds / 60)));
-    });
-    return {
-      timed: minutes.size,
-      options: estimated.map((o) => {
+    if (!geocoder?.walkingEtas || place.source !== "user") return 0;
+    const pinned = (o: SearchOption): o is SearchOption & { lat: number; lng: number } =>
+      o.type === kind && o.lat !== undefined && o.lng !== undefined;
+    const asked = new Set<string>();
+    let timed = 0;
+    for (let request = 0; request < MAX_WALK_REQUESTS; request += 1) {
+      const result = buildSearchResult(pool, state, at);
+      const shown = [...result.satisfying, ...result.nearMisses.map((n) => n.option)]
+        .filter(pinned)
+        .filter((o) => !asked.has(o.id));
+      // The first request fills up with the nearest; a second only times
+      // what came into view.
+      const nearest =
+        request === 0
+          ? held.options
+              .filter(pinned)
+              .filter((o) => !asked.has(o.id))
+              .sort((a, b) => a.distanceM - b.distanceM)
+          : [];
+      const targets = [...new Map([...shown, ...nearest].map((o) => [o.id, o])).values()].slice(
+        0,
+        MAX_WALK_TIMED,
+      );
+      if (targets.length === 0) break;
+      const etas = await geocoder.walkingEtas(
+        { lat: place.lat, lng: place.lng },
+        targets.map((o) => ({ lat: o.lat, lng: o.lng })),
+      );
+      if (!etas) break;
+      const minutes = new Map<string, number>();
+      targets.forEach((o, i) => {
+        asked.add(o.id);
+        const eta = etas[i];
+        // Never under a minute, like the estimate: "0 min walk" reads as none.
+        if (eta) minutes.set(o.id, Math.max(1, Math.ceil(eta.seconds / 60)));
+      });
+      timed += minutes.size;
+      held.options = held.options.map((o) => {
         const walkMinutes = minutes.get(o.id);
         if (walkMinutes === undefined) return o;
         const facts = o.facts
@@ -1334,8 +1361,9 @@ export class AssistantTools {
           walkEstimate: false,
           ...(facts ? { facts, summary: facts.summary } : {}),
         };
-      }),
-    };
+      });
+    }
+    return timed;
   }
 
   /** Whether a point is inside a city we cover: what tells "we have no
@@ -1365,16 +1393,12 @@ export class AssistantTools {
     const pool = this.poolFor(ctx, state.version, place, window);
 
     let fromCache: boolean | undefined;
-    let walks: { options: SearchOption[]; timed: number };
     if (kind === "street") {
-      const street = await this.streetPool(place, start, window, state.version, fetchedAt);
-      walks = await this.withWalkingTimes(place, street.options);
-      pool.street = { ...street, options: walks.options };
+      pool.street = await this.streetPool(place, start, window, state.version, fetchedAt);
     } else {
       const garage = await this.garagePool(ctx, input, place, window, state.version, fetchedAt);
       fromCache = garage.fromCache;
-      walks = await this.withWalkingTimes(place, garage.options);
-      pool.garage = { options: walks.options, meta: garage.meta, fetchedAt };
+      pool.garage = { options: garage.options, meta: garage.meta, fetchedAt };
       // A garage-only request whose garage search is down has nothing to
       // show: the turn ends on an "unavailable" card, with no street
       // substitute — the user asked for a garage.
@@ -1382,11 +1406,10 @@ export class AssistantTools {
         return this.garageUnavailableCard(ctx, state, place, window, garage.meta, fetchedAt);
       }
     }
+    const at = { searchedAt: fetchedAt, inCoverage: this.inCoverage(place) };
+    const walksTimed = await this.timeWalks(kind, pool, state, place, at);
     ctx.searchPool = pool;
-    const result = buildSearchResult(pool, state, {
-      searchedAt: fetchedAt,
-      inCoverage: this.inCoverage(place),
-    });
+    const result = buildSearchResult(pool, state, at);
     ctx.lastSearch = result;
     ctx.searchesThisTurn = (ctx.searchesThisTurn ?? 0) + 1;
     await this.audit(ctx, tool, input, "ok", {
@@ -1400,7 +1423,7 @@ export class AssistantTools {
       })),
       placeSource: place.source,
       // How many of this search's options carry a real walking time.
-      walksTimed: walks.timed,
+      walksTimed,
       ...(kind === "street"
         ? { streetCount: pool.street!.options.length, ...pool.street!.meta }
         : {

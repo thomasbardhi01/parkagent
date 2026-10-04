@@ -23,6 +23,7 @@ import type {
   GarageBookingRow,
   ItineraryRow,
   LinkSpendRequestRow,
+  PendingParkRow,
   SessionHoldRow,
   ProviderAccountRow,
   RefreshTokenRow,
@@ -327,6 +328,8 @@ export interface FakeDbState {
   sessionHolds: SessionHoldRow[];
   garageBookings: GarageBookingRow[];
   linkJobs: LinkJobRow[];
+  /** The street session lifecycle's rows (FR-55). */
+  pendingParks: PendingParkRow[];
 }
 
 /** The link-job WHERE shapes in use (LinkJobWhere), over the fake rows. */
@@ -486,6 +489,7 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
     fundingMethods: [],
     sessionHolds: [],
     garageBookings: [],
+    pendingParks: [],
   };
   const cardholderFor = (userId: string) => {
     const explicit = state.issuingCardholders.find((c) => c.userId === userId);
@@ -1451,6 +1455,82 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
             Object.assign(s, data);
             count += 1;
           }
+        }
+        return { count };
+      },
+    },
+    pendingPark: {
+      create: async ({ data }) => {
+        // Mirrors the two unique indexes (parked_event_id, session_id).
+        if (
+          (data.parkedEventId &&
+            state.pendingParks.some((p) => p.parkedEventId === data.parkedEventId)) ||
+          (data.sessionId && state.pendingParks.some((p) => p.sessionId === data.sessionId))
+        ) {
+          throw Object.assign(new Error("Unique constraint failed: pending_parks"), {
+            code: "P2002",
+          });
+        }
+        const row: PendingParkRow = {
+          id: `pp${state.pendingParks.length + 1}`,
+          parkedEventId: null,
+          candidates: null,
+          quote: null,
+          prompt: null,
+          zoneId: null,
+          leftCarAt: null,
+          farAt: null,
+          nearSince: null,
+          promptedAt: null,
+          confirmedAt: null,
+          startingAt: null,
+          sessionId: null,
+          closedAt: null,
+          createdAt: holdClock(),
+          ...data,
+        };
+        state.pendingParks.push(row);
+        return row;
+      },
+      findUnique: async ({ where }) =>
+        state.pendingParks.find((p) =>
+          "id" in where
+            ? p.id === where.id
+            : "parkedEventId" in where
+              ? p.parkedEventId === where.parkedEventId
+              : p.sessionId === where.sessionId,
+        ) ?? null,
+      findFirst: async ({ where }) =>
+        // Insertion order breaks a created_at tie: the fake clock is fixed.
+        state.pendingParks
+          .map((park, index) => ({ park, index }))
+          .filter(({ park }) => park.userId === where.userId)
+          .filter(({ park }) => where.status.in.includes(park.status))
+          .sort(
+            (a, b) => b.park.createdAt.getTime() - a.park.createdAt.getTime() || b.index - a.index,
+          )[0]?.park ?? null,
+      update: async ({ where, data }) => {
+        const row = state.pendingParks.find((p) => p.id === where.id);
+        if (!row) throw new Error(`fake pendingPark.update: no park ${where.id}`);
+        Object.assign(row, data);
+        return row;
+      },
+      // One synchronous pass, like the single UPDATE … WHERE status = …
+      // it stands in for: of two racing callers, one gets count 1.
+      updateMany: async ({ where, data }) => {
+        let count = 0;
+        for (const row of state.pendingParks) {
+          const statusHit =
+            typeof where.status === "string"
+              ? row.status === where.status
+              : where.status.in.includes(row.status);
+          const idHit =
+            "userId" in where
+              ? row.userId === where.userId && row.id !== where.id?.not
+              : row.id === where.id;
+          if (!statusHit || !idHit) continue;
+          Object.assign(row, data);
+          count += 1;
         }
         return { count };
       },

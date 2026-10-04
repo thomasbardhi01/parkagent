@@ -15,6 +15,7 @@ import { z } from "zod";
 import type { AppDeps } from "../app.js";
 import { policyFor } from "../services/limits.js";
 import { executorOutcome } from "../services/executor.js";
+import { PARK_OPEN } from "../services/pendingSession.js";
 import type { SessionRow } from "../db.js";
 import { cityForZone, providerForCity, providerStatusUsable } from "../providers/registry.js";
 import {
@@ -57,7 +58,41 @@ const extendSchema = z.object({
   minutes: z.number().int().positive().max(720),
 });
 
-export function registerSession(app: FastifyInstance, deps: AppDeps): void {
+type StartBody = z.infer<typeof startSchema>;
+
+/** What a start came to: the reply POST /session/start sends, and whether
+ * the provider was asked to start (so a failure may have charged). */
+export interface SessionStartReply {
+  status: number;
+  body: Record<string, unknown>;
+  reachedProvider: boolean;
+}
+
+export interface SessionStopReply {
+  status: number;
+  body: Record<string, unknown>;
+}
+
+/**
+ * The start and stop paths themselves, for the callers that aren't their
+ * routes: the lifecycle's tap (POST /parked/:id/confirm), the walk-away of
+ * an early tap, and the return that ends a session (routes/location.ts).
+ * They run exactly what the routes run; there is no second way to pay.
+ */
+export interface SessionOps {
+  start(
+    user: { id: string },
+    body: StartBody,
+    opts?: {
+      /** The amount the driver agreed to (the prompt's): a start that
+       * would cost more is refused `quote_changed`. */
+      maxTotalUsd?: number;
+    },
+  ): Promise<SessionStartReply>;
+  stop(userId: string, session: SessionRow): Promise<SessionStopReply>;
+}
+
+export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps {
   const now = () => deps.now?.() ?? new Date();
 
   /** Load the caller's session or reply 404/409; null means already replied. */
@@ -78,13 +113,17 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
     return session;
   }
 
-  app.post("/session/start", async (req, reply) => {
-    const parsed = startSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return reply.code(400).send({ error: z.treeifyError(parsed.error) });
-    }
-    const body = parsed.data;
-    const user = req.authedUser!;
+  const start: SessionOps["start"] = async (user, body, opts = {}) => {
+    let reachedProvider = false;
+    const reply = {
+      code: (status: number) => ({
+        send: (payload: Record<string, unknown>): SessionStartReply => ({
+          status,
+          body: payload,
+          reachedProvider,
+        }),
+      }),
+    };
     const policy = await policyFor(deps, user.id);
     const at = now();
 
@@ -208,6 +247,9 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
       rule = "session_cap_exceeded";
     } else if (!dryRun && spentTodayUsd + price.totalUsd > policy.daily_cap_usd) {
       rule = "daily_cap_exceeded";
+    } else if (opts.maxTotalUsd !== undefined && price.totalUsd > opts.maxTotalUsd + 0.001) {
+      // The tap agreed to an amount; this start would cost more than it.
+      rule = "quote_changed";
     }
 
     // Which card pays this session: the user's Wallet source, snapshotted
@@ -233,6 +275,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
       dryRun,
       paymentSource,
       ...(requestedSource !== paymentSource ? { requestedSource } : {}),
+      ...(opts.maxTotalUsd !== undefined ? { shownTotalUsd: opts.maxTotalUsd } : {}),
       policyHash: deps.policy.hash(),
       // Which terms priced this: the observed row's values when one
       // overrode the dataset.
@@ -416,6 +459,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
     };
 
     const startedAtMs = Date.now();
+    reachedProvider = true;
     const result = await deps.executorFor({ userId: user.id, city, dryRun }).startSession({
       zoneNumber: zone.providerZoneNumber,
       minutes,
@@ -480,13 +524,13 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
         user.id,
         freePeriodPush({ zoneNumber: zone.providerZoneNumber, notice: result.message }),
       );
-      return {
+      return reply.code(200).send({
         status: "free_period",
         zoneId: zone.zoneId,
         providerHours,
         notice: result.message,
         decisionId: decision.id,
-      };
+      });
     }
 
     if (!result.ok) {
@@ -637,7 +681,49 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
         dryRun,
       }),
     );
-    return { sessionId: session.id, expiresAt: result.expiresAt, amountUsd: chargedTotalUsd };
+    return reply.code(200).send({
+      sessionId: session.id,
+      expiresAt: result.expiresAt,
+      amountUsd: chargedTotalUsd,
+    });
+  };
+
+  app.post("/session/start", async (req, reply) => {
+    const parsed = startSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: z.treeifyError(parsed.error) });
+    }
+    const user = req.authedUser!;
+    // A park that waits for the walk-away (FR-55) is paid only through its
+    // own tap, POST /parked/:id/confirm: this route knows neither whether
+    // the phone has left the car nor what amount the driver was shown.
+    const waiting = await deps.db.pendingPark.findUnique({
+      where: { parkedEventId: parsed.data.parkedEventId },
+    });
+    if (waiting && waiting.userId === user.id && PARK_OPEN.includes(waiting.status)) {
+      const decision = await deps.db.decision.create({
+        data: {
+          kind: "session_start",
+          inputs: {
+            body: parsed.data,
+            parkStatus: waiting.status,
+            dryRun: deps.policy.effectiveDryRun(),
+            policyHash: deps.policy.hash(),
+          },
+          rule: "park_awaits_walk_away",
+          outcome: { allowed: false },
+          userId: user.id,
+          parkedEventId: parsed.data.parkedEventId,
+        },
+      });
+      return reply.code(409).send({
+        error: "park_awaits_walk_away",
+        parkStatus: waiting.status,
+        decisionId: decision.id,
+      });
+    }
+    const result = await start(user, parsed.data);
+    return reply.code(result.status).send(result.body);
   });
 
   app.post("/session/extend", async (req, reply) => {
@@ -749,27 +835,24 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
     return { sessionId: session.id, expiresAt: outcome.expiresAt, amountUsd: price.totalUsd };
   });
 
-  app.post("/session/stop", async (req, reply) => {
-    const parsed = stopSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return reply.code(400).send({ error: z.treeifyError(parsed.error) });
-    }
-    const user = req.authedUser!;
+  const stop: SessionOps["stop"] = async (userId, session) => {
+    const reply = {
+      code: (status: number) => ({
+        send: (payload: Record<string, unknown>): SessionStopReply => ({ status, body: payload }),
+      }),
+    };
     const at = now();
-
-    const session = await activeSession(parsed.data.sessionId, user.id, reply);
-    if (!session) return;
 
     const dryRun = deps.policy.effectiveDryRun();
     const startedAtMs = Date.now();
     const result = await deps
-      .executorFor({ userId: user.id, city: cityForZone(session.zoneId), dryRun })
+      .executorFor({ userId, city: cityForZone(session.zoneId), dryRun })
       .stopSession({
         providerSessionId: session.parknycConfirmation ?? session.id,
       });
     const durationMs = Date.now() - startedAtMs;
     const decisionInputs = {
-      body: parsed.data,
+      body: { sessionId: session.id },
       dryRun,
       policyHash: deps.policy.hash(),
     };
@@ -797,7 +880,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
             ...executorOutcome(result),
             ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}),
           },
-          userId: user.id,
+          userId,
           sessionId: session.id,
         },
       });
@@ -819,10 +902,24 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): void {
         inputs: decisionInputs,
         rule: "stop_ok",
         outcome: { ok: true, stoppedAt: at.toISOString(), durationMs, ...executorOutcome(result) },
-        userId: user.id,
+        userId,
         sessionId: session.id,
       },
     });
-    return { sessionId: session.id, stoppedAt: at };
+    return reply.code(200).send({ sessionId: session.id, stoppedAt: at });
+  };
+
+  app.post("/session/stop", async (req, reply) => {
+    const parsed = stopSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: z.treeifyError(parsed.error) });
+    }
+    const user = req.authedUser!;
+    const session = await activeSession(parsed.data.sessionId, user.id, reply);
+    if (!session) return;
+    const result = await stop(user.id, session);
+    return reply.code(result.status).send(result.body);
   });
+
+  return { start, stop };
 }

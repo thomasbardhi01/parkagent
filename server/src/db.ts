@@ -311,6 +311,52 @@ export interface GarageBookingRow {
 }
 
 /** A session_events row as the Activity timeline reads it. */
+/** A detected street park and where its lifecycle stands (FR-55; the
+ * states are in schema.prisma and services/pendingSession.ts). */
+export interface PendingParkRow {
+  id: string;
+  userId: string;
+  /** Null on a row made for a session started outside the lifecycle. */
+  parkedEventId: string | null;
+  status: string;
+  /** The street candidates with their terms, as /parked answered them. */
+  candidates: unknown;
+  /** The quote last shown to the driver. */
+  quote: unknown;
+  /** The walk-away prompt as the phone was given it. */
+  prompt: unknown;
+  /** The candidate the driver confirmed. */
+  zoneId: string | null;
+  carLat: number;
+  carLng: number;
+  parkedAt: Date;
+  leftCarAt: Date | null;
+  farAt: Date | null;
+  nearSince: Date | null;
+  promptedAt: Date | null;
+  confirmedAt: Date | null;
+  startingAt: Date | null;
+  sessionId: string | null;
+  closedAt: Date | null;
+  createdAt: Date;
+}
+
+export interface PendingParkWrite {
+  status?: string;
+  candidates?: unknown;
+  quote?: unknown;
+  prompt?: unknown;
+  zoneId?: string | null;
+  leftCarAt?: Date | null;
+  farAt?: Date | null;
+  nearSince?: Date | null;
+  promptedAt?: Date | null;
+  confirmedAt?: Date | null;
+  startingAt?: Date | null;
+  sessionId?: string | null;
+  closedAt?: Date | null;
+}
+
 export interface SessionEventRow {
   id: string;
   sessionId: string;
@@ -1284,6 +1330,36 @@ export interface AppDb {
     updateMany(args: {
       where: { userId: string } | { vehicleId: string };
       data: { vehicleId: null };
+    }): Promise<{ count: number }>;
+  };
+  /** The street session lifecycle (FR-55). */
+  pendingPark: {
+    create(args: {
+      data: PendingParkWrite & {
+        userId: string;
+        parkedEventId?: string;
+        status: string;
+        carLat: number;
+        carLng: number;
+        parkedAt: Date;
+      };
+    }): Promise<PendingParkRow>;
+    findUnique(args: {
+      where: { id: string } | { parkedEventId: string } | { sessionId: string };
+    }): Promise<PendingParkRow | null>;
+    /** The user's newest park in one of these states. */
+    findFirst(args: {
+      where: { userId: string; status: { in: string[] } };
+      orderBy: { createdAt: "desc" };
+    }): Promise<PendingParkRow | null>;
+    update(args: { where: { id: string }; data: PendingParkWrite }): Promise<PendingParkRow>;
+    /** Compare-and-set: the status in `where` is what makes a transition
+     * happen once however many requests race for it. */
+    updateMany(args: {
+      where:
+        | { id: string; status: string | { in: string[] } }
+        | { userId: string; status: { in: string[] }; id?: { not: string } };
+      data: PendingParkWrite;
     }): Promise<{ count: number }>;
   };
   sessionEvent: {

@@ -452,6 +452,54 @@ model LocationFix {
   @@map("location_fixes")
 }
 
+// A detected street park, from /parked to its end (FR-55): the session
+// lifecycle's own record. Nothing is asked or paid while the phone is at
+// the car; the walk-away (seen through POST /location) is what moves it on.
+//   at_car     detected, the phone hasn't left the car
+//   confirmed  Pay tapped before walk-away; the start waits for it
+//   prompted   the phone left; the driver was asked
+//   starting   one start is running for it (the guard against a second)
+//   started    its session started (session_id)
+//   declined   "Not now": nothing paid
+// and closed for good: cancelled (back at the car, or drove off, unpaid),
+// superseded (a newer park), expired, free, start_failed, ended (its
+// session ended when the phone came back).
+// Plain strings, no relations: the row outlives a tombstoned user like the
+// parked event it describes.
+model PendingPark {
+  id            String    @id @default(cuid())
+  userId        String    @map("user_id")
+  // Null on a row made for a session that started outside this lifecycle.
+  parkedEventId String?   @unique @map("parked_event_id")
+  status        String
+  // The street candidates with their terms, as /parked answered them.
+  candidates    Json?
+  // The quote last shown to the driver: /parked's, then the prompt's.
+  quote         Json?
+  // The walk-away prompt as the phone was given it, word for word.
+  prompt        Json?
+  // The candidate the driver confirmed (the side of the street).
+  zoneId        String?   @map("zone_id")
+  carLat        Float     @map("car_lat")
+  carLng        Float     @map("car_lng")
+  // When the car stopped: no fix from before it can show a walk-away.
+  parkedAt      DateTime  @map("parked_at") @db.Timestamptz(6)
+  // Where the phone is relative to the car (services/pendingSession.ts).
+  leftCarAt     DateTime? @map("left_car_at") @db.Timestamptz(6)
+  farAt         DateTime? @map("far_at") @db.Timestamptz(6)
+  nearSince     DateTime? @map("near_since") @db.Timestamptz(6)
+  promptedAt    DateTime? @map("prompted_at") @db.Timestamptz(6)
+  confirmedAt   DateTime? @map("confirmed_at") @db.Timestamptz(6)
+  startingAt    DateTime? @map("starting_at") @db.Timestamptz(6)
+  sessionId     String?   @unique @map("session_id")
+  closedAt      DateTime? @map("closed_at") @db.Timestamptz(6)
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([userId, status])
+  @@map("pending_parks")
+}
+
 // APNs device tokens registered via POST /device. The app re-sends on every
 // launch, so rows are upserted by token; a 410 from Apple deletes the row.
 model DeviceToken {

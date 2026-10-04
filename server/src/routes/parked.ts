@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
 import type { AppDeps } from "../app.js";
+import type { PendingParkRow } from "../db.js";
 import type { GarageFootprint } from "../services/garageLookup.js";
 import { describeFootprint } from "../services/garageLookup.js";
 import { policyFor } from "../services/limits.js";
@@ -20,6 +21,12 @@ import {
   placeOutcome,
 } from "../services/placeClassification.js";
 import { cityForZone, providerForCity, providerStatusUsable } from "../providers/registry.js";
+import {
+  PARK_SUPERSEDABLE,
+  parkCandidates,
+  settlePark,
+  startParkSession,
+} from "../services/pendingSession.js";
 import type { Quote } from "../services/quote.js";
 import { spentToday } from "../services/sessions.js";
 import { quoteZone } from "../services/quote.js";
@@ -27,6 +34,7 @@ import type { Candidate } from "../services/zoneLookup.js";
 import { lookupRadiusM, resolveCandidates } from "../services/zoneLookup.js";
 import { applyObservedToCandidates } from "../services/zoneTermsObserved.js";
 import { makeRateLimiter } from "../services/rateLimit.js";
+import type { SessionOps } from "./session.js";
 
 const bodySchema = z.object({
   lat: z.number().gte(-90).lte(90),
@@ -48,6 +56,13 @@ const placeBodySchema = z.object({
   class: z.enum(PLACE_ANSWERS),
   name: z.string().max(PLACE_NAME_MAX).nullish(),
 });
+
+/** Pay's body: the side of the street, when the candidates disagree. */
+const confirmBodySchema = z.object({ zoneId: z.string().min(1).optional() });
+
+/** The outcome a build lists when it waits for the walk-away (FR-55): it
+ * shows nothing at the car, reports its fixes, and pays through the tap. */
+const WALK_AWAY = "walk_away";
 
 /** How many garages around a fix are weighed; a block holds a handful. */
 const GARAGE_LOOKUP_LIMIT = 50;
@@ -110,7 +125,8 @@ function candidatePayload(candidate: Candidate, quote: Quote) {
   };
 }
 
-export function registerParked(app: FastifyInstance, deps: AppDeps): void {
+export function registerParked(app: FastifyInstance, deps: AppDeps, sessions: SessionOps): void {
+  const now = () => deps.now?.() ?? new Date();
   // A phone parks a handful of times a day; a runaway detector loop (or a
   // stolen key probing the zone map) should not hammer PostGIS.
   const limit = makeRateLimiter({ max: 30, windowMs: 60_000 });
@@ -295,6 +311,53 @@ export function registerParked(app: FastifyInstance, deps: AppDeps): void {
       },
     });
 
+    // A street park with something to pay, from a build that waits for the
+    // walk-away (FR-55): recorded, and nothing more. No prompt and no
+    // payment while the phone is at the car; POST /location sees it leave.
+    const awaitsWalkAway =
+      Array.isArray(rawOutcomes) &&
+      rawOutcomes.includes(WALK_AWAY) &&
+      located &&
+      (answer.action === "pay" || answer.action === "confirm") &&
+      candidates.some((c) => c.quote.totalUsd > 0);
+    if (awaitsWalkAway) {
+      // The car is here now: whatever waited at an earlier spot is over,
+      // its confirmation with it.
+      await deps.db.pendingPark.updateMany({
+        where: { userId: user.id, status: { in: PARK_SUPERSEDABLE } },
+        data: { status: "superseded", closedAt: serverNow },
+      });
+      await deps.db.pendingPark.create({
+        data: {
+          userId: user.id,
+          parkedEventId: parkedEvent.id,
+          status: "at_car",
+          candidates,
+          quote,
+          carLat: body.lat,
+          carLng: body.lng,
+          parkedAt: at,
+        },
+      });
+      await deps.db.decision.create({
+        data: {
+          kind: "street_pending",
+          inputs: {
+            parkedDecisionId: decision.id,
+            candidateZoneIds: candidates.map((c) => c.zoneId),
+            car: { lat: body.lat, lng: body.lng, accuracyM: body.accuracy },
+            parkedAt: at.toISOString(),
+            dryRun,
+            policyHash: deps.policy.hash(),
+          },
+          rule: answer.rule,
+          outcome: { status: "at_car", action: answer.action, quote, candidates },
+          userId: user.id,
+          parkedEventId: parkedEvent.id,
+        },
+      });
+    }
+
     // Which provider runs this city's meters, and whether the caller has
     // linked an account there — the app routes an unlinked user into the
     // link flow before offering to pay.
@@ -328,9 +391,202 @@ export function registerParked(app: FastifyInstance, deps: AppDeps): void {
       provider,
       // What kind of place this is, and where that came from (FR-54).
       place: classified.place,
+      // True → nothing is shown at the car; the prompt comes at walk-away.
+      ...(awaitsWalkAway ? { awaitsWalkAway: true } : {}),
       parkedEventId: parkedEvent.id,
       decisionId: decision.id,
     };
+  });
+
+  /** The caller's own waiting park, or the reply that says why not. */
+  async function ownPark(
+    userId: string,
+    parkedEventId: string,
+    reply: { code(c: number): { send(b: unknown): unknown } },
+  ): Promise<PendingParkRow | null> {
+    const parkedEvent = await deps.db.parkedEvent.findUnique({ where: { id: parkedEventId } });
+    if (!parkedEvent || parkedEvent.userId !== userId) {
+      reply.code(404).send({ error: "parked_event_not_found" });
+      return null;
+    }
+    const park = await deps.db.pendingPark.findUnique({ where: { parkedEventId } });
+    if (!park || park.userId !== userId) {
+      reply.code(409).send({ error: "no_pending_park" });
+      return null;
+    }
+    return settlePark(deps, park, now());
+  }
+
+  // The one tap (FR-55): Pay on the walk-away prompt, or in the app. It
+  // starts the session through POST /session/start's own path, for the
+  // amount the driver was shown, at most once per park. Tapped before the
+  // phone has left the car it only records the confirmation; the start
+  // waits for the walk-away.
+  app.post("/parked/:id/confirm", { preHandler: limit }, async (req, reply) => {
+    const parsed = confirmBodySchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({ error: z.treeifyError(parsed.error) });
+    }
+    const user = req.authedUser!;
+    const { id } = req.params as { id: string };
+    const park = await ownPark(user.id, id, reply);
+    if (!park) return;
+    const at = now();
+
+    if (park.status === "started") {
+      // A retried tap: the same session, not a second one.
+      const session = park.sessionId
+        ? await deps.db.session.findUnique({ where: { id: park.sessionId } })
+        : null;
+      return {
+        status: "started",
+        sessionId: park.sessionId,
+        expiresAt: session?.expiresAt ?? null,
+        amountUsd:
+          Math.round((Number(session?.amountUsd ?? 0) + Number(session?.feeUsd ?? 0)) * 100) / 100,
+      };
+    }
+    if (park.status === "starting") {
+      return reply.code(409).send({ error: "confirm_in_progress" });
+    }
+
+    const candidates = parkCandidates(park);
+    const zoneId =
+      parsed.data.zoneId ?? park.zoneId ?? (candidates.length === 1 ? candidates[0]!.zoneId : null);
+    const waiting = ["at_car", "confirmed", "prompted", "declined"].includes(park.status);
+    if (waiting && zoneId === null) {
+      return reply.code(409).send({ error: "side_required" });
+    }
+    const candidate = candidates.find((c) => c.zoneId === zoneId);
+    if (waiting && !candidate) {
+      return reply.code(409).send({ error: "zone_not_offered" });
+    }
+    if (!waiting || !candidate) {
+      // Cancelled, superseded, expired, free, failed, ended: a park that
+      // is over is never paid from again.
+      return reply.code(409).send({ error: "park_closed", status: park.status });
+    }
+    // What the driver was shown for this side: the walk-away prompt's
+    // quote, or /parked's when they chose the side in the app.
+    const prompted = park.quote as Quote | null;
+    const shown = prompted && prompted.zoneId === candidate.zoneId ? prompted : candidate.quote;
+    const dryRun = deps.policy.effectiveDryRun();
+    const confirmedRow = (early: boolean) =>
+      deps.db.decision.create({
+        data: {
+          kind: "street_confirmed",
+          inputs: {
+            parkedEventId: id,
+            zoneId: candidate.zoneId,
+            mode: "tap",
+            early,
+            shown,
+            parkStatus: park.status,
+            leftCarAt: park.leftCarAt?.toISOString() ?? null,
+            nearCarSince: park.nearSince?.toISOString() ?? null,
+            dryRun,
+            policyHash: deps.policy.hash(),
+          },
+          rule: early ? "confirmed_at_car" : "confirmed",
+          outcome: { starts: early ? "walk_away" : "now" },
+          userId: user.id,
+          parkedEventId: id,
+        },
+      });
+
+    // At the car: it never left, or it went away and its fixes have it
+    // back within reach of the car right now.
+    const backAtCar = park.leftCarAt !== null && park.farAt !== null && park.nearSince !== null;
+    if (park.leftCarAt === null || backAtCar) {
+      // The confirmation is kept and nothing is paid: the start waits for
+      // the phone to leave (again).
+      const early = {
+        status: "confirmed",
+        startsAt: "walk_away",
+        zoneId: candidate.zoneId,
+        quote: shown,
+      };
+      if (park.status === "confirmed" && park.zoneId === candidate.zoneId) return early;
+      const moved = await deps.db.pendingPark.updateMany({
+        where: { id: park.id, status: park.status },
+        data: {
+          status: "confirmed",
+          zoneId: candidate.zoneId,
+          quote: shown,
+          confirmedAt: at,
+          ...(backAtCar ? { leftCarAt: null, farAt: null, nearSince: null } : {}),
+        },
+      });
+      if (moved.count === 0) return reply.code(409).send({ error: "confirm_in_progress" });
+      await confirmedRow(true);
+      return early;
+    }
+
+    // Away from the car: this tap is the start. Only one request gets
+    // past this line for a park, whatever is retried or raced.
+    const won = await deps.db.pendingPark.updateMany({
+      where: { id: park.id, status: park.status },
+      data: {
+        status: "starting",
+        startingAt: at,
+        zoneId: candidate.zoneId,
+        quote: shown,
+        confirmedAt: at,
+      },
+    });
+    if (won.count === 0) return reply.code(409).send({ error: "confirm_in_progress" });
+    await confirmedRow(false);
+    const starting = (await deps.db.pendingPark.findUnique({ where: { id: park.id } }))!;
+    const outcome = await startParkSession(deps, sessions.start, starting, {
+      at,
+      mode: "tap",
+      trigger: "confirm",
+    });
+    switch (outcome.kind) {
+      case "started":
+        return { status: "started", ...outcome.body };
+      case "free":
+        return outcome.body;
+      case "quote_changed":
+        return reply.code(409).send({ error: "quote_changed", prompt: outcome.prompt });
+      case "refused":
+      case "failed":
+        return reply.code(outcome.status).send(outcome.body);
+    }
+  });
+
+  // "Not now": nothing is paid, and the park stops waiting.
+  app.post("/parked/:id/decline", { preHandler: limit }, async (req, reply) => {
+    const user = req.authedUser!;
+    const { id } = req.params as { id: string };
+    const park = await ownPark(user.id, id, reply);
+    if (!park) return;
+    if (park.status === "declined") return { status: "declined" };
+    if (park.status === "starting") return reply.code(409).send({ error: "confirm_in_progress" });
+    if (!["at_car", "confirmed", "prompted"].includes(park.status)) {
+      return reply.code(409).send({ error: "park_closed", status: park.status });
+    }
+    const moved = await deps.db.pendingPark.updateMany({
+      where: { id: park.id, status: park.status },
+      data: { status: "declined" },
+    });
+    if (moved.count === 0) return reply.code(409).send({ error: "confirm_in_progress" });
+    const decision = await deps.db.decision.create({
+      data: {
+        kind: "street_declined",
+        inputs: {
+          parkedEventId: id,
+          parkStatus: park.status,
+          shown: park.quote,
+          dryRun: deps.policy.effectiveDryRun(),
+        },
+        rule: "not_now",
+        outcome: { status: "declined" },
+        userId: user.id,
+        parkedEventId: id,
+      },
+    });
+    return { status: "declined", decisionId: decision.id };
   });
 
   // The driver's own answer for a park: what the place is (or that they

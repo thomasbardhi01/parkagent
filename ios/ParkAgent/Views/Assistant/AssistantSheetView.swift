@@ -382,6 +382,9 @@ struct AssistantSheetView: View {
                     showsOpenSettings: true,
                     dismiss: { speech.resetAvailability() }
                 )
+                // .contain keeps the notice's own buttons queryable inside it:
+                // tests ask what THIS notice offers, not the whole screen.
+                .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("assistant.speechDeniedNotice")
             case .unavailable:
                 SpeechNoticeRow(
@@ -389,6 +392,7 @@ struct AssistantSheetView: View {
                     message: "Dictation isn't available right now. Check the connection, or type instead.",
                     dismiss: { speech.resetAvailability() }
                 )
+                .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("assistant.speechUnavailableNotice")
             case .idle:
                 EmptyView()

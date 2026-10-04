@@ -134,6 +134,13 @@ final class LocationReporter: NSObject, CLLocationManagerDelegate {
         ParkedNotice.storeWaiting(waiting)
     }
 
+    /// Report the freshest fix now, for the server's current answer (a
+    /// prompt that was just re-quoted).
+    func refresh() async {
+        guard isRunning, let fix = lastFix else { return }
+        await report(fix)
+    }
+
     /// The app saw the phone leave the car, or come back to it. Sent with
     /// the freshest fix at once, or with the next one when there is none
     /// yet; the server decides what it means from where that fix is.
@@ -200,7 +207,10 @@ final class LocationReporter: NSObject, CLLocationManagerDelegate {
         let event = pendingEvent
         do {
             let response = try await send(LocationReport(
-                lat: fix.latitude, lng: fix.longitude, accuracy: fix.accuracy, ts: at, event: event?.rawValue
+                lat: fix.latitude, lng: fix.longitude, accuracy: fix.accuracy, ts: at,
+                // Never later than the report itself (a fix stamped ahead
+                // of this clock is still measured by now).
+                measuredAt: min(fix.at, at), event: event?.rawValue
             ))
             lastReport = (at, fix)
             // Delivered; one seen meanwhile waits for the next report.

@@ -152,6 +152,9 @@ can stop early, `ended_at_return` where it can't. The rules are in
 `ios/ParkAgent/Detection/ParkLifecycle.swift`. Keep new code on these:
 - nothing asks, pays, or extends on a fix that has the phone at the car;
 - a park is paid only through its tap, and a closed park never again;
+- only the newest `/parked` says where the car is: it closes a park still
+  waiting elsewhere, and stops extensions for a session whose car moved;
+- the tap pays what was shown (amount, zone number, dry run) or nothing;
 - the extension worker buys time only for a phone known to be away.
 
 The YOLO beta (no-tap start within every cap) and dropping the per-stop

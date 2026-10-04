@@ -408,3 +408,21 @@ test("sixteen minutes before the max stay runs out: not yet", async () => {
   expect(lastTick(t.state).rule).toBe("hold_not_near_expiry");
   expect(t.pushes).toEqual([]);
 });
+
+test("a later park put the car somewhere else: nothing is bought here, and the driver is told once", async () => {
+  const t = makeTickApp();
+  const session = activeSession(t.state);
+  const park = await seedPark(t, session, { leftCarAt: T("13:02") });
+  await t.deps.db.pendingPark.update({ where: { id: park.id }, data: { carMovedAt: T("13:40") } });
+  addFixes(t.state, session.id, [100, 300, 600]); // far, and would want to extend
+
+  await t.extender.tick();
+  await t.extender.tick();
+
+  const decision = lastTick(t.state);
+  expect(decision.rule).toBe("hold_car_moved");
+  expect(decision.inputs).toMatchObject({ position: "moved" });
+  expect(session.extendCount).toBe(0);
+  expect(t.pushes).toHaveLength(1);
+  expect(t.pushes[0]!.push.extra).toMatchObject({ reason: "car_moved" });
+});

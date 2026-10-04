@@ -1460,6 +1460,8 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
       },
     },
     pendingPark: {
+      // Every read hands out a copy, like a row read from Postgres: a
+      // request holding one doesn't see what another wrote since.
       create: async ({ data }) => {
         // Mirrors the two unique indexes (parked_event_id, session_id).
         if (
@@ -1477,10 +1479,13 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
           candidates: null,
           quote: null,
           prompt: null,
+          shownDryRun: null,
           zoneId: null,
           leftCarAt: null,
           farAt: null,
+          farDistanceM: null,
           nearSince: null,
+          carMovedAt: null,
           promptedAt: null,
           confirmedAt: null,
           startingAt: null,
@@ -1490,30 +1495,34 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
           ...data,
         };
         state.pendingParks.push(row);
-        return row;
+        return { ...row };
       },
-      findUnique: async ({ where }) =>
-        state.pendingParks.find((p) =>
+      findUnique: async ({ where }) => {
+        const row = state.pendingParks.find((p) =>
           "id" in where
             ? p.id === where.id
             : "parkedEventId" in where
               ? p.parkedEventId === where.parkedEventId
               : p.sessionId === where.sessionId,
-        ) ?? null,
-      findFirst: async ({ where }) =>
+        );
+        return row ? { ...row } : null;
+      },
+      findFirst: async ({ where }) => {
         // Insertion order breaks a created_at tie: the fake clock is fixed.
-        state.pendingParks
+        const row = state.pendingParks
           .map((park, index) => ({ park, index }))
           .filter(({ park }) => park.userId === where.userId)
           .filter(({ park }) => where.status.in.includes(park.status))
           .sort(
             (a, b) => b.park.createdAt.getTime() - a.park.createdAt.getTime() || b.index - a.index,
-          )[0]?.park ?? null,
+          )[0]?.park;
+        return row ? { ...row } : null;
+      },
       update: async ({ where, data }) => {
         const row = state.pendingParks.find((p) => p.id === where.id);
         if (!row) throw new Error(`fake pendingPark.update: no park ${where.id}`);
         Object.assign(row, data);
-        return row;
+        return { ...row };
       },
       // One synchronous pass, like the single UPDATE … WHERE status = …
       // it stands in for: of two racing callers, one gets count 1.

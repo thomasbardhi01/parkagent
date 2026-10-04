@@ -1504,7 +1504,9 @@ and the phone's fixes (`POST /location`) are what move it on.
 - **the walk-away asks, once, with the server's quote.** The phone has left
   when two fixes are clear of the car allowing for their own error, or the
   app reports the driver on foot (`left_car`) and no sharp fix has it at
-  the car door. The server answers with the prompt, quoted then for the
+  the car door. Two fixes faster apart than someone on foot (a car
+  pulling away) are not a walk-away, and one measurement sent twice is one
+  fix. The server answers with the prompt, quoted then for the
   stay the session will buy, and the phone shows it as written: "Pay
   $4.10 for zone 456?" with Pay · Not now · Wrong spot (Pay asks a locked
   phone to unlock first). Candidates that disagree get the side question
@@ -1515,14 +1517,16 @@ and the phone's fixes (`POST /location`) are what move it on.
 - **one tap pays the amount shown, once.** `POST /parked/:id/confirm` runs
   `POST /session/start`'s own path (every refusal, the dry-run switch, and
   the policy checks unchanged), for the shown stay, and for no more than
-  the shown amount: a start that would cost more is refused
-  (`quote_changed`) and asked again. Retried and concurrent taps and
-  retried fixes start one session. A start that reached the provider and
-  failed closes the park, and `POST /session/start` can't pay a held park;
+  the shown amount: a start that would cost more, type a different zone
+  number than was shown, or charge for real what was shown as a dry run is
+  refused (`quote_changed`) and asked again. Retried and concurrent taps
+  and retried fixes start one session. A start that reached the provider
+  and failed closes the park; one that broke before reaching it leaves the
+  park payable; and `POST /session/start` can't pay a held park;
 - **Pay tapped at the car confirms early and pays nothing there.** The
   session starts when the phone leaves, with no second tap. The same holds
   for a Pay tapped after the phone went away and came back;
-- **Not now pays nothing**, and the phone stops reporting;
+- **Not now pays nothing**, is final, and the phone stops reporting;
 - **coming back ends it.** Back within 30 m of the car for 60 s (after a
   fix put the phone clear of it), or the app reporting `returned_to_car`
   with a fix at the car, ends the session: stopped through the stop path
@@ -1530,9 +1534,16 @@ and the phone's fixes (`POST /location`) are what move it on.
   bought, and no stop attempted where it can't. A return before anything
   was paid cancels the held park, and so does driving off without leaving
   the car. Nobody's fix ends anyone else's session;
-- **a re-park is a fresh detection.** A park that is cancelled, expired,
-  superseded by a newer park, failed, or ended is never paid from again:
-  a new `/parked`, a new quote, a new tap;
+- **a re-park is a fresh detection.** A park that is declined, cancelled,
+  expired, superseded by a newer park, failed, or ended is never paid from
+  again: a new `/parked`, a new quote, a new tap. Any newer park (a garage
+  or an unmetered block too) closes one still waiting at an earlier spot,
+  and a park delivered late from before the newest one changes nothing;
+- **a session whose car has moved is not extended.** A newer park more
+  than 100 m from a running session's car stops automatic extensions for
+  it (`hold_car_moved`); the tap that pays for the new park ends that
+  session first. A park at a spot a running session already pays is
+  `covered`: not asked about, not paid twice;
 - **extension continues only while the phone is away** (FR-16), up to the
   zone's max stay and never past it, with "Move your car" 15 minutes
   before the paid stay runs out;

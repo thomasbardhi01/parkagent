@@ -1158,6 +1158,10 @@ struct LocationReport: Codable, Sendable {
     var lng: Double
     var accuracy: Double
     var ts: Date
+    /// When CoreLocation measured the fix. `ts` is when it was reported:
+    /// a still phone re-sends its last fix on the heartbeat, and the
+    /// server must not take one measurement sent twice for two (FR-55).
+    var measuredAt: Date? = nil
     /// What the app itself saw (FR-55): `left_car` (on foot after the
     /// park) or `returned_to_car` (the car's audio back, or driving).
     var event: String? = nil

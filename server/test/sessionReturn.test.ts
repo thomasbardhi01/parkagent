@@ -344,3 +344,148 @@ test("a stop the provider refuses leaves the session running, and it is never ex
     "hold_returned",
   );
 });
+
+// ------------------------------------------------------------ the car moved without a return being seen
+
+/** A second park, a kilometre north of the first. */
+const ELSEWHERE = { lat: CAR.lat + 0.01, lng: CAR.lng };
+
+function fixAt(t: { clock: { now: Date } }, metresNorthOfElsewhere: number) {
+  return { ...fix(t, 0), lat: ELSEWHERE.lat + metresNorthOfElsewhere / 111_320 };
+}
+
+test("a newer park somewhere else: the old session is no longer extended, the new park is asked about, and its tap ends the old one", async () => {
+  const t = makeApp();
+  const extender = makeExtender({ ...t.deps, log: { info() {}, warn() {} } });
+  const { session: old } = await paidAndAway(t);
+
+  // The driver came back and drove off without the phone showing it, then
+  // parked a kilometre away.
+  t.tick(30 * 60);
+  const parked = await post(
+    t.app,
+    "/parked",
+    parkedBody({ outcomes: OUTCOMES, lat: ELSEWHERE.lat, ts: t.clock.now.toISOString() }),
+  );
+  expect(parked.json()).toMatchObject({ awaitsWalkAway: true });
+  const newParkId = parked.json()["parkedEventId"] as string;
+  expect(t.state.decisions.filter((d) => d.kind === "session_car_moved")).toHaveLength(1);
+  expect(t.state.decisions.find((d) => d.kind === "session_car_moved")).toMatchObject({
+    rule: "newer_park_elsewhere",
+    sessionId: old.id,
+  });
+  // Not stopped on the phone's say-so: the new park could be a car it rode in.
+  expect(old.status).toBe("active");
+  expect(t.calls.stop).toBe(0);
+
+  // In the seat at the new spot: the session's fix is stored, and the new
+  // park waits. Then the phone leaves the new car.
+  t.tick(30);
+  const seat = await post(t.app, "/location", fixAt(t, 3));
+  expect(seat.json()).toMatchObject({
+    sessionId: old.id,
+    park: { parkedEventId: newParkId, status: "at_car" },
+  });
+  t.tick(30);
+  await post(t.app, "/location", fixAt(t, 60));
+  t.tick(20);
+  const left = await post(t.app, "/location", fixAt(t, 88));
+  expect(left.json()).toMatchObject({ park: { parkedEventId: newParkId, status: "prompted" } });
+  expect((left.json()["prompt"] as { kind: string }).kind).toBe("confirm");
+  expect(left.json()["ended"]).toBeUndefined();
+
+  // Near the old session's expiry, with the phone far from the old car:
+  // nothing is bought for a spot the car has left.
+  const at = t.clock.now;
+  t.clock.now = new Date(old.expiresAt!.getTime() - 8 * 60_000);
+  await extender.tick();
+  const tick = t.state.decisions.filter((d) => d.kind === "extend_tick").at(-1)!;
+  expect(tick.rule).toBe("hold_car_moved");
+  expect(tick.inputs).toMatchObject({ position: "moved" });
+  expect(t.calls.extend).toBe(0);
+  expect(t.pushes.at(-1)!.push.extra).toMatchObject({ reason: "car_moved" });
+  t.clock.now = at;
+
+  // The tap on the new park is the driver saying where the car is: the
+  // old session is stopped, and the new one starts.
+  const paid = await post(t.app, `/parked/${newParkId}/confirm`, {});
+  expect(paid.statusCode).toBe(200);
+  expect(paid.json()).toMatchObject({ status: "started" });
+  expect(t.calls.stop).toBe(1);
+  expect(old.status).toBe("stopped");
+  const ended = t.state.decisions.filter((d) => d.kind === "session_end_return").at(-1)!;
+  expect(ended).toMatchObject({ rule: "stopped_at_return", sessionId: old.id });
+  expect(ended.inputs).toMatchObject({ reason: "new_park", why: "new_park_paid" });
+  expect(t.calls.start).toBe(2);
+  expect(t.state.sessions.filter((s) => s.status === "active")).toHaveLength(1);
+  expect(t.state.sessions.filter((s) => s.status === "active")[0]!.carLat).toBe(ELSEWHERE.lat);
+});
+
+test("a new park at the spot a session already pays is covered: never asked about, never paid twice", async () => {
+  const t = makeApp();
+  const { session } = await paidAndAway(t);
+  // The detector fires again at the same spot while the phone is away.
+  t.tick(600);
+  const again = await post(
+    t.app,
+    "/parked",
+    parkedBody({ outcomes: OUTCOMES, ts: t.clock.now.toISOString() }),
+  );
+  const againId = again.json()["parkedEventId"] as string;
+  expect(t.state.decisions.some((d) => d.kind === "session_car_moved")).toBe(false);
+
+  t.tick(20);
+  await post(t.app, "/location", fix(t, 250));
+  t.tick(20);
+  const far = await post(t.app, "/location", fix(t, 275));
+  expect(far.json()).toMatchObject({
+    sessionId: session.id,
+    park: { parkedEventId: againId, status: "covered" },
+  });
+  expect(far.json()["prompt"]).toBeUndefined();
+  expect(t.state.decisions.filter((d) => d.kind === "street_prompt").at(-1)).toMatchObject({
+    rule: "already_paid",
+  });
+
+  const tap = await post(t.app, `/parked/${againId}/confirm`, {});
+  expect(tap.statusCode).toBe(409);
+  expect(tap.json()).toMatchObject({ error: "park_closed", status: "covered" });
+  expect(t.calls.start).toBe(1);
+  expect(session.status).toBe("active");
+});
+
+test("a park detected while a start is in flight doesn't orphan it: the paid park keeps its session", async () => {
+  let release = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
+  const t = makeApp();
+  const dryStart = t.deps.executorFor({ userId: "u1", city: "nyc", dryRun: true });
+  const slow: Executor = {
+    startSession: async (args) => {
+      await held;
+      return dryStart.startSession(args);
+    },
+    extendSession: (args) => dryStart.extendSession(args),
+    stopSession: (args) => dryStart.stopSession(args),
+  };
+  t.deps.executorFor = () => slow;
+
+  const parked = await post(t.app, "/parked", parkedBody({ outcomes: OUTCOMES }));
+  const id = parked.json()["parkedEventId"] as string;
+  t.tick(40);
+  await post(t.app, "/location", fix(t, 60));
+  t.tick(20);
+  await post(t.app, "/location", fix(t, 90));
+  const paying = post(t.app, `/parked/${id}/confirm`, {});
+  // Let the tap reach the provider, then a stray detection arrives.
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(t.state.pendingParks[0]!.status).toBe("starting");
+  await post(t.app, "/parked", parkedBody({ outcomes: OUTCOMES, lat: ELSEWHERE.lat }));
+  expect(t.state.pendingParks[0]!.status).toBe("starting");
+  release();
+  const paid = await paying;
+  expect(paid.statusCode).toBe(200);
+  expect(t.state.pendingParks[0]).toMatchObject({
+    status: "started",
+    sessionId: t.state.sessions[0]!.id,
+  });
+});

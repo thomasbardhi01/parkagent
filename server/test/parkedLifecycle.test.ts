@@ -631,8 +631,13 @@ test("a park nobody walked away from within the hour is not asked about", async 
   const t = makeApp();
   const parked = await park(t.app);
   t.tick(61 * 60);
+  // Said once, so the app can tell the driver; then there is nothing left
+  // to report to.
   const late = await post(t.app, "/location", fix(t, 200));
-  expect(late.statusCode).toBe(409);
+  expect(late.statusCode).toBe(200);
+  expect(late.json()).toMatchObject({ park: { status: "expired" } });
+  expect(late.json()["prompt"]).toBeUndefined();
+  expect((await post(t.app, "/location", fix(t, 220))).statusCode).toBe(409);
   expect(t.state.pendingParks[0]!.status).toBe("expired");
   const tap = await post(t.app, `/parked/${parked.parkedEventId}/confirm`, {});
   expect(tap.statusCode).toBe(409);
@@ -729,5 +734,332 @@ test("after a return, the next park is a fresh one: new quote, new tap, nothing 
   const prompt = left.json()["prompt"] as { parkedEventId: string; kind: string };
   expect(prompt).toMatchObject({ kind: "confirm", parkedEventId: second.parkedEventId });
   expect(count(t.state, "street_prompt")).toBe(2);
+  expect(t.calls.start).toBe(0);
+});
+
+// ------------------------------------------------------------ the car moved, or didn't walk
+
+const tap = (t: ReturnType<typeof makeApp>, parkedEventId: string, body: object = {}) =>
+  post(t.app, `/parked/${parkedEventId}/confirm`, body);
+
+test("driving off after an early Pay is not a walk-away: the same ground, too fast for someone on foot", async () => {
+  const t = makeApp();
+  const parked = await park(t.app);
+  await tap(t, parked.parkedEventId);
+
+  // 10 m/s down the block, a fix every 15 s, ahead of the app noticing.
+  for (const metres of [60, 210, 360, 510]) {
+    t.tick(15);
+    const res = await post(t.app, "/location", fix(t, metres));
+    expect(res.json()).toMatchObject({ park: { status: "confirmed" } });
+  }
+  expect(t.calls.start).toBe(0);
+  expect(t.state.sessions).toEqual([]);
+
+  // Then the phone says so: the park is over, unpaid.
+  t.tick(5);
+  const driving = await post(t.app, "/location", fix(t, 560, { event: "returned_to_car" }));
+  expect(driving.json()).toMatchObject({ park: { status: "cancelled" } });
+  expect(t.calls.start).toBe(0);
+});
+
+test("…and a driver who rode off and then walks is still seen leaving, at a walk", async () => {
+  const t = makeApp();
+  await park(t.app);
+  t.tick(15);
+  await post(t.app, "/location", fix(t, 60));
+  t.tick(15);
+  const riding = await post(t.app, "/location", fix(t, 260));
+  expect(riding.json()).toMatchObject({ park: { status: "at_car" } });
+  // Off the bus: 25 m in 18 s.
+  t.tick(18);
+  const walking = await post(t.app, "/location", fix(t, 285));
+  expect(walking.json()).toMatchObject({ park: { status: "prompted" } });
+});
+
+test("one GPS jump sent twice is one fix: the heartbeat's re-send is not a walk-away", async () => {
+  const t = makeApp();
+  const parked = await park(t.app);
+  await tap(t, parked.parkedEventId);
+  t.tick(30);
+  const measuredAt = t.clock.now.toISOString();
+  const jump = fix(t, 120, { measuredAt });
+  await post(t.app, "/location", jump);
+  // No new fix for a minute, so the app says "still there" with the old one.
+  for (let i = 0; i < 3; i += 1) {
+    t.tick(60);
+    const again = await post(t.app, "/location", { ...jump, ts: t.clock.now.toISOString() });
+    expect(again.json()).toMatchObject({ park: { status: "confirmed" } });
+  }
+  // The same from a client that doesn't say when it measured.
+  t.tick(60);
+  const bare = { ...fix(t, 120) };
+  await post(t.app, "/location", bare);
+  t.tick(60);
+  await post(t.app, "/location", { ...bare, ts: t.clock.now.toISOString() });
+  expect(t.state.pendingParks[0]).toMatchObject({ status: "confirmed", leftCarAt: null });
+  expect(t.calls.start).toBe(0);
+});
+
+test("a later park of any kind ends an earlier park's confirmation: leaving the garage pays no meter", async () => {
+  const t = makeApp();
+  const first = await park(t.app);
+  await tap(t, first.parkedEventId);
+  expect(t.state.pendingParks[0]!.status).toBe("confirmed");
+
+  // The car moved on to somewhere with nothing to hold (no meter here).
+  t.tick(300);
+  t.deps.findCandidates = async () => [];
+  const second = await park(t.app, { lat: CAR.lat + 0.01, ts: t.clock.now.toISOString() });
+  expect(second["action"]).toBe("unknown_zone");
+  expect(second["awaitsWalkAway"]).toBeUndefined();
+  expect(t.state.pendingParks.map((p) => p.status)).toEqual(["superseded"]);
+
+  // Walking away from the new place is a kilometre from the old meter.
+  for (const metres of [1170, 1195, 1220]) {
+    t.tick(20);
+    const res = await post(t.app, "/location", fix(t, metres));
+    expect(res.statusCode).toBe(409);
+  }
+  expect(t.calls.start).toBe(0);
+  expect((await tap(t, first.parkedEventId)).json()).toMatchObject({
+    error: "park_closed",
+    status: "superseded",
+  });
+});
+
+test("a park delivered late, from before one the server already has, neither waits nor takes its place", async () => {
+  const t = makeApp();
+  const current = await park(t.app);
+  await tap(t, current.parkedEventId);
+  // The phone's outbox delivers a park from two hours ago, somewhere else.
+  const old = await park(t.app, {
+    lat: CAR.lat + 0.01,
+    ts: new Date(PARKED_AT.getTime() - 2 * 60 * 60_000).toISOString(),
+  });
+  expect(old["awaitsWalkAway"]).toBeUndefined();
+  expect(t.state.pendingParks).toHaveLength(1);
+  expect(t.state.pendingParks[0]).toMatchObject({
+    parkedEventId: current.parkedEventId,
+    status: "confirmed",
+  });
+  // The current park still starts at its own walk-away.
+  const left = await walkAway(t);
+  expect(left.json()).toMatchObject({ park: { status: "started" } });
+  expect(t.calls.start).toBe(1);
+});
+
+test("two parks never wait at once: the older of two open ones is closed by the next fix", async () => {
+  const t = makeApp();
+  const first = await park(t.app);
+  // A second row slipped in beside it (two detections racing).
+  const second = { ...t.state.pendingParks[0]!, id: "pp-race", parkedEventId: "pe-race" };
+  t.state.pendingParks.push(second);
+  t.tick(30);
+  await post(t.app, "/location", fix(t, 4));
+  expect(t.state.pendingParks.map((p) => p.status)).toEqual(["superseded", "at_car"]);
+  expect((await tap(t, first.parkedEventId)).json()).toMatchObject({ error: "park_closed" });
+});
+
+// ------------------------------------------------------------ what was agreed to
+
+test("a prompt that said dry run is not charged for real: flipping dry run off asks again", async () => {
+  const t = makeApp({ envDryRun: false });
+  const parked = await park(t.app);
+  const left = await walkAway(t);
+  expect(left.json()["prompt"]).toMatchObject({ kind: "confirm", dryRun: true });
+
+  t.deps.policy.update({ ...t.deps.policy.get(), dry_run: false });
+  const first = await tap(t, parked.parkedEventId, { shownTotalUsd: 3.65 });
+  expect(first.statusCode).toBe(409);
+  expect(first.json()).toMatchObject({ error: "quote_changed" });
+  const asked = first.json()["prompt"] as { dryRun: boolean; body: string };
+  expect(asked.dryRun).toBe(false);
+  expect(asked.body).not.toContain("Dry run");
+  expect(t.calls.start).toBe(0);
+  expect(t.state.sessions).toEqual([]);
+
+  // Asked again in real money, and tapped: now it is real.
+  const second = await tap(t, parked.parkedEventId, { shownTotalUsd: 3.65 });
+  expect(second.statusCode).toBe(200);
+  expect(t.state.sessions).toHaveLength(1);
+  expect(t.state.sessions[0]!.dryRun).toBe(false);
+});
+
+test("an early Pay made under dry run is not charged for real at walk-away either", async () => {
+  const t = makeApp({ envDryRun: false });
+  const parked = await park(t.app);
+  await tap(t, parked.parkedEventId);
+  t.deps.policy.update({ ...t.deps.policy.get(), dry_run: false });
+  const left = await walkAway(t);
+  expect(left.json()).toMatchObject({ park: { status: "prompted" } });
+  expect(left.json()["prompt"]).toMatchObject({ kind: "confirm", dryRun: false });
+  expect(t.calls.start).toBe(0);
+  expect(t.state.sessions).toEqual([]);
+});
+
+test("the tap pays the zone number it was shown, or nothing: a number changed meanwhile asks again", async () => {
+  const t = makeApp({ zones: [{ ...STEINWAY_ZONE }] });
+  const parked = await park(t.app);
+  const left = await walkAway(t);
+  expect((left.json()["prompt"] as { title: string }).title).toBe("Pay $3.65 for zone 417371?");
+  // Another driver's report replaces the block's number.
+  t.state.zones[0]!.providerZoneNumber = "999999";
+
+  const first = await tap(t, parked.parkedEventId, { shownTotalUsd: 3.65 });
+  expect(first.statusCode).toBe(409);
+  expect(first.json()).toMatchObject({ error: "quote_changed" });
+  expect((first.json()["prompt"] as { title: string }).title).toBe("Pay $3.65 for zone 999999?");
+  expect(t.calls.start).toBe(0);
+
+  const second = await tap(t, parked.parkedEventId, { shownTotalUsd: 3.65 });
+  expect(second.statusCode).toBe(200);
+  expect(t.state.sessions[0]!.providerZoneNumber).toBe("999999");
+});
+
+test("the prompt is priced from the terms the start will use: a rate that changed is asked about once, not forever", async () => {
+  const t = makeApp({ zones: [{ ...STEINWAY_ZONE }] });
+  const parked = await park(t.app);
+  // The zones table is reloaded with a higher first hour before the walk-away.
+  t.state.zones[0]!.rateFirstHour = 4;
+  const left = await walkAway(t);
+  const prompt = left.json()["prompt"] as { amountUsd: number };
+  expect(prompt.amountUsd).toBe(5.65);
+  const paid = await tap(t, parked.parkedEventId, { shownTotalUsd: prompt.amountUsd });
+  expect(paid.statusCode).toBe(200);
+  expect(paid.json()).toMatchObject({ status: "started", amountUsd: 5.65 });
+});
+
+test("Not now is final: that park is not paid from afterwards", async () => {
+  const t = makeApp();
+  const parked = await park(t.app);
+  await walkAway(t);
+  await post(t.app, `/parked/${parked.parkedEventId}/decline`, {});
+  const later = await tap(t, parked.parkedEventId);
+  expect(later.statusCode).toBe(409);
+  expect(later.json()).toMatchObject({ error: "park_closed", status: "declined" });
+  expect(t.calls.start).toBe(0);
+});
+
+// ------------------------------------------------------------ when things break mid-start
+
+test("a start that throws before the provider is asked leaves the park payable", async () => {
+  const t = makeApp();
+  const parked = await park(t.app);
+  await walkAway(t);
+  const real = t.deps.db.vehicle.findFirst;
+  let failed = false;
+  t.deps.db.vehicle.findFirst = async (args) => {
+    if (!failed) {
+      failed = true;
+      throw new Error("connection reset");
+    }
+    return real(args);
+  };
+
+  const first = await tap(t, parked.parkedEventId);
+  expect(first.statusCode).toBe(500);
+  expect(t.calls.start).toBe(0);
+  expect(t.state.pendingParks[0]!.status).toBe("prompted");
+
+  const second = await tap(t, parked.parkedEventId);
+  expect(second.statusCode).toBe(200);
+  expect(t.calls.start).toBe(1);
+  expect(t.state.sessions.filter((s) => s.status === "active")).toHaveLength(1);
+});
+
+test("a start that throws after the provider was asked closes the park: it may have charged", async () => {
+  const t = makeApp();
+  const parked = await park(t.app);
+  await walkAway(t);
+  const real = t.deps.db.sessionEvent.create;
+  let failed = false;
+  t.deps.db.sessionEvent.create = async (args) => {
+    if (!failed) {
+      failed = true;
+      throw new Error("connection reset");
+    }
+    return real(args);
+  };
+
+  const first = await tap(t, parked.parkedEventId);
+  expect(first.statusCode).toBe(500);
+  expect(t.calls.start).toBe(1);
+  expect(t.state.pendingParks[0]!.status).toBe("start_failed");
+  const second = await tap(t, parked.parkedEventId);
+  expect(second.statusCode).toBe(409);
+  expect(t.calls.start).toBe(1);
+});
+
+test("an early Pay whose start throws at walk-away is tried again by the next fixes", async () => {
+  const t = makeApp();
+  const parked = await park(t.app);
+  await tap(t, parked.parkedEventId);
+  const real = t.deps.db.vehicle.findFirst;
+  let failed = false;
+  t.deps.db.vehicle.findFirst = async (args) => {
+    if (!failed) {
+      failed = true;
+      throw new Error("connection reset");
+    }
+    return real(args);
+  };
+  const first = await walkAway(t);
+  expect(first.statusCode).toBe(500);
+  expect(t.state.pendingParks[0]).toMatchObject({ status: "confirmed", leftCarAt: null });
+
+  t.tick(20);
+  await post(t.app, "/location", fix(t, 110));
+  t.tick(20);
+  const again = await post(t.app, "/location", fix(t, 135));
+  expect(again.json()).toMatchObject({ park: { status: "started" } });
+  expect(t.calls.start).toBe(1);
+});
+
+test("a fix in flight can't undo a tap: a Pay at the car still starts at the next walk-away", async () => {
+  const t = makeApp();
+  const parked = await park(t.app);
+  await walkAway(t);
+  t.tick(30);
+  await post(t.app, "/location", fix(t, 6));
+
+  // A fix reads the park, then stalls while the driver taps Pay in the seat.
+  const real = t.deps.db.pendingPark.findFirst;
+  let release = () => {};
+  let reading = () => {};
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  const read = new Promise<void>((resolve) => (reading = resolve));
+  t.deps.db.pendingPark.findFirst = async (args) => {
+    t.deps.db.pendingPark.findFirst = real;
+    const row = await real(args);
+    reading();
+    await gate;
+    return row;
+  };
+  t.tick(20);
+  const slow = post(t.app, "/location", fix(t, 5));
+  await read;
+  const early = await tap(t, parked.parkedEventId);
+  expect(early.json()).toMatchObject({ status: "confirmed" });
+  release();
+  await slow;
+  expect(t.state.pendingParks[0]).toMatchObject({ status: "confirmed", leftCarAt: null });
+
+  const left = await walkAway(t);
+  expect(left.json()).toMatchObject({ park: { status: "started" } });
+  expect(t.calls.start).toBe(1);
+});
+
+test("an early Pay that runs out of time is said, not dropped in silence", async () => {
+  const t = makeApp();
+  const parked = await park(t.app);
+  await tap(t, parked.parkedEventId);
+  t.tick(61 * 60);
+  const late = await post(t.app, "/location", fix(t, 3));
+  expect(late.statusCode).toBe(200);
+  expect(late.json()).toEqual({
+    ok: true,
+    park: { parkedEventId: parked.parkedEventId, status: "expired" },
+  });
   expect(t.calls.start).toBe(0);
 });

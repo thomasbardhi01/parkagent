@@ -44,8 +44,9 @@ const AT_CAR_ETA_MIN = 2; // within ~2 walking minutes = standing at the car
 
 export type Heading = "toward" | "away" | "still" | "unknown";
 
-/** Where the phone is, as far as buying more time goes. */
-export type PhonePosition = "away" | "at_car" | "returned" | "unknown";
+/** Where the phone is, as far as buying more time goes. `moved`: a later
+ * park put the car somewhere else. */
+export type PhonePosition = "away" | "at_car" | "returned" | "moved" | "unknown";
 
 /** The max stay can't be bought past: say when the car has to move. */
 function moveYourCarPush(zoneNumber: string, paidUntil: Date): Push {
@@ -55,6 +56,17 @@ function moveYourCarPush(zoneNumber: string, paidUntil: Date): Push {
     title: `Move your car — max stay at ${at}`,
     body: `Zone ${zoneNumber} can't be extended past its max stay. Paid time ends at ${at}.`,
     extra: { reason: "max_stay" },
+  };
+}
+
+/** A later park put the car somewhere else. Nothing more is bought for a
+ * spot the car may have left; the driver can still extend by hand. */
+function carMovedPush(zoneNumber: string, minutesLeft: number): Push {
+  return {
+    type: "session_expiring",
+    title: "Meter expiring",
+    body: `Zone ${zoneNumber} expires in ${minutesLeft} min. ParkAgent saw your car park somewhere else since, so it won't add time here. Extend in the app if it's still there.`,
+    extra: { reason: "car_moved" },
   };
 }
 
@@ -233,12 +245,14 @@ export function makeExtender(deps: ExtenderDeps): Extender {
     const position: PhonePosition =
       park?.status === "ended"
         ? "returned"
-        : sharp && distanceM !== null && distanceM <= AT_CAR_RADIUS_M
-          ? "at_car"
-          : (park?.leftCarAt ?? null) !== null ||
-              (sharp && distanceM !== null && distanceM - latest.accuracyM > AT_CAR_RADIUS_M)
-            ? "away"
-            : "unknown";
+        : (park?.carMovedAt ?? null) !== null
+          ? "moved"
+          : sharp && distanceM !== null && distanceM <= AT_CAR_RADIUS_M
+            ? "at_car"
+            : (park?.leftCarAt ?? null) !== null ||
+                (sharp && distanceM !== null && distanceM - latest.accuracyM > AT_CAR_RADIUS_M)
+              ? "away"
+              : "unknown";
 
     // How long they usually stay here.
     const past = await deps.db.session.findMany({
@@ -288,7 +302,7 @@ export function makeExtender(deps: ExtenderDeps): Extender {
     // either too small to be a meaningful extension or already inside the
     // no-extend buffer before the legal limit — warn the driver to move.
     let rule: string;
-    let expiringReason: ExpiringReason | "position_unknown" | null = null;
+    let expiringReason: ExpiringReason | "position_unknown" | "car_moved" | null = null;
     const nearMaxStay =
       session.maxStayMinutes !== null &&
       stayLeftMin <=
@@ -304,6 +318,9 @@ export function makeExtender(deps: ExtenderDeps): Extender {
     } else if (position === "returned") {
       // The phone came back: the park is over, and nothing more is bought.
       rule = "hold_returned";
+    } else if (position === "moved") {
+      rule = "hold_car_moved";
+      expiringReason = "car_moved";
     } else if (position === "at_car") {
       // At or in the car, where the cost rule alone would still buy a
       // cheap enough extension: they can drive off or pay themselves.
@@ -442,11 +459,13 @@ export function makeExtender(deps: ExtenderDeps): Extender {
           ? moveYourCarPush(session.providerZoneNumber, expiresAt)
           : expiringReason === "position_unknown"
             ? positionUnknownPush(session.providerZoneNumber, minutesLeft)
-            : sessionExpiringPush({
-                zoneNumber: session.providerZoneNumber,
-                minutesLeft,
-                reason: expiringReason,
-              }),
+            : expiringReason === "car_moved"
+              ? carMovedPush(session.providerZoneNumber, minutesLeft)
+              : sessionExpiringPush({
+                  zoneNumber: session.providerZoneNumber,
+                  minutesLeft,
+                  reason: expiringReason,
+                }),
       );
       outcome = { action: "warn", pushed: expiringReason };
     }

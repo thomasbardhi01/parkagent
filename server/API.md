@@ -1032,16 +1032,31 @@ the car. The record is one `pending_parks` row per held park
 | `prompted` | The phone left. The driver was asked (`street_prompt`). |
 | `starting` | One start is running for it. A second can't begin. |
 | `started` | Its session started (`sessionId`). |
-| `declined` | "Not now". Nothing paid. Pay still works from the app. |
-| `cancelled`, `superseded`, `expired`, `free`, `start_failed`, `ended` | Closed for good. A closed park is never paid from. |
+| `declined`, `cancelled`, `superseded`, `covered`, `expired`, `free`, `start_failed`, `ended` | Closed for good. A closed park is never paid from. `declined` is "Not now"; `covered` is a park at a spot a running session already pays. |
 
-**The phone has left the car** when two fixes at least 10 s apart are
-clear of the car even allowing for their own error (`distance − accuracy >
-30 m`), or when the app reports `left_car` (motion has the driver on foot)
-and no sharp fix (accuracy ≤ 20 m) has it within 10 m of the car. A fix
-with accuracy worse than 65 m, older than 5 minutes, or taken before the
-car stopped says nothing. A park nobody walked away from within an hour is
-`expired` and never asked about.
+**The phone has left the car** when two separate measurements at least
+10 s apart are clear of the car even allowing for their own error
+(`distance − accuracy > 30 m`) and no more than 3 m/s apart (a car pulling
+away covers the same ground, faster, and is not a walk-away), or when the
+app reports `left_car` (motion has the driver on foot) and no sharp fix
+(accuracy ≤ 20 m) has it within 10 m of the car. A fix with accuracy worse
+than 65 m, reported more than 5 minutes off the server's clock, or
+measured before the car stopped says nothing. One measurement sent twice
+(the app's heartbeat re-sends its last fix) is one measurement. A park
+nobody walked away from within an hour is `expired` and never asked about.
+
+**Only the latest park says where the car is.** Every `/parked` that is
+the user's newest (held or not: a garage, a free block, no zone)
+supersedes a park still waiting at an earlier spot, its confirmation with
+it. One delivered late from before a park the server already has is
+recorded and nothing more. If a session is still running for a car more
+than 100 m from the new park, a `session_car_moved` decision is written
+and the extension worker stops buying time for it; the session itself is
+not stopped on the phone's say-so (the new park may be a car the phone
+rode in). The tap that pays for the new park is the driver saying where
+the car is: it ends that session first, the way a return does. A held park
+within 100 m of a running session's car is that session's own spot: at
+walk-away it closes as `covered`, with nothing asked.
 
 **The phone is back** when the app reports `returned_to_car` (driving
 again, or CarPlay connected) with a usable fix within 75 m of the car, or
@@ -1051,20 +1066,26 @@ driver whose errand is right beside the car isn't "back" the whole time.
 
 Decisions rows, each with the fix that caused it: `street_pending`
 (/parked held a park), `street_prompt` (the walk-away; `rule` is
-`walk_away` or `left_car_event`; `outcome.prompt` and `outcome.quote`),
+`walk_away` or `left_car_event`, with `outcome.prompt` and
+`outcome.quote`; or `already_paid` / `free_now` when nothing was asked),
 `street_confirmed` (the tap; `inputs.mode: "tap"`, `inputs.shown` is the
 quote the driver agreed to, `inputs.early` when tapped at the car),
 `street_declined`, `session_start_walkaway` (the one start a park gets;
-`rule` is `started`, `free`, `quote_changed`, `refused`, or `failed`),
-`session_end_return` (`stopped_at_return`, `ended_at_return`, or
-`stop_failed`), and `park_cancelled_at_return` (`near_for_60s`,
-`returned_event`, or `drove_off`).
+`rule` is `started`, `free`, `quote_changed`, `covered`, `refused`,
+`failed`, or `error`), `session_end_return` (`stopped_at_return`,
+`ended_at_return`, or `stop_failed`; `inputs.reason` is `returned` or
+`new_park`), `session_car_moved`, and `park_cancelled_at_return`
+(`near_for_60s`, `returned_event`, or `drove_off`).
 
 ### POST /location
 
-`{lat, lng, accuracy, ts, event?}`, sent by the app while a park is held
-and while a session is active (at least every 60 s, sooner when moving).
-`event` is what the app itself saw: `left_car` or `returned_to_car`.
+`{lat, lng, accuracy, ts, measuredAt?, event?}`, sent by the app while a
+park is held and while a session is active (at least every 60 s, sooner
+when moving). `ts` is when the fix was reported and `measuredAt` when it
+was measured (they differ on the heartbeat's re-send). `event` is what the
+app itself saw: `left_car` or `returned_to_car`. A session and a held
+park can both be the caller's at once; the fix is read against each from
+its own car, and the answer carries both parts.
 
 With an active session the fix is stored in `location_fixes` (the
 extension worker reads the latest few) and the answer is
@@ -1092,7 +1113,9 @@ With a held park and no session the answer is
 - `startFailed` when that start reached the provider and failed.
 
 `status: "cancelled"` means the phone came back (or drove off) before
-anything was paid: the park is over. `409 {"error": "no_active_session"}`
+anything was paid: the park is over. A park that runs out of its hour is
+answered once with `status: "expired"`, so the app can tell a driver who
+tapped Pay at the car and never left. `409 {"error": "no_active_session"}`
 when there is neither a session nor a held park (the app stops reporting).
 
 The prompt is shown by the phone word for word; it never composes an
@@ -1112,7 +1135,9 @@ amount of its own:
 ```
 
 It is quoted when the phone leaves, for the stay the session would buy
-then (the caller's default stay). `confirm` is the only kind a tap pays.
+then (the caller's default stay), from the zone's row and observed terms
+as they are at that moment: the same reads the start prices from.
+`confirm` is the only kind a tap pays.
 `side` means the candidates disagree and the driver picks one in the app.
 `attention` says what is in the way, in the start path's own order
 (`reason`: `provider_not_linked`, `needs_zone_number`,
@@ -1139,14 +1164,17 @@ the candidates disagree, and the total the phone had on screen.
 
 Refusals: `404 parked_event_not_found` (not the caller's park),
 `409 no_pending_park`, `409 side_required` / `zone_not_offered`,
-`409 quote_changed` with a fresh `prompt` (the start would cost more than
-was shown; nothing was paid, and the park is asked about again at the new
-amount), `409 park_closed {status}` for a park that is over, and the start
-path's own answers (`409 provider_not_linked`, `409 policy_violation`,
-`502 executor_failed`, …). A refusal before the provider was asked leaves
-the park payable. A start that reached the provider and failed closes it
-(`start_failed`): whether that charged is unknown, so this park is not
-paid from again.
+`409 quote_changed` with a fresh `prompt` (what was agreed to no longer
+holds: the start would cost more than was shown, would type a different
+zone number than was shown, or would charge for real what was shown as a
+dry run; nothing was paid, and the park is asked about again as it stands),
+`409 session_already_active` (a running session already pays this spot),
+`409 park_closed {status}` for a park that is over, and the start path's
+own answers (`409 provider_not_linked`, `409 policy_violation`,
+`502 executor_failed`, …). A refusal, or an error, before the provider was
+asked leaves the park payable. A start that reached the provider and
+failed closes it (`start_failed`): whether that charged is unknown, so
+this park is not paid from again.
 
 `POST /session/start` for a held park that is still waiting answers
 `409 park_awaits_walk_away`: the tap is the only way to pay it.
@@ -1154,7 +1182,8 @@ paid from again.
 ### POST /parked/:id/decline
 
 "Not now". `200 {status: "declined"}`, a `street_declined` decision, and
-the app's next fix gets `409 no_active_session`. Idempotent.
+the app's next fix gets `409 no_active_session`. Idempotent, and final:
+a declined park is not paid from afterwards.
 
 ## Payment source
 
@@ -1199,9 +1228,9 @@ Pushes carry a standard `aps` payload plus `{"type": ...}`, one of:
 - `session_extended` — auto-extend (or a manual extend) bought more time
 - `session_expiring` — expiring soon and auto-extend will not fire; carries
   `reason`: `"max_stay"` (move the car), `"budget"` (a cap would be hit),
-  `"no_auto_extend"` (disabled or max_count used up), or
+  `"no_auto_extend"` (disabled or max_count used up),
   `"position_unknown"` (nothing shows the phone has left the car, so no
-  time is added). The `max_stay` push is titled "Move your car — max stay
+  time is added), or `"car_moved"` (a later park put the car elsewhere). The `max_stay` push is titled "Move your car — max stay
   at 3:05 PM" and goes out 15 minutes before the paid stay runs out
 - `payment_failed` — a pay or extend attempt failed; the meter is unpaid.
   The body says what to do instead (pay in the provider's app or at the
@@ -1253,9 +1282,10 @@ It buys time only while the phone is known to be away from the car
 (FR-55). `inputs.position` is `away` (the lifecycle's record says the
 phone left, or the latest fresh fix is clear of the car), `at_car` (the
 latest fresh fix is within 30 m), `returned` (the lifecycle ended it), or
-`unknown`. `hold_at_car` and `hold_returned` buy nothing and push nothing.
-`hold_position_unknown` buys nothing and pushes `session_expiring` with
-reason `position_unknown` once. Near the zone's max stay the worker warns
+`moved` (a later park put the car somewhere else), or `unknown`.
+`hold_at_car` and `hold_returned` buy nothing and push nothing.
+`hold_position_unknown` and `hold_car_moved` buy nothing and push
+`session_expiring` once, with reason `position_unknown` or `car_moved`. Near the zone's max stay the worker warns
 instead of extending: `warn_max_stay` fires 15 minutes before the paid
 stay runs out, whatever the position.
 

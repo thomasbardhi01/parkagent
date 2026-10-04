@@ -203,6 +203,26 @@ final class ParkedNoticeWalkAwayTests: XCTestCase {
         XCTAssertNil(ParkedNotice.restoreWaiting(now: now), "A stale park is removed, not just skipped")
     }
 
+    func testTheReturnThatEndsASessionSaysWhatBecameOfTheMeter() {
+        let until = Date(timeIntervalSince1970: 1_790_000_000)
+        let stopped = ParkedNotice.sessionEndedContent(zoneNumber: "417371", stopped: true, paidUntil: until)
+        XCTAssertEqual(stopped.title, "Parking session ended")
+        XCTAssertTrue(stopped.body.contains("stopped zone 417371"), stopped.body)
+        XCTAssertTrue(stopped.body.contains("pay again in the app"), stopped.body)
+        // Where meter time can't be handed back: still paid, no more bought.
+        let kept = ParkedNotice.sessionEndedContent(zoneNumber: "456", stopped: false, paidUntil: until)
+        XCTAssertTrue(kept.body.contains("Zone 456 stays paid until \(Format.clockTime(until))"), kept.body)
+        XCTAssertTrue(kept.body.contains("won't add more time"), kept.body)
+        XCTAssertFalse(kept.body.contains("stopped"), kept.body)
+    }
+
+    func testAnEarlyPayThatRanOutOfTimeIsSaid() {
+        let content = ParkedNotice.expiredContent(zoneNumber: "456")
+        XCTAssertEqual(content.title, "Zone 456 wasn't paid")
+        XCTAssertTrue(content.body.contains("pays when you walk away"), content.body)
+        XCTAssertEqual(ParkedNotice.expiredContent(zoneNumber: nil).title, "The meter wasn't paid")
+    }
+
     func testAFailedPayFromTheNotificationSaysSoWithTheZone() {
         let content = ParkedNotice.payFailedContent(zoneNumber: "456", message: "That park is over, so nothing was paid.")
         XCTAssertEqual(content.title, "Zone 456 wasn't paid")

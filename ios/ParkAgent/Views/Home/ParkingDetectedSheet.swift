@@ -7,7 +7,20 @@ import SwiftUI
 /// failure replaces the content in place.
 struct ParkingDetectedSheet: View {
     @Environment(AppModel.self) private var model
-    let parked: ParkedResponse
+    /// The park the sheet was opened for.
+    private let opened: ParkedResponse
+
+    init(parked: ParkedResponse) {
+        opened = parked
+    }
+
+    /// The freshest answer for that park. A walk-away prompt re-quotes a
+    /// held park (FR-55) while its sheet may already be up, and the Pay
+    /// button must show the amount the tap will send.
+    private var parked: ParkedResponse {
+        if let live = model.pendingParked, live.parkedEventId == opened.parkedEventId { return live }
+        return opened
+    }
 
     @State private var selectedZoneId: String?
     /// The needsZoneNumber flow: what the driver read off the meter.

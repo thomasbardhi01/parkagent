@@ -87,6 +87,12 @@ export interface SessionOps {
       /** The amount the driver agreed to (the prompt's): a start that
        * would cost more is refused `quote_changed`. */
       maxTotalUsd?: number;
+      /** The zone number the driver was shown: a start that would type a
+       * different one is refused `zone_number_changed`. */
+      shownZoneNumber?: string;
+      /** The driver was told this is a dry run: a start that would charge
+       * for real is refused `dry_run_changed`. */
+      shownDryRun?: boolean;
     },
   ): Promise<SessionStartReply>;
   stop(userId: string, session: SessionRow): Promise<SessionStopReply>;
@@ -113,14 +119,21 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
     return session;
   }
 
-  const start: SessionOps["start"] = async (user, body, opts = {}) => {
-    let reachedProvider = false;
+  /** `progress.reachedProvider` flips just before the executor is asked,
+   * and outlives a throw: the caller has to know whether one could have
+   * charged. */
+  const runStart = async (
+    user: { id: string },
+    body: StartBody,
+    opts: NonNullable<Parameters<SessionOps["start"]>[2]>,
+    progress: { reachedProvider: boolean },
+  ): Promise<SessionStartReply> => {
     const reply = {
       code: (status: number) => ({
         send: (payload: Record<string, unknown>): SessionStartReply => ({
           status,
           body: payload,
-          reachedProvider,
+          reachedProvider: progress.reachedProvider,
         }),
       }),
     };
@@ -250,6 +263,12 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
     } else if (opts.maxTotalUsd !== undefined && price.totalUsd > opts.maxTotalUsd + 0.001) {
       // The tap agreed to an amount; this start would cost more than it.
       rule = "quote_changed";
+    } else if (opts.shownZoneNumber && opts.shownZoneNumber !== zone.providerZoneNumber) {
+      // …to a zone number; the table now holds another (a newer report).
+      rule = "zone_number_changed";
+    } else if (opts.shownDryRun === true && !dryRun) {
+      // …to a dry run, "nothing is charged"; this one would charge.
+      rule = "dry_run_changed";
     }
 
     // Which card pays this session: the user's Wallet source, snapshotted
@@ -276,6 +295,8 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
       paymentSource,
       ...(requestedSource !== paymentSource ? { requestedSource } : {}),
       ...(opts.maxTotalUsd !== undefined ? { shownTotalUsd: opts.maxTotalUsd } : {}),
+      ...(opts.shownZoneNumber ? { shownZoneNumber: opts.shownZoneNumber } : {}),
+      ...(opts.shownDryRun !== undefined ? { shownDryRun: opts.shownDryRun } : {}),
       policyHash: deps.policy.hash(),
       // Which terms priced this: the observed row's values when one
       // overrode the dataset.
@@ -459,7 +480,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
     };
 
     const startedAtMs = Date.now();
-    reachedProvider = true;
+    progress.reachedProvider = true;
     const result = await deps.executorFor({ userId: user.id, city, dryRun }).startSession({
       zoneNumber: zone.providerZoneNumber,
       minutes,
@@ -686,6 +707,19 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
       expiresAt: result.expiresAt,
       amountUsd: chargedTotalUsd,
     });
+  };
+
+  const start: SessionOps["start"] = async (user, body, opts = {}) => {
+    const progress = { reachedProvider: false };
+    try {
+      return await runStart(user, body, opts, progress);
+    } catch (err) {
+      // Whoever called has to know whether this could have charged.
+      if (err && typeof err === "object") {
+        Object.assign(err, { reachedProvider: progress.reachedProvider });
+      }
+      throw err;
+    }
   };
 
   app.post("/session/start", async (req, reply) => {

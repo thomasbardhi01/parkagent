@@ -90,7 +90,7 @@ extension AppModel {
 
     func handleLocationResponse(_ response: LocationResponse) async {
         if let ended = response.ended {
-            sessionEndedAtReturn(ended)
+            await sessionEndedAtReturn(ended)
             return
         }
         guard var waiting = reporter.waiting, let park = response.park,
@@ -112,8 +112,18 @@ extension AppModel {
             await present(prompt, for: waiting)
         default:
             // Cancelled (back at the car unpaid, or drove off), free now,
-            // expired, failed: nothing left to ask or pay.
+            // covered by a running session, expired, failed: nothing left
+            // to ask or pay.
+            let unpaidPromise = park.status == "expired" && waiting.confirmed
             forgetWaitingPark(parkedEventId: park.parkedEventId)
+            if unpaidPromise {
+                // An early Pay that never got its walk-away: say so.
+                let zone = waiting.response.candidates.first?.providerZoneNumber
+                await ParkedNotice.postPayFailed(
+                    ParkedNotice.expiredContent(zoneNumber: zone?.isEmpty == false ? zone : nil),
+                    parkedEventId: park.parkedEventId
+                )
+            }
         }
     }
 
@@ -142,12 +152,17 @@ extension AppModel {
         }
     }
 
-    private func sessionEndedAtReturn(_ ended: LocationResponse.Ended) {
+    private func sessionEndedAtReturn(_ ended: LocationResponse.Ended) async {
         if !ended.stopped, let error = ended.error {
             // The provider didn't stop it: still running, and Stop in the
             // app still works. Nothing more is bought for it.
             sessionActionError = error == "executor_failed" ? .executorFailed(code: nil) : .refused(code: error)
             return
+        }
+        if let session = activeSession {
+            await ParkedNotice.postSessionEnded(ParkedNotice.sessionEndedContent(
+                zoneNumber: session.zoneNumber, stopped: ended.stopped, paidUntil: session.expiresAt
+            ))
         }
         reporter.stop()
         activeSession = nil
@@ -184,6 +199,7 @@ extension AppModel {
         #endif
         pendingParked = nil
         ParkedNotice.withdraw()
+        if carCoordinate == nil { carCoordinate = reporter.waiting?.coordinate }
         // Keep reporting: the same fixes now tell the server when the
         // phone comes back.
         if reporter.isRunning {
@@ -223,7 +239,11 @@ extension AppModel {
                 freePeriodNotice = notice ?? "Meters here are free right now."
             }
         } catch {
-            paymentError = error as? APIError ?? .transport(error)
+            let failure = error as? APIError ?? .transport(error)
+            paymentError = failure
+            // The server asked again at the new price: fetch that prompt
+            // now, so the sheet shows the amount the next tap will send.
+            if case .refused(code: "quote_changed") = failure { await reporter.refresh() }
         }
     }
 

@@ -433,6 +433,46 @@ enum ParkedNotice {
         try? await UNUserNotificationCenter.current().add(request)
     }
 
+    /// Pay was tapped at the car and the hour the server keeps a park ran
+    /// out with the phone still there: nothing was paid, and the driver
+    /// was counting on it.
+    static func expiredContent(zoneNumber: String?) -> Content {
+        Content(
+            title: zoneNumber.map { "Zone \($0) wasn't paid" } ?? "The meter wasn't paid",
+            body: "You tapped Pay, but ParkAgent pays when you walk away from the car, and an hour passed first. If you're still parked, pay in the app."
+        )
+    }
+
+    /// The session ended because the phone came back to the car. Said
+    /// quietly (no sound, not time-sensitive: the driver is at the car),
+    /// so that someone who only came back for a bag knows the meter is no
+    /// longer being looked after before walking away again.
+    static let sessionEndedType = "session_ended_at_return"
+
+    static func sessionEndedContent(zoneNumber: String, stopped: Bool, paidUntil: Date) -> Content {
+        let zone = zoneNumber.isEmpty ? "the meter" : "zone \(zoneNumber)"
+        return stopped
+            ? Content(
+                title: "Parking session ended",
+                body: "You're back at your car, so ParkAgent stopped \(zone). If you're staying parked, pay again in the app."
+            )
+            : Content(
+                title: "Parking session ended",
+                body: "You're back at your car. \(zone.prefix(1).uppercased() + zone.dropFirst()) stays paid until \(Format.clockTime(paidUntil)), and ParkAgent won't add more time."
+            )
+    }
+
+    @MainActor
+    static func postSessionEnded(_ content: Content) async {
+        let notification = UNMutableNotificationContent()
+        notification.title = content.title
+        notification.body = content.body
+        notification.interruptionLevel = .passive
+        notification.userInfo = ["type": sessionEndedType]
+        let request = UNNotificationRequest(identifier: sessionEndedType, content: notification, trigger: nil)
+        try? await UNUserNotificationCenter.current().add(request)
+    }
+
     // MARK: - A park waiting for its walk-away
 
     /// The park the server is holding, where the car is, and the prompt

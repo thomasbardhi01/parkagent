@@ -460,10 +460,10 @@ model LocationFix {
 //   prompted   the phone left; the driver was asked
 //   starting   one start is running for it (the guard against a second)
 //   started    its session started (session_id)
-//   declined   "Not now": nothing paid
-// and closed for good: cancelled (back at the car, or drove off, unpaid),
-// superseded (a newer park), expired, free, start_failed, ended (its
-// session ended when the phone came back).
+// and closed for good: declined ("Not now"), cancelled (back at the car, or
+// drove off, unpaid), superseded (a newer park), covered (a running
+// session already pays this spot), expired, free, start_failed, ended (its
+// session ended).
 // Plain strings, no relations: the row outlives a tombstoned user like the
 // parked event it describes.
 model PendingPark {
@@ -478,6 +478,9 @@ model PendingPark {
   quote         Json?
   // The walk-away prompt as the phone was given it, word for word.
   prompt        Json?
+  // Whether the driver was told this is a dry run: a start that would
+  // charge for real needs asking again.
+  shownDryRun   Boolean?  @map("shown_dry_run")
   // The candidate the driver confirmed (the side of the street).
   zoneId        String?   @map("zone_id")
   carLat        Float     @map("car_lat")
@@ -487,11 +490,15 @@ model PendingPark {
   // Where the phone is relative to the car (services/pendingSession.ts).
   leftCarAt     DateTime? @map("left_car_at") @db.Timestamptz(6)
   farAt         DateTime? @map("far_at") @db.Timestamptz(6)
+  farDistanceM  Float?    @map("far_distance_m")
   nearSince     DateTime? @map("near_since") @db.Timestamptz(6)
   promptedAt    DateTime? @map("prompted_at") @db.Timestamptz(6)
   confirmedAt   DateTime? @map("confirmed_at") @db.Timestamptz(6)
   startingAt    DateTime? @map("starting_at") @db.Timestamptz(6)
   sessionId     String?   @unique @map("session_id")
+  // A later park put the car somewhere else: nothing more is bought for
+  // this one's session without the driver.
+  carMovedAt    DateTime? @map("car_moved_at") @db.Timestamptz(6)
   closedAt      DateTime? @map("closed_at") @db.Timestamptz(6)
   createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt     DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)

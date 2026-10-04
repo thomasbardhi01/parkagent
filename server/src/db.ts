@@ -325,6 +325,8 @@ export interface PendingParkRow {
   quote: unknown;
   /** The walk-away prompt as the phone was given it. */
   prompt: unknown;
+  /** Whether the driver was told this is a dry run. */
+  shownDryRun: boolean | null;
   /** The candidate the driver confirmed. */
   zoneId: string | null;
   carLat: number;
@@ -332,11 +334,14 @@ export interface PendingParkRow {
   parkedAt: Date;
   leftCarAt: Date | null;
   farAt: Date | null;
+  farDistanceM: number | null;
   nearSince: Date | null;
   promptedAt: Date | null;
   confirmedAt: Date | null;
   startingAt: Date | null;
   sessionId: string | null;
+  /** A later park put the car somewhere else. */
+  carMovedAt: Date | null;
   closedAt: Date | null;
   createdAt: Date;
 }
@@ -346,10 +351,13 @@ export interface PendingParkWrite {
   candidates?: unknown;
   quote?: unknown;
   prompt?: unknown;
+  shownDryRun?: boolean | null;
   zoneId?: string | null;
   leftCarAt?: Date | null;
   farAt?: Date | null;
+  farDistanceM?: number | null;
   nearSince?: Date | null;
+  carMovedAt?: Date | null;
   promptedAt?: Date | null;
   confirmedAt?: Date | null;
   startingAt?: Date | null;

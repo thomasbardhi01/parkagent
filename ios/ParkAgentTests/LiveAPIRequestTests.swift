@@ -350,12 +350,19 @@ final class LiveAPIRequestTests: XCTestCase {
         {"ok": true, "park": {"parkedEventId": "pe1", "status": "prompted"}, "decisionId": "d9", "prompt": {"kind": "confirm", "parkedEventId": "pe1", "title": "Pay $3.65 for zone 417371?", "body": "1 h 30 m on 30th Ave · ends 3:31 PM", "zoneId": "nyc-417371", "zoneNumber": "417371", "amountUsd": 3.65, "minutes": 90, "endsAt": "2026-01-05T20:31:00.000Z", "quote": {"zoneId": "nyc-417371", "providerZoneNumber": "417371", "stayMinutes": 90, "chargedMinutes": 90, "meterUsd": 3.5, "feeUsd": 0.15, "totalUsd": 3.65}, "dryRun": true}}
         """#)
         let answer = try await api.reportParkLocation(LocationReport(
-            lat: 40.7790, lng: -73.9819, accuracy: 8, ts: Date(timeIntervalSince1970: 1_790_000_000), event: "left_car"
+            lat: 40.7790, lng: -73.9819, accuracy: 8, ts: Date(timeIntervalSince1970: 1_790_000_060),
+            measuredAt: Date(timeIntervalSince1970: 1_790_000_000), event: "left_car"
         ))
         let request = try sentRequest()
         XCTAssertEqual(request.httpMethod, "POST")
         XCTAssertEqual(request.url?.path(), "/location")
-        XCTAssertEqual(try body(request)["event"] as? String, "left_car")
+        let sent = try body(request)
+        XCTAssertEqual(sent["event"] as? String, "left_car")
+        // Reported a minute after it was measured: both times go out.
+        let reported = try XCTUnwrap(sent["ts"] as? String)
+        let measured = try XCTUnwrap(sent["measuredAt"] as? String)
+        XCTAssertNotEqual(reported, measured)
+        XCTAssertTrue(measured.hasPrefix("2026-09-2"), measured)
 
         XCTAssertEqual(answer.park, LocationResponse.Park(parkedEventId: "pe1", status: "prompted"))
         let prompt = try XCTUnwrap(answer.prompt)

@@ -22,7 +22,9 @@ import {
 } from "../services/placeClassification.js";
 import { cityForZone, providerForCity, providerStatusUsable } from "../providers/registry.js";
 import {
+  PARK_STATUSES,
   PARK_SUPERSEDABLE,
+  noteCarMoved,
   parkCandidates,
   settlePark,
   startParkSession,
@@ -318,19 +320,40 @@ export function registerParked(app: FastifyInstance, deps: AppDeps, sessions: Se
     // A street park with something to pay, from a build that waits for the
     // walk-away (FR-55): recorded, and nothing more. No prompt and no
     // payment while the phone is at the car; POST /location sees it leave.
+    //
+    // Only the latest park says where the car is. One the phone delivers
+    // late (its outbox) from before a park the server already has neither
+    // waits nor takes that park's place.
+    const newestPark = await deps.db.pendingPark.findFirst({
+      where: { userId: user.id, status: { in: PARK_STATUSES } },
+      orderBy: { createdAt: "desc" },
+    });
+    const isLatestPark = !newestPark || newestPark.parkedAt.getTime() <= at.getTime();
+    if (isLatestPark) {
+      // The car is here now, whatever kind of place this is: a park that
+      // waited at an earlier spot is over, its confirmation with it, and
+      // a session still running for a car somewhere else is no longer
+      // extended without the driver.
+      await deps.db.pendingPark.updateMany({
+        where: { userId: user.id, status: { in: PARK_SUPERSEDABLE } },
+        data: { status: "superseded", closedAt: serverNow },
+      });
+      await noteCarMoved(
+        deps,
+        user.id,
+        { lat: body.lat, lng: body.lng },
+        serverNow,
+        parkedEvent.id,
+      );
+    }
     const awaitsWalkAway =
+      isLatestPark &&
       Array.isArray(rawOutcomes) &&
       rawOutcomes.includes(WALK_AWAY) &&
       located &&
       (answer.action === "pay" || answer.action === "confirm") &&
       candidates.some((c) => c.quote.totalUsd > 0);
     if (awaitsWalkAway) {
-      // The car is here now: whatever waited at an earlier spot is over,
-      // its confirmation with it.
-      await deps.db.pendingPark.updateMany({
-        where: { userId: user.id, status: { in: PARK_SUPERSEDABLE } },
-        data: { status: "superseded", closedAt: serverNow },
-      });
       await deps.db.pendingPark.create({
         data: {
           userId: user.id,
@@ -338,6 +361,7 @@ export function registerParked(app: FastifyInstance, deps: AppDeps, sessions: Se
           status: "at_car",
           candidates,
           quote,
+          shownDryRun: dryRun,
           carLat: body.lat,
           carLng: body.lng,
           parkedAt: at,
@@ -457,7 +481,7 @@ export function registerParked(app: FastifyInstance, deps: AppDeps, sessions: Se
     const candidates = parkCandidates(park);
     const zoneId =
       parsed.data.zoneId ?? park.zoneId ?? (candidates.length === 1 ? candidates[0]!.zoneId : null);
-    const waiting = ["at_car", "confirmed", "prompted", "declined"].includes(park.status);
+    const waiting = ["at_car", "confirmed", "prompted"].includes(park.status);
     if (waiting && zoneId === null) {
       return reply.code(409).send({ error: "side_required" });
     }
@@ -466,8 +490,8 @@ export function registerParked(app: FastifyInstance, deps: AppDeps, sessions: Se
       return reply.code(409).send({ error: "zone_not_offered" });
     }
     if (!waiting || !candidate) {
-      // Cancelled, superseded, expired, free, failed, ended: a park that
-      // is over is never paid from again.
+      // Declined, cancelled, superseded, expired, free, failed, ended: a
+      // park that is over is never paid from again.
       return reply.code(409).send({ error: "park_closed", status: park.status });
     }
     // What the driver was shown for this side: the walk-away prompt's
@@ -524,7 +548,9 @@ export function registerParked(app: FastifyInstance, deps: AppDeps, sessions: Se
           zoneId: candidate.zoneId,
           quote: shown,
           confirmedAt: at,
-          ...(backAtCar ? { leftCarAt: null, farAt: null, nearSince: null } : {}),
+          ...(backAtCar
+            ? { leftCarAt: null, farAt: null, farDistanceM: null, nearSince: null }
+            : {}),
         },
       });
       if (moved.count === 0) return reply.code(409).send({ error: "confirm_in_progress" });
@@ -547,7 +573,7 @@ export function registerParked(app: FastifyInstance, deps: AppDeps, sessions: Se
     if (won.count === 0) return reply.code(409).send({ error: "confirm_in_progress" });
     await confirmedRow(false);
     const starting = (await deps.db.pendingPark.findUnique({ where: { id: park.id } }))!;
-    const outcome = await startParkSession(deps, sessions.start, starting, {
+    const outcome = await startParkSession(deps, sessions, starting, {
       at,
       mode: "tap",
       trigger: "confirm",
@@ -557,6 +583,11 @@ export function registerParked(app: FastifyInstance, deps: AppDeps, sessions: Se
         return { status: "started", ...outcome.body };
       case "free":
         return outcome.body;
+      case "covered":
+        // A session already running at this spot pays for it.
+        return reply
+          .code(409)
+          .send({ error: "session_already_active", sessionId: outcome.sessionId });
       case "quote_changed":
         return reply.code(409).send({ error: "quote_changed", prompt: outcome.prompt });
       case "refused":
@@ -578,7 +609,7 @@ export function registerParked(app: FastifyInstance, deps: AppDeps, sessions: Se
     }
     const moved = await deps.db.pendingPark.updateMany({
       where: { id: park.id, status: park.status },
-      data: { status: "declined" },
+      data: { status: "declined", closedAt: now() },
     });
     if (moved.count === 0) return reply.code(409).send({ error: "confirm_in_progress" });
     const decision = await deps.db.decision.create({

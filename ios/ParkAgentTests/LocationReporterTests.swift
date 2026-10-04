@@ -81,10 +81,15 @@ struct LocationReporterTests {
         await reporter.heartbeatDue()
         #expect(server.reports.count == 1)
         // …but a minute on, "still here", so the worker's view doesn't age out.
+        let measured = server.reports[0].ts
         clock.now += 31
         await reporter.heartbeatDue()
         #expect(server.reports.count == 2)
         #expect(server.reports[1].ts == clock.now)
+        // The same measurement, sent again: the server must be able to
+        // tell, or one GPS jump would count as two fixes away from the car.
+        #expect(server.reports[0].measuredAt == measured)
+        #expect(server.reports[1].measuredAt == measured)
         reporter.stop()
     }
 

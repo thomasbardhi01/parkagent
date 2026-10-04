@@ -6,12 +6,13 @@
  * with no I/O and no model:
  *
  *   name      0–0.5   the share of the query's name words its name carries
+ *                     (a word it carries only the start of counts half)
  *   area      ±0.2    the area the user named: carried, or absent (0 when
  *                     they named none)
  *   distance  0–0.15  full within 3 km of the bias point, falling in a
  *                     straight line to nothing at 15 km
- *   poi       +0.1    the query names something, and this is a business,
- *                     venue, or landmark
+ *   poi       +0.1    the query names something other than a neighborhood,
+ *                     and this is a business, venue, or landmark
  *   rank      +0.05   its source listed it first
  *
  * The classifier (placeMatch.ts) reads the scores against
@@ -23,7 +24,7 @@
 import { coveredCities } from "../../providers/registry.js";
 import type { GeocodeResult } from "./geocoder.js";
 import { metersBetween } from "./geocoder.js";
-import { isGenericWord, nameCarries, nameTokens } from "./placeTokens.js";
+import { carriesAll, isFillerWord, isGenericWord, nameMatch, nameTokens } from "./placeTokens.js";
 
 /** The lines the classifier draws, in one place so tests pin them. */
 export const RESOLUTION_THRESHOLDS = {
@@ -59,9 +60,10 @@ export interface Scored {
   score: number;
   /** Its name carries every name word of the query. */
   nameMatched: boolean;
-  /** It shares a word with the query: a name word, or an area the user
-   * named that is narrower than a whole covered city. Without one, being
-   * near the phone and listed first is not a reason to offer it. */
+  /** It shares a word with the query: a whole name word (not only the
+   * start of one), or an area the user named that is narrower than a whole
+   * covered city. Without one, being near the phone and listed first is
+   * not a reason to offer it. */
   evidence: boolean;
   parts: { name: number; area: number; distance: number; poi: number; rank: number };
 }
@@ -74,6 +76,29 @@ export interface QueryReading {
   area: string[];
   /** The query has a word that isn't a generic one ("bar", "the"). */
   specific: boolean;
+  /** The query is, as a whole, the name of an area some result lists —
+   * "Seaport", "Back Bay": the neighborhood, not a business named after
+   * it. The phrase as compared (`phraseOf`), or null. */
+  areaName: string | null;
+}
+
+/** A name as compared whole: its tokens without filler words. */
+export function phraseOf(text: string | readonly string[]): string {
+  const tokens = typeof text === "string" ? nameTokens(text) : text;
+  return tokens.filter((t) => !isFillerWord(t)).join(" ");
+}
+
+/** The names of the areas the results say they are in: a place lying in
+ * "Seaport" is what makes "Seaport" a neighborhood's name. (A result that
+ * is itself an area doesn't count on its own: a park or a street can be
+ * "an area" and still be what the user meant by its name.) */
+function areaPhrases(results: readonly GeocodeResult[]): Set<string> {
+  return new Set(
+    results
+      .flatMap((r) => [...(r.areaNames ?? []), r.area ?? ""])
+      .map((name) => phraseOf(name))
+      .filter((p) => p.length > 0),
+  );
 }
 
 /** A result's name as tokens. */
@@ -115,17 +140,30 @@ export function readQuery(query: string, results: readonly GeocodeResult[]): Que
   const areaTokens = new Set(results.flatMap((r) => [...areaTokensOf(r)]));
   const saidArea = tokens.filter((t) => areaTokens.has(t));
   const withoutArea = specific.filter((t) => !saidArea.includes(t));
-  const wholeNameFound =
-    specific.length > 0 &&
-    results.some((r) => {
-      const name = nameOf(r);
-      return specific.every((t) => nameCarries(name, t));
-    });
-  const name = wholeNameFound || withoutArea.length === 0 ? specific : withoutArea;
+  const wholeNameFound = results.some((r) => carriesAll(nameOf(r), specific));
+  // Every word is a place word ("Back Bay Boston"): the name is what's left
+  // without the covered city's — the city says where, not what.
+  const cities = cityWords();
+  const citiless = specific.filter((t) => !cities.has(t));
+  const name = wholeNameFound
+    ? specific
+    : withoutArea.length > 0
+      ? withoutArea
+      : citiless.length > 0
+        ? citiless
+        : specific;
+  // "Seaport", or "Seaport Boston": the covered city's name doesn't make
+  // a neighborhood's name something else.
+  const areas = areaPhrases(results);
+  const areaName =
+    [phraseOf(tokens), phraseOf(tokens.filter((t) => !cities.has(t)))].find(
+      (p) => p.length > 0 && areas.has(p),
+    ) ?? null;
   return {
     name,
     area: saidArea.filter((t) => !name.includes(t)),
     specific: specific.length > 0,
+    areaName,
   };
 }
 
@@ -162,7 +200,13 @@ export function scoreCandidates(
   const mostHits = Math.max(0, ...areaHits.map((hits) => hits.length));
   return results.map((result, index) => {
     const name = nameOf(result);
-    const carried = reading.name.filter((t) => nameCarries(name, t)).length;
+    const matches = reading.name.map((t) => nameMatch(name, t));
+    // A word the name carries only the start of ("Pru" of "Prudential")
+    // is half a word.
+    const carried = matches.reduce(
+      (sum, m) => sum + (m === null ? 0 : m === "fragment" ? 0.5 : 1),
+      0,
+    );
     const hits = areaHits[index]!;
     const parts = {
       name: reading.name.length > 0 ? (NAME_WEIGHT * carried) / reading.name.length : 0,
@@ -173,15 +217,17 @@ export function scoreCandidates(
             ? AREA_WEIGHT
             : -AREA_WEIGHT,
       distance: distancePart(result, bias ?? null),
-      poi: reading.specific && result.kind === "poi" ? POI_BONUS : 0,
+      // A neighborhood's name says nothing for a business named after it.
+      poi: reading.specific && !reading.areaName && result.kind === "poi" ? POI_BONUS : 0,
       rank: (result.rank ?? index) === 0 ? RANK_BONUS : 0,
     };
     const sum = parts.name + parts.area + parts.distance + parts.poi + parts.rank;
     return {
       result,
       score: Math.round(Math.min(1, Math.max(0, sum)) * 1000) / 1000,
-      nameMatched: reading.name.length > 0 && carried === reading.name.length,
-      evidence: carried > 0 || hits.some((t) => !cities.has(t)),
+      nameMatched: carriesAll(name, reading.name),
+      evidence:
+        matches.some((m) => m !== null && m !== "fragment") || hits.some((t) => !cities.has(t)),
       parts,
     };
   });

@@ -95,7 +95,7 @@ access token authorizes three endpoints:
 |---|---|---|
 | `GET /v1/search` | Every place lookup: `limitToCountries=US`, `resultTypeFilter=Poi,Address`, ONE of `searchLocation` (the phone when it's in the city) or the city's `searchRegion` (Apple answers 400 when both are sent, which broke every search until #152), and the phone as `userLocation`. | 1, or 2 when the biased city has no match and the other is tried |
 | `GET /v1/searchAutocomplete` | Only when the search is weak: nothing found, nothing carrying a word of the name, or a best score under 0.55 (`placeScore.ts` `searchIsWeak`). Same parameters as the search. Each completion is then one `GET` of its `completionUrl` (Apple's own relative `/v1/search?q=…&metadata=…`, with `lang=en-US` added). | 1, plus at most 3 completions, per city tried |
-| `GET /v1/etas` | Once per search of a named place, for the walk from the place to its ten nearest options: `origin`, `destinations` (up to ten `lat,lng` pairs joined with `\|`), `transportType=Walking`. | 1 per search, so 2 for a request that searches street and garages |
+| `GET /v1/etas` | Per search of a named place, for the walk from the place to the options the search shows, then the nearest: `origin`, `destinations` (up to ten `lat,lng` pairs joined with `\|`), `transportType=Walking`. | 1 per search, and a second only when the real walks bring an untimed option into view |
 
 - Results outside the covered metros are dropped. A biased search that
   finds nothing in its city tries the other cities, so the bias orders the

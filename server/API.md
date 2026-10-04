@@ -2276,15 +2276,21 @@ the query:
 
 | Part | Value | From |
 |---|---|---|
-| name | 0–0.5 | the share of the query's name words the result's name carries |
+| name | 0–0.5 | the share of the query's name words the result's name carries; a word it carries only the start of ("Pru" of "Prudential") counts half |
 | area | +0.2 / −0.2 / 0 | the area the user named: carried, absent, or none named |
 | distance | 0–0.15 | full within 3 km of the bias point (the phone inside the city, else the city's center), linear to 0 at 15 km; full when there is no bias point at all |
-| poi | +0.1 | the query names something and the result is a business, venue, or landmark |
+| poi | +0.1 | the query names something other than a neighborhood, and the result is a business, venue, or landmark |
 | rank | +0.05 | its source listed it first |
 
 Names match loosely: case, punctuation, and stretched letters don't
-count ("Moo" is "Mooo...."), abbreviations are spelled out ("St"), and
-initials stand for a whole name ("MFA" is the Museum of Fine Arts).
+count ("Moo" is "Mooo...."), abbreviations are spelled out ("St"), words
+run together are the words ("lola42" is "LoLa 42", "Trader Joes" is
+"Trader Joe's"), and initials stand for a whole name ("MFA" is the Museum
+of Fine Arts). A query word that is the start of a longer name word
+("Mass" of "Massachusetts") is a fragment: it counts half, and a name
+carried by fragments alone ("Pru" for "Prudential Center") isn't carried
+at all. A name word that is only the start of the QUERY word is no match:
+"xyzzy" isn't "W XYZ Bar" (prod, 2026-10-02, where it was taken at 0.80).
 Generic words ("steakhouse") and an area the user named ("in Seaport")
 aren't part of the name; a street address counts as a location word, so a
 tapped choice's reply ("Mooo...., 15 Beacon St") resolves to exactly that
@@ -2295,7 +2301,7 @@ against `RESOLUTION_THRESHOLDS = { found: 0.75, ambiguousFloor: 0.6,
 ambiguousGap: 0.2, closestFloor: 0.3, distinctM: 250 }`):
 
 - **none**: no result, or — with nothing carrying the whole name — no
-  result that both shares a word with the query and scores at least
+  result that both shares a whole word with the query and scores at least
   `closestFloor`. A result that is only nearby and listed first is the
   phone's location by another name, so it is never offered. The covered
   cities' own names don't count as a shared word ("in Boston" says which
@@ -2319,8 +2325,18 @@ ambiguousGap: 0.2, closestFloor: 0.3, distinctM: 250 }`):
   fewer than two are that strong), nearest the bias point first, at most
   three.
 
-The chain asks Nominatim too when Apple's results don't carry the name,
-and classifies both sets together.
+**A neighborhood's name is the neighborhood.** When the query, as a whole
+(less a covered city's name: "Back Bay Boston"), is the name of an area
+the results say they lie in ("Seaport", "Back Bay", "Fenway"), only a
+result called exactly that is the place, the area itself before a T stop
+or a park of the same name; a business named after it ("Seaport Hotel")
+only carries the name, and gets no business bonus. On prod Apple answered
+"Seaport" with businesses alone and the hotel was taken.
+
+The chain asks Nominatim too when Apple's results don't carry the name —
+and when the query is a neighborhood's name and no result is that area —
+and classifies both sets together. Nominatim knows the neighborhoods
+("Seaport", "Back Bay", and "Fenway" all come back as areas).
 
 **The decision row.** Every `geocode_place` call (kind `assistant_tool`)
 records `{query, source, confidence, candidates: [{name, lat, lng,
@@ -2523,15 +2539,24 @@ budget or shown on a card.
 
 **Walking times (FR-44).** A search of a NAMED place asks Apple for the
 real walk from that place to each option's pin before it reads the limits
-and the order off the walks: `GET /v1/etas`, `transportType=Walking`, one
-request per search for its ten nearest options (`MAX_WALK_TIMED`; Apple
-takes ten destinations a call). An option that gets one has `walkMinutes =
+and the order off the walks: `GET /v1/etas`, `transportType=Walking`, ten
+destinations a request (`MAX_WALK_TIMED`, Apple's limit). The options the
+search will show are asked about first, then the nearest: what a search
+shows is decided by the request's order, not by distance, and on prod
+(2026-10-02) the free blocks a Saturday-evening search led with were the
+12th to 15th nearest and kept their estimates while ten nearer ones were
+timed. If the real walks reorder the list so that an untimed option comes
+into view, a second request times it; there is no third
+(`MAX_WALK_REQUESTS`). An option that gets one has `walkMinutes =
 ceil(seconds / 60)` (never under 1) and `walkEstimate: false`, and a
-street option's one-line summary is rebuilt to say that walk. Every other
-option keeps the estimate with `walkEstimate: true`: the options beyond
-the nearest ten, every option when no place was named (there is no
-destination to walk to) or no Apple key is set, and all of them when the
-call fails or Apple is out of quota — walking times never fail a search.
+street option's one-line summary is rebuilt to say that walk. Each of
+Apple's answers goes to the pin its echoed destination is nearest, so an
+answer left out or moved onto the walkway never lends its time to another
+option. Every other option keeps the estimate with `walkEstimate: true`:
+options never on view past the first ten, a destination Apple gave no
+route to, every option when no place was named (there is no destination
+to walk to) or no Apple key is set, and all of them when the call fails
+or Apple is out of quota — walking times never fail a search.
 Because the search carries them, `maxWalkMinutes` is judged on the real
 walk (an option the estimate would pass can come back a near-miss, with
 the real minutes as its `actual`), "closest" is the closest by it, and the

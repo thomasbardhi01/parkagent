@@ -48,6 +48,168 @@ final class ParkedNoticeTests: XCTestCase {
     }
 }
 
+/// The street session lifecycle (FR-55): a park the server holds says
+/// nothing at the car, and at walk-away shows the server's prompt as
+/// written, with Pay · Not now · Wrong spot.
+final class ParkedNoticeWalkAwayTests: XCTestCase {
+    private func heldPark() -> ParkedResponse {
+        var parked = MockFixtures.singleQuote()
+        parked.awaitsWalkAway = true
+        return parked
+    }
+
+    private func confirmPrompt(amount: Double = 4.10) -> ParkPrompt {
+        ParkPrompt(
+            kind: "confirm", parkedEventId: "pe-held",
+            title: "Pay \(Format.money(amount)) for zone 456?", body: "1 h 05 m on Boylston St · ends 3:05 PM",
+            zoneId: "bos-456", zoneNumber: "456", amountUsd: amount, minutes: 65, dryRun: false
+        )
+    }
+
+    func testNothingIsSaidOrShownBeforeTheWalkAway() {
+        let parked = heldPark()
+        XCTAssertNil(ParkedNotice.prompt(for: parked), "A held park has no notification of its own")
+        XCTAssertNil(ParkedNotice.content(for: parked))
+        let decision = ParkedNotice.decide(
+            for: parked, at: MockFixtures.fixtureCoordinate, memory: PlaceMemory(),
+            lastAutomotiveAt: nil, now: Date()
+        )
+        XCTAssertEqual(decision, .silent(.awaitingWalkAway))
+        XCTAssertFalse(decision.showsSheet, "No sheet at the car either")
+        // The very same park without the hold is announced at once, as before.
+        var plain = parked
+        plain.awaitsWalkAway = nil
+        XCTAssertNotNil(ParkedNotice.prompt(for: plain))
+    }
+
+    func testTheSideQuestionWaitsForTheWalkAwayToo() {
+        var parked = MockFixtures.twoCandidates()
+        parked.awaitsWalkAway = true
+        XCTAssertNil(ParkedNotice.prompt(for: parked))
+        XCTAssertEqual(
+            ParkedNotice.decide(
+                for: parked, at: MockFixtures.fixtureCoordinate, memory: PlaceMemory(),
+                lastAutomotiveAt: nil, now: Date()
+            ),
+            .silent(.awaitingWalkAway)
+        )
+    }
+
+    func testTheConfirmNotificationShowsTheServersAmountAndItsThreeActions() {
+        let prompt = confirmPrompt()
+        let notice = ParkedNotice.walkAwayNotice(for: prompt)
+        // The server's words, as written: the phone composes no amount.
+        XCTAssertEqual(notice.content.title, "Pay $4.10 for zone 456?")
+        XCTAssertEqual(notice.content.body, "1 h 05 m on Boylston St · ends 3:05 PM")
+        XCTAssertEqual(notice.category, .confirm)
+        XCTAssertEqual(notice.category.actions, [.pay, .notNow, .wrongSpot])
+        XCTAssertEqual(notice.category.actions.map(\.title), ["Pay", "Not now", "Wrong spot"])
+        // What the Pay button sends: this park, this side, this total.
+        XCTAssertEqual(notice.parkedEventId, "pe-held")
+        XCTAssertEqual(notice.zoneId, "bos-456")
+        XCTAssertEqual(notice.shownTotalUsd, 4.10)
+    }
+
+    func testPayNeedsAnUnlockedPhoneAndWrongSpotOpensTheApp() {
+        XCTAssertTrue(ParkedNotice.WalkAwayAction.pay.options.contains(.authenticationRequired))
+        XCTAssertFalse(ParkedNotice.WalkAwayAction.pay.options.contains(.foreground), "Pay runs without opening the app")
+        XCTAssertTrue(ParkedNotice.WalkAwayAction.wrongSpot.options.contains(.foreground))
+        XCTAssertEqual(ParkedNotice.WalkAwayAction.notNow.options, [])
+    }
+
+    func testAPromptATapCannotPayOffersNoPay() {
+        var side = confirmPrompt()
+        side.kind = "side"
+        side.amountUsd = nil
+        side.title = "Which side of the street?"
+        let sideNotice = ParkedNotice.walkAwayNotice(for: side)
+        XCTAssertEqual(sideNotice.category, .attention)
+        XCTAssertFalse(sideNotice.category.actions.contains(.pay))
+        XCTAssertNil(sideNotice.shownTotalUsd)
+        XCTAssertNil(sideNotice.zoneId, "No side is chosen for a tap to pay")
+
+        // What it would cost is on the prompt; a tap still can't pay it.
+        var unlinked = confirmPrompt()
+        unlinked.kind = "attention"
+        unlinked.reason = "provider_not_linked"
+        let attention = ParkedNotice.walkAwayNotice(for: unlinked)
+        XCTAssertEqual(attention.category, .attention)
+        XCTAssertNil(attention.shownTotalUsd)
+        XCTAssertEqual(attention.category.actions, [.notNow])
+    }
+
+    func testTheWalkAwayCategoriesAreRegisteredWithTheirButtons() throws {
+        let registered = ParkedNotice.notificationCategories
+        let confirm = try XCTUnwrap(registered.first { $0.identifier == "park.confirm" })
+        XCTAssertEqual(confirm.actions.map(\.identifier), ["park.pay", "park.not_now", "park.wrong_spot"])
+        XCTAssertEqual(confirm.actions.map(\.title), ["Pay", "Not now", "Wrong spot"])
+        let attention = try XCTUnwrap(registered.first { $0.identifier == "park.attention" })
+        XCTAssertEqual(attention.actions.map(\.identifier), ["park.not_now"])
+        // The place prompts are all still there.
+        for category in ParkedNotice.Category.allCases {
+            XCTAssertTrue(registered.contains { $0.identifier == category.rawValue }, category.rawValue)
+        }
+    }
+
+    func testATappedButtonNamesItsParkItsSideAndTheTotalShown() throws {
+        let userInfo: [AnyHashable: Any] = [
+            "type": "parked", "parkedEventId": "pe-held", "zoneId": "bos-456", "zoneNumber": "456",
+            "shownTotalUsd": 4.10,
+        ]
+        let pay = try XCTUnwrap(PushManager.walkAwayTap(identifier: "park.pay", userInfo: userInfo))
+        XCTAssertEqual(pay, PushManager.WalkAwayTap(
+            action: .pay, parkedEventId: "pe-held", zoneId: "bos-456", zoneNumber: "456", shownTotalUsd: 4.10
+        ))
+        XCTAssertEqual(PushManager.walkAwayTap(identifier: "park.not_now", userInfo: userInfo)?.action, .notNow)
+        // A tap on the notification itself, a place button, or a button
+        // with no park to act on is not a walk-away tap.
+        XCTAssertNil(PushManager.walkAwayTap(identifier: UNNotificationDefaultActionIdentifier, userInfo: userInfo))
+        XCTAssertNil(PushManager.walkAwayTap(identifier: "parked.place.garage", userInfo: userInfo))
+        XCTAssertNil(PushManager.walkAwayTap(identifier: "park.pay", userInfo: ["type": "parked"]))
+    }
+
+    func testTheSheetShowsThePromptsQuoteForItsSide() throws {
+        let parked = heldPark()
+        let candidate = try XCTUnwrap(parked.candidates.first)
+        var requoted = candidate.quote
+        requoted.totalUsd += 0.5
+        requoted.feeUsd += 0.5
+        var prompt = confirmPrompt(amount: requoted.totalUsd)
+        prompt.zoneId = candidate.zoneId
+        prompt.quote = requoted
+        var waiting = ParkedNotice.Waiting(
+            response: parked, latitude: 40.77, longitude: -73.98, savedAt: Date(), shown: nil
+        )
+        XCTAssertEqual(waiting.presentable.candidates.first?.quote, candidate.quote)
+        waiting.shown = prompt
+        // What the sheet's Pay button says is what the tap sends, and the
+        // server pays no more than that.
+        XCTAssertEqual(waiting.presentable.candidates.first?.quote, requoted)
+        XCTAssertEqual(waiting.presentable.quote, requoted)
+        XCTAssertEqual(waiting.presentable.parkedEventId, parked.parkedEventId)
+    }
+
+    func testAWaitingParkIsDroppedAfterTheHourTheServerKeepsIt() {
+        let parked = heldPark()
+        let now = Date()
+        ParkedNotice.storeWaiting(ParkedNotice.Waiting(
+            response: parked, latitude: 40.77, longitude: -73.98, savedAt: now.addingTimeInterval(-59 * 60), shown: nil
+        ))
+        XCTAssertNotNil(ParkedNotice.restoreWaiting(now: now))
+        ParkedNotice.storeWaiting(ParkedNotice.Waiting(
+            response: parked, latitude: 40.77, longitude: -73.98, savedAt: now.addingTimeInterval(-61 * 60), shown: nil
+        ))
+        XCTAssertNil(ParkedNotice.restoreWaiting(now: now))
+        XCTAssertNil(ParkedNotice.restoreWaiting(now: now), "A stale park is removed, not just skipped")
+    }
+
+    func testAFailedPayFromTheNotificationSaysSoWithTheZone() {
+        let content = ParkedNotice.payFailedContent(zoneNumber: "456", message: "That park is over, so nothing was paid.")
+        XCTAssertEqual(content.title, "Zone 456 wasn't paid")
+        XCTAssertTrue(content.body.hasPrefix("That park is over, so nothing was paid."), content.body)
+    }
+}
+
 /// The pending park survives the process for a while, and no longer.
 final class ParkedNoticeStoreTests: XCTestCase {
     override func tearDown() {

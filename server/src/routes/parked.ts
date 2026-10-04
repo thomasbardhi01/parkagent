@@ -57,8 +57,12 @@ const placeBodySchema = z.object({
   name: z.string().max(PLACE_NAME_MAX).nullish(),
 });
 
-/** Pay's body: the side of the street, when the candidates disagree. */
-const confirmBodySchema = z.object({ zoneId: z.string().min(1).optional() });
+/** Pay's body: the side of the street, when the candidates disagree, and
+ * the total the phone had on screen when Pay was tapped. */
+const confirmBodySchema = z.object({
+  zoneId: z.string().min(1).optional(),
+  shownTotalUsd: z.number().positive().optional(),
+});
 
 /** The outcome a build lists when it waits for the walk-away (FR-55): it
  * shows nothing at the car, reports its fixes, and pays through the tap. */
@@ -469,7 +473,12 @@ export function registerParked(app: FastifyInstance, deps: AppDeps, sessions: Se
     // What the driver was shown for this side: the walk-away prompt's
     // quote, or /parked's when they chose the side in the app.
     const prompted = park.quote as Quote | null;
-    const shown = prompted && prompted.zoneId === candidate.zoneId ? prompted : candidate.quote;
+    const quoted = prompted && prompted.zoneId === candidate.zoneId ? prompted : candidate.quote;
+    // …and never more than the phone itself had on screen at the tap.
+    const shown = {
+      ...quoted,
+      totalUsd: Math.min(quoted.totalUsd, parsed.data.shownTotalUsd ?? quoted.totalUsd),
+    };
     const dryRun = deps.policy.effectiveDryRun();
     const confirmedRow = (early: boolean) =>
       deps.db.decision.create({
@@ -481,6 +490,7 @@ export function registerParked(app: FastifyInstance, deps: AppDeps, sessions: Se
             mode: "tap",
             early,
             shown,
+            quotedTotalUsd: quoted.totalUsd,
             parkStatus: park.status,
             leftCarAt: park.leftCarAt?.toISOString() ?? null,
             nearCarSince: park.nearSince?.toISOString() ?? null,

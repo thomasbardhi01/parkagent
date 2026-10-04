@@ -328,6 +328,91 @@ final class LiveAPIRequestTests: XCTestCase {
     {"action": "garage", "candidates": [], "quote": null, "rule": "place_garage", "dryRun": true, "needsZoneNumber": false, "provider": null, "place": {"class": "garage", "confidence": 0.9, "runnerUp": {"class": "street", "confidence": 0.6}, "garageId": "bos-fixture-deck-0a1b2c", "garageName": "Fixture Deck", "source": "footprint", "attribution": "© OpenStreetMap contributors"}, "parkedEventId": "pe1", "decisionId": "d1"}
     """#
 
+    // MARK: - The street session lifecycle (FR-55)
+
+    func testAHeldParkIsReadFromParked() async throws {
+        StubURLProtocol.respond(json: Self.parkedResponseBody.replacingOccurrences(
+            of: #""parkedEventId""#, with: #""awaitsWalkAway": true, "parkedEventId""#
+        ))
+        let held = try await api.parked(
+            ParkedRequest(lat: 42.35, lng: -71.07, accuracy: 9, ts: Date(), signals: [], outcomes: ParkedRequest.shownOutcomes),
+            idempotencyKey: "park-held"
+        )
+        XCTAssertEqual(held.awaitsWalkAway, true)
+        // A server from before the lifecycle says nothing, and nothing is held.
+        StubURLProtocol.respond(json: Self.parkedResponseBody)
+        let plain = try await api.parked(ParkedRequest(lat: 42.35, lng: -71.07, accuracy: 9, ts: Date(), signals: []), idempotencyKey: "park-plain")
+        XCTAssertNil(plain.awaitsWalkAway)
+    }
+
+    func testAFixCarriesWhatTheAppSawAndReadsThePromptBack() async throws {
+        StubURLProtocol.respond(json: #"""
+        {"ok": true, "park": {"parkedEventId": "pe1", "status": "prompted"}, "decisionId": "d9", "prompt": {"kind": "confirm", "parkedEventId": "pe1", "title": "Pay $3.65 for zone 417371?", "body": "1 h 30 m on 30th Ave · ends 3:31 PM", "zoneId": "nyc-417371", "zoneNumber": "417371", "amountUsd": 3.65, "minutes": 90, "endsAt": "2026-01-05T20:31:00.000Z", "quote": {"zoneId": "nyc-417371", "providerZoneNumber": "417371", "stayMinutes": 90, "chargedMinutes": 90, "meterUsd": 3.5, "feeUsd": 0.15, "totalUsd": 3.65}, "dryRun": true}}
+        """#)
+        let answer = try await api.reportParkLocation(LocationReport(
+            lat: 40.7790, lng: -73.9819, accuracy: 8, ts: Date(timeIntervalSince1970: 1_790_000_000), event: "left_car"
+        ))
+        let request = try sentRequest()
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.url?.path(), "/location")
+        XCTAssertEqual(try body(request)["event"] as? String, "left_car")
+
+        XCTAssertEqual(answer.park, LocationResponse.Park(parkedEventId: "pe1", status: "prompted"))
+        let prompt = try XCTUnwrap(answer.prompt)
+        XCTAssertTrue(prompt.payable)
+        XCTAssertEqual(prompt.title, "Pay $3.65 for zone 417371?")
+        XCTAssertEqual(prompt.amountUsd, 3.65)
+        XCTAssertEqual(prompt.quote?.totalUsd, 3.65)
+        XCTAssertEqual(prompt.endsAt, Date(timeIntervalSince1970: 1_767_645_060))
+
+        // With nothing seen, no event key is sent; an ended session reads back.
+        StubURLProtocol.respond(json: #"{"ok": true, "sessionId": "s1", "ended": {"reason": "returned", "stopped": false}}"#)
+        let ended = try await api.reportParkLocation(LocationReport(lat: 40.7784, lng: -73.9819, accuracy: 8, ts: Date()))
+        XCTAssertNil(try body(try sentRequest())["event"])
+        XCTAssertEqual(ended.ended, LocationResponse.Ended(reason: "returned", stopped: false))
+        XCTAssertNil(ended.prompt)
+    }
+
+    func testTheTapSendsTheSideAndTheTotalShownUnderAKey() async throws {
+        StubURLProtocol.respond(json: #"{"status": "started", "sessionId": "s1", "expiresAt": "2026-01-05T20:31:00.000Z", "amountUsd": 3.65}"#)
+        let outcome = try await api.confirmPark(parkedEventId: "pe1", zoneId: "nyc-417371", shownTotalUsd: 3.65)
+        let request = try sentRequest()
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.url?.path(), "/parked/pe1/confirm")
+        XCTAssertEqual(bearer(request), "Bearer access-1")
+        XCTAssertNotNil(request.value(forHTTPHeaderField: "Idempotency-Key"), "a retried tap must be answered once")
+        let sent = try body(request)
+        XCTAssertEqual(sent["zoneId"] as? String, "nyc-417371")
+        XCTAssertEqual(sent["shownTotalUsd"] as? Double, 3.65)
+        guard case .started(let started) = outcome else { return XCTFail("expected a started session") }
+        XCTAssertEqual(started.sessionId, "s1")
+        XCTAssertEqual(started.amountUsd, 3.65)
+
+        // Tapped at the car: kept, nothing paid.
+        StubURLProtocol.respond(json: #"{"status": "confirmed", "startsAt": "walk_away", "zoneId": "nyc-417371"}"#)
+        let early = try await api.confirmPark(parkedEventId: "pe1", zoneId: nil, shownTotalUsd: nil)
+        guard case .waitingForWalkAway = early else { return XCTFail("expected the confirmation to wait") }
+        XCTAssertTrue(try body(try sentRequest()).isEmpty, "no side and no total: an empty body, not nulls")
+    }
+
+    func testARefusedTapIsANamedRefusalAndNotNowIsItsOwnCall() async throws {
+        StubURLProtocol.respond(sequence: [(409, #"{"error": "park_closed", "status": "cancelled"}"#)])
+        do {
+            _ = try await api.confirmPark(parkedEventId: "pe1", zoneId: nil, shownTotalUsd: 3.65)
+            XCTFail("a closed park must not read as paid")
+        } catch let error as APIError {
+            guard case .refused(let code) = error else { return XCTFail("\(error)") }
+            XCTAssertEqual(code, "park_closed")
+            XCTAssertFalse(error.paymentOutcomeUnknown, "the server answered: nothing was paid")
+        }
+
+        StubURLProtocol.respond(json: #"{"status": "declined"}"#)
+        try await api.declinePark(parkedEventId: "pe1")
+        let request = try sentRequest()
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.url?.path(), "/parked/pe1/decline")
+    }
+
     /// FR-54: the app says which place outcomes it can show, and reads the
     /// place back. A server from before FR-54 sends no `place`, and its
     /// answer still decodes.
@@ -339,7 +424,7 @@ final class LiveAPIRequestTests: XCTestCase {
             idempotencyKey: "park-1"
         )
         let sent = try body(try sentRequest())
-        XCTAssertEqual(sent["outcomes"] as? [String], ["garage", "nopay"])
+        XCTAssertEqual(sent["outcomes"] as? [String], ["garage", "nopay", "walk_away"])
 
         XCTAssertEqual(response.action, .garage)
         XCTAssertEqual(response.rule, "place_garage")

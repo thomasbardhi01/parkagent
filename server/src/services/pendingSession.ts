@@ -206,6 +206,8 @@ export interface ParkPrompt {
   amountUsd?: number;
   minutes?: number;
   endsAt?: string;
+  /** The quote behind the amount, for the app's own sheet to show. */
+  quote?: Quote;
   reason?: ParkPromptReason;
   dryRun: boolean;
 }
@@ -333,6 +335,7 @@ export async function buildParkPrompt(
         // What it would cost, for the app to show. No tap pays it.
         amountUsd: quote.totalUsd,
         minutes: quote.stayMinutes,
+        quote,
       },
     };
   }
@@ -352,6 +355,7 @@ export async function buildParkPrompt(
       amountUsd: quote.totalUsd,
       minutes: quote.stayMinutes,
       endsAt: endsAt.toISOString(),
+      quote,
     },
   };
 }

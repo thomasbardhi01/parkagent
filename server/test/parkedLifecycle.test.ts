@@ -492,6 +492,23 @@ test("the tap pays what was shown or nothing: a start that would cost more asks 
   expect(t.calls.start).toBe(1);
 });
 
+test("the phone's own on-screen total binds too: less than the server would charge pays nothing", async () => {
+  const t = makeApp();
+  const parked = await park(t.app);
+  await walkAway(t);
+  // An older prompt was on screen: $3.40, where the stay now costs $3.65.
+  const tap = await post(t.app, `/parked/${parked.parkedEventId}/confirm`, { shownTotalUsd: 3.4 });
+  expect(tap.statusCode).toBe(409);
+  expect(tap.json()).toMatchObject({ error: "quote_changed" });
+  expect((tap.json()["prompt"] as { amountUsd: number }).amountUsd).toBe(3.65);
+  expect(t.calls.start).toBe(0);
+  expect(t.state.sessions).toEqual([]);
+  // More than the server quoted never raises what is paid.
+  const over = await post(t.app, `/parked/${parked.parkedEventId}/confirm`, { shownTotalUsd: 9 });
+  expect(over.statusCode).toBe(200);
+  expect(over.json()).toMatchObject({ status: "started", amountUsd: 3.65 });
+});
+
 test("a start that reached the provider and failed closes the park: no second attempt from it", async () => {
   const failing: Executor = {
     startSession: async (): Promise<ExecutorResult> => ({

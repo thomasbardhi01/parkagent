@@ -17,6 +17,11 @@ import UserNotifications
 /// and an unclear place asks what it is. Those wait until the car has been
 /// still for a minute, and are made once a day per place; a park with a
 /// quote is never held back or skipped.
+///
+/// A street park the server holds for the walk-away (FR-55) says nothing
+/// here at all while the phone is at the car: no notification, no sheet.
+/// When the phone has left, the server's own prompt is shown word for
+/// word ("Pay $4.10 for zone 456?") with Pay · Not now · Wrong spot.
 enum ParkedNotice {
     struct Content: Equatable {
         let title: String
@@ -150,6 +155,8 @@ enum ParkedNotice {
             guard let content = placeContent(for: response) else { return nil }
             return Prompt(content: content, category: .ask, timeSensitive: false, isPlacePrompt: true)
         case .pay, .confirm, .ignore:
+            // Held for the walk-away: the server's prompt says it then.
+            if response.awaitsWalkAway == true { return nil }
             guard let content = streetContent(for: response) else { return nil }
             return Prompt(
                 content: content,
@@ -213,6 +220,9 @@ enum ParkedNotice {
         case askedToday
         /// The driver said "not here" at this spot in the last two hours.
         case notHere
+        /// A street park the server holds until the phone leaves the car
+        /// (FR-55): nothing is said or shown before then.
+        case awaitingWalkAway
     }
 
     enum Decision: Equatable {
@@ -258,6 +268,7 @@ enum ParkedNotice {
                     || (response.action == .unknownZone && response.rule == "place_unknown"))
             guard aboutThePlace else { return .unlocated }
         }
+        if response.awaitsWalkAway == true { return .silent(.awaitingWalkAway) }
         guard let prompt = prompt(for: response) else {
             return .silent(response.action == .nopay ? .noPayment : .nothingToSay)
         }
@@ -288,7 +299,7 @@ enum ParkedNotice {
 
     /// The categories iOS needs registered before any of them is posted.
     static var notificationCategories: Set<UNNotificationCategory> {
-        Set(Category.allCases.map { category in
+        let place = Category.allCases.map { category in
             UNNotificationCategory(
                 identifier: category.rawValue,
                 actions: category.actions.map { action in
@@ -299,7 +310,186 @@ enum ParkedNotice {
                 },
                 intentIdentifiers: []
             )
-        })
+        }
+        let walkAway = WalkAwayCategory.allCases.map { category in
+            UNNotificationCategory(
+                identifier: category.rawValue,
+                actions: category.actions.map { action in
+                    UNNotificationAction(identifier: action.rawValue, title: action.title, options: action.options)
+                },
+                intentIdentifiers: []
+            )
+        }
+        return Set(place + walkAway)
+    }
+
+    // MARK: - The walk-away prompt (FR-55)
+
+    /// A button on the walk-away prompt. The raw value is the notification
+    /// action's identifier.
+    enum WalkAwayAction: String, Sendable, CaseIterable {
+        case pay = "park.pay"
+        case notNow = "park.not_now"
+        case wrongSpot = "park.wrong_spot"
+
+        var title: String {
+            switch self {
+            case .pay: "Pay"
+            case .notNow: "Not now"
+            case .wrongSpot: "Wrong spot"
+            }
+        }
+
+        var options: UNNotificationActionOptions {
+            switch self {
+            // Money moves on this tap: a locked phone asks for Face ID or
+            // the passcode first, so a pocket or a bystander can't pay.
+            case .pay: [.authenticationRequired]
+            case .notNow: []
+            // Fixing the spot takes the sheet.
+            case .wrongSpot: [.foreground]
+            }
+        }
+    }
+
+    enum WalkAwayCategory: String, Sendable, CaseIterable {
+        /// A tap pays the amount in the title.
+        case confirm = "park.confirm"
+        /// Nothing a tap can pay (which side? no linked account, a missing
+        /// zone number, over a limit): the notification opens the app.
+        case attention = "park.attention"
+
+        var actions: [WalkAwayAction] {
+            switch self {
+            case .confirm: [.pay, .notNow, .wrongSpot]
+            case .attention: [.notNow]
+            }
+        }
+    }
+
+    /// The notification a walk-away prompt becomes: the server's title and
+    /// body as written, and Pay only when the prompt carries an amount a
+    /// tap pays.
+    struct WalkAwayNotice: Equatable {
+        let content: Content
+        let category: WalkAwayCategory
+        /// What rides along for the buttons: which park, which side, and
+        /// the total on screen (the server pays no more than it).
+        let parkedEventId: String
+        let zoneId: String?
+        let zoneNumber: String?
+        let shownTotalUsd: Double?
+    }
+
+    static func walkAwayNotice(for prompt: ParkPrompt) -> WalkAwayNotice {
+        WalkAwayNotice(
+            content: Content(title: prompt.title, body: prompt.body),
+            category: prompt.payable ? .confirm : .attention,
+            parkedEventId: prompt.parkedEventId,
+            zoneId: prompt.payable ? prompt.zoneId : nil,
+            zoneNumber: prompt.zoneNumber,
+            shownTotalUsd: prompt.payable ? prompt.amountUsd : nil
+        )
+    }
+
+    /// Time-sensitive, under the same identifier as every parked
+    /// notification: a newer prompt (a changed price) replaces the old.
+    @MainActor
+    static func post(_ notice: WalkAwayNotice) async {
+        let notification = UNMutableNotificationContent()
+        notification.title = notice.content.title
+        notification.body = notice.content.body
+        notification.sound = .default
+        notification.interruptionLevel = .timeSensitive
+        notification.categoryIdentifier = notice.category.rawValue
+        var userInfo: [String: Any] = ["type": type, "parkedEventId": notice.parkedEventId]
+        if let zoneId = notice.zoneId { userInfo["zoneId"] = zoneId }
+        if let zoneNumber = notice.zoneNumber { userInfo["zoneNumber"] = zoneNumber }
+        if let shown = notice.shownTotalUsd { userInfo["shownTotalUsd"] = shown }
+        notification.userInfo = userInfo
+        held = nil
+        let request = UNNotificationRequest(identifier: type, content: notification, trigger: nil)
+        try? await UNUserNotificationCenter.current().add(request)
+    }
+
+    /// Pay from the notification didn't go through: say so, since the
+    /// prompt it was tapped on is gone.
+    static func payFailedContent(zoneNumber: String?, message: String) -> Content {
+        Content(
+            title: zoneNumber.map { "Zone \($0) wasn't paid" } ?? "The meter wasn't paid",
+            body: "\(message) Open ParkAgent to see where it stands."
+        )
+    }
+
+    @MainActor
+    static func postPayFailed(_ content: Content, parkedEventId: String) async {
+        let notification = UNMutableNotificationContent()
+        notification.title = content.title
+        notification.body = content.body
+        notification.sound = .default
+        notification.interruptionLevel = .timeSensitive
+        notification.userInfo = ["type": type, "parkedEventId": parkedEventId]
+        let request = UNNotificationRequest(identifier: type, content: notification, trigger: nil)
+        try? await UNUserNotificationCenter.current().add(request)
+    }
+
+    // MARK: - A park waiting for its walk-away
+
+    /// The park the server is holding, where the car is, and the prompt
+    /// already shown for it. On disk: iOS ends a backgrounded app between
+    /// the park and the walk-away all the time, and a relaunch must pick
+    /// the reporting back up (and not show the same prompt twice).
+    struct Waiting: Codable {
+        var response: ParkedResponse
+        var latitude: Double
+        var longitude: Double
+        var savedAt: Date
+        var shown: ParkPrompt?
+
+        var coordinate: CLLocationCoordinate2D {
+            CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+        }
+
+        /// The /parked answer with the prompt's own quote for its side:
+        /// what the sheet shows is what the tap pays.
+        var presentable: ParkedResponse {
+            guard let quote = shown?.quote else { return response }
+            var copy = response
+            copy.candidates = copy.candidates.map { candidate in
+                guard candidate.zoneId == quote.zoneId else { return candidate }
+                var updated = candidate
+                updated.quote = quote
+                updated.providerZoneNumber = quote.providerZoneNumber
+                return updated
+            }
+            if copy.quote?.zoneId == quote.zoneId { copy.quote = quote }
+            return copy
+        }
+    }
+
+    private static let waitingKey = "waitingPark"
+    /// The server stops asking about a park after an hour.
+    static let waitingFor: TimeInterval = 60 * 60
+
+    static func storeWaiting(_ waiting: Waiting?) {
+        let defaults = UserDefaults.standard
+        guard let waiting, let data = try? JSONEncoder().encode(waiting) else {
+            defaults.removeObject(forKey: waitingKey)
+            return
+        }
+        defaults.set(data, forKey: waitingKey)
+    }
+
+    static func restoreWaiting(now: Date = AppClock.now) -> Waiting? {
+        let defaults = UserDefaults.standard
+        guard let data = defaults.data(forKey: waitingKey),
+              let waiting = try? JSONDecoder().decode(Waiting.self, from: data)
+        else { return nil }
+        guard now.timeIntervalSince(waiting.savedAt) < waitingFor else {
+            defaults.removeObject(forKey: waitingKey)
+            return nil
+        }
+        return waiting
     }
 
     /// The push/notification `type` a tap routes on (PushManager → Park tab).

@@ -492,7 +492,7 @@ struct HomeView: View {
             Text(waitingParkTitle(parked))
                 .font(.bodyTextSemibold)
                 .foregroundStyle(Color.textPrimary)
-            Text(waitingParkLine(parked, asked: waiting.shown != nil))
+            Text(waitingParkLine(parked, waiting: waiting))
                 .font(.secondaryText)
                 .foregroundStyle(Color.textSecondary)
                 .accessibilityIdentifier("home.waitingPark.line")
@@ -515,10 +515,11 @@ struct HomeView: View {
         return "Parked in zone \(number)"
     }
 
-    private func waitingParkLine(_ parked: ParkedResponse, asked: Bool) -> String {
+    private func waitingParkLine(_ parked: ParkedResponse, waiting: ParkedNotice.Waiting) -> String {
         let quote = parked.quote ?? parked.candidates.first?.quote
         let price = quote.map { "\(Format.money($0.totalUsd)) for \(Format.minutes($0.stayMinutes)). " } ?? ""
-        return asked
+        if waiting.confirmed { return "\(price)Confirmed. ParkAgent pays when you walk away." }
+        return waiting.shown != nil
             ? "\(price)Not paid yet. Review to pay."
             : "\(price)Nothing is paid at the car. ParkAgent will ask when you walk away."
     }

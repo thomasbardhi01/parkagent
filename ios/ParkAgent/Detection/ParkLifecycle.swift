@@ -213,6 +213,10 @@ extension AppModel {
             case .waitingForWalkAway:
                 // Nothing is paid at the car. The sheet closes; the park
                 // keeps waiting, and Home says what will happen.
+                if var waiting = reporter.waiting, waiting.response.parkedEventId == parked.parkedEventId {
+                    waiting.confirmed = true
+                    reporter.setWaiting(waiting)
+                }
                 pendingParked = nil
                 Haptics.success()
             case .freePeriod(let notice):

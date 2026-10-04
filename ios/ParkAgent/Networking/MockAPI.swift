@@ -132,8 +132,8 @@ private actor MockParkStore {
         if held?.response.parkedEventId == parkedEventId { held = nil }
     }
 
-    func located(_ report: LocationReport) -> LocationResponse {
-        guard var park = held, !park.started else { return LocationResponse() }
+    func located(_ report: LocationReport) -> (response: LocationResponse, startNow: Held?) {
+        guard var park = held, !park.started else { return (LocationResponse(), nil) }
         let metersNorth = abs(report.lat - park.lat) * 111_320
         let metersEast = abs(report.lng - park.lng) * 111_320 * cos(park.lat * .pi / 180)
         if (metersNorth * metersNorth + metersEast * metersEast).squareRoot() > 40 || report.event == "left_car" {
@@ -142,11 +142,15 @@ private actor MockParkStore {
         }
         let id = park.response.parkedEventId
         guard park.leftCar else {
-            return LocationResponse(park: .init(parkedEventId: id, status: park.confirmed ? "confirmed" : "at_car"))
+            let status = park.confirmed ? "confirmed" : "at_car"
+            return (LocationResponse(park: .init(parkedEventId: id, status: status)), nil)
+        }
+        if park.confirmed {
+            return (LocationResponse(park: .init(parkedEventId: id, status: "starting")), park)
         }
         let candidate = park.response.candidates[0]
         let quote = candidate.quote
-        return LocationResponse(
+        let asked = LocationResponse(
             park: .init(parkedEventId: id, status: "prompted"),
             prompt: ParkPrompt(
                 kind: "confirm", parkedEventId: id,
@@ -157,6 +161,7 @@ private actor MockParkStore {
                 quote: quote, dryRun: park.response.dryRun
             )
         )
+        return (asked, nil)
     }
 }
 
@@ -505,7 +510,13 @@ struct MockAPI: APIClient {
 
     func reportParkLocation(_ report: LocationReport) async throws -> LocationResponse {
         try await reportLocation(report)
-        return await parkStore.located(report)
+        let answer = await parkStore.located(report)
+        // Pay was tapped at the car: like the server, it starts now.
+        guard let held = answer.startNow else { return answer.response }
+        let id = held.response.parkedEventId
+        let outcome = try await confirmPark(parkedEventId: id, zoneId: nil, shownTotalUsd: nil)
+        guard case .started(let started) = outcome else { return answer.response }
+        return LocationResponse(park: .init(parkedEventId: id, status: "started"), started: started)
     }
 
     func confirmPark(parkedEventId: String, zoneId: String?, shownTotalUsd: Double?) async throws -> ParkConfirmOutcome {

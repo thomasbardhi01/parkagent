@@ -445,6 +445,8 @@ enum ParkedNotice {
         var longitude: Double
         var savedAt: Date
         var shown: ParkPrompt?
+        /// Pay was tapped at the car: kept, and paid at walk-away.
+        var confirmed = false
 
         var coordinate: CLLocationCoordinate2D {
             CLLocationCoordinate2D(latitude: latitude, longitude: longitude)

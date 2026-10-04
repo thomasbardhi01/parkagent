@@ -64,8 +64,19 @@ final class LocationReporter: NSObject, CLLocationManagerDelegate {
     @ObservationIgnored private let now: () -> Date
     @ObservationIgnored private let usesSystemLocation: Bool
 
+    /// A UI test walks by hand (the simulator's own location is wherever
+    /// Xcode left it, usually far from the fixture car); the detector's
+    /// route test drives the real thing.
+    static var systemLocationByDefault: Bool {
+        #if DEBUG
+        !LaunchOverrides.uiTesting || LaunchOverrides.detectorSimulation
+        #else
+        true
+        #endif
+    }
+
     /// `usesSystemLocation: false` for unit tests, which feed fixes by hand.
-    init(now: @escaping () -> Date = { Date() }, usesSystemLocation: Bool = true) {
+    init(now: @escaping () -> Date = { Date() }, usesSystemLocation: Bool = LocationReporter.systemLocationByDefault) {
         self.now = now
         self.usesSystemLocation = usesSystemLocation
         super.init()

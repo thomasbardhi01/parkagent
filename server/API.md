@@ -2290,7 +2290,11 @@ of Fine Arts). A query word that is the start of a longer name word
 ("Mass" of "Massachusetts") is a fragment: it counts half, and a name
 carried by fragments alone ("Pru" for "Prudential Center") isn't carried
 at all. A name word that is only the start of the QUERY word is no match:
-"xyzzy" isn't "W XYZ Bar" (prod, 2026-10-02, where it was taken at 0.80).
+a made-up "Blorptastic" isn't a place called "Blorp" (on prod,
+2026-10-02, "xyzzy restaurant" was taken for W XYZ Bar at 0.80 this way).
+A whole word always is the word, at full credit, however short and
+whatever else the name holds: "XYZ bar" and "W XYZ" are W XYZ Bar, as
+sure as its whole name.
 Generic words ("steakhouse") and an area the user named ("in Seaport")
 aren't part of the name; a street address counts as a location word, so a
 tapped choice's reply ("Mooo...., 15 Beacon St") resolves to exactly that
@@ -2345,7 +2349,11 @@ score}]}` — the five best-scored candidates, the winner's source, and any
 looks the place up itself leaves the same record under its own tool name
 (rule `place_lookup`). `pnpm -C server verify:places` runs the
 device-test phrases through the real chain with no model and prints each
-one's source and confidence.
+one's source and confidence. It ends with two kinds of control
+(`placeControls.ts`): a name that exists nowhere, which must come back
+not found or as the closest thing only under the `found` line, and a real
+bar said by its own words ("XYZ bar", "W XYZ"), which must be W XYZ Bar
+by name at or above it.
 
 `propose_plan`'s input schema is generated from the same zod schemas it
 validates with (`MODEL_PLAN_JSON_SCHEMA`, minus the server-attached

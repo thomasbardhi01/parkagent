@@ -1199,8 +1199,11 @@ and "Walking times").
   word with what the user said is never offered as "the closest thing",
   however near the phone it is, and the answer carries no point at all —
   the phone's location is never substituted for a place that wasn't
-  found. A fragment of a word is not the word: "xyzzy restaurant" is not
-  "W XYZ Bar", and "Pru" alone is not the Prudential Center.
+  found. A fragment of a word is not the word: a name word that is only
+  the start of what was said is no match (a made-up "Blorptastic" is not
+  a place called "Blorp"), and "Pru" alone is not the Prudential Center.
+  A whole word always is the word: "XYZ bar" and "W XYZ" are W XYZ Bar,
+  as sure as its whole name.
 - **A neighborhood's name is the neighborhood.** "Seaport", "Back Bay",
   and "Fenway" resolve to the area, never a business named after it; when
   the first source has only businesses, the next is asked.
@@ -1231,9 +1234,16 @@ and "Walking times").
   St location with confidence at or above `found`.
 - "Starbucks" with six locations is ambiguous with at most three choices,
   nearest the phone first.
-- "xyzzy restaurant" with an unrelated result nearby is none, and the tool
-  result contains neither the phone's coordinates nor that result; so is
-  "xyzzy restaurant" answered by autocomplete with "W XYZ Bar".
+- A name that exists nowhere ("Blorptastic Noodle House", the negative
+  control) with an unrelated result nearby is none, and the tool result
+  contains neither the phone's coordinates nor that result; so is it
+  answered by autocomplete with a place that only starts like it. Answered
+  with a place sharing its common words, it is at most the closest thing,
+  said as that, under the `found` line.
+- "XYZ bar" and "W XYZ" (the positive controls) are W XYZ Bar by name, at
+  the confidence its whole name gets, whether the search or autocomplete
+  found it; and no query made of a name's own whole words scores less
+  than the whole name.
 - "Seaport", "Back Bay", and "Fenway" are the area when the first source
   answers with businesses named after them and the next has the area.
 - Apple answering 429 gives `{ok: false, reason: "quota"}`; the chain
@@ -1250,14 +1260,17 @@ and "Walking times").
 Coverage is unit only; the live FR-35, FR-36, and FR-40 tests run the
 same code on prod with the Apple key.
 
-Evidence: `placeScore.test.ts` (28 tests: each part of the score, the four
+Evidence: `placeScore.test.ts` (34 tests: each part of the score, the four
 outcomes, the name as it was said, initials, words run together,
-fragments, neighborhoods, the clear-winner rule, when a search is weak);
-`assistantPlaceResolution.test.ts` (38 tests:
+fragments, the negative control, the positive controls and the
+whole-word guarantee, neighborhoods, the clear-winner rule, when a
+search is weak);
+`assistantPlaceResolution.test.ts` (46 tests:
 autocomplete and what it may fetch, quota through the chain and onto the
 decision row, `/v1/etas` requests and failures, the scored
-`geocode_place` answers and rows, the W XYZ Bar and neighborhood cases
-through the chain, walking times through the searches onto the card);
+`geocode_place` answers and rows, the negative and positive controls and
+the neighborhood cases through the chain, how `verify:places` judges an
+answer, walking times through the searches onto the card);
 `assistantPlaces.test.ts` (the classifier's earlier cases, unchanged in
 what they find). `pnpm -C server verify:places` prints each device-test
 phrase's source and confidence through the real chain, checks each
@@ -1267,7 +1280,12 @@ Run against Apple on prod with `verify:places` (#198, 2026-10-02):
 autocomplete and walking times work. The three things that run found — "W
 XYZ Bar" taken for "xyzzy restaurant", the Seaport Hotel for "Seaport",
 and Saturday free blocks left with estimates — are fixed and pinned
-above. Not here: the "~7 min" rendering of an estimate is FR-46. A
+above. W XYZ Bar is a real bar (in Boston and in New York), so "not W XYZ
+Bar" was a poor control for "not found": since 2026-10-04 the negative
+control is a made-up name, "Blorptastic Noodle House", and "XYZ bar" and
+"W XYZ" are positive controls that must be that bar
+(`placeControls.ts`). The word-level rule itself is unchanged. Not here:
+the "~7 min" rendering of an estimate is FR-46. A
 cross-street ("Boylston and Dartmouth") still depends on Apple's search:
 Nominatim returns nothing for one.
 

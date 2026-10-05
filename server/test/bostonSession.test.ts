@@ -207,10 +207,11 @@ test("a Boston start with no reported zone number refuses needs_zone_number", as
 test("the extension worker prices Boston ticket risk with the $40 ticket", async () => {
   const { state, deps } = makeApp();
   const extender = makeExtender({ ...deps, log: { info() {}, warn() {} } });
-  // Started 80 min ago, 10 min left, no fixes: heading unknown, dwell falls
-  // back to the 90-min default, so pReturn = 0.6 and ticket risk uses the
-  // city ticket: bos 40 × 0.4 = 16 (nyc would be 65 × 0.4 = 26).
-  seedSession(state, {
+  // Started 80 min ago, 10 min left, the phone long gone and its fixes
+  // quiet: heading unknown, dwell falls back to the 90-min default, so
+  // pReturn = 0.6 and ticket risk uses the city ticket: bos 40 × 0.4 = 16
+  // (nyc would be 65 × 0.4 = 26).
+  const session = seedSession(state, {
     status: "active",
     dryRun: true,
     userId: "u1",
@@ -228,6 +229,18 @@ test("the extension worker prices Boston ticket risk with the $40 ticket", async
     maxStayMinutes: 120,
     hoursJson: HOURS_BOS,
     parknycConfirmation: "dry-seed",
+  });
+  // The worker buys time only for a phone known to have left the car.
+  await deps.db.pendingPark.create({
+    data: {
+      userId: "u1",
+      status: "started",
+      sessionId: session.id,
+      carLat: 42.3495,
+      carLng: -71.0798,
+      parkedAt: session.createdAt,
+      leftCarAt: new Date(NOW.getTime() - 79 * 60_000),
+    },
   });
 
   await extender.tick();

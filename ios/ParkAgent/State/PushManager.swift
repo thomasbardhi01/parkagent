@@ -27,12 +27,30 @@ final class PushManager: NSObject, UNUserNotificationCenterDelegate {
         didSet { replayPendingPlaceAction() }
     }
 
+    /// A button on the walk-away prompt (ParkedNotice.WalkAwayAction):
+    /// Pay, Not now, or Wrong spot, for the park the notification named.
+    /// Wired when detection arms, like the place buttons.
+    var onWalkAwayAction: ((WalkAwayTap) async -> Void)? {
+        didSet { replayPendingWalkAwayTap() }
+    }
+
+    /// One tapped walk-away button, with what the notification carried.
+    struct WalkAwayTap: Equatable, Sendable {
+        var action: ParkedNotice.WalkAwayAction
+        var parkedEventId: String
+        var zoneId: String?
+        var zoneNumber: String?
+        /// The total the notification showed: the server pays no more.
+        var shownTotalUsd: Double?
+    }
+
     private var api: (any APIClient)?
     private var pendingToken: String?
     /// A tap that arrived before AppModel wired the handlers above (a cold
     /// launch from the notification); replayed once they are.
     private var pendingOpen: (type: String, provider: String?, deepLink: String?)?
     private var pendingPlaceAction: (action: ParkedNotice.Action, parkedEventId: String, coordinate: CLLocationCoordinate2D?)?
+    private var pendingWalkAwayTap: WalkAwayTap?
 
     private override init() {
         super.init()
@@ -156,6 +174,35 @@ final class PushManager: NSObject, UNUserNotificationCenterDelegate {
         return (action, parkedEventId, coordinate)
     }
 
+    /// Which walk-away button a notification response is, and the park it
+    /// is about. nil for anything else, and for a button with no park.
+    nonisolated static func walkAwayTap(identifier: String, userInfo: [AnyHashable: Any]) -> WalkAwayTap? {
+        guard let action = ParkedNotice.WalkAwayAction(rawValue: identifier),
+              let parkedEventId = userInfo["parkedEventId"] as? String, !parkedEventId.isEmpty
+        else { return nil }
+        return WalkAwayTap(
+            action: action,
+            parkedEventId: parkedEventId,
+            zoneId: userInfo["zoneId"] as? String,
+            zoneNumber: userInfo["zoneNumber"] as? String,
+            shownTotalUsd: userInfo["shownTotalUsd"] as? Double
+        )
+    }
+
+    private func walkAwayTapped(_ tap: WalkAwayTap) async {
+        guard let onWalkAwayAction else {
+            pendingWalkAwayTap = tap
+            return
+        }
+        await onWalkAwayAction(tap)
+    }
+
+    private func replayPendingWalkAwayTap() {
+        guard let onWalkAwayAction, let pending = pendingWalkAwayTap else { return }
+        pendingWalkAwayTap = nil
+        Task { await onWalkAwayAction(pending) }
+    }
+
     private func replayPendingPlaceAction() {
         guard let onPlaceAction, let pending = pendingPlaceAction else { return }
         pendingPlaceAction = nil
@@ -183,6 +230,13 @@ final class PushManager: NSObject, UNUserNotificationCenterDelegate {
         let type = userInfo["type"] as? String
         let provider = userInfo["provider"] as? String
         let deepLink = userInfo["deepLink"] as? String
+        // A button on the walk-away prompt: Pay, Not now, Wrong spot.
+        if let tap = Self.walkAwayTap(identifier: response.actionIdentifier, userInfo: userInfo) {
+            // iOS keeps a background launch alive until this returns: the
+            // payment's answer is in hand before the app is suspended.
+            await walkAwayTapped(tap)
+            return
+        }
         // A button on a place prompt, rather than the notification itself.
         if let tapped = Self.placeAction(identifier: response.actionIdentifier, userInfo: userInfo) {
             // iOS keeps a background launch alive until this returns.

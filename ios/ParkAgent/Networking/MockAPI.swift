@@ -42,6 +42,9 @@ enum MockScenario: String, Sendable {
     case placeUnknownStreet
     /// `nopay`: silent. No sheet, no notification.
     case noPayment
+    /// The street session lifecycle (FR-55): /parked holds the park until
+    /// the phone leaves the car, and a fix away from it brings the prompt.
+    case walkAway
 
     static let defaultsKey = "mockScenario"
 }
@@ -95,6 +98,73 @@ enum AuthMockScenario: String, Sendable {
     static let defaultsKey = "authScenario"
 }
 
+/// The mock's one waiting park (FR-55): held at the car, asked about once
+/// a fix shows the phone away from it, started by its tap.
+private actor MockParkStore {
+    struct Held {
+        var response: ParkedResponse
+        var lat: Double
+        var lng: Double
+        var leftCar = false
+        var confirmed = false
+        var started = false
+    }
+
+    private var held: Held?
+
+    func hold(_ response: ParkedResponse, lat: Double, lng: Double) {
+        held = Held(response: response, lat: lat, lng: lng)
+    }
+
+    func confirm(parkedEventId: String) -> Held? {
+        guard var park = held, park.response.parkedEventId == parkedEventId, !park.started else { return nil }
+        park.confirmed = true
+        held = park
+        return park
+    }
+
+    func started(parkedEventId: String) {
+        guard held?.response.parkedEventId == parkedEventId else { return }
+        held?.started = true
+    }
+
+    func close(parkedEventId: String) {
+        if held?.response.parkedEventId == parkedEventId { held = nil }
+    }
+
+    func located(_ report: LocationReport) -> (response: LocationResponse, startNow: Held?) {
+        guard var park = held, !park.started else { return (LocationResponse(), nil) }
+        let metersNorth = abs(report.lat - park.lat) * 111_320
+        let metersEast = abs(report.lng - park.lng) * 111_320 * cos(park.lat * .pi / 180)
+        if (metersNorth * metersNorth + metersEast * metersEast).squareRoot() > 40 || report.event == "left_car" {
+            park.leftCar = true
+            held = park
+        }
+        let id = park.response.parkedEventId
+        guard park.leftCar else {
+            let status = park.confirmed ? "confirmed" : "at_car"
+            return (LocationResponse(park: .init(parkedEventId: id, status: status)), nil)
+        }
+        if park.confirmed {
+            return (LocationResponse(park: .init(parkedEventId: id, status: "starting")), park)
+        }
+        let candidate = park.response.candidates[0]
+        let quote = candidate.quote
+        let asked = LocationResponse(
+            park: .init(parkedEventId: id, status: "prompted"),
+            prompt: ParkPrompt(
+                kind: "confirm", parkedEventId: id,
+                title: "Pay \(Format.money(quote.totalUsd)) for zone \(candidate.providerZoneNumber)?",
+                body: "\(Format.minutes(quote.stayMinutes)) · dry run, nothing is charged",
+                zoneId: candidate.zoneId, zoneNumber: candidate.providerZoneNumber,
+                amountUsd: quote.totalUsd, minutes: quote.stayMinutes,
+                quote: quote, dryRun: park.response.dryRun
+            )
+        )
+        return (asked, nil)
+    }
+}
+
 private extension ParkedRequest {
     /// Whether the app said it can show this place outcome.
     func lists(_ outcome: ParkedAction) -> Bool {
@@ -113,6 +183,7 @@ struct MockAPI: APIClient {
     private let limitsStore = MockLimitsStore()
     private let zoneStore = MockZoneNumberStore()
     private let profileStore = MockProfileStore()
+    private let parkStore = MockParkStore()
 
     private var scenario: MockScenario {
         MockScenario(rawValue: UserDefaults.standard.string(forKey: MockScenario.defaultsKey) ?? "")
@@ -281,6 +352,14 @@ struct MockAPI: APIClient {
         switch scenario {
         case .singleQuote, .paymentFailed, .freePeriodAtStart, .cardDeclined:
             return MockFixtures.singleQuote(provider: provider)
+        case .walkAway:
+            // Like the server: held only for an app that waits for the
+            // walk-away, and then nothing is shown at the car.
+            var response = MockFixtures.singleQuote(provider: provider)
+            guard request.outcomes?.contains(ParkedRequest.walkAwayOutcome) == true else { return response }
+            response.awaitsWalkAway = true
+            await parkStore.hold(response, lat: request.lat, lng: request.lng)
+            return response
         case .twoCandidates:
             return MockFixtures.twoCandidates(provider: provider)
         case .freePeriod:
@@ -427,6 +506,37 @@ struct MockAPI: APIClient {
     func reportLocation(_ report: LocationReport) async throws {
         try await pause()
         await MockDetectorProbe.shared.located(report)
+    }
+
+    func reportParkLocation(_ report: LocationReport) async throws -> LocationResponse {
+        try await reportLocation(report)
+        let answer = await parkStore.located(report)
+        // Pay was tapped at the car: like the server, it starts now.
+        guard let held = answer.startNow else { return answer.response }
+        let id = held.response.parkedEventId
+        let outcome = try await confirmPark(parkedEventId: id, zoneId: nil, shownTotalUsd: nil)
+        guard case .started(let started) = outcome else { return answer.response }
+        return LocationResponse(park: .init(parkedEventId: id, status: "started"), started: started)
+    }
+
+    func confirmPark(parkedEventId: String, zoneId: String?, shownTotalUsd: Double?) async throws -> ParkConfirmOutcome {
+        try await pause()
+        guard let held = await parkStore.confirm(parkedEventId: parkedEventId) else {
+            throw APIError.refused(code: "park_closed")
+        }
+        guard held.leftCar else { return .waitingForWalkAway }
+        let candidate = held.response.candidates.first { $0.zoneId == zoneId } ?? held.response.candidates[0]
+        let outcome = try await startSession(SessionStartRequest(
+            parkedEventId: parkedEventId, zoneId: candidate.zoneId, minutes: candidate.quote.stayMinutes
+        ))
+        guard case .started(let started) = outcome else { return .freePeriod(notice: nil) }
+        await parkStore.started(parkedEventId: parkedEventId)
+        return .started(started)
+    }
+
+    func declinePark(parkedEventId: String) async throws {
+        try await pause()
+        await parkStore.close(parkedEventId: parkedEventId)
     }
 
     func registerDevice(_ registration: DeviceRegistration) async throws {

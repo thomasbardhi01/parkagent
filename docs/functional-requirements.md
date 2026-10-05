@@ -99,8 +99,8 @@ started at 11:55 ET). "—" means the FR has no live test.
 | FR-52 | Garage price freshness | pending | — | #177 |
 | FR-53 | The phone classifies the place it parked | unit + device-manual (nightly: the `placeHint` contract) | — | iOS `PlaceClassifierTests`, `PlaceMemoryTests`, `FootprintIndexTests`, `ParkFusionEngineTests` (entry fix, GPS loss, barometer, crawl), `SignalTraceTests` (garage, home, and street traces with truth sidecars), `ParkDetectorTests` (the altimeter's window, sign-out), `LiveAPIRequestTests` (the hint and the `/garages/near` fetch on the wire); `server/test/parkedPlaceHint.test.ts`, `server/fr/90-park-now.fr.test.ts`; field test |
 | FR-54 | `/parked` answers garage and no-pay outcomes | nightly (the garage case self-skips until the target is loaded) + unit | — (first run after #179 deploys) | `server/fr/90-park-now.fr.test.ts`, `server/fr/10-parked-nyc.fr.test.ts` (the action vocabulary), `server/test/parkedPlace.test.ts`, `server/test/parkedPlaceHint.test.ts`; iOS `ParkedNoticeTests` (each prompt variant, the minute's wait, once a day per place), `PlaceMemoryTests` (prompts already made), `ParkDetectorTests` (the unlocated hand-off), `LiveAPIRequestTests` (`outcomes`, `place`, the answer on the wire); UI `ParkFlowUITests` (the garage, lot, and ask sheets) |
-| FR-55 | A street session runs from walk-away to return, confirmed with the amount | pending | — | #180 |
-| FR-56 | YOLO beta mode | pending | — | #180 |
+| FR-55 | A street session runs from walk-away to return, confirmed with the amount | nightly + unit + device-manual | — (first run after #180's PR deploys) | `server/fr/90-park-now.fr.test.ts`, `server/test/parkedLifecycle.test.ts`, `server/test/sessionReturn.test.ts`, `server/test/extendTick.test.ts` (only while away, the max-stay warning), `server/test/walkAwayRoute.test.ts` (the GPX route through the lifecycle); iOS `ParkedNoticeTests` (nothing at the car; the prompt's amount and its three actions), `LocationReporterTests` (events, the server's answer), `LiveAPIRequestTests` (the tap and the fix on the wire); UI `SessionUITests` (walk-away → Pay → the session; Pay at the car waits); field test |
+| FR-56 | YOLO beta mode | pending | — | #210 |
 | FR-57 | Ticket capture (V2) | pending | — | #181 |
 | FR-58 | Garage stays and estimates (V2) | pending | — | #182 |
 | FR-59 | Stay budget on the Issuing webhook (V2) | pending | — | #183 |
@@ -117,7 +117,9 @@ to `/parked` with its detector signals. **Accepted when** every `/parked`
 call writes a `parked_events` row and a `decisions` row and answers an
 action (`pay | confirm | ignore | unknown_zone`, and `garage | nopay` for
 an app that lists them: FR-54), a quote (or null), the effective dry-run
-flag, what kind of place it took the park for, and both row ids.
+flag, what kind of place it took the park for, and both row ids. For an
+app that waits for the walk-away (FR-55) a street park with something to
+pay is also held (`awaitsWalkAway`): the hand-off asks and starts nothing.
 
 The detector keeps working with the app closed: iOS's significant-change
 and visit monitoring wake (or relaunch) the app, the app delegate re-arms
@@ -320,6 +322,9 @@ Evidence: live FR-12 test at a $5.50/$9.00 Financial District block;
 ### FR-13 — Start
 
 `POST /session/start` is the only money-moving path for street parking.
+A park held for its walk-away (FR-55) reaches that same path through its
+tap, `POST /parked/:id/confirm`, and through nothing else: the route
+itself refuses a held park (`409 park_awaits_walk_away`).
 It refuses before the executor when policy says no (max stay, free
 period, caps), when the zone has no number, or when the caller has no
 linked provider account (`409 provider_not_linked`, dry run included —
@@ -382,7 +387,12 @@ when**: far from the car near expiry → `extend`; heading back with time
 `hold_session_cap`/`hold_daily_cap` and a `session_expiring(budget)`
 push; the free boundary → `free_period` hold (no purchase past the end
 of enforcement); every tick writes an `extend_tick` decision and settled
-rules get 5-minute hysteresis.
+rules get 5-minute hysteresis. It buys time only for a phone known to be
+away from the car (FR-55): at the car → `hold_at_car`, after the phone
+came back → `hold_returned`, no sign of where it is →
+`hold_position_unknown` with a `session_expiring(position_unknown)` push.
+The max-stay warning ("Move your car — max stay at 3:05 PM") goes out 15
+minutes before the paid stay runs out.
 
 Evidence: `extendTick.test.ts` (every rule above), `adversarial.test.ts`
 (hysteresis, heading); live auto-extend fired in the acceptance run
@@ -624,7 +634,10 @@ TAPS it (to the Park tab, the Wallet for `card_declined`, the link flow for
 banner in the foreground never moves the app by itself. The app also posts
 one LOCAL notification of its own: a park detected in the background that
 has something to pay ("Parked in zone …", time-sensitive) — never for an
-unknown zone or a free period. **Accepted when** registration/binding/
+unknown zone or a free period. For a park held for its walk-away (FR-55)
+that notification is the server's own prompt, shown as written once the
+phone has left the car ("Pay $4.10 for zone 456?", with Pay · Not now ·
+Wrong spot), and nothing is posted at the car. **Accepted when** registration/binding/
 release and the push-test report hold live, and each push type's trigger
 is pinned.
 
@@ -1477,23 +1490,94 @@ street answer for an entry fix never shown), `PlaceAnswerTests` (place
 memory only after the server took the answer), `ParkFlowUITests`.
 
 ### FR-55 — A street session runs from walk-away to return (#180, WS-3)
-**Accepted when** nothing prompts, pays, or extends while the phone is at
-the car. The session becomes active when the phone leaves the car, after
-one tap on the quoted amount (or automatically under FR-56). It extends
-while the phone is away, up to the max stay, and ends when the phone
-returns: stopped where early stop exists, no more extensions where it
-doesn't. An early departure and a re-park start a fresh detection. The
-daily cap binds every path, and individuals have no per-stop cap. Unit and
-nightly (dry run).
+A street session is active from the moment the phone leaves the car until
+it comes back. A street park from an app that waits for the walk-away is
+held by the server (`pending_parks`; server/API.md "Session lifecycle"),
+and the phone's fixes (`POST /location`) are what move it on.
 
-### FR-56 — YOLO beta mode (#180, WS-3)
+**Accepted when**
+
+- **nothing is asked, paid, or extended while the phone is at the car.**
+  `/parked` holds the park (`street_pending`) and the app posts no
+  notification, no sheet, and no side-of-street question. If the driver
+  opens the app, the Park tab shows the held park passively;
+- **the walk-away asks, once, with the server's quote.** The phone has left
+  when two fixes are clear of the car allowing for their own error, or the
+  app reports the driver on foot (`left_car`) and no sharp fix has it at
+  the car door. Two fixes faster apart than someone on foot (a car
+  pulling away) are not a walk-away, and one measurement sent twice is one
+  fix. The server answers with the prompt, quoted then for the
+  stay the session will buy, and the phone shows it as written: "Pay
+  $4.10 for zone 456?" with Pay · Not now · Wrong spot (Pay asks a locked
+  phone to unlock first). Candidates that disagree get the side question
+  then. What a tap can't pay (no linked account, no zone number, over a
+  cap) is said then, without a Pay button. A fix that is blurry, stale,
+  from before the car stopped, or someone else's is never a walk-away, and
+  one fix far away is not enough;
+- **one tap pays the amount shown, once.** `POST /parked/:id/confirm` runs
+  `POST /session/start`'s own path (every refusal, the dry-run switch, and
+  the policy checks unchanged), for the shown stay, and for no more than
+  the shown amount: a start that would cost more, type a different zone
+  number than was shown, or charge for real what was shown as a dry run is
+  refused (`quote_changed`) and asked again. Retried and concurrent taps
+  and retried fixes start one session. A start that reached the provider
+  and failed closes the park; one that broke before reaching it leaves the
+  park payable; and `POST /session/start` can't pay a held park;
+- **Pay tapped at the car confirms early and pays nothing there.** The
+  session starts when the phone leaves, with no second tap. The same holds
+  for a Pay tapped after the phone went away and came back;
+- **Not now pays nothing**, is final, and the phone stops reporting;
+- **coming back ends it.** Back within 30 m of the car for 60 s (after a
+  fix put the phone clear of it), or the app reporting `returned_to_car`
+  with a fix at the car, ends the session: stopped through the stop path
+  where the provider can stop early; `ended_at_return`, nothing more
+  bought, and no stop attempted where it can't. A return before anything
+  was paid cancels the held park, and so does driving off without leaving
+  the car. Nobody's fix ends anyone else's session;
+- **a re-park is a fresh detection.** A park that is declined, cancelled,
+  expired, superseded by a newer park, failed, or ended is never paid from
+  again: a new `/parked`, a new quote, a new tap. Any newer park (a garage
+  or an unmetered block too) closes one still waiting at an earlier spot,
+  and a park delivered late from before the newest one changes nothing;
+- **a session whose car has moved is not extended.** A newer park more
+  than 100 m from a running session's car stops automatic extensions for
+  it (`hold_car_moved`); the tap that pays for the new park ends that
+  session first. A park at a spot a running session already pays is
+  `covered`: not asked about, not paid twice;
+- **extension continues only while the phone is away** (FR-16), up to the
+  zone's max stay and never past it, with "Move your car" 15 minutes
+  before the paid stay runs out;
+- an app that doesn't list `walk_away` is answered exactly as before.
+
+Not in this FR (#210): the YOLO beta's no-tap start, and dropping the
+per-stop cap for individuals (decision 9). The tap enforces the hard caps
+and the user's limits as they are today. Also not here: an Activity row
+for an unpaid ("Not now") park (the Activity ledger is the wallet's; the
+park is on the decisions ledger), and "Walk to …" on the session card
+(#211).
+
+Evidence: `parkedLifecycle.test.ts` and `sessionReturn.test.ts` (each rule
+above, including the retried, raced, replayed, and wrong-car cases);
+`extendTick.test.ts`; `walkAwayRoute.test.ts` (the shared GPX route: the
+park is asked about once as the walk leaves the car); live FR-55 (a held
+park starts and asks nothing at the car; the start route and another
+user can't pay it; the walk-away asks with the quote during meter hours,
+and closes the park as free outside them; the tap reaches the start path
+once and is refused `provider_not_linked` for the unlinked throwaway; Not
+now stops the reporting); iOS `ParkedNoticeTests`, `LocationReporterTests`,
+`LiveAPIRequestTests`, `SessionUITests`. Device: the walk-away and return
+on a real street, and the notification's Pay from a locked phone
+(docs/device-smoke-test.md).
+
+### FR-56 — YOLO beta mode (#210, WS-3)
 **Accepted when** YOLO is off by default. Only admin-allowlisted users who
 accepted the beta consent copy (payments may happen without a tap and may
 occasionally be wrong) skip the tap. They can turn it off with one tap.
 Every automatic payment fits the hard caps, the user's limits, and the
 beta caps; one that doesn't falls back to tap-to-confirm. Every automatic
 payment writes a decisions row recording YOLO mode. Removal from the
-allowlist turns it off at once. Unit and nightly.
+allowlist turns it off at once. Individuals have no per-stop cap; the
+daily cap binds every path. Unit and nightly.
 
 ### FR-57 to FR-59 — V2 (#181, #182, #183)
 Ticket capture and parsing; garage stays with rate cards, estimates, and

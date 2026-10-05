@@ -275,3 +275,154 @@ test("drain waits for the pass in progress (shutdown doesn't cut an extension of
   await Promise.all([pass, drain]);
   expect(drained).toBe(true);
 });
+
+// --- only while the phone is away from the car (FR-55) ---
+
+/** The lifecycle's record for a session: whether the phone left, or came back. */
+async function seedPark(
+  t: ReturnType<typeof makeTickApp>,
+  session: SessionRow,
+  overrides: { status?: string; leftCarAt?: Date | null } = {},
+) {
+  return t.deps.db.pendingPark.create({
+    data: {
+      userId: session.userId,
+      status: "started",
+      sessionId: session.id,
+      carLat: CAR.lat,
+      carLng: CAR.lng,
+      parkedAt: T("13:00"),
+      ...overrides,
+    },
+  });
+}
+
+test("never buys time with the phone at the car, however cheap the extension", async () => {
+  // A $0.50/h block: 30 minutes cost less than the at-the-car ticket risk,
+  // so the cost rule alone would have bought them.
+  const t = makeTickApp();
+  const session = activeSession(t.state, { rateFirstHour: 0.5, rateAdditionalHour: 0.5 });
+  addFixes(t.state, session.id, [200, 80, 12]);
+
+  await t.extender.tick();
+
+  const decision = lastTick(t.state);
+  expect(decision.rule).toBe("hold_at_car");
+  expect(decision.inputs).toMatchObject({ position: "at_car", distanceM: 12 });
+  expect(session.extendCount).toBe(0);
+  expect(t.state.sessionEvents).toEqual([]);
+  expect(t.pushes).toEqual([]);
+});
+
+test("at the car holds even for a session whose phone had left earlier", async () => {
+  const t = makeTickApp();
+  const session = activeSession(t.state, { rateFirstHour: 0.5, rateAdditionalHour: 0.5 });
+  await seedPark(t, session, { leftCarAt: T("13:02") });
+  addFixes(t.state, session.id, [300, 90, 9]);
+
+  await t.extender.tick();
+
+  expect(lastTick(t.state).rule).toBe("hold_at_car");
+  expect(session.extendCount).toBe(0);
+});
+
+test("no sign of where the phone is: nothing is bought, and the driver is told once", async () => {
+  const t = makeTickApp();
+  const session = activeSession(t.state);
+
+  await t.extender.tick();
+  await t.extender.tick();
+
+  const decision = lastTick(t.state);
+  expect(decision.rule).toBe("hold_position_unknown");
+  expect(decision.inputs).toMatchObject({ position: "unknown", fixCount: 0 });
+  expect(session.extendCount).toBe(0);
+  expect(t.pushes).toHaveLength(1);
+  expect(t.pushes[0]!.push).toMatchObject({
+    type: "session_expiring",
+    extra: { reason: "position_unknown" },
+  });
+  expect(t.pushes[0]!.push.body).toContain("won't add time");
+});
+
+test("a phone that left the car keeps its session extended when its fixes go quiet", async () => {
+  const t = makeTickApp();
+  const session = activeSession(t.state);
+  await seedPark(t, session, { leftCarAt: T("13:02") });
+
+  await t.extender.tick();
+
+  const decision = lastTick(t.state);
+  expect(decision.inputs).toMatchObject({ position: "away", fixCount: 0 });
+  expect(decision.rule).toBe("extend");
+  expect(session.extendCount).toBe(1);
+  // …and never past the zone's max stay.
+  expect(session.purchasedMinutes).toBe(120);
+});
+
+test("after the phone came back, nothing more is bought", async () => {
+  const t = makeTickApp();
+  const session = activeSession(t.state);
+  await seedPark(t, session, { status: "ended", leftCarAt: T("13:02") });
+  addFixes(t.state, session.id, [100, 300, 600]); // far again, and would want to extend
+
+  await t.extender.tick();
+
+  expect(lastTick(t.state).rule).toBe("hold_returned");
+  expect(session.extendCount).toBe(0);
+  expect(t.pushes).toEqual([]);
+});
+
+test("fifteen minutes before the max stay runs out: move your car, with the time", async () => {
+  const t = makeTickApp({ now: () => T("14:45") });
+  const session = activeSession(t.state, {
+    purchasedMinutes: 120,
+    chargedMinutes: 120,
+    expiresAt: T("15:00"),
+  });
+  addFixes(t.state, session.id, [100, 300, 600]);
+
+  await t.extender.tick();
+
+  expect(lastTick(t.state).rule).toBe("warn_max_stay");
+  expect(session.extendCount).toBe(0);
+  expect(t.pushes).toHaveLength(1);
+  expect(t.pushes[0]!.push).toMatchObject({
+    type: "session_expiring",
+    title: "Move your car — max stay at 3:00 PM",
+    extra: { reason: "max_stay" },
+  });
+});
+
+test("sixteen minutes before the max stay runs out: not yet", async () => {
+  const t = makeTickApp({ now: () => T("14:44") });
+  const session = activeSession(t.state, {
+    purchasedMinutes: 120,
+    chargedMinutes: 120,
+    expiresAt: T("15:00"),
+  });
+  addFixes(t.state, session.id, [100, 300, 600]);
+
+  await t.extender.tick();
+
+  expect(lastTick(t.state).rule).toBe("hold_not_near_expiry");
+  expect(t.pushes).toEqual([]);
+});
+
+test("a later park put the car somewhere else: nothing is bought here, and the driver is told once", async () => {
+  const t = makeTickApp();
+  const session = activeSession(t.state);
+  const park = await seedPark(t, session, { leftCarAt: T("13:02") });
+  await t.deps.db.pendingPark.update({ where: { id: park.id }, data: { carMovedAt: T("13:40") } });
+  addFixes(t.state, session.id, [100, 300, 600]); // far, and would want to extend
+
+  await t.extender.tick();
+  await t.extender.tick();
+
+  const decision = lastTick(t.state);
+  expect(decision.rule).toBe("hold_car_moved");
+  expect(decision.inputs).toMatchObject({ position: "moved" });
+  expect(session.extendCount).toBe(0);
+  expect(t.pushes).toHaveLength(1);
+  expect(t.pushes[0]!.push.extra).toMatchObject({ reason: "car_moved" });
+});

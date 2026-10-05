@@ -62,6 +62,12 @@ extension AppModel {
         if let city = response.candidates.first?.city {
             detectedCity = city
         }
+        if response.awaitsWalkAway == true {
+            // The server holds it until the phone leaves the car (FR-55):
+            // nothing is said or shown now.
+            await awaitWalkAway(response, for: request)
+            return
+        }
         if decision == .unlocated {
             // The answer is about the street at the entry fix, not the car.
             // Offline, the driver was already told when it was queued.
@@ -144,6 +150,9 @@ extension AppModel {
     /// The car drove on before a held place prompt was due: it was a
     /// pause (a ticket gate, a pickup), not a park. Take the prompt back.
     func drivingResumed() {
+        // Driving again: back in the car, as far as a session or a
+        // waiting park goes (the server checks the fix is at the car).
+        Task { await phoneReturnedToCar() }
         guard let held = ParkedNotice.cancelHeld() else { return }
         let spot = CLLocationCoordinate2D(latitude: held.latitude, longitude: held.longitude)
         detector.placeMemory.update { $0.forgetPrompt(at: spot, since: held.notedAt) }

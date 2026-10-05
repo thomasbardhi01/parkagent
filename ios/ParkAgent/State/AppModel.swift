@@ -435,11 +435,18 @@ final class AppModel {
         if activeSession != nil, !reporter.isRunning {
             reporter.start(api: api, carCoordinate: carCoordinate)
         }
+        // A park waiting for its walk-away, and the lifecycle's hooks
+        // (Detection/ParkLifecycle.swift, FR-55).
+        resumeParkLifecycle()
     }
 
     /// The server has no active session for us (the worker expired it, or
     /// it was stopped from another device).
     private func sessionEndedElsewhere() {
+        // A park that was waiting is over too: its sheet goes with it.
+        if let waiting = reporter.waiting, pendingParked?.parkedEventId == waiting.response.parkedEventId {
+            pendingParked = nil
+        }
         reporter.stop()
         activeSession = nil
         carCoordinate = nil

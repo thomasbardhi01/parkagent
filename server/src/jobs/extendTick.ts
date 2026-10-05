@@ -6,6 +6,10 @@
  * row (kind "extend_tick") with all of its inputs; that table is the whole
  * debugging story for the dry-run week.
  *
+ * It buys time only while the phone is known to be away from the car
+ * (FR-55): never with the phone at the car, never after it came back, and
+ * never when there is no sign of where it is.
+ *
  * Money only moves through applyExtension → executor, which is picked per
  * call by effectiveDryRun(). Pushes fire on rule *transitions* (a session
  * that stays in "warn_max_stay" for ten ticks warns once), except the
@@ -13,8 +17,9 @@
  */
 
 import type { SessionRow } from "../db.js";
-import type { ExpiringReason } from "../services/apns.js";
+import type { ExpiringReason, Push } from "../services/apns.js";
 import { sessionExpiringPush } from "../services/apns.js";
+import { AT_CAR_RADIUS_M, FIX_USABLE_ACCURACY_M, clockLabel } from "../services/pendingSession.js";
 import { cityPolicy } from "../services/policy.js";
 import type { SessionDeps } from "../services/sessions.js";
 import {
@@ -27,6 +32,7 @@ import {
 import { policyFor } from "../services/limits.js";
 
 const DECISION_WINDOW_MIN = 12; // only act when expiry is this close
+const MAX_STAY_WARN_MIN = 15; // "move your car" comes this long before the stay runs out
 const HYSTERESIS_MS = 5 * 60_000; // don't flip a fresh decision
 const WALK_SPEED_M_PER_MIN = 80; // ~4.8 km/h
 const ROUTE_FACTOR = 1.3; // straight-line → street grid
@@ -37,6 +43,43 @@ const FIX_MAX_AGE_MS = 10 * 60_000; // older fixes say nothing about "now"
 const AT_CAR_ETA_MIN = 2; // within ~2 walking minutes = standing at the car
 
 export type Heading = "toward" | "away" | "still" | "unknown";
+
+/** Where the phone is, as far as buying more time goes. `moved`: a later
+ * park put the car somewhere else. */
+export type PhonePosition = "away" | "at_car" | "returned" | "moved" | "unknown";
+
+/** The max stay can't be bought past: say when the car has to move. */
+function moveYourCarPush(zoneNumber: string, paidUntil: Date): Push {
+  const at = clockLabel(paidUntil);
+  return {
+    type: "session_expiring",
+    title: `Move your car — max stay at ${at}`,
+    body: `Zone ${zoneNumber} can't be extended past its max stay. Paid time ends at ${at}.`,
+    extra: { reason: "max_stay" },
+  };
+}
+
+/** A later park put the car somewhere else. Nothing more is bought for a
+ * spot the car may have left; the driver can still extend by hand. */
+function carMovedPush(zoneNumber: string, minutesLeft: number): Push {
+  return {
+    type: "session_expiring",
+    title: "Meter expiring",
+    body: `Zone ${zoneNumber} expires in ${minutesLeft} min. ParkAgent saw your car park somewhere else since, so it won't add time here. Extend in the app if it's still there.`,
+    extra: { reason: "car_moved" },
+  };
+}
+
+/** No extension without knowing the phone has left the car: say so, so
+ * the driver can extend by hand. */
+function positionUnknownPush(zoneNumber: string, minutesLeft: number): Push {
+  return {
+    type: "session_expiring",
+    title: "Meter expiring",
+    body: `Zone ${zoneNumber} expires in ${minutesLeft} min. ParkAgent can't tell that you've left the car, so it won't add time. Extend in the app if you need to.`,
+    extra: { reason: "position_unknown" },
+  };
+}
 
 export function haversineM(aLat: number, aLng: number, bLat: number, bLng: number): number {
   const R = 6_371_000;
@@ -193,6 +236,24 @@ export function makeExtender(deps: ExtenderDeps): Extender {
       distanceM !== null ? (distanceM * ROUTE_FACTOR) / WALK_SPEED_M_PER_MIN : null;
     const heading = headingFromDistances(distances);
 
+    // Away from the car, at it, back at it, or unknown (FR-55). The
+    // lifecycle's own record says whether the phone ever left and whether
+    // it came back; the latest fresh fix says where it is now.
+    const park = await deps.db.pendingPark.findUnique({ where: { sessionId: session.id } });
+    const latest = chronological.at(-1);
+    const sharp = latest !== undefined && latest.accuracyM <= FIX_USABLE_ACCURACY_M;
+    const position: PhonePosition =
+      park?.status === "ended"
+        ? "returned"
+        : (park?.carMovedAt ?? null) !== null
+          ? "moved"
+          : sharp && distanceM !== null && distanceM <= AT_CAR_RADIUS_M
+            ? "at_car"
+            : (park?.leftCarAt ?? null) !== null ||
+                (sharp && distanceM !== null && distanceM - latest.accuracyM > AT_CAR_RADIUS_M)
+              ? "away"
+              : "unknown";
+
     // How long they usually stay here.
     const past = await deps.db.session.findMany({
       where: {
@@ -241,19 +302,32 @@ export function makeExtender(deps: ExtenderDeps): Extender {
     // either too small to be a meaningful extension or already inside the
     // no-extend buffer before the legal limit — warn the driver to move.
     let rule: string;
-    let expiringReason: ExpiringReason | null = null;
+    let expiringReason: ExpiringReason | "position_unknown" | "car_moved" | null = null;
     const nearMaxStay =
       session.maxStayMinutes !== null &&
       stayLeftMin <=
         Math.max(MIN_EXTEND_MINUTES - 1, policy.auto_extend.no_extend_within_minutes_of_max_stay);
 
-    if (remainingMin > DECISION_WINDOW_MIN) {
+    if (remainingMin > (nearMaxStay ? MAX_STAY_WARN_MIN : DECISION_WINDOW_MIN)) {
       rule = "hold_not_near_expiry";
     } else if (nearMaxStay) {
       rule = "warn_max_stay";
       expiringReason = "max_stay";
     } else if (costTicketUsd <= costExtendUsd * TICKET_COST_MARGIN) {
       rule = "hold_return_likely";
+    } else if (position === "returned") {
+      // The phone came back: the park is over, and nothing more is bought.
+      rule = "hold_returned";
+    } else if (position === "moved") {
+      rule = "hold_car_moved";
+      expiringReason = "car_moved";
+    } else if (position === "at_car") {
+      // At or in the car, where the cost rule alone would still buy a
+      // cheap enough extension: they can drive off or pay themselves.
+      rule = "hold_at_car";
+    } else if (position === "unknown") {
+      rule = "hold_position_unknown";
+      expiringReason = "position_unknown";
     } else if (!policy.auto_extend.enabled) {
       rule = "hold_auto_extend_disabled";
       expiringReason = "no_auto_extend";
@@ -290,6 +364,8 @@ export function makeExtender(deps: ExtenderDeps): Extender {
       distanceM: distanceM !== null ? Math.round(distanceM) : null,
       walkEtaMin: walkEtaMin !== null ? Math.round(walkEtaMin * 10) / 10 : null,
       heading,
+      position,
+      leftCarAt: park?.leftCarAt?.toISOString() ?? null,
       dwell,
       pReturn,
       desiredMinutes: Math.floor(desiredMinutes),
@@ -376,13 +452,20 @@ export function makeExtender(deps: ExtenderDeps): Extender {
       }
     } else if (expiringReason !== null && changed) {
       // Warn once per rule transition, not every tick.
+      const minutesLeft = Math.max(0, Math.round(remainingMin));
       await deps.sendPush(
         session.userId,
-        sessionExpiringPush({
-          zoneNumber: session.providerZoneNumber,
-          minutesLeft: Math.max(0, Math.round(remainingMin)),
-          reason: expiringReason,
-        }),
+        expiringReason === "max_stay"
+          ? moveYourCarPush(session.providerZoneNumber, expiresAt)
+          : expiringReason === "position_unknown"
+            ? positionUnknownPush(session.providerZoneNumber, minutesLeft)
+            : expiringReason === "car_moved"
+              ? carMovedPush(session.providerZoneNumber, minutesLeft)
+              : sessionExpiringPush({
+                  zoneNumber: session.providerZoneNumber,
+                  minutesLeft,
+                  reason: expiringReason,
+                }),
       );
       outcome = { action: "warn", pushed: expiringReason };
     }

@@ -8,6 +8,13 @@ import Observation
 /// older than ten minutes). Also keeps the walking-distance-from-car figure
 /// fresh.
 ///
+/// It also runs for a park the server is holding until the phone leaves
+/// the car (FR-55): these fixes are how the server sees the walk-away
+/// (and asks) and the return (and ends the session). The server's answer
+/// to each report says where the park or session stands; `onResponse`
+/// hands it on. What the app itself saw (on foot after the park; the
+/// car's audio back, or driving) rides on the next report as its `event`.
+///
 /// It must keep working with the app in a pocket: updates never auto-pause
 /// (iOS pauses a still phone and then never resumes in the background),
 /// background delivery is on with Always, and a CLBackgroundActivitySession
@@ -28,23 +35,48 @@ final class LocationReporter: NSObject, CLLocationManagerDelegate {
     /// The server says there is no active session any more (it expired,
     /// or was stopped elsewhere): stop reporting and drop it locally.
     @ObservationIgnored var onSessionEnded: (() -> Void)?
+    /// The server's answer to a report: the walk-away prompt, a session
+    /// started or ended, a waiting park cancelled.
+    @ObservationIgnored var onResponse: ((LocationResponse) async -> Void)?
+
+    /// What the app saw of the phone and the car (LocationReport.event).
+    enum PhoneEvent: String, Sendable {
+        case leftCar = "left_car"
+        case returnedToCar = "returned_to_car"
+    }
 
     private(set) var isRunning = false
     private(set) var lastReport: (at: Date, fix: ParkFix)?
+    /// The park the server is holding for its walk-away, while it waits:
+    /// Home shows it passively, and its prompt lands on it.
+    private(set) var waiting: ParkedNotice.Waiting?
 
     @ObservationIgnored private let locationManager = CLLocationManager()
     @ObservationIgnored private var backgroundSession: CLBackgroundActivitySession?
     @ObservationIgnored private var heartbeatTask: Task<Void, Never>?
     @ObservationIgnored private var lastFix: ParkFix?
     @ObservationIgnored private var carCoordinate: CLLocationCoordinate2D?
-    @ObservationIgnored private var send: ((LocationReport) async throws -> Void)?
+    @ObservationIgnored private var send: ((LocationReport) async throws -> LocationResponse)?
     @ObservationIgnored private var inFlight = false
+    /// Seen by the app, not yet delivered with a report.
+    @ObservationIgnored private var pendingEvent: PhoneEvent?
     @ObservationIgnored private var capabilities = DetectionCapabilities()
     @ObservationIgnored private let now: () -> Date
     @ObservationIgnored private let usesSystemLocation: Bool
 
+    /// A UI test walks by hand (the simulator's own location is wherever
+    /// Xcode left it, usually far from the fixture car); the detector's
+    /// route test drives the real thing.
+    static var systemLocationByDefault: Bool {
+        #if DEBUG
+        !LaunchOverrides.uiTesting || LaunchOverrides.detectorSimulation
+        #else
+        true
+        #endif
+    }
+
     /// `usesSystemLocation: false` for unit tests, which feed fixes by hand.
-    init(now: @escaping () -> Date = { Date() }, usesSystemLocation: Bool = true) {
+    init(now: @escaping () -> Date = { Date() }, usesSystemLocation: Bool = LocationReporter.systemLocationByDefault) {
         self.now = now
         self.usesSystemLocation = usesSystemLocation
         super.init()
@@ -55,14 +87,19 @@ final class LocationReporter: NSObject, CLLocationManagerDelegate {
         locationManager.pausesLocationUpdatesAutomatically = false
     }
 
-    func start(api: any APIClient, carCoordinate: CLLocationCoordinate2D?) {
-        start(send: { try await api.reportLocation($0) }, carCoordinate: carCoordinate)
+    func start(api: any APIClient, carCoordinate: CLLocationCoordinate2D?, waiting: ParkedNotice.Waiting? = nil) {
+        start(send: { try await api.reportParkLocation($0) }, carCoordinate: carCoordinate, waiting: waiting)
     }
 
-    func start(send: @escaping (LocationReport) async throws -> Void, carCoordinate: CLLocationCoordinate2D?) {
+    func start(
+        send: @escaping (LocationReport) async throws -> LocationResponse,
+        carCoordinate: CLLocationCoordinate2D?,
+        waiting: ParkedNotice.Waiting? = nil
+    ) {
         stop()
         self.send = send
         self.carCoordinate = carCoordinate
+        setWaiting(waiting)
         isRunning = true
         if usesSystemLocation { startUpdates() }
         heartbeatTask = Task { [weak self] in
@@ -86,7 +123,31 @@ final class LocationReporter: NSObject, CLLocationManagerDelegate {
         send = nil
         lastFix = nil
         lastReport = nil
+        pendingEvent = nil
+        setWaiting(nil)
         isRunning = false
+    }
+
+    /// The waiting park, kept on disk with it (see ParkedNotice.Waiting).
+    func setWaiting(_ waiting: ParkedNotice.Waiting?) {
+        self.waiting = waiting
+        ParkedNotice.storeWaiting(waiting)
+    }
+
+    /// Report the freshest fix now, for the server's current answer (a
+    /// prompt that was just re-quoted).
+    func refresh() async {
+        guard isRunning, let fix = lastFix else { return }
+        await report(fix)
+    }
+
+    /// The app saw the phone leave the car, or come back to it. Sent with
+    /// the freshest fix at once, or with the next one when there is none
+    /// yet; the server decides what it means from where that fix is.
+    func note(_ event: PhoneEvent) async {
+        guard isRunning else { return }
+        pendingEvent = event
+        if let fix = lastFix { await report(fix) }
     }
 
     func capabilitiesChanged(_ capabilities: DetectionCapabilities) {
@@ -143,16 +204,37 @@ final class LocationReporter: NSObject, CLLocationManagerDelegate {
         inFlight = true
         defer { inFlight = false }
         let at = now()
+        let event = pendingEvent
         do {
-            try await send(LocationReport(lat: fix.latitude, lng: fix.longitude, accuracy: fix.accuracy, ts: at))
+            let response = try await send(LocationReport(
+                lat: fix.latitude, lng: fix.longitude, accuracy: fix.accuracy, ts: at,
+                // Never later than the report itself (a fix stamped ahead
+                // of this clock is still measured by now).
+                measuredAt: min(fix.at, at), event: event?.rawValue
+            ))
             lastReport = (at, fix)
+            // Delivered; one seen meanwhile waits for the next report.
+            if pendingEvent == event { pendingEvent = nil }
+            await onResponse?(response)
         } catch APIError.refused(code: "no_active_session") {
-            // The worker expired it, or it was stopped from another device.
+            // The worker expired it, it was stopped from another device,
+            // or the park that was waiting is over.
             onSessionEnded?()
         } catch {
-            // Transient; the next fix or heartbeat tries again.
+            // Transient; the next fix or heartbeat tries again (and the
+            // event with it).
         }
     }
+
+    #if DEBUG
+    /// UI tests only: a fix reported at once, whatever the cadence says
+    /// (the simulator has nowhere to walk).
+    func report(now fix: ParkFix) async {
+        guard isRunning else { return }
+        lastFix = fix
+        await report(fix)
+    }
+    #endif
 
     // MARK: - CLLocationManagerDelegate
 

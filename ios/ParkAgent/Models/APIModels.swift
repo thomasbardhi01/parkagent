@@ -52,9 +52,11 @@ struct ParkedRequest: Codable, Sendable, Equatable {
     /// by a build from before them lists none, and is answered as before.
     var outcomes: [String]? = nil
 
-    /// What this build shows: the garage and lot prompt, and silence for
-    /// a place with nothing to pay.
-    static let shownOutcomes = [ParkedAction.garage.rawValue, ParkedAction.nopay.rawValue]
+    /// What this build shows: the garage and lot prompt, silence for a
+    /// place with nothing to pay, and (FR-55) nothing at the car for a
+    /// street park: it reports its fixes and waits for the walk-away.
+    static let shownOutcomes = [ParkedAction.garage.rawValue, ParkedAction.nopay.rawValue, walkAwayOutcome]
+    static let walkAwayOutcome = "walk_away"
 }
 
 /// The phone's own read of where it parked (PlaceClassifier, FR-53), sent
@@ -171,10 +173,98 @@ struct ParkedResponse: Codable, Sendable, Identifiable {
     var needsZoneNumber: Bool
     /// What kind of place this is (FR-54); nil from a server before it.
     var place: ParkedPlace? = nil
+    /// True → the server holds this park until the phone leaves the car
+    /// (FR-55): nothing is shown at the car, and it is paid through
+    /// POST /parked/:id/confirm, never /session/start.
+    var awaitsWalkAway: Bool? = nil
     var parkedEventId: String
     var decisionId: String
 
     var id: String { parkedEventId }
+}
+
+// MARK: - The street session lifecycle (FR-55; server/API.md "Session lifecycle")
+
+/// What the phone shows at walk-away, word for word as the server wrote
+/// it: the phone never composes an amount of its own.
+struct ParkPrompt: Codable, Sendable, Equatable {
+    /// `confirm`: a tap pays `amountUsd`. `side`: the two sides differ,
+    /// pick one in the app. `attention`: something is in the way of
+    /// paying here, and the body says what.
+    var kind: String
+    var parkedEventId: String
+    var title: String
+    var body: String
+    var zoneId: String? = nil
+    var zoneNumber: String? = nil
+    var amountUsd: Double? = nil
+    var minutes: Int? = nil
+    var endsAt: Date? = nil
+    /// The quote behind the amount: what the sheet shows for that side.
+    var quote: Quote? = nil
+    var reason: String? = nil
+    var dryRun: Bool
+
+    var payable: Bool { kind == "confirm" && amountUsd != nil }
+}
+
+/// POST /location's answer: where the park or session stands now.
+struct LocationResponse: Codable, Sendable, Equatable {
+    struct Park: Codable, Sendable, Equatable {
+        var parkedEventId: String
+        var status: String
+    }
+
+    struct Ended: Codable, Sendable, Equatable {
+        var reason: String
+        /// False where the provider can't stop early, or refused to.
+        var stopped: Bool
+        var error: String? = nil
+    }
+
+    var ok: Bool = true
+    var sessionId: String? = nil
+    /// A park waiting on its walk-away or its tap.
+    var park: Park? = nil
+    /// The phone has left the car: ask (repeated until answered).
+    var prompt: ParkPrompt? = nil
+    /// A Pay tapped at the car started now, at walk-away.
+    var started: SessionStartResponse? = nil
+    /// The phone came back to the car: the session is over.
+    var ended: Ended? = nil
+}
+
+/// POST /parked/:id/confirm, the tap. Three good answers.
+enum ParkConfirmOutcome: Sendable {
+    case started(SessionStartResponse)
+    /// Tapped at the car: kept, and paid when the phone leaves.
+    case waitingForWalkAway
+    case freePeriod(notice: String?)
+}
+
+struct ParkConfirmWire: Decodable, Sendable {
+    var status: String?
+    var notice: String?
+    var sessionId: String?
+    var expiresAt: Date?
+    var amountUsd: Double?
+
+    func outcome() throws -> ParkConfirmOutcome {
+        switch status {
+        case "confirmed":
+            return .waitingForWalkAway
+        case "free_period":
+            return .freePeriod(notice: notice)
+        default:
+            guard let sessionId, let expiresAt, let amountUsd else {
+                throw DecodingError.dataCorrupted(DecodingError.Context(
+                    codingPath: [],
+                    debugDescription: "parked/confirm response is neither started, confirmed, nor a free period"
+                ))
+            }
+            return .started(SessionStartResponse(sessionId: sessionId, expiresAt: expiresAt, amountUsd: amountUsd))
+        }
+    }
 }
 
 /// POST /zones/:zoneId/provider-number — storing the number the driver
@@ -394,7 +484,7 @@ struct SessionStartRequest: Codable, Sendable {
     var minutes: Int
 }
 
-struct SessionStartResponse: Codable, Sendable {
+struct SessionStartResponse: Codable, Sendable, Equatable {
     var sessionId: String
     var expiresAt: Date
     var amountUsd: Double
@@ -1068,6 +1158,13 @@ struct LocationReport: Codable, Sendable {
     var lng: Double
     var accuracy: Double
     var ts: Date
+    /// When CoreLocation measured the fix. `ts` is when it was reported:
+    /// a still phone re-sends its last fix on the heartbeat, and the
+    /// server must not take one measurement sent twice for two (FR-55).
+    var measuredAt: Date? = nil
+    /// What the app itself saw (FR-55): `left_car` (on foot after the
+    /// park) or `returned_to_car` (the car's audio back, or driving).
+    var event: String? = nil
 }
 
 struct DeviceRegistration: Codable, Sendable {

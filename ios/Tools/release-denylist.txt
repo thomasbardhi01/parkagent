@@ -28,6 +28,7 @@ MockAssistant
 MockScenario
 MockProviderLoginView
 MockZoneNumberStore
+MockParkStore
 MockConversationStore
 useMockAPI
 usesMockSignIn
@@ -54,6 +55,7 @@ Reset onboarding?
 
 # Test-only UI: the simulated park, probes, the mock sign-in.
 home.simulateParkButton
+home.simulateWalkAwayButton
 diagnostics.selfTest.run
 -detectorSimulation
 root.detectorProbe

@@ -134,6 +134,32 @@ restart or deploy, including `fly secrets set`, reloads the image's copy
 (dry run on, caps 45/60). To go real: flip
 the `DRY_RUN` secret first, then the caps, then the policy.
 
+## Street session lifecycle (FR-55)
+A street session is active from the moment the phone leaves the car until
+it comes back. `/parked` holds a street park for an app that lists
+`walk_away` in `outcomes` (a `pending_parks` row, status `at_car`): the app
+shows nothing at the car and reports its fixes to `POST /location`. The
+server decides when the phone has left (two fixes clear of the car, or the
+app's `left_car`) and answers with the prompt, which the phone shows as
+written ("Pay $4.10 for zone 456?", Pay · Not now · Wrong spot); the
+prompt is a local notification, not an APNs push. The tap is
+`POST /parked/:id/confirm`: it runs `POST /session/start`'s own path, for
+no more than the amount shown, once per park, and a tap at the car waits
+for the walk-away. Coming back (30 m of the car for 60 s, or
+`returned_to_car` at the car) ends the session: stopped where the provider
+can stop early, `ended_at_return` where it can't. The rules are in
+`server/src/services/pendingSession.ts`; the app half is
+`ios/ParkAgent/Detection/ParkLifecycle.swift`. Keep new code on these:
+- nothing asks, pays, or extends on a fix that has the phone at the car;
+- a park is paid only through its tap, and a closed park never again;
+- only the newest `/parked` says where the car is: it closes a park still
+  waiting elsewhere, and stops extensions for a session whose car moved;
+- the tap pays what was shown (amount, zone number, dry run) or nothing;
+- the extension worker buys time only for a phone known to be away.
+
+The YOLO beta (no-tap start within every cap) and dropping the per-stop
+cap are #210, not built yet.
+
 ## Working style
 - Small PRs on feat/* branches, squash-merged into main.
 - **V1 workstreams** (`docs/workstreams.md`): one PR per issue; a session

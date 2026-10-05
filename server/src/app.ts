@@ -314,13 +314,14 @@ export function buildApp(deps?: AppDeps, app: FastifyInstance = createFastify())
   }));
   if (deps) {
     registerAuth(app, deps);
-    registerParked(app, deps);
+    // The start and stop paths, for the lifecycle's own callers (FR-55).
+    const sessionOps = registerSession(app, deps);
+    registerParked(app, deps, sessionOps);
     registerCity(app, deps);
     registerZones(app, deps);
     registerGarages(app, deps);
     registerPolicy(app, deps);
-    registerSession(app, deps);
-    registerLocation(app, deps);
+    registerLocation(app, deps, sessionOps);
     registerMe(app, deps);
     registerLimits(app, deps);
     registerDevice(app, deps);

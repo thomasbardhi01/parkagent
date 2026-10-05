@@ -76,6 +76,15 @@ function isoAt(hhmm: string): string {
   return `2026-09-26T${hhmm}:00-04:00`;
 }
 
+/** A day is planned for a request that starts later (FR-45: build_itinerary
+ * is off for parking now): the day's first arrival goes on the request
+ * first, the way the model is told to. */
+async function dayContext(tools: AssistantTools): Promise<ToolContext> {
+  const ctx: ToolContext = { ...CTX };
+  await tools.execute(ctx, "update_request", { startsAt: isoAt(DAY[0]!.arrival) });
+  return ctx;
+}
+
 /** A metered street candidate anywhere (flat Boston rate). */
 function streetCandidate(): Candidate {
   return {
@@ -132,7 +141,7 @@ describe("a six-stop Boston day prices per stop and against the cap", () => {
       garage: garageProvider(),
       now: NOW,
     });
-    const out = await tools.execute(CTX, "build_itinerary", {
+    const out = await tools.execute(await dayContext(tools), "build_itinerary", {
       stops: DAY.map((s) => ({
         label: s.label,
         address: s.address,
@@ -181,7 +190,7 @@ describe("a six-stop Boston day prices per stop and against the cap", () => {
       garage: garageProvider(),
       now: NOW,
     });
-    const out = await tools.execute(CTX, "build_itinerary", {
+    const out = await tools.execute(await dayContext(tools), "build_itinerary", {
       stops: DAY.slice(0, 1).map((s) => ({
         label: s.label,
         address: s.address,

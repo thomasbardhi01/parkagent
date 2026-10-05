@@ -1,6 +1,6 @@
 /**
  * FR-21 / FR-23 / FR-24 / FR-25 / FR-27 / FR-35 / FR-36 / FR-38 / FR-40 /
- * FR-43 — the assistant surface with REAL
+ * FR-43 / FR-45 — the assistant surface with REAL
  * model calls (the server's configured Anthropic model), counted against
  * the per-run budget in client.ts. These tests assert STRUCTURE and
  * GROUNDING — plan shape, option counts, numeric sanity, dates relative
@@ -11,12 +11,18 @@
  * (assistantItinerary / assistantGeocode / assistantAccuracy /
  * assistantPlanEnforcement); this file proves the deployed loop is wired:
  * model reachable, tools grounded, plans validated, gates closed.
+ *
+ * FR-45 spends no model call of its own (the run's budget is spoken for):
+ * it reads what the FR-21 and FR-43 cards say they answered. The intent's
+ * tool gate, the stay question, and V7 are pinned by
+ * test/assistantIntentRouter.test.ts.
  */
 
 import { describe, expect, it } from "vitest";
 
 import {
   assistantMessage,
+  gate,
   mostRecentEasternAt,
   NYC_AUTOPAY,
   ownUser,
@@ -123,8 +129,18 @@ async function planFor(text: string, location: { lat: number; lng: number }) {
   return res;
 }
 
-describe("FR-21 / FR-23 single spot for a named place", () => {
-  it("FR-21 FR-23 'parking near Newbury Street' yields a validated single_spot plan with grounded options", async () => {
+/** The request a card says it answered (FR-45, API.md "The card says what
+ * it answered"). */
+interface RequestSummary {
+  intent: string;
+  place: { query: string | null; resolved: { label: string } | null };
+  window: { startsAt: string | null; durationMinutes: number | null };
+  hard: { maxPriceUsd: number | null };
+  assumed?: { place?: string; durationMinutes?: number };
+}
+
+describe("FR-21 / FR-23 / FR-45 single spot for a named place", () => {
+  it("FR-21 FR-23 FR-45 'parking near Newbury Street' yields a validated single_spot plan with grounded options, and the card says what it answered", async () => {
     let res = await assistantMessage(
       me,
       `Find me street or garage parking near Newbury Street in Boston ${DAY.phrase} at 2 PM, for about 2 hours. Propose the options as a plan.`,
@@ -176,6 +192,41 @@ describe("FR-21 / FR-23 single spot for a named place", () => {
         // The pinned day, at the time asked — dates relative to now.
         expect(option["startsAt"] as string).toMatch(new RegExp(`^${DAY.date}T14:00`));
       }
+    }
+
+    // FR-45: the card says what it answered. A request for a later day is
+    // park_later; the place, the start, and the stay are the user's, so
+    // nothing was assumed.
+    const sent = `plan: ${JSON.stringify(plan)}`;
+    expect(plan["verdict"], sent).toBe("meets");
+    const request = plan["requestSummary"] as RequestSummary | undefined;
+    expect(request, sent).toBeDefined();
+    expect(request!.intent, sent).toBe("park_later");
+    expect(request!.window.startsAt, sent).toMatch(new RegExp(`^${DAY.date}T14:00`));
+    expect(request!.window.durationMinutes, sent).toBe(120);
+    expect(typeof request!.place.resolved?.label, sent).toBe("string");
+    expect(request!.assumed ?? {}, sent).toEqual({});
+    // What leads is the server's: the option that honors an ask, or the
+    // cheapest and the closest together — first on the card, and one of
+    // them the recommendation.
+    const primary = options.filter((o) => o["primary"] === true);
+    expect(primary.length, sent).toBeGreaterThanOrEqual(1);
+    expect(primary.length, sent).toBeLessThanOrEqual(2);
+    expect(
+      options.slice(0, primary.length).every((o) => o["primary"] === true),
+      sent,
+    ).toBe(true);
+    expect(
+      primary.filter((o) => o["recommended"] === true),
+      sent,
+    ).toHaveLength(1);
+    // An option over the policy's approval threshold says so, and no other.
+    const policy = (await gate())["policy"] as Record<string, unknown>;
+    const warnOverUsd = (policy["confirm_warn_usd"] as number | undefined) ?? 15;
+    for (const option of options) {
+      expect(option["warn"] === true, `option: ${JSON.stringify(option)}`).toBe(
+        (option["priceUsd"] as number) > warnOverUsd,
+      );
     }
   }, 180_000);
 });
@@ -328,14 +379,14 @@ describe("FR-35 / FR-36 / FR-40 the device-test phrases", () => {
   }, 240_000);
 });
 
-describe("FR-43 nothing meets the request", () => {
+describe("FR-43 / FR-45 nothing meets the request", () => {
   // IM-01 (docs/research/1-assistant-spec.md §3): "under $2 near Cambridge
   // Common for 2h". One turn and no follow-up — the run's whole assistant
   // budget (FR_ASSISTANT_MAX_CALLS) is 12, and the tests above can use 11
   // of it — so the phone IS at Cambridge Common and the request says
   // "here": "Cambridge Common" by name is also a restaurant up the avenue,
   // and the place search rightly asks which.
-  it("FR-43 'under $2 here for 2 hours' at Cambridge Common ends in a none_meets card, never an option over the limit", async () => {
+  it("FR-43 FR-45 'under $2 here for 2 hours' at Cambridge Common ends in a none_meets card, never an option over the limit", async () => {
     const res = await assistantMessage(
       me,
       `Find me parking under $2 right here where I am ${DAY.phrase} at 2 PM, for 2 hours`,
@@ -350,6 +401,15 @@ describe("FR-43 nothing meets the request", () => {
     // The server's verdict: a "no", as its own kind — not a single_spot
     // with the nearest thing dressed as an option.
     expect(plan["kind"], sent).toBe("none_meets");
+
+    // FR-45: the card says what it answered — the verdict, the limit it was
+    // held to, and that "right here" was taken as the phone's location.
+    expect(plan["verdict"], sent).toBe("none_meets");
+    const request = plan["requestSummary"] as RequestSummary | undefined;
+    expect(request, sent).toBeDefined();
+    expect(request!.hard.maxPriceUsd, sent).toBe(2);
+    expect(request!.window.durationMinutes, sent).toBe(120);
+    expect(request!.assumed?.place, sent).toBe("phone_location");
 
     // The limit that failed is the one asked for.
     const failed = plan["constraintsFailed"] as Record<string, unknown>[];

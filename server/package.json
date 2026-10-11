@@ -29,11 +29,11 @@
   "license": "UNLICENSED",
   "type": "module",
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.131.0",
-    "@fastify/cors": "^11.3.0",
+    "@anthropic-ai/sdk": "^0.132.1",
+    "@fastify/cors": "^11.3.1",
     "@prisma/adapter-pg": "^7.10.0",
     "@prisma/client": "^7.10.0",
-    "dotenv": "^18.0.5",
+    "dotenv": "^18.0.6",
     "executor": "workspace:*",
     "fastify": "^5.12.5",
     "pg": "^8.23.1",
@@ -43,13 +43,13 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@types/node": "^26.6.2",
+    "@types/node": "^26.6.4",
     "@types/pg": "^8.23.1",
-    "eslint": "^10.11.0",
+    "eslint": "^10.12.0",
     "globals": "^17.13.0",
     "tsx": "^4.23.15",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.71.0",
+    "typescript-eslint": "^8.71.1",
     "vitest": "^5.0.3"
   },
   "private": true

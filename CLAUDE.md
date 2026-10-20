@@ -317,6 +317,20 @@ when the phone, the network, a provider, or the server fails:
 
 Keep new code on those rules.
 
+## Claude Code tooling in this repo
+- `.claude/agents/`: `ci-watch` (Haiku) polls checks and reads failed logs;
+  `test-run` (Sonnet) runs suites and reports counts; `code-map` (Haiku)
+  sweeps callers, env vars and external calls. A session delegates those
+  steps to them instead of reading the raw output itself.
+- `.claude/mods/parkagent-fleet/`: a mod that draws context %, rate limits
+  and cost above the prompt and a `/fleet` pane of every session on this
+  machine plus the latest CI runs. Load it once via
+  `CLAUDE_CODE_PLUGIN_DIRS` in `~/.claude/settings.json` (its README).
+- Sessions talk to each other with the built-in `ListAgents`/`SendMessage`;
+  one coordinator session hands out one PR per worker worktree.
+- `docs/audit/2026-10-audit-brief.md` is the read-only audit prompt; its
+  outputs land in `docs/audit/2026-10/`.
+
 ## Pinned versions
 Two server deps are deliberately held below `latest`. Don't bump them casually.
 - `prisma` / `@prisma/client` pinned to `^7`. The `latest` npm tag currently

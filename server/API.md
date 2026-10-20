@@ -1822,8 +1822,10 @@ builtAt, degraded}` (deploys wait on its `commit`). `dryRun` is the
 `live_payments`, `provider_accounts`, `push`, `stripe`, `issuing`,
 `link_wallet`, `apple_signin_revoke`, `apple_maps`, `email_signin`,
 `google_signin`, `parkwhiz`, `assistant` (`server/src/env.ts` FEATURES),
-plus `policy_edit` when `policy.json` can't be rewritten. It's `[]` when all
-is well. A feature that's simply not configured is off, not degraded. The
+plus `policy_edit` when `policy.json` can't be rewritten, and `assistant`
+while the last assistant turn failed on billing or auth (in this process,
+within 15 minutes; the next turn that completes clears it — `/health`
+never calls the model itself). It's `[]` when all is well. A feature that's simply not configured is off, not degraded. The
 log says why, one line each: `config: apple_maps is off — APPLE_MAPS_KEY is
 not set, but …`. Only core settings refuse boot. See "Settings" below. `/health/ready` is readiness:
 one `SELECT 1` bounded at 3 s → `{ok: true, db: "ok"}`, or `503 {ok:
@@ -2121,6 +2123,23 @@ before any model call (the turn would otherwise be saved over their
 transcript). Ids are the server's: one that names no conversation (deleted,
 or past retention) starts a NEW conversation under a fresh id (returned
 as `conversationId`) rather than reviving the old id with the old plans. Rate-limited 20/min — each turn is a paid model call.
+
+**When the model provider fails.** A turn the Anthropic API refuses for a
+reason asking again won't fix right now answers
+
+```json
+503 { "error": "assistant_unavailable", "reason": "billing" | "auth" | "rate_limit" | "overloaded", "requestId": "req_…" | null }
+```
+
+`billing` is an exhausted credit balance (a 400 `invalid_request_error`
+saying so, or a `billing_error`), `auth` a 401 or 403, `rate_limit` a 429,
+`overloaded` a 529 or an `overloaded_error` event mid-stream.
+`requestId` is Anthropic's, for their support. It's logged at warn with
+the reason (`assistant unavailable: billing`). Any other failure, including
+a 400 our request caused, stays `500 {error: "internal"}`. A streamed
+turn has already answered 200, so its `error` event carries the same body
+(`{error: "assistant_failed"}` for the rest). A billing or auth failure
+also puts `assistant` in `/health`'s `degraded` (see "GET /health").
 
 **Times.** Every time a tool takes (`update_request`'s `startsAt`, an
 itinerary stop's `arrival`) is read with an explicit offset honored

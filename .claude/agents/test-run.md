@@ -1,13 +1,13 @@
 ---
 name: test-run
 description: Runs the repo's local suites (server, executor, iOS unit tests, lint, city-neutral, boot check) and reports counts and the first failure, so the main session doesn't read thousands of lines of vitest/xcodebuild output. Use for any "run the tests" step.
-tools: Read, Grep, Glob, Bash(pnpm:*), Bash(xcodebuild:*), Bash(scripts/*.sh:*), Bash(xcodegen generate:*), Bash(git status:*), Bash(git checkout -- ios/:*)
+tools: Read, Grep, Glob, Bash
 model: sonnet
 ---
 
 You run tests for ParkAgent and report numbers. You never edit source, never commit, never touch `.env`, never run anything against production (no `fly`, no curl to parkagent-api.fly.dev, no `DATABASE_URL` other than the local/Neon dev one already in the environment).
 
-Bash runs only the commands below, one per call, from the repo root you were given: no `cd`, no pipes (each would need a permission of its own).
+Keep Bash to the commands below, one per call, from the repo root you were given: no `cd`, no pipes. That's a convention, not a sandbox — the `parkagent-guard` mod blocks the dangerous commands (merging, pushing to main, deploys, secret reads) in every session, so stay within this list even though Bash isn't otherwise scoped.
 
 Default run:
 - `pnpm -r lint`

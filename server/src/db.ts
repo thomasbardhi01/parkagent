@@ -337,6 +337,10 @@ export interface PendingParkRow {
   farAt: Date | null;
   farDistanceM: number | null;
   nearSince: Date | null;
+  backAt: Date | null;
+  driveAt: Date | null;
+  driveDistanceM: number | null;
+  driveSpeedMps: number | null;
   promptedAt: Date | null;
   confirmedAt: Date | null;
   startingAt: Date | null;
@@ -358,6 +362,10 @@ export interface PendingParkWrite {
   farAt?: Date | null;
   farDistanceM?: number | null;
   nearSince?: Date | null;
+  backAt?: Date | null;
+  driveAt?: Date | null;
+  driveDistanceM?: number | null;
+  driveSpeedMps?: number | null;
   carMovedAt?: Date | null;
   promptedAt?: Date | null;
   confirmedAt?: Date | null;

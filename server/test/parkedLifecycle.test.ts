@@ -117,6 +117,15 @@ async function walkAway(t: ReturnType<typeof makeApp>, headers = HEADERS) {
   return post(t.app, "/location", fix(t, 90), headers);
 }
 
+/** The same, with the app's own on-foot report on the second fix: the only
+ * thing that starts a Pay tapped at the car. */
+async function walkOff(t: ReturnType<typeof makeApp>, headers = HEADERS) {
+  t.tick(40);
+  await post(t.app, "/location", fix(t, 60), headers);
+  t.tick(20);
+  return post(t.app, "/location", fix(t, 90, { event: "left_car" }), headers);
+}
+
 const kinds = (state: FakeDbState) => state.decisions.map((d) => d.kind);
 const count = (state: FakeDbState, kind: string) => kinds(state).filter((k) => k === kind).length;
 /** The rows for what moved a park without the phone or a tap. */
@@ -448,7 +457,7 @@ test("Pay tapped before walk-away confirms early; the session starts only once t
   expect(t.calls.start).toBe(0);
   expect(t.state.sessions).toEqual([]);
 
-  const left = await walkAway(t);
+  const left = await walkOff(t);
   expect(left.json()).toMatchObject({ park: { status: "started" } });
   expect(left.json()["started"]).toMatchObject({ amountUsd: 3.65 });
   // No tap is asked for: it was already given.
@@ -486,7 +495,7 @@ test("Pay tapped back at the car pays nothing there: the start waits for the nex
   expect(seat.json()).toMatchObject({ park: { status: "confirmed" } });
   expect(t.calls.start).toBe(0);
 
-  const left = await walkAway(t);
+  const left = await walkOff(t);
   expect(left.json()).toMatchObject({ park: { status: "started" } });
   expect(t.calls.start).toBe(1);
   expect(t.state.sessions).toHaveLength(1);
@@ -865,6 +874,102 @@ test("driving off after an early Pay is not a walk-away: the same ground, too fa
   expect(t.calls.start).toBe(0);
 });
 
+test("an early Pay is never paid by distance alone: a red light a block away asks, and pays nothing", async () => {
+  const t = makeApp();
+  const parked = await park(t.app);
+  await tap(t, parked.parkedEventId);
+
+  // Pulls away (60 m, then 210 m 15 s later), then sits at a light: two
+  // fixes 20 s apart at nearly the same distance read like a walk.
+  t.tick(15);
+  await post(t.app, "/location", fix(t, 60));
+  t.tick(15);
+  await post(t.app, "/location", fix(t, 210));
+  t.tick(20);
+  const light = await post(t.app, "/location", fix(t, 214));
+  // At most a prompt: a second tap is what would pay.
+  expect(light.json()).toMatchObject({
+    park: { parkedEventId: parked.parkedEventId, status: "prompted" },
+    prompt: { kind: "confirm", amountUsd: 3.65 },
+  });
+  expect(light.json()["started"]).toBeUndefined();
+  expect(t.calls.start).toBe(0);
+  expect(t.state.sessions).toEqual([]);
+  expect(t.state.decisions.filter((d) => d.kind === "street_prompt")).toEqual([
+    expect.objectContaining({
+      rule: "walk_away",
+      inputs: expect.objectContaining({ parkStatus: "confirmed" }),
+    }),
+  ]);
+
+  // Green: driving on pays nothing either.
+  for (const metres of [380, 560]) {
+    t.tick(15);
+    await post(t.app, "/location", fix(t, metres));
+  }
+  expect(t.calls.start).toBe(0);
+  expect(count(t.state, "session_start_walkaway")).toBe(0);
+});
+
+test("an early Pay starts on the app's on-foot report, even on the fix that also finishes a pair", async () => {
+  const t = makeApp();
+  const parked = await park(t.app);
+  await tap(t, parked.parkedEventId);
+  t.tick(40);
+  await post(t.app, "/location", fix(t, 60));
+  t.tick(20);
+  // 30 m in 20 s is a walk-away by distance too; the app's word is what counts.
+  const left = await post(t.app, "/location", fix(t, 90, { event: "left_car" }));
+  expect(left.json()).toMatchObject({ park: { status: "started" } });
+  expect(t.calls.start).toBe(1);
+  expect(count(t.state, "street_prompt")).toBe(0);
+  expect(t.state.decisions.find((d) => d.kind === "session_start_walkaway")).toMatchObject({
+    rule: "started",
+    inputs: expect.objectContaining({ fix: expect.objectContaining({ event: "left_car" }) }),
+  });
+});
+
+test("a fix at driving speed never counts toward leaving, and starts the pair over", async () => {
+  const t = makeApp();
+  await park(t.app);
+  t.tick(20);
+  await post(t.app, "/location", fix(t, 60, { speedMps: 0.8 }));
+  // Circling the block for a spot: about the same distance, at 12 m/s.
+  t.tick(20);
+  const circling = await post(t.app, "/location", fix(t, 70, { speedMps: 12 }));
+  expect(circling.json()).toMatchObject({ park: { status: "at_car" } });
+  expect(t.state.pendingParks[0]).toMatchObject({ farAt: null, leftCarAt: null });
+  // …and neither does the app's on-foot report riding on one.
+  t.tick(5);
+  await post(t.app, "/location", fix(t, 75, { speedMps: 11, event: "left_car" }));
+  expect(t.state.pendingParks[0]).toMatchObject({ status: "at_car", leftCarAt: null });
+
+  // Out of the car: two fixes at a walk are a walk-away again.
+  t.tick(20);
+  await post(t.app, "/location", fix(t, 80, { speedMps: 1.2 }));
+  t.tick(20);
+  const walking = await post(t.app, "/location", fix(t, 105, { speedMps: 1.3 }));
+  expect(walking.json()).toMatchObject({ park: { status: "prompted" } });
+  // A phone that gives no speed (null, or iOS's -1) is read by pace, as before.
+  expect((await post(t.app, "/location", fix(t, 110, { speedMps: null }))).statusCode).toBe(200);
+  expect((await post(t.app, "/location", fix(t, 110, { speedMps: -1 }))).statusCode).toBe(200);
+});
+
+test("a measurement older than five minutes is not read, however freshly it is reported", async () => {
+  const t = makeApp();
+  await park(t.app);
+  const measured = (secondsAfterPark: number) =>
+    new Date(PARKED_AT.getTime() + secondsAfterPark * 1000).toISOString();
+  // Six minutes on, the outbox delivers two measurements from the first minute.
+  t.tick(6 * 60);
+  await post(t.app, "/location", fix(t, 60, { measuredAt: measured(30) }));
+  t.tick(1);
+  const late = await post(t.app, "/location", fix(t, 90, { measuredAt: measured(50) }));
+  expect(late.json()).toMatchObject({ park: { status: "at_car" } });
+  expect(t.state.pendingParks[0]).toMatchObject({ farAt: null, leftCarAt: null });
+  expect(count(t.state, "street_prompt")).toBe(0);
+});
+
 test("…and a driver who rode off and then walks is still seen leaving, at a walk", async () => {
   const t = makeApp();
   await park(t.app);
@@ -946,7 +1051,7 @@ test("a park delivered late, from before one the server already has, neither wai
     status: "confirmed",
   });
   // The current park still starts at its own walk-away.
-  const left = await walkAway(t);
+  const left = await walkOff(t);
   expect(left.json()).toMatchObject({ park: { status: "started" } });
   expect(t.calls.start).toBe(1);
 });
@@ -1168,7 +1273,7 @@ test("a start whose session is still pending inside its deadline is left to fini
   expect(t.calls.start).toBe(0);
 });
 
-test("a start that throws leaves its session pending: the park waits out the deadline, then the sweep fails both", async () => {
+test("a start that throws after the provider was asked fails its park and its own pending session at once", async () => {
   const crashing: Executor = {
     startSession: async () => {
       throw new Error("browser crashed");
@@ -1186,33 +1291,30 @@ test("a start that throws leaves its session pending: the park waits out the dea
 
   expect((await tap(t, parked.parkedEventId)).statusCode).toBe(500);
   const session = t.state.sessions[0]!;
-  expect(session.status).toBe("pending");
-  // A pending session is not a paid one: the park neither starts nor
-  // closes while it could still be paid for, and nothing is retried.
-  expect(t.state.pendingParks[0]!.status).toBe("starting");
-  const retried = await tap(t, parked.parkedEventId);
-  expect(retried.json()).toMatchObject({ error: "confirm_in_progress" });
-
-  // Ten minutes on, nothing answers for it: the park is a failed start,
-  // the session is failed with it, and the ledger says why.
-  t.tick(11 * 60);
-  const late = await tap(t, parked.parkedEventId);
-  expect(late.statusCode).toBe(409);
-  expect(late.json()).toMatchObject({ error: "park_closed", status: "start_failed" });
+  // The session it left pending is that very start's, and nothing is left
+  // to answer for it: the park doesn't wait ten minutes on it. Whether it
+  // charged is unknown, so the park is never tried again.
   expect(session.status).toBe("failed");
-  expect(lifecycleRows(t.state)).toEqual([
-    expect.objectContaining({
-      rule: "start_stale",
-      sessionId: session.id,
-      inputs: expect.objectContaining({ previousStatus: "starting" }),
-      outcome: {
-        status: "start_failed",
-        reason: "stale_pending",
-        sessionId: session.id,
-        sessionFailed: true,
-      },
-    }),
-  ]);
+  expect(t.state.pendingParks[0]!.status).toBe("start_failed");
+  const retried = await tap(t, parked.parkedEventId);
+  expect(retried.statusCode).toBe(409);
+  expect(retried.json()).toMatchObject({ error: "park_closed", status: "start_failed" });
+  expect(t.state.sessions).toHaveLength(1);
+  const error = t.state.decisions.find(
+    (d) => d.kind === "session_start_walkaway" && d.rule === "error",
+  )!;
+  expect(error.outcome).toMatchObject({
+    parkStatus: "start_failed",
+    reachedProvider: true,
+    reason: "start_threw",
+    staleSessionId: session.id,
+    sessionFailed: true,
+  });
+
+  // The sweep later finds nothing left to settle.
+  t.tick(11 * 60);
+  await tap(t, parked.parkedEventId);
+  expect(lifecycleRows(t.state)).toEqual([]);
 });
 
 test("a start that answers after the sweep closed its park: the park takes the session, on the ledger", async () => {
@@ -1301,7 +1403,7 @@ test("a start with no answer by its deadline stops holding the park; a success a
   });
 });
 
-test("an early Pay whose start throws at walk-away is tried again by the next fixes", async () => {
+test("an early Pay whose start throws at walk-away is tried again by the app's next on-foot report", async () => {
   const t = makeApp();
   const parked = await park(t.app);
   await tap(t, parked.parkedEventId);
@@ -1314,14 +1416,14 @@ test("an early Pay whose start throws at walk-away is tried again by the next fi
     }
     return real(args);
   };
-  const first = await walkAway(t);
+  const first = await walkOff(t);
   expect(first.statusCode).toBe(500);
   expect(t.state.pendingParks[0]).toMatchObject({ status: "confirmed", leftCarAt: null });
 
   t.tick(20);
   await post(t.app, "/location", fix(t, 110));
   t.tick(20);
-  const again = await post(t.app, "/location", fix(t, 135));
+  const again = await post(t.app, "/location", fix(t, 135, { event: "left_car" }));
   expect(again.json()).toMatchObject({ park: { status: "started" } });
   expect(t.calls.start).toBe(1);
 });
@@ -1355,7 +1457,7 @@ test("a fix in flight can't undo a tap: a Pay at the car still starts at the nex
   await slow;
   expect(t.state.pendingParks[0]).toMatchObject({ status: "confirmed", leftCarAt: null });
 
-  const left = await walkAway(t);
+  const left = await walkOff(t);
   expect(left.json()).toMatchObject({ park: { status: "started" } });
   expect(t.calls.start).toBe(1);
 });

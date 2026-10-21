@@ -1,8 +1,16 @@
 {
   "name": "parkagent-fleet",
-  "version": "0.1.0",
-  "description": "Context, rate-limit and cost band above the prompt; a Fleet pane listing every ParkAgent session on this machine with its branch, context fill and spend, plus the repo's latest CI runs.",
+  "version": "0.2.0",
+  "description": "Band above the prompt and a /fleet pane: every ParkAgent session on this machine, CI, open PRs, the last nightly and prod health. Routes simple turns to haiku, a lean prompt mode, and /report to a coordinator session.",
   "types": "./types/index.d.ts",
+  "userConfig": {
+    "coordSession": {
+      "type": "string",
+      "title": "Coordinator session name",
+      "default": "coord",
+      "description": "Name (as ListAgents lists it) of the session that /report sends fleet reports to."
+    }
+  },
   "author": {
     "name": "Thomas Bardhi"
   },

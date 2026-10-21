@@ -324,10 +324,14 @@ Keep new code on those rules.
   steps to them instead of reading the raw output itself.
 - `.claude/mods/parkagent-fleet/`: a mod that draws context %, rate limits
   and cost above the prompt and a `/fleet` pane of every session on this
-  machine plus the latest CI runs. Load it once via
+  machine plus CI, open PRs, the last nightly and prod health. It also
+  routes simple read-only turns to haiku (`/route`), a lean prompt mode
+  (`/lean`), and `/report` to a coordinator session. Load it once via
   `CLAUDE_CODE_PLUGIN_DIRS` in `~/.claude/settings.json` (its README).
 - Sessions talk to each other with the built-in `ListAgents`/`SendMessage`;
-  one coordinator session hands out one PR per worker worktree.
+  one coordinator session hands out one PR per worker worktree. Workers run
+  `/report` when their PR is green or they are blocked, so the coordinator's
+  `/fleet` pane shows where every worktree stands.
 - `docs/audit/2026-10-audit-brief.md` is the audit prompt: one session per
   phase in an audit worktree, outputs in `docs/audit/2026-10/`; only Phase
   3.5 writes code (tests, on `audit/tests-<area>` in its own worktree).

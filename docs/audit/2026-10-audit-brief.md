@@ -13,9 +13,11 @@ Phase 3.5 is the exception: it is the only phase that writes code, and it runs i
 worktree of its own (see SESSIONS). Remove both worktrees once their branches are merged
 or dropped.
 
-Why now: main has not moved since 2026-10-05, the nightly FR suite has been red since at
-least 2026-10-15 with every model-backed test (FR-21…FR-43, FR-38) failing together, the
-daily `supply-chain` job is red, three feature PRs (#212, #213, #214) are waiting, and
+Why now: from 2026-10-15 to 10-20 the nightly FR suite was red with every model-backed
+test (FR-21…FR-43, FR-38) failing together, and nothing said why for a week: the Anthropic
+credit balance had run out, the API's 400 reached us as a bare 500, and `/health` said
+`degraded: []` (issue #216; fixed in #223). The daily `supply-chain` job was red at the
+same time (GHSA-68fv, fixed in #222). Three feature PRs (#212, #213, #214) are waiting, and
 V1 is being narrowed to **Boston only**. Before merging anything else we want one honest,
 evidence-backed picture of what the build does today, what is broken, and what is dead
 weight for a Boston-first MVP.
@@ -97,8 +99,9 @@ PHASE 1 — INVENTORY AND SAFETY SCAN  → `01-inventory.md`
 3. Dependencies: `pnpm audit --prod`, `scripts/audit.mjs`, outdated majors
    (`pnpm -r outdated`), unused deps (compare `package.json` to imports), the two deliberate
    pins (Prisma ^7, TypeScript 6) still justified or not, Python deps in `data/pyproject.toml`.
-   Explain why the daily `supply-chain` workflow is currently red (read its latest log with
-   `gh run view --log-failed`).
+   Confirm the daily `supply-chain` workflow is green on main (it was red 2026-10-18…20 on
+   GHSA-68fv-2mgg-jv7q, fixed in #222); if it is red again, explain why from its latest log
+   (`gh run view --log-failed`).
 
 PHASE 2 — FUNCTIONALITY AUDIT  → `02-modules.md`, one section per module
 Modules, in this order (Boston money path first):
@@ -145,10 +148,11 @@ PHASE 3 — TESTING  → `03-tests.md`
    branches with no coverage, Boston money path first.
 4. Test quality: three examples each (file:line) of tests that assert nothing meaningful,
    mock the thing under test, or can't fail.
-5. The FR suite: read `server/fr/*.fr.test.ts` and the latest nightly failure
-   (`gh run view <id> --log-failed`, issue #216). Determine whether the nine failing
-   assistant FRs share one cause (model backend) or several. Do NOT run the FR suite
-   against prod.
+5. The FR suite: read `server/fr/*.fr.test.ts` and the latest nightly run. The 2026-10-15…20
+   failures (issue #216) had one cause, an exhausted Anthropic credit balance. Check that a
+   repeat would now be seen: the 503 `assistant_unavailable` with `reason: "billing"` and
+   `assistant` in `/health`'s `degraded` (#223, offline tests), and whether the nightly's
+   report would name it. Do NOT run the FR suite against prod.
 3.5 (its own session and worktree; the only phase that writes code) Add tests for the
    highest-risk gaps found in Phase 2, offline only, on `audit/tests-<area>`. Each new
    test must fail when the behaviour it covers is broken: prove it by breaking the code,

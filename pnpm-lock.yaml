@@ -184,7 +184,6 @@ importers:
   executor:
     dependencies:
       playwright:
-        specifier: ^1.63.0
         specifier: ^1.64.1
         version: 1.64.1
     devDependencies:
@@ -192,10 +191,6 @@ importers:
         specifier: ^10.0.1
         version: 10.0.1(eslint@10.13.0(jiti@2.7.0))
       '@types/node':
-        specifier: ^26.6.2
-        version: 26.6.5
-      eslint:
-        specifier: ^10.11.0
         specifier: ^26.6.5
         version: 26.6.5
       eslint:
@@ -211,16 +206,11 @@ importers:
         specifier: ^6.0.3
         version: 6.0.3
       typescript-eslint:
-        specifier: ^8.71.0
-        version: 8.72.0(eslint@10.13.0(jiti@2.7.0))(typescript@6.0.3)
-      vitest:
-        specifier: ^5.0.3
-        version: 5.0.5(@opentelemetry/api@1.9.1)(@types/node@26.6.5)(vite@8.3.4(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
         specifier: ^8.71.2
         version: 8.72.0(eslint@10.13.0(jiti@2.7.0))(typescript@6.0.3)
       vitest:
         specifier: ^5.0.4
-        version: 5.0.5(@types/node@26.6.5)(vite@8.3.4(@types/node@26.6.5)(tsx@4.23.15))
+        version: 5.0.5(@opentelemetry/api@1.10.0)(@types/node@26.6.5)(vite@8.3.4(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
 
   server:
     dependencies:
@@ -229,10 +219,6 @@ importers:
         version: 0.134.0(zod@4.6.7)
       '@fastify/cors':
         specifier: ^11.3.1
-        specifier: ^0.131.0
-        version: 0.131.0(zod@4.6.7)
-      '@fastify/cors':
-        specifier: ^11.3.0
         version: 11.3.1
       '@prisma/adapter-pg':
         specifier: ^7.10.0
@@ -242,14 +228,12 @@ importers:
         version: 7.10.1(prisma@7.10.0(@types/node@26.6.5)(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(typescript@6.0.3))(typescript@6.0.3)
       dotenv:
         specifier: ^18.0.8
-        specifier: ^18.0.5
         version: 18.0.8
       executor:
         specifier: workspace:*
         version: link:../executor
       fastify:
         specifier: ^5.12.7
-        specifier: ^5.12.5
         version: 5.12.7
       pg:
         specifier: ^8.23.1
@@ -262,7 +246,6 @@ importers:
         version: 22.6.2(@types/node@26.6.5)
       zod:
         specifier: ^4.6.7
-        specifier: ^4.6.5
         version: 4.6.7
     devDependencies:
       '@eslint/js':
@@ -270,14 +253,12 @@ importers:
         version: 10.0.1(eslint@10.13.0)
       '@types/node':
         specifier: ^26.6.5
-        specifier: ^26.6.2
         version: 26.6.5
       '@types/pg':
         specifier: ^8.23.1
         version: 8.23.1
       eslint:
         specifier: ^10.12.0
-        specifier: ^10.11.0
         version: 10.13.0
       globals:
         specifier: ^17.13.0
@@ -293,12 +274,7 @@ importers:
         version: 8.72.0(eslint@10.13.0)(typescript@6.0.3)
       vitest:
         specifier: ^5.0.4
-        version: 5.0.5(@opentelemetry/api@1.9.1)(@types/node@26.6.5)(vite@8.3.4(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
-        specifier: ^8.71.0
-        version: 8.72.0(eslint@10.13.0)(typescript@6.0.3)
-      vitest:
-        specifier: ^5.0.3
-        version: 5.0.5(@types/node@26.6.5)(vite@8.3.4(@types/node@26.6.5)(tsx@4.23.15))
+        version: 5.0.5(@opentelemetry/api@1.10.0)(@types/node@26.6.5)(vite@8.3.4(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
 
 packages:
 
@@ -593,8 +569,8 @@ packages:
   '@keyv/serialize@1.1.1':
     resolution: {integrity: sha512-dXn3FZhPv0US+7dtJsIi2R+c7qWYiReoEh5zUntWCf4oSpMNib8FDhSoed6m3QyZdx5hK7iLFkYk3rNxwt8vTA==}
 
-  '@opentelemetry/api@1.9.1':
-    resolution: {integrity: sha512-gLyJlPHPZYdAk1JENA9LeHejZe1Ti77/pTeFm/nMXmQH/HFZlcS/O2XJB+L8fkbrNSqhdtlvjBVjxwUYanNH5Q==}
+  '@opentelemetry/api@1.10.0':
+    resolution: {integrity: sha512-lMkyes8iHrG+mk6WH7X70MdCLI2RS0FwNBY1PyQ8UemaijE2m5mv5A0Niy3HtbYTFrgkUEQjFMXmSAk2hQDuPQ==}
     engines: {node: '>=8.0.0'}
 
   '@oxc-project/types@0.154.0':
@@ -2124,9 +2100,8 @@ packages:
 snapshots:
 
   '@anthropic-ai/sdk@0.134.0(zod@4.6.7)':
-  '@anthropic-ai/sdk@0.131.0(zod@4.6.7)':
     dependencies:
-      '@opentelemetry/api': 1.9.1
+      '@opentelemetry/api': 1.10.0
       json-schema-to-ts: 3.1.1
       standardwebhooks: 1.1.1
     optionalDependencies:
@@ -2268,11 +2243,6 @@ snapshots:
 
   '@eslint/js@10.0.1(eslint@10.13.0)':
     optionalDependencies:
-    optionalDependencies:
-      eslint: 10.13.0(jiti@2.7.0)
-
-  '@eslint/js@10.0.1(eslint@10.13.0)':
-    optionalDependencies:
       eslint: 10.13.0
 
   '@eslint/object-schema@3.0.5': {}
@@ -2345,7 +2315,7 @@ snapshots:
 
   '@keyv/serialize@1.1.1': {}
 
-  '@opentelemetry/api@1.9.1': {}
+  '@opentelemetry/api@1.10.0': {}
 
   '@oxc-project/types@0.154.0': {}
 
@@ -2650,14 +2620,6 @@ snapshots:
       '@typescript-eslint/utils': 8.72.0(eslint@10.13.0)(typescript@6.0.3)
       '@typescript-eslint/visitor-keys': 8.72.0
       eslint: 10.13.0
-    dependencies:
-      '@eslint-community/regexpp': 4.12.2
-      '@typescript-eslint/parser': 8.72.0(eslint@10.13.0(jiti@2.7.0))(typescript@6.0.3)
-      '@typescript-eslint/scope-manager': 8.72.0
-      '@typescript-eslint/type-utils': 8.72.0(eslint@10.13.0(jiti@2.7.0))(typescript@6.0.3)
-      '@typescript-eslint/utils': 8.72.0(eslint@10.13.0(jiti@2.7.0))(typescript@6.0.3)
-      '@typescript-eslint/visitor-keys': 8.72.0
-      eslint: 10.13.0(jiti@2.7.0)
       ignore: 7.0.13
       natural-compare: 1.4.0
       ts-api-utils: 2.5.0(typescript@6.0.3)
@@ -2679,41 +2641,6 @@ snapshots:
 
   '@typescript-eslint/parser@8.72.0(eslint@10.13.0)(typescript@6.0.3)':
     dependencies:
-  '@typescript-eslint/eslint-plugin@8.72.0(@typescript-eslint/parser@8.72.0(eslint@10.13.0)(typescript@6.0.3))(eslint@10.13.0)(typescript@6.0.3)':
-    dependencies:
-      '@eslint-community/regexpp': 4.12.2
-      '@typescript-eslint/parser': 8.72.0(eslint@10.13.0)(typescript@6.0.3)
-      '@typescript-eslint/scope-manager': 8.72.0
-      '@typescript-eslint/type-utils': 8.72.0(eslint@10.13.0)(typescript@6.0.3)
-      '@typescript-eslint/utils': 8.72.0(eslint@10.13.0)(typescript@6.0.3)
-      '@typescript-eslint/visitor-keys': 8.72.0
-      eslint: 10.13.0
-      ignore: 7.0.13
-      natural-compare: 1.4.0
-      ts-api-utils: 2.5.0(typescript@6.0.3)
-      typescript: 6.0.3
-    transitivePeerDependencies:
-      - supports-color
-
-  '@typescript-eslint/parser@8.72.0(eslint@10.13.0(jiti@2.7.0))(typescript@6.0.3)':
-    dependencies:
-      '@typescript-eslint/scope-manager': 8.72.0
-      '@typescript-eslint/types': 8.72.0
-      '@typescript-eslint/typescript-estree': 8.72.0(typescript@6.0.3)
-      '@typescript-eslint/visitor-keys': 8.72.0
-      debug: 4.4.3
-      eslint: 10.13.0
-      eslint: 10.13.0(jiti@2.7.0)
-      typescript: 6.0.3
-    transitivePeerDependencies:
-      - supports-color
-
-  '@typescript-eslint/project-service@8.72.0(typescript@6.0.3)':
-    dependencies:
-      '@typescript-eslint/tsconfig-utils': 8.72.0(typescript@6.0.3)
-      '@typescript-eslint/types': 8.72.0
-  '@typescript-eslint/parser@8.72.0(eslint@10.13.0)(typescript@6.0.3)':
-    dependencies:
       '@typescript-eslint/scope-manager': 8.72.0
       '@typescript-eslint/types': 8.72.0
       '@typescript-eslint/typescript-estree': 8.72.0(typescript@6.0.3)
@@ -2723,11 +2650,6 @@ snapshots:
       typescript: 6.0.3
     transitivePeerDependencies:
       - supports-color
-
-  '@typescript-eslint/scope-manager@8.72.0':
-    dependencies:
-      '@typescript-eslint/types': 8.72.0
-      '@typescript-eslint/visitor-keys': 8.72.0
 
   '@typescript-eslint/project-service@8.72.0(typescript@6.0.3)':
     dependencies:
@@ -3418,38 +3340,6 @@ snapshots:
   lefthook-windows-x64@2.2.2:
     optional: true
 
-    optional: true
-
-  lefthook-darwin-arm64@2.2.2:
-    optional: true
-
-  lefthook-darwin-x64@2.2.2:
-    optional: true
-
-  lefthook-freebsd-arm64@2.2.2:
-    optional: true
-
-  lefthook-freebsd-x64@2.2.2:
-    optional: true
-
-  lefthook-linux-arm64@2.2.2:
-    optional: true
-
-  lefthook-linux-x64@2.2.2:
-    optional: true
-
-  lefthook-openbsd-arm64@2.2.2:
-    optional: true
-
-  lefthook-openbsd-x64@2.2.2:
-    optional: true
-
-  lefthook-windows-arm64@2.2.2:
-    optional: true
-
-  lefthook-windows-x64@2.2.2:
-    optional: true
-
   lefthook@2.2.2:
     optionalDependencies:
       lefthook-android-arm64: 2.2.2
@@ -3916,8 +3806,7 @@ snapshots:
       tsx: 4.23.15
       yaml: 2.9.1
 
-  vitest@5.0.5(@opentelemetry/api@1.9.1)(@types/node@26.6.5)(vite@8.3.4(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1)):
-  vitest@5.0.5(@types/node@26.6.5)(vite@8.3.4(@types/node@26.6.5)(tsx@4.23.15)):
+  vitest@5.0.5(@opentelemetry/api@1.10.0)(@types/node@26.6.5)(vite@8.3.4(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1)):
     dependencies:
       '@types/chai': 5.2.3
       '@vitest/mocker': 5.0.5(vite@8.3.4(@types/node@26.6.5)(tsx@4.23.15))
@@ -3934,7 +3823,7 @@ snapshots:
       vite: 8.3.4(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1)
       why-is-node-running: 3.2.1
     optionalDependencies:
-      '@opentelemetry/api': 1.9.1
+      '@opentelemetry/api': 1.10.0
       '@types/node': 26.6.5
     transitivePeerDependencies:
       - msw

@@ -8,12 +8,13 @@
  * 90-minute stay quotes $3.50 + $0.15.
  */
 
-import { expect, test, vi } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 
-import type { ZoneTermsRow } from "../src/db.js";
+import type { PendingParkRow, ZoneTermsRow } from "../src/db.js";
 import type { Executor, ExecutorResult } from "../src/services/executor.js";
 import { DryRunExecutor } from "../src/services/executor.js";
 import type { ParkStarter } from "../src/services/pendingSession.js";
+import type { Quote } from "../src/services/quote.js";
 import {
   START_DEADLINE_MS,
   STARTING_STALE_MS,
@@ -53,6 +54,15 @@ const STEINWAY_ZONE: ZoneTermsRow = {
 
 type App = ReturnType<typeof makeTestApp>["app"];
 
+/** What the driver had been shown for a park when its start ran. */
+interface ShownAtStart {
+  quote: Quote;
+  dryRun: boolean;
+}
+
+/** Every app this file makes, for the check after each test. */
+const apps: ReturnType<typeof makeApp>[] = [];
+
 /** A test app whose clock the test moves, and an executor that counts. */
 function makeApp(options: Parameters<typeof makeTestApp>[0] = {}) {
   const clock = { now: new Date(PARKED_AT) };
@@ -61,7 +71,7 @@ function makeApp(options: Parameters<typeof makeTestApp>[0] = {}) {
     () => {},
     () => clock.now,
   );
-  const executor: Executor = {
+  const counted: Executor = {
     startSession: (args) => {
       calls.start += 1;
       return dry.startSession(args);
@@ -75,18 +85,74 @@ function makeApp(options: Parameters<typeof makeTestApp>[0] = {}) {
       return dry.stopSession(args);
     },
   };
+  const { executor: given, ...rest } = options;
+  const inner = given ?? counted;
+  const shownAtStart: ShownAtStart[] = [];
+  const executor: Executor = {
+    startSession: (args) => {
+      shownAtStart.push(shownFor(t.state));
+      return inner.startSession(args);
+    },
+    extendSession: (args) => inner.extendSession(args),
+    stopSession: (args) => inner.stopSession(args),
+  };
   const t = makeTestApp({
     candidates: [STEINWAY_A],
     zones: [STEINWAY_ZONE],
     now: () => clock.now,
     executor,
-    ...options,
+    ...rest,
   });
   const tick = (seconds: number) => {
     clock.now = new Date(clock.now.getTime() + seconds * 1000);
   };
-  return { ...t, clock, calls, tick };
+  const made = { ...t, clock, calls, tick, shownAtStart };
+  apps.push(made);
+  return made;
 }
+
+/**
+ * What the session being started was shown as, read when the executor is
+ * asked: its park's quote and dry run, or (a build that doesn't wait for
+ * the walk-away) what /parked answered.
+ */
+function shownFor(state: FakeDbState): ShownAtStart {
+  const session = state.sessions.at(-1)!;
+  const park = state.pendingParks.find(
+    (p: PendingParkRow) => p.parkedEventId === session.parkedEventId,
+  );
+  if (park) return structuredClone({ quote: park.quote as Quote, dryRun: park.shownDryRun! });
+  const parked = state.decisions.find(
+    (d) => d.kind === "parked_quote" && d.parkedEventId === session.parkedEventId,
+  )!;
+  return structuredClone({
+    quote: parked.outcome["quote"] as Quote,
+    dryRun: parked.inputs["dryRun"] as boolean,
+  });
+}
+
+// Every start, in every test here: the provider is asked for the zone
+// number, the minutes and the amount the driver was shown, and through the
+// dry-run executor exactly when the driver was told it is a dry run.
+afterEach(() => {
+  for (const t of apps.splice(0)) {
+    const starts = t.executorCalls.filter((c) => c.op === "start");
+    expect(starts).toHaveLength(t.shownAtStart.length);
+    starts.forEach((call, i) => {
+      const { quote, dryRun } = t.shownAtStart[i]!;
+      expect(call).toEqual({
+        op: "start",
+        userId: "u1",
+        city: "nyc",
+        dryRun,
+        zoneNumber: quote.providerZoneNumber,
+        minutes: quote.stayMinutes,
+        amountUsd: quote.meterUsd,
+        feeUsd: quote.feeUsd,
+      });
+    });
+  }
+});
 
 function post(app: App, url: string, body: unknown, headers = HEADERS) {
   return app.inject({ method: "POST", url, headers, payload: body as object });

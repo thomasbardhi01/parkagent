@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./ios/Config.xcconfig)",
+      "Bash(gh pr merge:*)",
+      "Bash(gh secret set:*)",
+      "Bash(fly deploy:*)",
+      "Bash(fly secrets set:*)",
+      "Bash(fly ssh:*)",
+      "Bash(git push origin main:*)"
+    ]
+  }
+}

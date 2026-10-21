@@ -3,29 +3,13 @@
 // No engine, no `$`, no I/O — so it unit-tests directly and the hook in
 // register.tsx only wires it to `tool.check` and supplies the git branch.
 
-/** The shell readers we treat as "reveals a file's contents". */
-const READERS = new Set([
-  "cat",
-  "less",
-  "head",
-  "tail",
-  "more",
-  "source",
-  ".",
-  "cp",
-  "grep",
-  "egrep",
-  "fgrep",
-  "rg",
-  "bat",
-  "strings",
-  "xxd",
-  "od",
-  "nl",
-  "view",
-]);
-/** Of those, the ones whose FIRST positional is a pattern/program, not a file. */
-const PATTERN_FIRST = new Set(["grep", "egrep", "fgrep", "rg"]);
+/** Commands that may NAME a secret path without reading its contents: a
+ * metadata/existence check, not a read. `git check-ignore` / `git ls-files`
+ * are handled in `secretInArgv`. Everything else naming a secret is denied. */
+const SAFE_WITH_SECRET = new Set(["ls", "stat", "test", "["]);
+
+/** The basename of a command, so an absolute path (/opt/homebrew/bin/gh) counts. */
+const base = (cmd: string): string => cmd.split("/").pop() ?? cmd;
 
 /** Wrappers that run another command; we unwrap them to reach the real one. */
 const WRAPPERS = new Set([
@@ -47,7 +31,13 @@ const SHELLS = new Set(["bash", "sh", "zsh", "dash", "ksh"]);
 
 const ASSIGN = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
-export type ParseResult = { ok: boolean; argvs: string[][] };
+export type ParseResult = {
+  ok: boolean;
+  argvs: string[][];
+  /** A command whose command position was a variable/substitution we could not
+   * resolve (`$G pr merge`, `` `echo gh` ``) — the real command is hidden. */
+  opaque: boolean;
+};
 
 /**
  * Lex one script into its simple commands (argv arrays), splitting on
@@ -58,11 +48,15 @@ export type ParseResult = { ok: boolean; argvs: string[][] };
 function lex(src: string): ParseResult {
   const argvs: string[][] = [];
   let ok = true;
+  let opaque = false;
   let cur: string[] = [];
   let word = "";
   let hasWord = false;
   let i = 0;
   const n = src.length;
+  // A $-expansion while the command word is still being formed (cur is empty)
+  // means the command itself came from a variable/substitution we can't read.
+  const atCommandPosition = () => cur.length === 0;
 
   const endWord = () => {
     if (hasWord) {
@@ -117,6 +111,7 @@ function lex(src: string): ParseResult {
       continue;
     }
     if (c === "$" && src.charAt(i + 1) === "(") {
+      if (atCommandPosition()) opaque = true;
       const close = matchParen(src, i + 2);
       if (close === -1) {
         ok = false;
@@ -124,11 +119,13 @@ function lex(src: string): ParseResult {
       }
       const p = lex(src.slice(i + 2, close));
       if (!p.ok) ok = false;
+      if (p.opaque) opaque = true;
       argvs.push(...p.argvs);
       i = close + 1;
       continue;
     }
     if (c === "$" && src.charAt(i + 1) === "{") {
+      if (atCommandPosition()) opaque = true;
       const close = src.indexOf("}", i + 2);
       if (close === -1) {
         ok = false;
@@ -139,11 +136,13 @@ function lex(src: string): ParseResult {
     }
     if (c === "$") {
       // $VAR: skip the name; contributes nothing we can resolve.
+      if (atCommandPosition()) opaque = true;
       i += 1;
       while (i < n && /[A-Za-z0-9_]/.test(src.charAt(i))) i += 1;
       continue;
     }
     if (c === "`") {
+      if (atCommandPosition()) opaque = true;
       const end = findBacktick(src, i + 1);
       if (end === -1) {
         ok = false;
@@ -151,6 +150,7 @@ function lex(src: string): ParseResult {
       }
       const p = lex(src.slice(i + 1, end).replace(/\\`/g, "`"));
       if (!p.ok) ok = false;
+      if (p.opaque) opaque = true;
       argvs.push(...p.argvs);
       i = end + 1;
       continue;
@@ -183,7 +183,7 @@ function lex(src: string): ParseResult {
   }
   endCmd();
 
-  return { ok, argvs };
+  return { ok, argvs, opaque };
 }
 
 /** Read a double-quoted span starting after the opening quote. */
@@ -350,6 +350,7 @@ function unwrap(argv: string[]): string[] {
 export function expand(command: string): ParseResult {
   const first = lex(command);
   let ok = first.ok;
+  let opaque = first.opaque;
   const out: string[][] = [];
   const work = first.argvs.slice();
   let guard = 0;
@@ -357,12 +358,13 @@ export function expand(command: string): ParseResult {
     guard += 1;
     const eff = unwrap(work.shift() as string[]);
     if (!eff.length) continue;
-    if (SHELLS.has(eff[0] as string)) {
+    if (SHELLS.has(base(eff[0] as string))) {
       const ci = eff.findIndex((a, idx) => idx > 0 && /^-[A-Za-z]*c$/.test(a));
       const script = ci !== -1 ? eff[ci + 1] : undefined;
       if (script !== undefined) {
         const inner = lex(script);
         if (!inner.ok) ok = false;
+        if (inner.opaque) opaque = true;
         work.push(...inner.argvs);
         continue;
       }
@@ -370,7 +372,7 @@ export function expand(command: string): ParseResult {
     out.push(eff);
   }
 
-  return { ok, argvs: out };
+  return { ok, argvs: out, opaque };
 }
 
 const PREFIX = "guard:";
@@ -394,8 +396,46 @@ function ghDeny(rest: string[]): string | null {
       return `${PREFIX} dispatching a workflow against main is blocked. A human runs deploys/nightly.`;
     }
   }
+  // `gh api` with a write method (or a field flag that implies POST).
+  if (group === "api" && ghApiWrites(rest)) {
+    return `${PREFIX} gh api with a write method (-X/--method, -f/-F/--input) is blocked.`;
+  }
+  if (group === "repo" && (sub === "delete" || sub === "edit" || sub === "archive")) {
+    return `${PREFIX} gh repo ${sub} changes the repository. Blocked.`;
+  }
+  if (group === "release" && (sub === "create" || sub === "delete" || sub === "edit")) {
+    return `${PREFIX} gh release ${sub} changes releases. Blocked.`;
+  }
+  if (group === "ruleset") {
+    return `${PREFIX} gh ruleset changes branch protection. Blocked.`;
+  }
+  if (group === "variable" && (sub === "set" || sub === "delete")) {
+    return `${PREFIX} gh variable ${sub} changes Actions variables. Blocked.`;
+  }
 
   return null;
+}
+
+/** Whether a `gh api` call writes: a method other than GET, or a field flag. */
+function ghApiWrites(rest: string[]): boolean {
+  let method = "GET";
+  for (let i = 0; i < rest.length; i += 1) {
+    const t = rest[i] as string;
+    if (t === "-X" || t === "--method") {
+      method = (rest[i + 1] ?? "").toUpperCase();
+      i += 1;
+      continue;
+    }
+    if (t.startsWith("--method=")) {
+      method = t.slice("--method=".length).toUpperCase();
+      continue;
+    }
+    if (t === "-f" || t === "-F" || t === "--field" || t === "--raw-field" || t === "--input") {
+      return true; // sending a body implies POST
+    }
+  }
+
+  return method !== "GET";
 }
 
 /** The value of --ref/-r on a `gh workflow run`, or null when none is given. */
@@ -511,6 +551,23 @@ const FLY_VALUE_OPTS = new Set([
   "--dockerfile",
 ]);
 
+/** The only fly subcommands we allow: read-only ones. `[v]` matches any
+ * second word; `[v, w]` needs that exact pair. Everything else is denied. */
+const FLY_READONLY: ReadonlyArray<readonly [string, string?]> = [
+  ["status"],
+  ["logs"],
+  ["releases"],
+  ["version"],
+  ["auth", "whoami"],
+  ["apps", "list"],
+  ["machine", "list"],
+  ["machine", "status"],
+  ["secrets", "list"],
+  ["postgres", "list"],
+  ["ips", "list"],
+  ["checks", "list"],
+];
+
 function flyDeny(rest: string[]): string | null {
   const pos: string[] = [];
   for (let i = 0; i < rest.length; i += 1) {
@@ -524,59 +581,37 @@ function flyDeny(rest: string[]): string | null {
   }
   const p0 = pos[0];
   const p1 = pos[1];
-  if (p0 === "deploy")
-    return `${PREFIX} fly deploy is a production deploy of parkagent-api. Blocked.`;
-  if (p0 === "secrets" && (p1 === "set" || p1 === "unset" || p1 === "import")) {
-    return `${PREFIX} changing prod secrets is blocked. Check-secrets, then a person sets them.`;
-  }
-  if (p0 === "ssh") return `${PREFIX} fly ssh opens a shell on the prod machine. Blocked.`;
-  if ((p0 === "postgres" || p0 === "pg" || p0 === "mpg") && p1 === "connect") {
-    return `${PREFIX} fly postgres connect opens the prod database. Blocked.`;
-  }
+  if (p0 === undefined) return null; // bare `fly` prints help
+  const allowed = FLY_READONLY.some(([a, b]) => a === p0 && (b === undefined || b === p1));
+  if (allowed) return null;
 
-  return null;
+  return `${PREFIX} fly ${p0} changes prod; only read-only fly is allowed.`;
 }
 
 /** Committed, non-secret templates that look like .env.* but hold no secrets. */
 const ENV_TEMPLATES = new Set(["example", "sample", "template", "dist", "defaults"]);
 
-function isSecretPath(arg: string): boolean {
-  const base = arg.split("/").pop() ?? arg;
-  if (base === "Config.xcconfig") return true;
-  if (base === ".env") return true;
-  if (base.startsWith(".env.")) return !ENV_TEMPLATES.has(base.slice(".env.".length));
+/** Whether a path refers to .env, .env.* (not a template), or ios/Config.xcconfig. */
+export function isSecretPath(arg: string): boolean {
+  const name = arg.split("/").pop() ?? arg;
+  if (name === "Config.xcconfig") return true;
+  if (name === ".env") return true;
+  if (name.startsWith(".env.")) return !ENV_TEMPLATES.has(name.slice(".env.".length));
 
   return false;
 }
 
-const READER_VALUE_OPTS = new Set([
-  "-e",
-  "-f",
-  "--regexp",
-  "--file",
-  "-m",
-  "--max-count",
-  "-A",
-  "-B",
-  "-C",
-]);
-
-function readerDeny(cmd: string, rest: string[]): string | null {
-  // Collect the file operands, skipping flags (and, for grep-like readers,
-  // the leading pattern — a pattern of ".env" must not read like the file).
-  const pos: string[] = [];
-  for (let i = 0; i < rest.length; i += 1) {
-    const t = rest[i] as string;
-    if (READER_VALUE_OPTS.has(t)) {
-      i += 1;
-      continue;
-    }
-    if (t.startsWith("-") && t !== "-") continue;
-    pos.push(t);
-  }
-  const files = PATTERN_FIRST.has(cmd) ? pos.slice(1) : pos;
-  if (files.some(isSecretPath)) {
-    return `${PREFIX} reading .env / .env.* / ios/Config.xcconfig is blocked. Secrets live in the vault.`;
+/** Deny any command whose arguments name a secret path — a redirect target
+ * included (`>`/`<` split those into their own argv) — unless the command only
+ * tests for a path's existence or ignore status, never its contents. */
+function secretInArgv(argv: string[]): string | null {
+  const cmd = base(argv[0] as string);
+  const safe =
+    SAFE_WITH_SECRET.has(cmd) ||
+    (cmd === "git" && (argv[1] === "check-ignore" || argv[1] === "ls-files"));
+  if (safe) return null;
+  if (argv.some(isSecretPath)) {
+    return `${PREFIX} reading a secret path (.env / .env.* / ios/Config.xcconfig) is blocked. Secrets live in the vault.`;
   }
 
   return null;
@@ -585,20 +620,28 @@ function readerDeny(cmd: string, rest: string[]): string | null {
 function denyArgv(argv: string[], branch: string | null): string | null {
   const cmd = argv[0];
   if (cmd === undefined) return null;
+  const b = base(cmd);
   const rest = argv.slice(1);
-  if (cmd === "gh") return ghDeny(rest);
-  if (cmd === "git") return gitDeny(rest, branch);
-  if (cmd === "fly" || cmd === "flyctl") return flyDeny(rest);
-  if (READERS.has(cmd)) return readerDeny(cmd, rest);
+  if (b === "gh") {
+    const r = ghDeny(rest);
+    if (r !== null) return r;
+  } else if (b === "git") {
+    const r = gitDeny(rest, branch);
+    if (r !== null) return r;
+  } else if (b === "fly" || b === "flyctl") {
+    const r = flyDeny(rest);
+    if (r !== null) return r;
+  }
 
-  return null;
+  // Any command (other than the safe existence/ignore checks) naming a secret.
+  return secretInArgv(argv);
 }
 
 /** True when any effective argv is a bare `git push` whose branch we must know. */
 export function needsBranch(argvs: string[][]): boolean {
   return argvs.some((argv) => {
     const a = unwrap(argv);
-    if (a[0] !== "git") return false;
+    if (a[0] === undefined || base(a[0]) !== "git") return false;
     const pi = pushIndex(a.slice(1));
     if (pi === -1) return false;
     const pushArgs = a.slice(1).slice(pi + 1);
@@ -621,7 +664,7 @@ export function needsBranch(argvs: string[][]): boolean {
 export function gitDirOf(argvs: string[][]): string | null {
   for (const argv of argvs) {
     const a = unwrap(argv);
-    if (a[0] !== "git") continue;
+    if (a[0] === undefined || base(a[0]) !== "git") continue;
     const ci = a.indexOf("-C");
     const dir = ci !== -1 ? a[ci + 1] : undefined;
     if (dir !== undefined) return dir;
@@ -630,9 +673,10 @@ export function gitDirOf(argvs: string[][]): string | null {
   return null;
 }
 
-/** The guarded verbs to look for when a command could not be parsed. */
-const UNPARSEABLE =
-  /(?:^|[\s;&|()`$<>])(?:gh|git|fly|flyctl)(?:\s|$)|\.env(?:\.|\b)|Config\.xcconfig/;
+/** A guarded tool named anywhere on the line (even after `=`), or a secret
+ * path. Used to fail closed when the line can't be parsed, or when a command's
+ * own name was hidden behind a variable/substitution. */
+export const NAMES_GUARDED = /\b(?:gh|git|fly|flyctl)\b|\.env(?:\.|\b)|Config\.xcconfig/;
 
 /**
  * Decide a Bash command. Returns a one-line deny reason, or null to allow
@@ -640,13 +684,18 @@ const UNPARSEABLE =
  * git branch when known; the hook fetches it only when `needsBranch` is true.
  */
 export function decide(command: string, branch: string | null = null): string | null {
-  const { ok, argvs } = expand(command);
+  const { ok, argvs, opaque } = expand(command);
   if (!ok) {
-    if (UNPARSEABLE.test(command)) {
+    if (NAMES_GUARDED.test(command)) {
       return `${PREFIX} command could not be parsed and names a guarded tool. Blocked; simplify it or use /guard off.`;
     }
 
     return null;
+  }
+  // The command's own name came from a variable/substitution and the line names
+  // a guarded tool: we can't tell what it runs, so fail closed.
+  if (opaque && NAMES_GUARDED.test(command)) {
+    return `${PREFIX} a variable or substitution hides the command, and the line names a guarded tool. Blocked; write it out or use /guard off.`;
   }
   for (const argv of argvs) {
     const reason = denyArgv(argv, branch);

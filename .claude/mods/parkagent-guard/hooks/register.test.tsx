@@ -137,3 +137,47 @@ test("/guard status reports whether the guard is on or lifted", async ($, on) =>
   expect((await $.command.run(GUARD(""))).text).toMatch(/lifted/i);
   void w;
 });
+
+const fileCheck = ($: Engine, tool: string, input: Record<string, unknown>) =>
+  $.tool.check({ tool, input });
+
+test("the file tools cannot read a secret path", async ($, on) => {
+  world(on);
+  await $.session.start(START);
+
+  expect((await fileCheck($, "Read", { file_path: ".env" })).decision).toBe("deny");
+  expect((await fileCheck($, "Read", { file_path: "/repo/.env.production" })).decision).toBe(
+    "deny",
+  );
+  expect((await fileCheck($, "Edit", { file_path: "ios/Config.xcconfig" })).decision).toBe("deny");
+  expect((await fileCheck($, "Write", { file_path: ".env.local" })).decision).toBe("deny");
+  expect((await fileCheck($, "Grep", { pattern: "KEY", path: ".env" })).decision).toBe("deny");
+  expect((await fileCheck($, "Glob", { pattern: "**/.env" })).decision).toBe("deny");
+  // Ordinary paths run, and a committed template is not a secret.
+  expect((await fileCheck($, "Read", { file_path: "server/src/index.ts" })).decision).toBe("allow");
+  expect((await fileCheck($, "Read", { file_path: ".env.example" })).decision).toBe("allow");
+});
+
+test("the catch returns ask, never allow, when evaluation throws after deferring", async ($, on) => {
+  mock.clock(on, { now: 1_000_000 });
+  on("session.start", (_, e) => ({ cwd: e.cwd }));
+  on("session.cwd", () => ({ value: "/repo" }));
+  on("command.register", (_, e) => ({ value: { command: e.name } }));
+  on("process.run", () => ({
+    value: {
+      exitCode: 0,
+      stdout: "feat/x\n",
+      stderr: "",
+      isStdoutTruncated: false,
+      isStderrTruncated: false,
+    },
+  }));
+  // The engine beneath throws: the guard called next() for a non-guarded command,
+  // so the catch takes over with next already called — it must ask, not allow.
+  on("tool.check", () => {
+    throw new Error("engine boom");
+  });
+  await $.session.start(START);
+
+  expect((await check($, "pnpm test")).decision).toBe("ask");
+});

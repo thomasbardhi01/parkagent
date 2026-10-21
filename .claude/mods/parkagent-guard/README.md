@@ -9,28 +9,52 @@ must never do:
 - **`gh pr merge`** — a human merges, never a Claude session (CLAUDE.md).
 - **`gh pr review --approve`** — no self-approval.
 - **`gh secret set`** — never writes repository/Actions secrets.
-- **`gh workflow run`** against main (no `--ref`, or `--ref main`/`master`) —
-  a human runs deploys and the nightly.
+- **`gh workflow run`** against main (no `--ref`, or `--ref main`/`master`).
+- **`gh api`** with a write method (`-X`/`--method` other than GET, or a
+  `-f`/`-F`/`--input` field that implies POST), and **`gh repo delete|edit|
+  archive`**, **`gh release create|delete|edit`**, **`gh ruleset …`**,
+  **`gh variable set|delete`**.
 - **`git push` to `main`/`master`** in any form: bare push while on main,
   `origin main`, `HEAD:main`, `--force`, `--delete main`, `--all`/`--mirror`.
   A push to a feature branch is allowed.
-- **`fly deploy`**, **`fly secrets set|unset|import`**, **`fly ssh`**,
-  **`fly postgres connect`** — production machine and secrets.
-- **Reading `.env`, `.env.*`, or `ios/Config.xcconfig`** with
-  `cat · less · head · tail · more · grep · rg · source · . · cp · bat ·
-  strings · xxd · od · nl · view`. `.env.example`/`.env.sample` (committed,
-  non-secret templates) are allowed.
+- **`fly`** — only read-only verbs are allowed (`status`, `logs`, `releases`,
+  `version`, `auth whoami`, `apps list`, `machine list|status`, `secrets
+  list`, `postgres list`, `ips list`, `checks list`). Everything else
+  (`deploy`, `ssh`, `secrets set`, `machine exec`, …) is denied.
+- **Any command that names a secret path** (`.env`, `.env.*`, or
+  `ios/Config.xcconfig`) — the file tools (`Read`, `Edit`, `Write`,
+  `NotebookEdit`, and `Grep`/`Glob` by their path/glob) and any Bash argv,
+  **a bare redirect target included** (`cat < .env`). The only exception is a
+  command that checks for a path without reading it: `ls`, `stat`, `test`,
+  `[`, `git check-ignore`, `git ls-files`. `.env.example`/`.env.sample`/
+  `.env.template`/`.env.dist`/`.env.defaults` (committed templates) are not
+  secrets.
 
 It parses the command the way a shell would: it splits on `;  &&  ||  |`,
 subshells and `< >` redirections, descends into `$(...)`, backticks and
-`bash -c` / `sh -c "..."`, and sees through wrapper prefixes
-(`env VAR=1 …`, `sudo`, `timeout 60 …`, `nohup`, `xargs`). **If it can't parse
-a command and the command names a guarded tool, it denies it** rather than
-guess. The deny reason the model reads starts with `guard:`.
+`bash -c` / `sh -c "..."`, sees through wrapper prefixes (`env VAR=1 …`,
+`sudo`, `timeout 60 …`, `nohup`, `xargs`), and matches `gh`/`git`/`fly` by
+**basename** so an absolute path (`/opt/homebrew/bin/gh`) still counts.
+**It fails closed** when it can't parse a command that names a guarded tool,
+and when the command's own name is hidden behind a variable or substitution
+(`G=gh; $G pr merge`) and the line names a guarded tool. The deny reason the
+model reads starts with `guard:`.
 
-A denial is the guard's `tool.check` hook returning `{ decision: "deny" }`;
-it only ever *tightens*, so nothing it allows loosens Claude Code's own
-permission rules.
+A denial is a `tool.check` hook returning `{ decision: "deny" }`; the guard
+only ever *tightens*, never loosening Claude Code's own rules. If a hook ever
+throws, its catch **never answers "allow"** — it denies anything naming a
+guarded tool, otherwise defers to the engine, otherwise asks the person.
+
+## Two layers
+
+The mod is the **strong** layer, but only in sessions that load it. As an
+**always-on weak** backstop, `.claude/settings.json` carries native
+`permissions.deny` rules — `Read(./.env)`, `Read(./.env.*)`,
+`Read(./ios/Config.xcconfig)`, `Bash(gh pr merge:*)`, `Bash(gh secret set:*)`,
+`Bash(fly deploy:*)`, `Bash(fly secrets set:*)`, `Bash(fly ssh:*)`,
+`Bash(git push origin main:*)` — that apply in every session with no mod
+loaded. Those rules are coarse (they don't understand compound commands,
+wrappers or substitutions); the mod is what does.
 
 ## Turning it off
 

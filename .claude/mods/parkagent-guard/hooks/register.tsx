@@ -1,7 +1,7 @@
 import { atom, read, update } from "claude-code";
 import type { Register } from "claude-code";
 
-import { decide, expand, gitDirOf, needsBranch } from "./guard";
+import { decide, expand, gitDirOf, isSecretPath, NAMES_GUARDED, needsBranch } from "./guard";
 
 type Engine = Parameters<Parameters<Register>[0]>[2] extends (
   $: infer E,
@@ -12,11 +12,11 @@ type Engine = Parameters<Parameters<Register>[0]>[2] extends (
 
 const OFF_MS = 10 * 60 * 1000;
 
+const SECRET_READ_REASON =
+  "guard: reading a secret path (.env / .env.* / ios/Config.xcconfig) is blocked. Secrets live in the vault.";
+
 /** When the /guard off window ends, in epoch ms; 0 means the guard is armed. */
 const offUntil = atom({ plugin: "parkagent-guard", key: "offUntil" } as const, 0);
-
-/** Guarded verbs scanned in the fail-closed catch, when the hook itself threw. */
-const GUARDED = /(?:^|[\s;&|()`$<>])(?:gh|git|fly|flyctl)(?:\s|$)|\.env(?:\.|\b)|Config\.xcconfig/;
 
 const commandOf = (input: unknown): string =>
   typeof input === "object" &&
@@ -24,6 +24,26 @@ const commandOf = (input: unknown): string =>
   typeof (input as { command?: unknown }).command === "string"
     ? (input as { command: string }).command
     : "";
+
+/** The file tools whose target path we check against the secret paths. */
+const FILE_TOOLS = ["Read", "Grep", "Glob", "Edit", "Write", "NotebookEdit"] as const;
+
+/** The path(s) a file tool's input names: the file, and for Grep/Glob the
+ * directory and the glob/pattern that stands in for a path. */
+function fileToolTargets(tool: string, input: unknown): string[] {
+  const o = (input ?? {}) as Record<string, unknown>;
+  const str = (k: string): string | undefined =>
+    typeof o[k] === "string" ? (o[k] as string) : undefined;
+  const keys =
+    tool === "NotebookEdit"
+      ? ["notebook_path"]
+      : tool === "Grep"
+        ? ["path", "glob"]
+        : tool === "Glob"
+          ? ["path", "pattern"]
+          : ["file_path"]; // Read, Edit, Write
+  return keys.map(str).filter((v): v is string => v !== undefined);
+}
 
 /** The current git branch, for a bare `git push`; null when it can't be read. */
 async function currentBranch($: Engine, dir: string | null): Promise<string | null> {
@@ -79,8 +99,8 @@ export const register: Register = (on) => {
     return next(e);
   }).catch(($, e, next) => {
     // The hook threw or timed out. Fail closed on anything naming a guarded
-    // tool; otherwise let the engine's verdict stand.
-    if (GUARDED.test(commandOf(e.input))) {
+    // tool; never answer "allow" — defer if we can, otherwise ask the person.
+    if (NAMES_GUARDED.test(commandOf(e.input))) {
       return {
         decision: "deny",
         reason:
@@ -88,8 +108,30 @@ export const register: Register = (on) => {
       };
     }
 
-    return next.called ? next(e) : { decision: "allow" };
+    return next.called ? { decision: "ask" } : next(e);
   });
+
+  // The same enforcement for the file tools: never read a secret path.
+  for (const tool of FILE_TOOLS) {
+    on("tool.check", { tool }, async ($, e, next) => {
+      if (e.agentId === undefined) {
+        const until = await read($, offUntil);
+        if (until > (await $.clock.now())) return next(e);
+      }
+      if (fileToolTargets(String(e.tool), e.input).some(isSecretPath)) {
+        return { decision: "deny", reason: SECRET_READ_REASON };
+      }
+
+      return next(e);
+    }).catch(($, e, next) => {
+      // Fail closed on a secret target; never answer "allow".
+      if (fileToolTargets(String(e.tool), e.input).some(isSecretPath)) {
+        return { decision: "deny", reason: SECRET_READ_REASON };
+      }
+
+      return next.called ? { decision: "ask" } : next(e);
+    });
+  }
 
   on("command.run", { command: "guard" }, async ($, e) => {
     const arg = e.args.trim().toLowerCase();

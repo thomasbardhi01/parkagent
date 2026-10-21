@@ -32,6 +32,43 @@ test("gh: read-only and feature-branch dispatches are allowed", () => {
   allow("gh workflow run ci.yml --ref feat/x");
 });
 
+test("gh api writes and other mutating gh subcommands are denied", () => {
+  deny("gh api --method PUT repos/o/r/pulls/1/merge"); // merge via the API
+  deny("gh api -X POST repos/o/r/issues");
+  deny("gh api repos/o/r/dispatches -f event_type=x"); // -f implies POST
+  deny("gh api graphql -F query=@q.graphql");
+  deny("gh repo delete o/r");
+  deny("gh repo edit --visibility public");
+  deny("gh repo archive o/r");
+  deny("gh release create v1");
+  deny("gh release delete v1");
+  deny("gh ruleset create");
+  deny("gh variable set FOO --body bar");
+  deny("gh variable delete FOO");
+  allow("gh api repos/o/r"); // a plain GET
+  allow("gh api repos/o/r --method GET");
+  allow("gh repo view o/r");
+  allow("gh release list");
+  allow("gh variable list");
+});
+
+test("gh/git/fly are matched by basename, so an absolute path still counts", () => {
+  deny("/opt/homebrew/bin/gh pr merge 1");
+  deny("/usr/bin/git push origin main");
+  deny("/opt/homebrew/bin/fly deploy");
+  deny("/opt/homebrew/bin/gh api -X DELETE repos/o/r");
+});
+
+test("a hidden command (variable or substitution) fails closed when the line names a guarded tool", () => {
+  deny("G=gh; $G pr merge 1");
+  deny("C=$(echo cat); $C .env");
+  deny("`echo gh` pr merge 1");
+  deny("$(echo fly) deploy");
+  // No guarded tool named: a hidden command is left alone.
+  allow("E=echo; $E hello");
+  allow("$(echo ls) -la");
+});
+
 test("git push to main/master is denied in every form", () => {
   deny("git push", "main");
   deny("git push", "master");
@@ -58,7 +95,19 @@ test("git push to a feature branch, and other git commands, are allowed", () => 
   allow('git commit -m "no pushes to main here"');
 });
 
-test("fly deploy / secrets / ssh / postgres connect are denied; read-only fly is allowed", () => {
+test("fly: only read-only verbs are allowed; everything else is denied", () => {
+  allow("fly status -a parkagent-api");
+  allow("fly logs");
+  allow("fly releases -a parkagent-api --image");
+  allow("fly version");
+  allow("fly auth whoami");
+  allow("fly apps list");
+  allow("fly machine list");
+  allow("fly machine status 1234 -a parkagent-api");
+  allow("fly secrets list");
+  allow("fly postgres list");
+  allow("fly ips list");
+  allow("fly checks list");
   deny("fly deploy");
   deny("fly deploy -a parkagent-api");
   deny("flyctl deploy --image registry.fly.io/parkagent-api:deployment-x");
@@ -66,13 +115,12 @@ test("fly deploy / secrets / ssh / postgres connect are denied; read-only fly is
   deny("fly secrets unset FOO");
   deny("fly ssh console -a parkagent-api");
   deny("fly postgres connect -a parkagent-db");
-  allow("fly status -a parkagent-api");
-  allow("fly logs");
-  allow("fly releases -a parkagent-api --image");
-  allow("fly scale show -a parkagent-api");
+  deny("fly machine exec 1234 -a parkagent-api"); // not list/status
+  deny("fly scale show -a parkagent-api"); // read-ish, but not on the allowlist
+  deny("fly apps destroy parkagent-api");
 });
 
-test("reading .env, .env.*, and ios/Config.xcconfig is denied; other reads are allowed", () => {
+test("any command naming a secret path is denied, whatever the command", () => {
   deny("cat .env");
   deny("cat ./.env");
   deny("less .env.production");
@@ -83,11 +131,26 @@ test("reading .env, .env.*, and ios/Config.xcconfig is denied; other reads are a
   deny("cp .env /tmp/leak");
   deny("cat ios/Config.xcconfig");
   deny("cat server/../ios/Config.xcconfig");
+  // No READERS allowlist any more: an arbitrary tool naming a secret is denied.
+  deny("awk '{print}' .env");
+  deny("sed -n 1p .env");
+  deny("base64 .env");
+  deny("cat < .env"); // a bare redirect target counts
+  deny("cat .env > /tmp/leak"); // the reader before the redirect counts
   allow("cat server/src/index.ts");
   allow("grep -rn TODO server/src");
-  allow('grep "\\.env" docs/setup.md'); // ".env" is the PATTERN, not a file
+  allow('grep "\\.env" docs/setup.md'); // the arg is literally \.env, not .env
   allow("cat .env.example"); // committed template, not a secret
   allow("cat .env.sample");
+});
+
+test("existence/ignore checks may name a secret path without reading it", () => {
+  allow("ls -la .env");
+  allow("stat .env");
+  allow("test -f .env");
+  allow("[ -f .env ]");
+  allow("git check-ignore .env");
+  allow("git ls-files .env");
 });
 
 test("compound commands: a guarded verb anywhere in the line is denied", () => {

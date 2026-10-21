@@ -324,20 +324,24 @@ Keep new code on those rules.
   steps to them instead of reading the raw output itself. Their `tools:`
   lines use plain `Bash` (a scoped `Bash(...)` pattern there does not
   actually restrict which commands run — #221 comment 6305900070); the
-  reader agents keep `disallowedTools: Write, Edit`, and `parkagent-guard`
+  reader agents keep `disallowedTools: Write, Edit`, and the `guard` plugin
   below is the real backstop.
 - There are **two guard layers**, and together they keep a slip from running:
-  - `.claude/mods/parkagent-guard/` is the **strong layer**, but only when the
-    mod is loaded (`CLAUDE_CODE_PLUGIN_DIRS`, its README). It parses every Bash
-    command (in this session and its subagents) and the file tools' target
-    paths, and denies the ones a Claude session must never run — `gh pr merge`,
-    `gh pr review --approve`, `gh secret set`, `gh workflow run` on main, `gh
-    api` writes, `gh repo/release/ruleset/variable` mutations, `git push` to
-    main/master, any non-read-only `fly`, and reads of `.env`/`.env.*`/
-    `ios/Config.xcconfig`. It matches gh/git/fly by basename, fails closed on a
-    command it can't parse or whose name is hidden behind a variable, and its
-    `tool.check` catch never answers "allow". `/guard off` lifts it for 10
-    minutes in one session after a confirmation (never for subagents).
+  - The `guard` plugin (`guard@claude-mods`, enabled in `.claude/settings.json`,
+    configured under `claudeMods.guard` there; README in
+    thomasbardhi01/claude-mods) is the **strong layer**, in every session that
+    has installed it. It parses every Bash command (in this session and its
+    subagents) and the file tools' target paths, and denies the ones a Claude
+    session must never run — `gh pr merge`, `gh pr review --approve`,
+    `gh secret set`, `gh workflow run` on main, `gh api` writes,
+    `gh repo/release/ruleset/variable` mutations, `git push` to main (the
+    default branch, read from `origin/HEAD`), any non-read-only `fly`, and
+    reads of `.env`/`.env.*`/`Config.xcconfig`. It matches gh/git/fly by
+    basename, fails closed on a command it can't parse or whose name is
+    hidden behind a variable, and its `tool.check` catch never answers
+    "allow". `/guard off` lifts it for 10 minutes in one session after a
+    confirmation (never for subagents). Edit `.claude/settings.json` by
+    hand: the `guard` plugin blocks Claude sessions from changing it.
   - `.claude/settings.json` `permissions.deny` is the **always-on weak layer**:
     native Claude Code rules that need no mod and apply in every session,
     covering the worst cases (reading `.env`/`Config.xcconfig`, `gh pr merge`,
@@ -347,10 +351,12 @@ Keep new code on those rules.
   Neither changes the working agreement: a human still merges every PR, a
   Claude session never does (see "Working style") — the guards just make the
   slip impossible to run by hand.
-- `.claude/mods/parkagent-fleet/`: a mod that draws context %, rate limits
-  and cost above the prompt and a `/fleet` pane of every session on this
-  machine plus the latest CI runs. Load it once via
-  `CLAUDE_CODE_PLUGIN_DIRS` in `~/.claude/settings.json` (its README).
+- The `fleet`, `route` and `lean` plugins (same marketplace, config under
+  `claudeMods` in `.claude/settings.json`): a band with context %, rate limits
+  and cost above the prompt; a `/fleet` pane of every session on this machine
+  plus CI, open PRs, the last nightly and prod health; `/report` to the `coord`
+  session; simple read-only turns routed to haiku (`/route`); a lean prompt
+  mode (`/lean`).
 - Sessions talk to each other with the built-in `ListAgents`/`SendMessage`;
   one coordinator session hands out one PR per worker worktree.
 - `docs/audit/2026-10-audit-brief.md` is the audit prompt: one session per

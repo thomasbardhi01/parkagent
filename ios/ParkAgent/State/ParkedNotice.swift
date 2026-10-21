@@ -436,6 +436,60 @@ enum ParkedNotice {
     /// Pay was tapped at the car and the hour the server keeps a park ran
     /// out with the phone still there: nothing was paid, and the driver
     /// was counting on it.
+    /// A waiting park the server dropped on a drive-off read from the pace
+    /// between two fixes (#226): a guess one GPS jump can make, and the
+    /// park is closed for good. Said in words, so a driver still parked
+    /// knows nothing will pay. Nil for anything else (a drive-off read
+    /// from the phone's own speed, a return, an older server): those go
+    /// quietly, as before.
+    static func driveOffGuessContent(_ park: LocationResponse.Park, waiting: Waiting) -> Content? {
+        guard park.status == "cancelled", park.readBy == "pace",
+              park.parkedEventId == waiting.response.parkedEventId
+        else { return nil }
+        let number = waiting.response.candidates.first?.providerZoneNumber
+        let zone = number.flatMap { $0.isEmpty ? nil : "zone \($0)" } ?? "the meter"
+        let app = waiting.response.provider?.displayName ?? "the parking app"
+        return Content(
+            title: number.flatMap { $0.isEmpty ? nil : "Zone \($0) won't be paid" } ?? "The meter won't be paid",
+            body: "It looks like your car moved, so ParkAgent won't pay \(zone). If you're still parked, pay at the meter or in \(app)."
+        )
+    }
+
+    /// Pay on the walk-away notification that the server kept rather than
+    /// paid (#226): the phone was back near the car, or it is free now.
+    /// iOS has already taken the notification away, so without this the
+    /// tap shows nothing at all.
+    static func tapAnswerContent(_ outcome: ParkConfirmOutcome, zoneNumber: String?) -> Content? {
+        let zone = zoneNumber.flatMap { $0.isEmpty ? nil : "Zone \($0)" }
+        switch outcome {
+        case .started:
+            return nil
+        case .waitingForWalkAway:
+            return Content(
+                title: zone.map { "\($0): Pay kept" } ?? "Pay kept",
+                body: "Kept. ParkAgent pays when you walk away."
+            )
+        case .freePeriod(let notice):
+            return Content(
+                title: zone.map { "\($0) is free right now" } ?? "The meter is free right now",
+                body: (notice ?? "Meters here are free right now.") + " Nothing was paid."
+            )
+        }
+    }
+
+    static let tapAnswerType = "walk_away_tap_answer"
+
+    @MainActor
+    static func postTapAnswer(_ content: Content, parkedEventId: String) async {
+        let notification = UNMutableNotificationContent()
+        notification.title = content.title
+        notification.body = content.body
+        notification.interruptionLevel = .passive
+        notification.userInfo = ["type": type, "parkedEventId": parkedEventId]
+        let request = UNNotificationRequest(identifier: tapAnswerType, content: notification, trigger: nil)
+        try? await UNUserNotificationCenter.current().add(request)
+    }
+
     static func expiredContent(zoneNumber: String?) -> Content {
         Content(
             title: zoneNumber.map { "Zone \($0) wasn't paid" } ?? "The meter wasn't paid",
@@ -449,16 +503,25 @@ enum ParkedNotice {
     /// longer being looked after before walking away again.
     static let sessionEndedType = "session_ended_at_return"
 
-    static func sessionEndedContent(zoneNumber: String, stopped: Bool, paidUntil: Date) -> Content {
+    /// `why` and `readBy` are the server's `ended` (#226): a drive-off read
+    /// from the pace between two fixes is a guess (one GPS jump can make
+    /// it), so it isn't said as fact, and a driver still parked is told
+    /// how to keep the time going.
+    static func sessionEndedContent(
+        zoneNumber: String, stopped: Bool, paidUntil: Date, why: String? = nil, readBy: String? = nil
+    ) -> Content {
         let zone = zoneNumber.isEmpty ? "the meter" : "zone \(zoneNumber)"
+        let guessed = why == "drove_off" && readBy == "pace"
+        let what = guessed ? "It looks like your car moved" : why == "drove_off" ? "You drove off" : "You're back at your car"
+        let stillParked = guessed ? " If you're still parked, pay again in the app." : ""
         return stopped
             ? Content(
                 title: "Parking session ended",
-                body: "You're back at your car, so ParkAgent stopped \(zone). If you're staying parked, pay again in the app."
+                body: "\(what), so ParkAgent stopped \(zone). If you're staying parked, pay again in the app."
             )
             : Content(
                 title: "Parking session ended",
-                body: "You're back at your car. \(zone.prefix(1).uppercased() + zone.dropFirst()) stays paid until \(Format.clockTime(paidUntil)), and ParkAgent won't add more time."
+                body: "\(what). \(zone.prefix(1).uppercased() + zone.dropFirst()) stays paid until \(Format.clockTime(paidUntil)), and ParkAgent won't add more time.\(stillParked)"
             )
     }
 
@@ -487,6 +550,9 @@ enum ParkedNotice {
         var shown: ParkPrompt?
         /// Pay was tapped at the car: kept, and paid at walk-away.
         var confirmed = false
+        /// The park's own time (its /parked `ts`). The server reads no fix
+        /// measured before it, so a `left_car` sent with one is lost.
+        var parkedAt: Date? = nil
 
         var coordinate: CLLocationCoordinate2D {
             CLLocationCoordinate2D(latitude: latitude, longitude: longitude)

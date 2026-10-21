@@ -351,13 +351,14 @@ final class LiveAPIRequestTests: XCTestCase {
         """#)
         let answer = try await api.reportParkLocation(LocationReport(
             lat: 40.7790, lng: -73.9819, accuracy: 8, ts: Date(timeIntervalSince1970: 1_790_000_060),
-            measuredAt: Date(timeIntervalSince1970: 1_790_000_000), event: "left_car"
+            measuredAt: Date(timeIntervalSince1970: 1_790_000_000), event: "left_car", speedMps: 1.4
         ))
         let request = try sentRequest()
         XCTAssertEqual(request.httpMethod, "POST")
         XCTAssertEqual(request.url?.path(), "/location")
         let sent = try body(request)
         XCTAssertEqual(sent["event"] as? String, "left_car")
+        XCTAssertEqual(sent["speedMps"] as? Double, 1.4)
         // Reported a minute after it was measured: both times go out.
         let reported = try XCTUnwrap(sent["ts"] as? String)
         let measured = try XCTUnwrap(sent["measuredAt"] as? String)
@@ -375,7 +376,10 @@ final class LiveAPIRequestTests: XCTestCase {
         // With nothing seen, no event key is sent; an ended session reads back.
         StubURLProtocol.respond(json: #"{"ok": true, "sessionId": "s1", "ended": {"reason": "returned", "stopped": false}}"#)
         let ended = try await api.reportParkLocation(LocationReport(lat: 40.7784, lng: -73.9819, accuracy: 8, ts: Date()))
-        XCTAssertNil(try body(try sentRequest())["event"])
+        let plain = try body(try sentRequest())
+        XCTAssertNil(plain["event"])
+        // No valid speed is said as null (#226), not left out.
+        XCTAssertTrue(plain["speedMps"] is NSNull, "\(plain)")
         XCTAssertEqual(ended.ended, LocationResponse.Ended(reason: "returned", stopped: false))
         XCTAssertNil(ended.prompt)
     }

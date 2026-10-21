@@ -195,6 +195,174 @@ struct LocationReporterTests {
         reporter.stop()
     }
 
+    // MARK: - Walk-away and drive-off (#226)
+
+    /// A park held at the car, parked at `parkedAt`.
+    private func waitingPark(parkedAt: Date, id: String = "pe1") -> ParkedNotice.Waiting {
+        var held = MockFixtures.singleQuote()
+        held.parkedEventId = id
+        held.awaitsWalkAway = true
+        var waiting = ParkedNotice.Waiting(
+            response: held, latitude: 42.35, longitude: -71.07, savedAt: parkedAt, shown: nil
+        )
+        waiting.parkedAt = parkedAt
+        return waiting
+    }
+
+    /// `meters` north of the car at 42.35, -71.07.
+    private func fix(_ meters: Double, at: Date, accuracy: Double = 6, speed: Double? = nil) -> ParkFix {
+        ParkFix(latitude: 42.35 + meters / 111_320, longitude: -71.07, accuracy: accuracy, at: at, speed: speed)
+    }
+
+    @Test func everyFixCarriesItsSpeedOrSaysItHasNone() async {
+        let clock = Clock()
+        let server = Server()
+        let reporter = LocationReporter(now: { clock.now }, usesSystemLocation: false)
+        reporter.start(send: { try await server.receive($0) }, carCoordinate: nil)
+        await reporter.handle(fix(0, at: clock.now, speed: 1.4))
+        clock.now += 61
+        await reporter.handle(fix(1, at: clock.now))
+        #expect(server.reports.map(\.speedMps) == [1.4, nil])
+        reporter.stop()
+    }
+
+    /// CoreLocation's first fix after a start is often a cached one from
+    /// before the park. The server reads nothing measured before the park,
+    /// so a `left_car` sent with it was lost, and CoreMotion never says
+    /// "walking" twice.
+    @Test func aLeftCarWhoseFixPredatesTheParkWaitsForAFreshOne() async {
+        let clock = Clock()
+        let server = Server()
+        server.reply = LocationResponse(park: .init(parkedEventId: "pe1", status: "at_car"))
+        let reporter = LocationReporter(now: { clock.now }, usesSystemLocation: false)
+        let parkedAt = clock.now
+        reporter.start(send: { try await server.receive($0) }, carCoordinate: nil, waiting: waitingPark(parkedAt: parkedAt))
+        // The cached fix: two minutes older than the park.
+        await reporter.handle(fix(0, at: parkedAt.addingTimeInterval(-120)))
+        #expect(server.reports.count == 1)
+
+        clock.now += 2
+        await reporter.note(.leftCar)
+        #expect(server.reports.allSatisfy { $0.event == nil }, "Sent with a fix the server reads as nothing")
+
+        // The first fix since the park takes it, without waiting for the
+        // usual cadence.
+        clock.now += 3
+        server.reply = LocationResponse(park: .init(parkedEventId: "pe1", status: "prompted"))
+        await reporter.handle(fix(12, at: clock.now, speed: 1.3))
+        let carried = server.reports.filter { $0.event == "left_car" }
+        #expect(carried.count == 1)
+        #expect((carried.first?.measuredAt ?? .distantPast) >= parkedAt)
+        reporter.stop()
+    }
+
+    /// At the car's door with a sharp fix the server keeps the park at the
+    /// car: the walk-away is said again with the next fix, until the
+    /// server's answer shows it took it.
+    @Test func aLeftCarTheServerDidNotTakeIsSaidAgain() async {
+        let clock = Clock()
+        let server = Server()
+        server.reply = LocationResponse(park: .init(parkedEventId: "pe1", status: "confirmed"))
+        let reporter = LocationReporter(now: { clock.now }, usesSystemLocation: false)
+        reporter.start(send: { try await server.receive($0) }, carCoordinate: nil, waiting: waitingPark(parkedAt: clock.now))
+        clock.now += 1
+        await reporter.handle(fix(4, at: clock.now))
+        await reporter.note(.leftCar)
+        #expect(server.reports.last?.event == "left_car")
+
+        // Still "confirmed": not taken. Said again with the next fix.
+        clock.now += 16
+        server.reply = LocationResponse(park: .init(parkedEventId: "pe1", status: "starting"))
+        await reporter.handle(fix(18, at: clock.now, speed: 1.4))
+        #expect(server.reports.filter { $0.event == "left_car" }.count == 2)
+
+        // Taken: the next report carries nothing.
+        clock.now += 61
+        await reporter.heartbeatDue()
+        #expect(server.reports.last?.event == nil)
+        reporter.stop()
+    }
+
+    /// A walk to the trunk, then back in the car: once motion no longer
+    /// has the driver on foot, a `left_car` not yet taken is dropped.
+    @Test func aLeftCarIsDroppedOnceMotionNoLongerHasTheDriverOnFoot() async {
+        let clock = Clock()
+        let server = Server()
+        server.reply = LocationResponse(park: .init(parkedEventId: "pe1", status: "confirmed"))
+        let reporter = LocationReporter(now: { clock.now }, usesSystemLocation: false)
+        var onFoot = true
+        reporter.stillOnFoot = { onFoot }
+        reporter.start(send: { try await server.receive($0) }, carCoordinate: nil, waiting: waitingPark(parkedAt: clock.now))
+        clock.now += 1
+        await reporter.handle(fix(3, at: clock.now))
+        await reporter.note(.leftCar)
+        #expect(server.reports.last?.event == "left_car")
+
+        onFoot = false
+        clock.now += 20
+        await reporter.handle(fix(40, at: clock.now))
+        #expect(server.reports.count == 3)
+        #expect(server.reports.last?.event == nil, "A red light 40 m on is not a walk-away")
+        reporter.stop()
+    }
+
+    @Test func aLeftCarNeverRidesOnAFixAtDrivingSpeed() async {
+        let clock = Clock()
+        let server = Server()
+        server.reply = LocationResponse(park: .init(parkedEventId: "pe1", status: "confirmed"))
+        let reporter = LocationReporter(now: { clock.now }, usesSystemLocation: false)
+        reporter.start(send: { try await server.receive($0) }, carCoordinate: nil, waiting: waitingPark(parkedAt: clock.now))
+        clock.now += 1
+        await reporter.handle(fix(30, at: clock.now, speed: 9))
+        await reporter.note(.leftCar)
+        clock.now += 20
+        await reporter.handle(fix(200, at: clock.now, speed: 11))
+        #expect(server.reports.allSatisfy { $0.event == nil })
+        // Walking pace again: now it goes.
+        clock.now += 20
+        await reporter.handle(fix(210, at: clock.now, speed: 1.2))
+        #expect(server.reports.last?.event == "left_car")
+        reporter.stop()
+    }
+
+    /// Back in the car and driving off within the minute: by the time
+    /// CoreMotion says "automotive" the latest fix is down the street. The
+    /// report goes with the fix from when the drive began, at the car.
+    @Test func returnedToCarGoesWithTheFixFromWhenTheDriveBegan() async {
+        let clock = Clock()
+        let server = Server()
+        let reporter = LocationReporter(now: { clock.now }, usesSystemLocation: false)
+        reporter.start(send: { try await server.receive($0) }, carCoordinate: nil)
+        let atCar = clock.now
+        await reporter.handle(fix(5, at: atCar, accuracy: 8))
+        clock.now += 20
+        await reporter.handle(fix(90, at: clock.now, accuracy: 10, speed: 8))
+        clock.now += 20
+        await reporter.handle(fix(240, at: clock.now, accuracy: 10, speed: 12))
+        await reporter.note(.returnedToCar, at: atCar.addingTimeInterval(2))
+        let report = server.reports.last
+        #expect(report?.event == "returned_to_car")
+        #expect(report.map { distance($0, from: CLLocationCoordinate2D(latitude: 42.35, longitude: -71.07)) } ?? .infinity < 10)
+        #expect(report?.measuredAt == atCar)
+        reporter.stop()
+    }
+
+    /// A blurry fix is all there is (CarPlay connecting in a garage): it
+    /// goes at once, and the server judges it.
+    @Test func returnedToCarGoesAtOnceWithAPoorFix() async {
+        let clock = Clock()
+        let server = Server()
+        let reporter = LocationReporter(now: { clock.now }, usesSystemLocation: false)
+        reporter.start(send: { try await server.receive($0) }, carCoordinate: nil)
+        await reporter.handle(fix(10, at: clock.now, accuracy: 140))
+        clock.now += 3
+        await reporter.note(.returnedToCar)
+        #expect(server.reports.count == 2)
+        #expect(server.reports.last?.event == "returned_to_car")
+        #expect(server.reports.last?.accuracy == 140)
+        reporter.stop()
+    }
+
     @Test func aWaitingParkIsKeptOnDiskAndDroppedWhenReportingStops() {
         let clock = Clock()
         let reporter = LocationReporter(now: { clock.now }, usesSystemLocation: false)

@@ -46,12 +46,17 @@ struct ParkDetectorTests {
         let log = SignalLog(directory: FileManager.default.temporaryDirectory)
         return ParkDetector(
             engine: engine, signalLog: log, store: store, motion: motion, altimeter: altimeter,
-            placeMemory: places ?? tempPlaces(), footprints: LinearFootprintIndex(footprints: footprints)
+            placeMemory: places ?? tempPlaces(), footprints: LinearFootprintIndex(footprints: footprints),
+            carAudio: tempCarAudio()
         )
     }
 
     func tempPlaces() -> PlaceMemoryStore {
         PlaceMemoryStore(directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+    }
+
+    func tempCarAudio() -> CarAudioMemory {
+        CarAudioMemory(defaults: UserDefaults(suiteName: "carAudio-" + UUID().uuidString)!)
     }
 
     func tempStore() -> DetectorStore {
@@ -458,5 +463,115 @@ struct ParkDetectorTests {
         engine.motion(MotionSample(at: clock.now, automotive: true))
         #expect(resumed == 2, "A red light, or a stop that wasn't a park")
         #expect(detector.lastAutomotiveAt == drive.addingTimeInterval(50))
+    }
+
+    // MARK: - Walk-away and drive-off (#226)
+
+    /// `left_car` starts a Pay tapped at the car, so only CoreMotion
+    /// fairly sure the driver is on foot, in no vehicle, is a walk-away.
+    @Test func onlyAConfidentWalkOutOfTheCarIsAWalkAway() async {
+        let motion = FakeMotion()
+        let detector = makeDetector(store: tempStore(), motion: motion)
+        var walks: [Date] = []
+        detector.onWalking = { walks.append($0) }
+        detector.arm(capabilities: DetectionCapabilities())
+        await settle()
+        let t = Date.now
+        motion.handler?(MotionSample(at: t, walking: true, confidence: .low))
+        motion.handler?(MotionSample(at: t.addingTimeInterval(5), automotive: true, walking: true, confidence: .medium))
+        await settle()
+        #expect(walks.isEmpty, "A guess, or a phone in a moving car, is not a walk")
+        #expect(!detector.isOnFootNow)
+
+        motion.handler?(MotionSample(at: t.addingTimeInterval(10), walking: true, confidence: .medium))
+        await settle()
+        #expect(walks == [t.addingTimeInterval(10)])
+        #expect(detector.isOnFootNow)
+
+        // A low reading in between says nothing; a stop at a light does.
+        motion.handler?(MotionSample(at: t.addingTimeInterval(20), stationary: true, confidence: .low))
+        await settle()
+        #expect(detector.isOnFootNow)
+        motion.handler?(MotionSample(at: t.addingTimeInterval(30), automotive: true, stationary: true, confidence: .high))
+        await settle()
+        #expect(!detector.isOnFootNow)
+    }
+
+    /// Suspended through the walk-away: the walk is only in CoreMotion's
+    /// history, and the wake that replays it says so.
+    @Test func aWalkAwayInTheHistoryIsToldAtTheWake() async {
+        let motion = FakeMotion()
+        let detector = makeDetector(store: tempStore(), motion: motion)
+        var walks: [Date] = []
+        detector.onWalking = { walks.append($0) }
+        detector.arm(capabilities: DetectionCapabilities())
+        await settle()
+        let t = Date.now
+        motion.historyAnswer = [
+            MotionSample(at: t.addingTimeInterval(-300), automotive: true),
+            MotionSample(at: t.addingTimeInterval(-200), stationary: true),
+            MotionSample(at: t.addingTimeInterval(-180), walking: true),
+        ]
+        await detector.wake(.significantChange)
+        #expect(walks == [t.addingTimeInterval(-180)])
+    }
+
+    /// …but a walk that ended in a drive is not one: walking to the trunk,
+    /// then driving off (the red light of #226).
+    @Test func aWalkThatEndedInADriveIsNotAWalkAway() async {
+        let motion = FakeMotion()
+        let detector = makeDetector(store: tempStore(), motion: motion)
+        var walks: [Date] = []
+        detector.onWalking = { walks.append($0) }
+        detector.arm(capabilities: DetectionCapabilities())
+        await settle()
+        let t = Date.now
+        motion.historyAnswer = [
+            MotionSample(at: t.addingTimeInterval(-200), stationary: true),
+            MotionSample(at: t.addingTimeInterval(-180), walking: true),
+            MotionSample(at: t.addingTimeInterval(-150), automotive: true),
+            MotionSample(at: t.addingTimeInterval(-90), automotive: true, stationary: true),
+        ]
+        await detector.wake(.significantChange)
+        #expect(walks.isEmpty)
+        #expect(!detector.isOnFootNow)
+    }
+
+    /// Relaunched mid-walk: CoreMotion hands over the current activity
+    /// again when updates start. The engine has seen it; what the driver
+    /// is doing now has not been told.
+    @Test func theCurrentWalkHandedOverAgainAfterARelaunchIsStillAWalk() async {
+        let store = tempStore()
+        let walk = MotionSample(at: Date.now.addingTimeInterval(-30), walking: true)
+        // Handled before the app was ended: the cursor is past it.
+        store.save(.init(engine: .init(), motionHistoryThrough: walk.at, savedAt: .now))
+
+        let motion = FakeMotion()
+        let detector = makeDetector(store: store, motion: motion)
+        var walks: [Date] = []
+        detector.onWalking = { walks.append($0) }
+        detector.arm(capabilities: DetectionCapabilities())
+        await settle()
+        motion.handler?(walk)
+        await settle()
+        #expect(detector.isOnFootNow)
+        #expect(walks == [walk.at])
+    }
+
+    /// Headphones connecting near the car must never read as the driver
+    /// back in it: only CarPlay, or the Bluetooth route that went away as
+    /// a drive ended.
+    @Test func onlyTheCarsOwnAudioIsTheCar() {
+        let audio = tempCarAudio()
+        #expect(audio.isCar(.carPlay, uid: nil))
+        #expect(!audio.isCar(.bluetooth, uid: "AA:BB:headphones"))
+        #expect(!audio.isCar(.bluetooth, uid: nil))
+        audio.remember("11:22:car")
+        #expect(audio.isCar(.bluetooth, uid: "11:22:car"))
+        #expect(!audio.isCar(.bluetooth, uid: "AA:BB:headphones"))
+        for n in 0..<CarAudioMemory.kept { audio.remember("car-\(n)") }
+        #expect(!audio.isCar(.bluetooth, uid: "11:22:car"), "Only the last few cars are kept")
+        audio.forget()
+        #expect(audio.routes.isEmpty)
     }
 }

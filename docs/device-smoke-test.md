@@ -145,9 +145,29 @@ a Stripe test key). Wallet → the ParkAgent card row then reads "Coming
 soon", as it does for everyone on a Release build.
 
 There is no simulated park any more: a real park is the test. Park at a
-meter with the app in the background and a **"Parked in zone …"**
-notification should arrive within a few minutes (see
-`docs/field-test-plan.md`).
+meter with the app in the background, stay in the car for a minute
+(nothing may arrive), then walk away: **"Pay $… for zone …?"** with **Pay
+· Not now · Wrong spot** should arrive within about a minute of leaving
+(see `docs/field-test-checklist.md`, step 2).
+
+### 13. The walk-away prompt, the tap, and the return (FR-55)
+
+On one real park, in dry run:
+
+1. In the car, open the app. The Park tab shows the park and its quote
+   with "ParkAgent will ask when you walk away", and no sheet opened by
+   itself. Close the app.
+2. Walk 50 m. The notification's title is the server's own ("Pay $4.10
+   for zone 456?"). Long-press it: three buttons.
+3. Lock the phone and tap **Pay** on the notification: it asks to unlock,
+   then "Dry run: meter session" arrives and the Park tab shows the
+   session.
+4. Walk back and stand at the car for a minute (or start the engine). The
+   session leaves the Park tab. `pnpm -C server decisions:recent` shows,
+   in order: `street_pending`, `street_prompt`, `street_confirmed`,
+   `session_start`, `session_start_walkaway`, `session_end_return`.
+5. Park again at the same meter: a new quote and a new prompt. Nothing
+   from the first park is reused.
 
 ---
 

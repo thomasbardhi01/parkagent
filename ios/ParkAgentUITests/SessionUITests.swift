@@ -29,6 +29,72 @@ final class SessionUITests: ParkAgentUITestCase {
         }
     }
 
+    /// The street session lifecycle (FR-55): a park the server holds shows
+    /// no sheet at the car, only Home's passive card; the walk-away brings
+    /// the sheet with the server's amount; Pay starts the session.
+    func testAHeldParkShowsNothingUntilTheWalkAwayThenPayStartsTheSession() {
+        let app = launchApp(scenario: "walkAway")
+        let simulate = element(app, "home.simulateParkButton")
+        XCTAssertTrue(simulate.waitForExistence(timeout: 15), "Home never appeared")
+        simulate.tap()
+
+        // At the car: the park is on Home, quietly, and nothing was opened.
+        let card = element(app, "home.waitingPark")
+        XCTAssertTrue(card.waitForExistence(timeout: 10), "The held park never reached Home")
+        waitForLabelContaining(element(app, "home.waitingPark.line"), "ParkAgent will ask when you walk away")
+        XCTAssertFalse(element(app, "parkedSheet.view").exists, "A held park must not open the sheet at the car")
+        XCTAssertFalse(element(app, "home.activeSessionRow").exists, "Nothing is paid at the car")
+
+        // The phone leaves the car: now the sheet, with the amount.
+        element(app, "home.simulateWalkAwayButton").tap()
+        let pay = element(app, "parkedSheet.payButton")
+        XCTAssertTrue(pay.waitForExistence(timeout: 10), "The walk-away brought no prompt")
+        XCTAssertFalse(
+            element(app, "parkedSheet.paysAtWalkAwayNote").exists,
+            "Away from the car, Pay pays now"
+        )
+        pay.tap()
+        XCTAssertTrue(
+            element(app, "parkedSheet.view").waitForNonExistence(timeout: 10),
+            "Sheet did not close after paying"
+        )
+        let row = element(app, "home.activeSessionRow")
+        XCTAssertTrue(row.waitForExistence(timeout: 5), "Walk-away → Pay started no session")
+        XCTAssertFalse(element(app, "home.waitingPark").exists, "A paid park is no longer waiting")
+        row.tap()
+        XCTAssertTrue(element(app, "session.view").waitForExistence(timeout: 5))
+    }
+
+    /// Pay tapped at the car pays nothing there: the park keeps waiting,
+    /// and the walk-away starts the session with no second tap.
+    func testPayAtTheCarWaitsForTheWalkAway() {
+        let app = launchApp(scenario: "walkAway")
+        let simulate = element(app, "home.simulateParkButton")
+        XCTAssertTrue(simulate.waitForExistence(timeout: 15), "Home never appeared")
+        simulate.tap()
+        let review = element(app, "home.waitingPark.reviewButton")
+        XCTAssertTrue(review.waitForExistence(timeout: 10), "The held park never reached Home")
+        review.tap()
+
+        // The driver opened it; the sheet says when it pays.
+        XCTAssertTrue(element(app, "parkedSheet.paysAtWalkAwayNote").waitForExistence(timeout: 5))
+        element(app, "parkedSheet.payButton").tap()
+        XCTAssertTrue(
+            element(app, "parkedSheet.view").waitForNonExistence(timeout: 10),
+            "Sheet did not close after the early tap"
+        )
+        XCTAssertFalse(element(app, "home.activeSessionRow").exists, "Paid at the car")
+        waitForLabelContaining(element(app, "home.waitingPark.line"), "Confirmed. ParkAgent pays when you walk away.")
+
+        // The phone leaves: the session starts, and nothing asks again.
+        element(app, "home.simulateWalkAwayButton").tap()
+        XCTAssertTrue(
+            element(app, "home.activeSessionRow").waitForExistence(timeout: 10),
+            "The walk-away did not start the confirmed park"
+        )
+        XCTAssertFalse(element(app, "parkedSheet.view").exists, "A confirmed park is not asked about again")
+    }
+
     /// Pay → countdown, auto-extend toggle, Extend and Stop; Stop returns Home.
     func testPayThenStopReturnsHome() {
         let app = launchApp(scenario: "singleQuote")

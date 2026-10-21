@@ -414,7 +414,9 @@ first, and set only what it calls OK. It runs the server's own checks
   its feature off. The server logs `config: <feature> is off — <the
   variable and why>` and lists the feature in `/health`'s `degraded`.
 - **Afterwards:** `curl -s https://parkagent-api.fly.dev/health` should show
-  `"degraded":[]`.
+  `"degraded":[]`. `assistant` there can also mean an assistant turn failed
+  on Anthropic billing or auth since the last one that succeeded (it clears
+  on the next good turn; server/API.md "GET /health").
 
 The 2026-09-26 outage was `APPLE_MAPS_PRIVATE_KEY` set where the server
 reads `APPLE_MAPS_KEY` (`docs/incidents.md`).

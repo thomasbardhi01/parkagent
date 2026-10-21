@@ -28,39 +28,47 @@ extension AppModel {
         // the car has left.
         pendingParked = nil
         ParkedNotice.withdraw()
-        let waiting = ParkedNotice.Waiting(
+        var waiting = ParkedNotice.Waiting(
             response: response, latitude: coordinate.latitude, longitude: coordinate.longitude,
             savedAt: AppClock.now, shown: nil
         )
+        waiting.parkedAt = request.ts
         startLifecycleReporting(waiting: waiting)
         // Already on foot when the park was detected (walking away is one
         // of the ways a park is confirmed): CoreMotion won't say so again.
-        let walked = request.signals.contains(RawDetectorSignal.motionWalking.rawValue)
-            || (detector.lastOnFootAt ?? .distantPast) >= request.ts
-        if walked { await reporter.note(.leftCar) }
+        // Only the newest confident reading counts: a walk to the trunk
+        // and back into the car is not a walk-away (#226).
+        if let walk = detector.lastConfidentMotion, walk.isWalkingAway {
+            await reporter.note(.leftCar, at: walk.at)
+        }
     }
 
     /// Wire the reporter for the lifecycle and start it. A session already
     /// running keeps reporting; the waiting park rides along until the
     /// server says what became of it.
     private func startLifecycleReporting(waiting: ParkedNotice.Waiting?) {
+        wireLifecycleReporter()
+        reporter.start(api: api, carCoordinate: carCoordinate, waiting: waiting)
+    }
+
+    private func wireLifecycleReporter() {
         reporter.onResponse = { [weak self] response in
             await self?.handleLocationResponse(response)
         }
-        reporter.start(api: api, carCoordinate: carCoordinate, waiting: waiting)
+        // A `left_car` not yet taken stands only while motion still has
+        // the driver on foot.
+        reporter.stillOnFoot = { [weak self] in self?.detector.isOnFootNow ?? false }
     }
 
     /// Launch, or detection re-armed: pick a waiting park back up. iOS
     /// ends a backgrounded app between the park and the walk-away all the
     /// time; the relaunch for the next location event lands here.
     func resumeParkLifecycle() {
-        reporter.onResponse = { [weak self] response in
-            await self?.handleLocationResponse(response)
+        wireLifecycleReporter()
+        detector.onWalking = { [weak self] walkedAt in
+            Task { await self?.phoneLeftCar(at: walkedAt) }
         }
-        detector.onWalking = { [weak self] in
-            Task { await self?.phoneLeftCar() }
-        }
-        detector.onCarPlayConnected = { [weak self] in
+        detector.onCarAudioConnected = { [weak self] in
             Task { await self?.phoneReturnedToCar() }
         }
         PushManager.shared.onWalkAwayAction = { [weak self] tap in
@@ -71,27 +79,43 @@ extension AppModel {
         startLifecycleReporting(waiting: waiting)
     }
 
-    /// Motion has the driver on foot. Only a park still waiting at the car
-    /// cares; the server weighs it against the fix that goes with it.
-    func phoneLeftCar() async {
+    /// Motion has the driver walking away (CoreMotion, walking or running
+    /// at medium confidence or better, in no vehicle), since `walkedAt`.
+    /// Never distance: a car at a red light is two still fixes away from
+    /// where it parked (#226). Only a park still waiting at the car cares;
+    /// the server weighs it against the fix that goes with it.
+    func phoneLeftCar(at walkedAt: Date? = nil) async {
         guard reporter.waiting != nil, activeSession == nil else { return }
-        await reporter.note(.leftCar)
+        await reporter.note(.leftCar, at: walkedAt)
     }
 
-    /// Driving again, or CarPlay back: the phone is in the car. The server
-    /// ends the session (or drops the unpaid park) only when the fix that
-    /// goes with it is at the car.
-    func phoneReturnedToCar() async {
+    /// Driving again (since `seenAt`, when CoreMotion dates the drive), or
+    /// the car's audio back: the phone is in the car. Sent at once, with the
+    /// fix that best shows where the phone was then, however blurry; the
+    /// server ends the session (or drops the unpaid park) only when that
+    /// fix is at the car.
+    func phoneReturnedToCar(at seenAt: Date? = nil) async {
         guard reporter.isRunning else { return }
-        await reporter.note(.returnedToCar)
+        await reporter.note(.returnedToCar, at: seenAt)
     }
 
     // MARK: - The server's answer to a fix
 
-    func handleLocationResponse(_ response: LocationResponse) async {
+    /// `activity` reads the server's record of sessions (the Activity
+    /// feed); tests hand in their own.
+    func handleLocationResponse(
+        _ response: LocationResponse,
+        activity: (() async throws -> ActivityPage)? = nil
+    ) async {
         if let ended = response.ended {
             await sessionEndedAtReturn(ended)
             return
+        }
+        if response.started == nil, let waiting = reporter.waiting,
+           let unknown = LostStart.sessionToAdopt(response, waiting: waiting, holding: activeSession?.sessionId) {
+            let read = activity ?? { [api] in try await api.walletActivity(cursor: nil) }
+            await adoptRunningSession(unknown, waiting: waiting, activity: read)
+            if reporter.waiting == nil { return }
         }
         guard var waiting = reporter.waiting, let park = response.park,
               park.parkedEventId == waiting.response.parkedEventId
@@ -169,6 +193,38 @@ extension AppModel {
         carCoordinate = nil
         distanceFromCarMeters = nil
         Task { await wallet.load(api: api) }
+    }
+
+    /// The answer names a running session this phone doesn't hold while a
+    /// park waits: the reply that said `started` was lost, or a start that
+    /// ran out of time here went through late (#226). Read the session
+    /// from the server's own record and show it (with Stop). The waiting
+    /// park goes once the server has no open park left (it became this
+    /// session, or the session covers it). Nothing to read yet: the next
+    /// answer tries again.
+    private func adoptRunningSession(
+        _ adopt: LostStart.Adoption,
+        waiting: ParkedNotice.Waiting,
+        activity: () async throws -> ActivityPage
+    ) async {
+        guard let page = try? await activity(),
+              var session = LostStart.session(adopt.sessionId, in: page, parked: waiting.response)
+        else { return }
+        // Read while it was being fetched (a stop, another answer).
+        guard reporter.waiting?.response.parkedEventId == waiting.response.parkedEventId,
+              activeSession?.sessionId != adopt.sessionId
+        else { return }
+        session.maxExtendCount = policyResponse?.policy.autoExtend.maxCount ?? session.maxExtendCount
+        activeSession = session
+        Task { await wallet.load(api: api) }
+        if carCoordinate == nil { carCoordinate = waiting.coordinate }
+        if adopt.parkClosed {
+            if pendingParked?.parkedEventId == waiting.response.parkedEventId { pendingParked = nil }
+            ParkedNotice.withdraw()
+            // Keep reporting: the same fixes now tell the server when the
+            // phone comes back.
+            reporter.setWaiting(nil)
+        }
     }
 
     // MARK: - The tap
@@ -344,4 +400,54 @@ extension AppModel {
         }
     }
     #endif
+}
+
+/// The `started` reply that never arrived (#226): what the next answers
+/// say instead, and the session they name, read from the server's own
+/// record of it.
+enum LostStart {
+    struct Adoption: Equatable {
+        var sessionId: String
+        /// The server has no open park left for this phone: the waiting
+        /// one became this session, or the session covers it.
+        var parkClosed: Bool
+    }
+
+    /// The session to take up, if the answer names one this phone doesn't
+    /// hold while `waiting` waits. A server that says which session a
+    /// park became puts it on the park; one that doesn't answers a running
+    /// session, and no park once none is open.
+    static func sessionToAdopt(
+        _ response: LocationResponse, waiting: ParkedNotice.Waiting, holding: String?
+    ) -> Adoption? {
+        let ours = response.park.map { $0.parkedEventId == waiting.response.parkedEventId } ?? false
+        if ours, let park = response.park, park.status == "started",
+           let sessionId = park.sessionId ?? response.sessionId, sessionId != holding {
+            return Adoption(sessionId: sessionId, parkClosed: true)
+        }
+        guard let sessionId = response.sessionId, sessionId != holding else { return nil }
+        // A park still open beside it keeps waiting, and is answered as
+        // before.
+        return Adoption(sessionId: sessionId, parkClosed: response.park == nil)
+    }
+
+    /// The running session, as the Activity feed has it.
+    static func session(_ sessionId: String, in page: ActivityPage, parked: ParkedResponse) -> ActiveSession? {
+        guard let item = page.items.first(where: { $0.kind == "session" && $0.sessionId == sessionId }),
+              item.status == "active", let expiresAt = item.expiresAt
+        else { return nil }
+        let zoneNumber = item.zoneNumber ?? parked.candidates.first?.providerZoneNumber ?? ""
+        return ActiveSession(
+            sessionId: sessionId,
+            zoneNumber: zoneNumber,
+            zoneLabel: "Zone \(zoneNumber)",
+            startedAt: item.startedAt ?? item.at,
+            expiresAt: expiresAt,
+            amountUsd: item.totalUsd ?? 0,
+            extendCount: item.timeline?.filter { $0.kind == "extended" }.count ?? 0,
+            maxExtendCount: 2,
+            maxStayReached: false,
+            paymentSource: item.paymentSource == PaymentSource.parkagentCard.rawValue ? .parkagentCard : .providerCard
+        )
+    }
 }

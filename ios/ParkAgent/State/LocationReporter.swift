@@ -15,6 +15,12 @@ import Observation
 /// hands it on. What the app itself saw (on foot after the park; the
 /// car's audio back, or driving) rides on the next report as its `event`.
 ///
+/// `left_car` is what starts a Pay tapped at the car (#226), so it goes
+/// only with a fix that can show it: measured since the park, at walking
+/// pace, while motion still has the driver on foot. It is said again until
+/// the server's answer shows it took it. `returned_to_car` goes with the
+/// fix that best shows where the phone was when it got back in the car.
+///
 /// It must keep working with the app in a pocket: updates never auto-pause
 /// (iOS pauses a still phone and then never resumes in the background),
 /// background delivery is on with Always, and a CLBackgroundActivitySession
@@ -29,6 +35,16 @@ final class LocationReporter: NSObject, CLLocationManagerDelegate {
     /// `minInterval`.
     static let moveThresholdM: Double = 25
     static let minInterval: TimeInterval = 15
+    /// A fix faster than this (CLLocation.speed) is a car moving, and
+    /// never carries `left_car` (the server's MAX_WALK_MPS).
+    static let walkingPaceMaxMps: Double = 3
+    /// The server reads no fix blurrier than this (FIX_USABLE_ACCURACY_M).
+    static let usableAccuracyM: Double = 65
+    /// `returned_to_car` looks this far either side of the moment it was
+    /// seen for the fix to send with it.
+    static let returnFixWindow: TimeInterval = 60
+    /// Fixes kept for that choice.
+    static let recentFixesKept: TimeInterval = 5 * 60
 
     /// Fresh distance to the car, meters.
     @ObservationIgnored var onDistance: ((Double) -> Void)?
@@ -38,6 +54,10 @@ final class LocationReporter: NSObject, CLLocationManagerDelegate {
     /// The server's answer to a report: the walk-away prompt, a session
     /// started or ended, a waiting park cancelled.
     @ObservationIgnored var onResponse: ((LocationResponse) async -> Void)?
+    /// Whether motion still has the driver on foot. A `left_car` not yet
+    /// taken is dropped once it doesn't (back in the car, or standing
+    /// still); the next walk says it again. Nil: not checked (tests).
+    @ObservationIgnored var stillOnFoot: (() -> Bool)?
 
     /// What the app saw of the phone and the car (LocationReport.event).
     enum PhoneEvent: String, Sendable {
@@ -60,6 +80,12 @@ final class LocationReporter: NSObject, CLLocationManagerDelegate {
     @ObservationIgnored private var inFlight = false
     /// Seen by the app, not yet delivered with a report.
     @ObservationIgnored private var pendingEvent: PhoneEvent?
+    /// When it was seen (a drive dates from its start).
+    @ObservationIgnored private var pendingEventAt: Date?
+    /// It already rode on a report the server didn't take it from.
+    @ObservationIgnored private var pendingEventTried = false
+    /// The last few minutes of fixes, oldest first.
+    @ObservationIgnored private var recentFixes: [ParkFix] = []
     @ObservationIgnored private var capabilities = DetectionCapabilities()
     @ObservationIgnored private let now: () -> Date
     @ObservationIgnored private let usesSystemLocation: Bool
@@ -123,7 +149,8 @@ final class LocationReporter: NSObject, CLLocationManagerDelegate {
         send = nil
         lastFix = nil
         lastReport = nil
-        pendingEvent = nil
+        recentFixes = []
+        clearPendingEvent()
         setWaiting(nil)
         isRunning = false
     }
@@ -141,13 +168,67 @@ final class LocationReporter: NSObject, CLLocationManagerDelegate {
         await report(fix)
     }
 
-    /// The app saw the phone leave the car, or come back to it. Sent with
-    /// the freshest fix at once, or with the next one when there is none
-    /// yet; the server decides what it means from where that fix is.
-    func note(_ event: PhoneEvent) async {
+    /// The app saw the phone leave the car, or come back to it, at `seenAt`
+    /// (now when nil). Sent at once with a fix that can carry it, or with
+    /// the next one; the server decides what it means from where that fix
+    /// is.
+    func note(_ event: PhoneEvent, at seenAt: Date? = nil) async {
         guard isRunning else { return }
         pendingEvent = event
-        if let fix = lastFix { await report(fix) }
+        pendingEventAt = seenAt ?? now()
+        pendingEventTried = false
+        guard let fix = lastFix, canCarry(event, fix) else { return }
+        await report(fix)
+    }
+
+    private func clearPendingEvent() {
+        pendingEvent = nil
+        pendingEventAt = nil
+        pendingEventTried = false
+    }
+
+    /// Whether `fix` can say `event` to the server. A `left_car` with a fix
+    /// measured before the park is read as nothing at all (CoreLocation's
+    /// first fix after a start is often a cached one), and one at driving
+    /// speed is a car pulling away.
+    private func canCarry(_ event: PhoneEvent, _ fix: ParkFix) -> Bool {
+        switch event {
+        case .returnedToCar:
+            return true
+        case .leftCar:
+            if let parkedAt = waiting?.parkedAt, fix.at < parkedAt { return false }
+            return (fix.speed ?? 0) <= Self.walkingPaceMaxMps
+        }
+    }
+
+    /// Whether the server's answer shows it took the event. A `left_car`
+    /// the park still waits at the car after (refused at the car's door)
+    /// is said again with the next fix.
+    private func taken(_ event: PhoneEvent, by response: LocationResponse) -> Bool {
+        guard event == .leftCar, let waiting,
+              let park = response.park, park.parkedEventId == waiting.response.parkedEventId
+        else { return true }
+        return park.status != "at_car" && park.status != "confirmed"
+    }
+
+    /// The fix that best shows where the phone was when it got back in the
+    /// car: the usable one measured nearest that moment (CoreMotion dates a
+    /// drive from its start, while the phone was still at the car), else
+    /// the sharpest around it, else the latest. A poor fix is still sent.
+    private func returnFix(near moment: Date, latest: ParkFix) -> ParkFix {
+        let around = recentFixes.filter { abs($0.at.timeIntervalSince(moment)) <= Self.returnFixWindow }
+        let gap = { (fix: ParkFix) in abs(fix.at.timeIntervalSince(moment)) }
+        if let usable = around.filter({ $0.accuracy <= Self.usableAccuracyM }).min(by: { gap($0) < gap($1) }) {
+            return usable
+        }
+        return around.min { $0.accuracy < $1.accuracy } ?? latest
+    }
+
+    private func remember(_ fix: ParkFix) {
+        lastFix = fix
+        recentFixes.append(fix)
+        let since = fix.at.addingTimeInterval(-Self.recentFixesKept)
+        recentFixes.removeAll { $0.at < since }
     }
 
     func capabilitiesChanged(_ capabilities: DetectionCapabilities) {
@@ -174,7 +255,7 @@ final class LocationReporter: NSObject, CLLocationManagerDelegate {
     /// One fix from CoreLocation (or a test).
     func handle(_ fix: ParkFix) async {
         guard isRunning, fix.accuracy > 0 else { return }
-        lastFix = fix
+        remember(fix)
         if let car = carCoordinate {
             onDistance?(fix.distance(to: ParkFix(coordinate: car, accuracy: 0, at: fix.at)))
         }
@@ -184,7 +265,10 @@ final class LocationReporter: NSObject, CLLocationManagerDelegate {
         }
         let elapsed = now().timeIntervalSince(last.at)
         let moved = fix.distance(to: last.fix)
-        if elapsed >= Self.heartbeat || (moved >= Self.moveThresholdM && elapsed >= Self.minInterval) {
+        // An event held for a fix that can carry it goes with the first
+        // one; one the server didn't take, at the usual pace.
+        let eventDue = pendingEvent.map { canCarry($0, fix) && (!pendingEventTried || elapsed >= Self.minInterval) } ?? false
+        if eventDue || elapsed >= Self.heartbeat || (moved >= Self.moveThresholdM && elapsed >= Self.minInterval) {
             await report(fix)
         }
     }
@@ -204,17 +288,29 @@ final class LocationReporter: NSObject, CLLocationManagerDelegate {
         inFlight = true
         defer { inFlight = false }
         let at = now()
-        let event = pendingEvent
+        if pendingEvent == .leftCar, let stillOnFoot, !stillOnFoot() {
+            // Back in the car, or standing: no walk-away to tell any more.
+            clearPendingEvent()
+        }
+        var sent = fix
+        if pendingEvent == .returnedToCar {
+            sent = returnFix(near: pendingEventAt ?? at, latest: fix)
+        }
+        let event = pendingEvent.flatMap { canCarry($0, sent) ? $0 : nil }
         do {
             let response = try await send(LocationReport(
-                lat: fix.latitude, lng: fix.longitude, accuracy: fix.accuracy, ts: at,
+                lat: sent.latitude, lng: sent.longitude, accuracy: sent.accuracy, ts: at,
                 // Never later than the report itself (a fix stamped ahead
                 // of this clock is still measured by now).
-                measuredAt: min(fix.at, at), event: event?.rawValue
+                measuredAt: min(sent.at, at), event: event?.rawValue,
+                speedMps: sent.speed.flatMap { $0 >= 0 && $0.isFinite ? $0 : nil }
             ))
-            lastReport = (at, fix)
-            // Delivered; one seen meanwhile waits for the next report.
-            if pendingEvent == event { pendingEvent = nil }
+            lastReport = (at, sent)
+            if let event, pendingEvent == event {
+                // Delivered, unless the answer says otherwise; one seen
+                // meanwhile waits for the next report.
+                if taken(event, by: response) { clearPendingEvent() } else { pendingEventTried = true }
+            }
             await onResponse?(response)
         } catch APIError.refused(code: "no_active_session") {
             // The worker expired it, it was stopped from another device,
@@ -231,7 +327,7 @@ final class LocationReporter: NSObject, CLLocationManagerDelegate {
     /// (the simulator has nowhere to walk).
     func report(now fix: ParkFix) async {
         guard isRunning else { return }
-        lastFix = fix
+        remember(fix)
         await report(fix)
     }
     #endif

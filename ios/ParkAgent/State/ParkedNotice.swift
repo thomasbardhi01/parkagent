@@ -487,6 +487,9 @@ enum ParkedNotice {
         var shown: ParkPrompt?
         /// Pay was tapped at the car: kept, and paid at walk-away.
         var confirmed = false
+        /// The park's own time (its /parked `ts`). The server reads no fix
+        /// measured before it, so a `left_car` sent with one is lost.
+        var parkedAt: Date? = nil
 
         var coordinate: CLLocationCoordinate2D {
             CLLocationCoordinate2D(latitude: latitude, longitude: longitude)

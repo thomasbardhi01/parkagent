@@ -68,6 +68,10 @@ struct MotionSample: Codable, Equatable, Sendable {
     /// looking like a park.
     var isDriving: Bool { automotive && confidence != .low }
     var isOnFoot: Bool { (walking || running) && confidence != .low }
+    /// On foot and in no vehicle, at medium confidence or better: the only
+    /// reading the lifecycle's `left_car` rests on (#226). A red light
+    /// (automotive, stationary) never is one.
+    var isWalkingAway: Bool { isOnFoot && !automotive }
     var isStill: Bool { stationary && !automotive }
 }
 

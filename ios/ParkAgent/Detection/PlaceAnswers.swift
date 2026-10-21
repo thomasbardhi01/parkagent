@@ -151,8 +151,10 @@ extension AppModel {
     /// pause (a ticket gate, a pickup), not a park. Take the prompt back.
     func drivingResumed() {
         // Driving again: back in the car, as far as a session or a
-        // waiting park goes (the server checks the fix is at the car).
-        Task { await phoneReturnedToCar() }
+        // waiting park goes (the server checks the fix is at the car). The
+        // drive dates from its start, while the phone was still beside it.
+        let droveAt = detector.lastAutomotiveAt
+        Task { await phoneReturnedToCar(at: droveAt) }
         guard let held = ParkedNotice.cancelHeld() else { return }
         let spot = CLLocationCoordinate2D(latitude: held.latitude, longitude: held.longitude)
         detector.placeMemory.update { $0.forgetPrompt(at: spot, since: held.notedAt) }

@@ -213,6 +213,8 @@ struct LocationResponse: Codable, Sendable, Equatable {
     struct Park: Codable, Sendable, Equatable {
         var parkedEventId: String
         var status: String
+        /// The session a `started` park became, when the server says so.
+        var sessionId: String? = nil
     }
 
     struct Ended: Codable, Sendable, Equatable {
@@ -1165,6 +1167,26 @@ struct LocationReport: Codable, Sendable {
     /// What the app itself saw (FR-55): `left_car` (on foot after the
     /// park) or `returned_to_car` (the car's audio back, or driving).
     var event: String? = nil
+    /// CLLocation.speed, m/s, for the fix measured at `measuredAt`; sent
+    /// as null when CoreLocation had none (#226). The server tells a car
+    /// driving off from a driver walking away by it.
+    var speedMps: Double? = nil
+
+    private enum CodingKeys: String, CodingKey {
+        case lat, lng, accuracy, ts, measuredAt, event, speedMps
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(lat, forKey: .lat)
+        try container.encode(lng, forKey: .lng)
+        try container.encode(accuracy, forKey: .accuracy)
+        try container.encode(ts, forKey: .ts)
+        try container.encodeIfPresent(measuredAt, forKey: .measuredAt)
+        try container.encodeIfPresent(event, forKey: .event)
+        // Always present: null is "no valid speed", not "an old app".
+        try container.encode(speedMps, forKey: .speedMps)
+    }
 }
 
 struct DeviceRegistration: Codable, Sendable {

@@ -121,8 +121,12 @@ export interface WalkState {
   farAt: Date | null;
   /** How far from the car that first measurement was. */
   farDistanceM: number | null;
-  /** Since when every usable fix has been at the car (measured). */
+  /** Since when every usable fix has been within reach of the car
+   * (measured): what keeps a tap at the car waiting. */
   nearSince: Date | null;
+  /** …and at it even allowing for each fix's error: what a return, which
+   * stops the session, is timed from. */
+  atCarSince: Date | null;
   /** After leaving: the last measurement that had the phone at the car,
    * kept until the phone is seen walking away from it again. Driving off
    * is told from it. */
@@ -187,8 +191,7 @@ export function advanceWalk(before: WalkState, fix: WalkFix): WalkStep {
   const fast = speed !== null && speed > MAX_WALK_MPS;
   const near = usable && fix.distanceM <= AT_CAR_RADIUS_M;
   // At the car even allowing for the fix's own error: what a return (which
-  // stops the session) and `backAt` (which holds extensions) are read
-  // from. A blurry fix near the car is what GPS does, and says nothing.
+  // stops the session) is timed from. `near` alone only holds.
   const atCar = near && fix.distanceM + fix.accuracyM <= AT_CAR_RADIUS_M;
   const clear = usable && fix.distanceM - fix.accuracyM > AT_CAR_RADIUS_M;
   const step = (extra: Partial<WalkStep>): WalkStep => ({
@@ -207,6 +210,7 @@ export function advanceWalk(before: WalkState, fix: WalkFix): WalkStep {
   const leave = (why: WalkReason) => {
     state.leftCarAt = fix.at;
     state.nearSince = null;
+    state.atCarSince = null;
     state.backAt = null;
     forgetDrive();
     return step({ left: true, why });
@@ -271,16 +275,26 @@ export function advanceWalk(before: WalkState, fix: WalkFix): WalkStep {
     state.backAt = null;
     forgetDrive();
   }
-  if (near && !fast && !atCar) return step({});
-  if (atCar && !fast) {
-    // Measured, not reported: the heartbeat's re-send of one measurement
-    // beside the car is not a minute there.
+  if (near && !fast) {
+    // Holding takes any usable fix within reach of the car: urban returns
+    // are often 20–50 m blurry, and a return nobody saw would leave a tap
+    // paying from the seat, a drive-off unseen, and extensions bought for
+    // an empty spot. So the phone may be back: a tap waits (nearSince),
+    // and the drive-off pair and the extension hold are armed (backAt).
     state.nearSince ??= fix.measuredAt;
     state.backAt = fix.measuredAt;
     forgetDrive();
+    // Stopping takes more. A return stops the session, and two blurry
+    // fixes are a driver in a café down the block as much as one at the
+    // car: only fixes at the car even allowing for their error count
+    // toward the minute, and a blurry one neither counts nor restarts it.
+    // Measured, not reported: the heartbeat's re-send of one measurement
+    // beside the car is not a minute there.
+    if (!atCar) return step({});
+    state.atCarSince ??= fix.measuredAt;
     if (
       state.farAt !== null &&
-      fix.measuredAt.getTime() - state.nearSince.getTime() >= RETURN_DWELL_MS
+      fix.measuredAt.getTime() - state.atCarSince.getTime() >= RETURN_DWELL_MS
     ) {
       return step({ returned: true, why: "near_for_60s" });
     }
@@ -288,6 +302,7 @@ export function advanceWalk(before: WalkState, fix: WalkFix): WalkStep {
   }
   if (!usable) return step({});
   state.nearSince = null;
+  state.atCarSince = null;
   if (!clear || state.backAt === null) {
     forgetDrive();
     return step({});
@@ -578,6 +593,7 @@ export const walkStateOf = (park: PendingParkRow): WalkState => ({
   farAt: park.farAt,
   farDistanceM: park.farDistanceM,
   nearSince: park.nearSince,
+  atCarSince: park.atCarSince,
   backAt: park.backAt,
   driveAt: park.driveAt,
   driveDistanceM: park.driveDistanceM,
@@ -903,6 +919,17 @@ export async function endSession(
           why: args.why,
           ...(args.fix ? { fix: args.fix } : {}),
           ...(args.readBy ? { readBy: args.readBy } : {}),
+          // A drive-off's first fix, as the park held it before the one
+          // that finished the pair (`fix`).
+          ...(droveOff && park
+            ? {
+                driveFrom: {
+                  measuredAt: park.driveAt?.toISOString() ?? null,
+                  distanceM: park.driveDistanceM,
+                  speedMps: park.driveSpeedMps,
+                },
+              }
+            : {}),
           leftCarAt: park?.leftCarAt?.toISOString() ?? null,
           expiresAt: paidUntil,
           dryRun: deps.policy.effectiveDryRun(),
@@ -1194,6 +1221,7 @@ export async function startParkSession(
                   farAt: null,
                   farDistanceM: null,
                   nearSince: null,
+                  atCarSince: null,
                   ...NOT_BACK,
                 },
           stalePending: null,

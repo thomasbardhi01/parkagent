@@ -595,25 +595,65 @@ test("two blurry fixes near the car a minute apart are no return: the session is
   expect(back.json()).toMatchObject({ ended: { why: "near_for_60s", stopped: true } });
 });
 
-test("one blurry fix near the car is not the phone back at it: the worker still extends", async () => {
+test("one blurry fix near the car holds, and stops nothing: the worker buys no more on a guess, and says why", async () => {
+  // Holding errs toward not buying. A blurry fix within 30 m may be the
+  // driver back at the car (urban returns are often this blurry); it may
+  // be GPS. Not buying costs a push and a manual extend; buying may pay
+  // for an empty spot. It never stops the session.
   const t = makeApp();
   const extender = makeExtender({ ...t.deps, log: { info() {}, warn() {} } });
   const { session } = await paidAndAway(t);
   t.tick(120);
   await post(t.app, "/location", measured(t, 300));
   t.tick(20);
-  // 28 m off with 60 m of error: what GPS does, not a walk back.
   await post(t.app, "/location", { ...measured(t, 28), accuracy: 60 });
   for (const metres of [300, 310]) {
     t.tick(20);
     await post(t.app, "/location", measured(t, metres));
   }
-  expect(t.state.pendingParks[0]!.backAt).toBeNull();
+  expect(t.state.pendingParks[0]!.backAt).not.toBeNull();
+  expect(session.status).toBe("active");
+  expect(t.calls.stop).toBe(0);
   t.clock.now = new Date(session.expiresAt!.getTime() - 6 * 60_000);
   await post(t.app, "/location", measured(t, 305));
   await extender.tick();
-  expect(t.state.decisions.filter((d) => d.kind === "extend_tick").at(-1)!.rule).toBe("extend");
-  expect(t.calls.extend).toBe(1);
+  expect(t.state.decisions.filter((d) => d.kind === "extend_tick").at(-1)!.rule).toBe(
+    "hold_back_at_car",
+  );
+  expect(t.calls.extend).toBe(0);
+});
+
+test("back in the car on blurry fixes, then a drive-off by pace: the session ends, and nothing is bought for the empty spot", async () => {
+  const t = makeApp();
+  const extender = makeExtender({ ...t.deps, log: { info() {}, warn() {} } });
+  const { session } = await paidAndAway(t);
+  t.tick(600);
+  // An urban canyon: four minutes within 30 m of the car, every fix 45 m
+  // blurry. No return (too blurry to stop on) but the phone may be back.
+  for (const metres of [10, 12, 9, 11]) {
+    await post(t.app, "/location", { ...measured(t, metres), accuracy: 45 });
+    t.tick(60);
+  }
+  expect(session.status).toBe("active");
+  expect(t.state.pendingParks[0]!.backAt).not.toBeNull();
+  // Pulls out: 160 m in 12 s.
+  await post(t.app, "/location", { ...measured(t, 120), accuracy: 45 });
+  t.tick(12);
+  const gone = await post(t.app, "/location", { ...measured(t, 280), accuracy: 45 });
+  expect(gone.json()).toMatchObject({
+    ended: { why: "drove_off", readBy: "pace", stopped: false },
+  });
+  expect(t.calls.stop).toBe(0);
+  expect(
+    t.state.decisions.filter((d) => d.kind === "session_end_return").at(-1)!.inputs,
+  ).toMatchObject({
+    driveFrom: { distanceM: expect.closeTo(120, 0), measuredAt: expect.any(String) },
+  });
+
+  t.clock.now = new Date(session.expiresAt!.getTime() - 6 * 60_000);
+  await post(t.app, "/location", { ...measured(t, 2_500), accuracy: 45 });
+  await extender.tick();
+  expect(t.calls.extend).toBe(0);
 });
 
 test("the app's on-foot report on a fix at driving speed doesn't clear the phone being back at the car", async () => {

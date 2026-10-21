@@ -106,6 +106,14 @@ export function registerLocation(app: FastifyInstance, deps: AppDeps, sessions: 
     return { fix, step };
   }
 
+  /** The first fix of a drive-off's pair, as the park held it before the
+   * second: with the fix that finished it, the row says both. */
+  const driveFrom = (park: PendingParkRow) => ({
+    measuredAt: park.driveAt?.toISOString() ?? null,
+    distanceM: park.driveDistanceM,
+    speedMps: park.driveSpeedMps,
+  });
+
   /** Where the phone stands, written only while the park is still in the
    * state it was read in: a tap that moved it on meanwhile wins. */
   const remember = (park: PendingParkRow, state: ReturnType<typeof walkStateOf>) =>
@@ -207,6 +215,7 @@ export function registerLocation(app: FastifyInstance, deps: AppDeps, sessions: 
             parkedEventId,
             parkStatus: park.status,
             fix,
+            ...(step.droveOffBy ? { driveFrom: driveFrom(park) } : {}),
             leftCarAt: park.leftCarAt?.toISOString() ?? null,
             ...ledger(),
           },

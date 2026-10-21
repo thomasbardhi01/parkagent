@@ -802,6 +802,42 @@ test("walking past the car is not a return: under a minute within 30 m changes n
   expect(count(t.state, "park_cancelled_at_return")).toBe(0);
 });
 
+/** Back at the car on fixes within 30 m but 40 m blurry, as urban returns are. */
+async function blurryReturn(t: ReturnType<typeof makeApp>) {
+  t.tick(120);
+  await post(t.app, "/location", { ...fix(t, 10), accuracy: 40 });
+  t.tick(30);
+  await post(t.app, "/location", { ...fix(t, 8), accuracy: 40 });
+}
+
+test("a tap from the seat on blurry fixes waits for the walk-away, as one on sharp fixes does", async () => {
+  const t = makeApp();
+  const parked = await park(t.app);
+  await walkAway(t);
+  await blurryReturn(t);
+  const tap = await post(t.app, `/parked/${parked.parkedEventId}/confirm`, {});
+  expect(tap.statusCode).toBe(200);
+  expect(tap.json()).toMatchObject({ status: "confirmed", startsAt: "walk_away" });
+  expect(t.calls.start).toBe(0);
+});
+
+test("back at the car on blurry fixes, then a drive-off by pace: the unpaid park closes, and the tap at the next light pays nothing", async () => {
+  const t = makeApp();
+  const parked = await park(t.app);
+  await walkAway(t);
+  await blurryReturn(t);
+  t.tick(15);
+  await post(t.app, "/location", fix(t, 120));
+  t.tick(12);
+  const gone = await post(t.app, "/location", fix(t, 280));
+  expect(gone.json()).toMatchObject({ park: { status: "cancelled", readBy: "pace" } });
+  t.tick(20);
+  const tap = await post(t.app, `/parked/${parked.parkedEventId}/confirm`, {});
+  expect(tap.statusCode).toBe(409);
+  expect(tap.json()).toMatchObject({ error: "park_closed", status: "cancelled" });
+  expect(t.calls.start).toBe(0);
+});
+
 test("a drive-off read from pace alone closes an unpaid park: the Pay tapped at the next light pays nothing", async () => {
   const t = makeApp();
   const parked = await park(t.app);

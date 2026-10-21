@@ -492,6 +492,9 @@ model PendingPark {
   farAt         DateTime? @map("far_at") @db.Timestamptz(6)
   farDistanceM  Float?    @map("far_distance_m")
   nearSince     DateTime? @map("near_since") @db.Timestamptz(6)
+  // Since when every usable fix has been at the car even allowing for its
+  // error: what a return (which stops the session) is timed from.
+  atCarSince    DateTime? @map("at_car_since") @db.Timestamptz(6)
   // After leaving: the phone back at the car, and the first fix clear of
   // it at more than a walk since: what a drive-off is told from.
   backAt         DateTime? @map("back_at") @db.Timestamptz(6)

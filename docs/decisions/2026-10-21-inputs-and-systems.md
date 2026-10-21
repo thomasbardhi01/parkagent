@@ -1,0 +1,59 @@
+# 2026-10-21: Inputs and systems map (before WS-4)
+
+Status: **proposed** (D0 of the WS-4 batch, #238). Read-only: this record
+changes no code. It names every raw input, what each is trusted for, every
+place one signal or decision is computed twice, and what WS-4 must not add.
+Lines are anchors at `bca4241`.
+
+## 1. Raw inputs
+
+| Input | Enters at | Trusted for | Derived |
+|---|---|---|---|
+| **GPS fix** `lat/lng/accuracy/ts/measuredAt/speedMps/event` (`CLLocation`, `ios/ParkAgent/State/LocationReporter.swift:286-307`) | `POST /location` `server/src/routes/location.ts:46-60` | Client clock, twice over: `ts` is the phone's report time, `measuredAt` its fix time, re-sent by the 60 s heartbeat with a new `ts` and the same `measuredAt` (`LocationReporter.swift:278-284`). Lifecycle use is gated: ≤65 m, measured ≤5 min ago, reported within ±5 min, not before the park (`fixCountsFor`, `services/pendingSession.ts:351-362`). The stored row (`location_fixes`, `location.ts:128-137`) has **no** `measuredAt` and no skew check. `speedMps` is taken as read; negatives dropped (`location.ts:74`). | Left / back / drove off (§2 row 1); the extension worker's position (row 2). |
+| **Motion** `CMMotionActivity` (`ios/ParkAgent/Detection/ParkDetector.swift:765-783`) | Never leaves the phone. Becomes `event: left_car` (walking, not automotive; speed ≤3 m/s, `LocationReporter.swift:194-201`) or `returned_to_car` (automotive, `Detection/PlaceAnswers.swift:152-157`). | The server reads the word, not the sample; it is the only input that lets a Pay tapped at the car start (`API.md` "Session lifecycle"). | Two of the three park signals; the walk-away event; the return. |
+| **Park event** `{lat,lng,accuracy,ts,signals,placeHint,outcomes}` (`ParkFusionEngine.evaluate`, `Detection/ParkFusionEngine.swift:569-626`) | `POST /parked` `server/src/routes/parked.ts:41-52` | `ts` is the detector's fix time, clamped to 24 h back / 10 min ahead, else server time (`parked.ts:156-168`); inside the clamp it prices the quote, sets `parkedAt`, and orders parks (`parked.ts:180-364`). `placeHint` never makes a park `pay` (`services/placeClassification.ts`). | Candidates, quote, prompt kind, `pending_parks` row, `session_car_moved`. |
+| **Bluetooth / CarPlay** (`ParkDetector.swift:837-863`) | Phone only. A disconnect is one counted park signal (`ParkFusionEngine.swift:343-356, 578`); a connect sends `returned_to_car` on main (`Detection/ParkLifecycle.swift:71-73`), a hint only after #239. | A route is learned as the car's only if it played while driving (#239). Never an arrival on its own after #239. | Park confirmation; detector wake. |
+| **Zone + rate data** (`data/build_zones.py`, `data/build_boston_zones.py`, `data/import_parkboston_zones.py`) | `server/src/scripts/load-zones.ts:108-185`, `load-zone-numbers.ts:119-125` | A dataset snapshot, dated by `built_at`; no staleness check at read. Zone numbers: any signed-in user may report, two agreeing verify (`routes/zones.ts:96-135`), verified > import > single report. `zone_terms_observed` is written only from an executor result (`routes/session.ts:514-522`) and beats the dataset (`services/zoneTermsObserved.ts:41-53`). | The quote (`services/quote.ts:124`), the prompt's amount and zone number, `quote_changed`. |
+| **Provider responses** (executor, `server/src/services/executor.ts:106-166`) | `routes/session.ts:629-663` (start), `:841` (extend) | The receipt and `expiresAt` win over our estimate (`:640-641`); the estimate survives as `estimatedTotalUsd`. `afterPayClick` goes only into the decision (`executor.ts:173-176`): the failure path marks the session `failed` and settles the hold `leg_failed` whatever it says (`session.ts:568-574`). | Session status, charged amount, observed terms, `start_failed` for a park. |
+| **Garage sources** SpotHero `services/garage/spotheroDeepLink.ts:259`, ParkWhiz `services/garage/parkwhiz.ts:201` | 8 s deadline, 10 min cache | Price as quoted; no availability field; the cached option is what gets booked (`services/assistant/tools.ts:2656-2661`), never re-quoted. | Options, plans, the Link spend amount. |
+| **Stripe / Link** (`routes/webhooksStripe.ts:56-91`, `routes/link.ts:124-182`) | Signature-checked; Link approval is Stripe's, not ours | Issuing authorization amount from `pending_request`; top-up `userId` from the intent's own metadata (`webhooksStripe.ts:345`). | Hold claim, captured spend, reveal-once. |
+| **Caps, consent, policy** `GET/PUT /me/limits` `routes/limits.ts:24-26`; `policy.json` `services/policy.ts:155-183` | `policyFor` clamps the user's row to the policy ceilings (`services/limits.ts:62-120`). Consent is per request only (`consent_replace_payment_method`, a tap, a token): no consent column on `users`. Dry run = env or policy (`policy.ts:182`); `DRY_RUN` anything but `"false"` is on (`env.ts:570-576`). | Every cap refusal, every dry-run branch (~25 inline `effectiveDryRun()` sites). |
+| **The clock** | `pendingSession.ts` and `quote.ts` take `at` from the caller; routes read `now()` (`location.ts:66`, `parked.ts:135`, `session.ts:148`); the worker `at = now()` per pass (`jobs/extendTick.ts:543`). | Client time decides three things: `/parked` `ts` (pricing, `parkedAt`, newest-park order), `/location` `measuredAt` (every walk rule), and stored fix `ts` (the worker's freshness and order, `extendTick.ts:237-240`). | — |
+| **The user's words** `POST /assistant/message` `routes/assistant.ts:68-80, 204` | Text ≤2000 chars; 20/min | The model names an option id, zone id and duration, all checked against the last search (`tools.ts:2633-2647`); it never supplies an amount (`scrubUngroundedAmounts` `tools.ts:2144`) or a start time (`tools.ts:1114-1162`). No tool pays: `start_session` answers `start_via_app` (`tools.ts:2702`), `book_garage` a deep link (`:2669`). | Plans, the confirmation token's binding. |
+
+## 2. Signal → decision → action, and the duplicates
+
+| Derived signal | Decision | Action | Computed by | Also computed by (delete list) |
+|---|---|---|---|---|
+| Phone left / back / drove off | prompt, start on `left_car`, end session, cancel park | `street_prompt`, `startParkSession`, `endSession` | `advanceWalk` `pendingSession.ts:191-346` (pure; `measuredAt`; 30/65/75 m, 10/60/120 s, 0.5–3 m/s) | **1.** `extendTick.ts:235-282`: own `haversineM` (`:96`), freshness off reported `ts` at 10 min (`:42, :240`), sharp = ≤65 m, `away`/`at_car` by distance; a re-sent heartbeat fix is "fresh" there and "the same measurement" in `pendingSession.ts:151`. |
+| Shown quote = what the tap pays | refuse if more than shown, another zone number, or no longer dry | `quote_changed` / `zone_number_changed` / `dry_run_changed` | `runStart` `routes/session.ts:270-279`, shown = min(prompt, `shownTotalUsd`) `parked.ts:496-502` | none (one owner). Manual extend has no shown-amount bound (`session.ts:820`). |
+| Per-stop cap | refuse the stop | `session_cap_exceeded` | `runStart` `session.ts:266` | **2.** `parked.ts:213` (prompt kind), `pendingSession.ts:523` (prompt reason), `sessions.ts:118` (extend), `assistant.ts:493` (Link). |
+| Daily cap | refuse the stop | `daily_cap_exceeded` | `runStart` `session.ts:268` (skipped under dry run) | **3.** `parked.ts:218` (not skipped under dry run), `pendingSession.ts:526` (skipped), `sessions.ts:123` (reads `session.dryRun`, not effective), `assistant.ts:494, 640, 790, 856`, `tools.ts:2542`, `webhooksStripe.ts:119-126` (Issuing rows only; `spentToday` `sessions.ts:53-68` counts Link too). |
+| Effective dry run | swap in the dry executor; place no hold | `dryRun` on the row | `policy.effectiveDryRun()` `policy.ts:182` | **4.** ~25 inline call sites; absent from hold settle/sweep (`holds.ts:298, 455`), Link create/reveal (`linkWallet.ts:216, 322`), shadow (`shadow.ts:42`). |
+| Provider usable | refuse the start | `provider_not_linked` | `providerStatusUsable` `providers/registry.ts:166` at `session.ts:181-209` | **5.** `pendingSession.ts:521`; absent from `applyExtension` (`sessions.ts:237`; the executor wrap catches it at `parknycExecutor.ts:369`). |
+| Consent to pay | one tap or one token per start | `street_confirmed` / `consumeConfirmation` | the tap `parked.ts:450-613`; the token `assistant.ts:405-417` minted, `tools.ts:2605-2654` verified (user, plan, option, 10 min, single-use CAS; **not** the amount) | **6.** E plans a second token (hashed on the plan row, parameter hash). Same shape, second code. |
+| Phone position for the worker | hold / extend / stop buying | `extend_tick` rule | `extendTick.ts:266-282` | = row 1. |
+
+## 3. Delete list (D's scope; one owner each)
+
+1. **One phone-position classifier.** `extendTick` stops reading `location_fixes` itself; it asks `pendingSession` (the park row's `leftCarAt`/`backAt`/`carMovedAt`, plus `fixCountsFor` on the newest fix). Delete `haversineM`, `headingFromDistances`, `FIX_MAX_AGE_MS` and the `away`/`position` ladder from `extendTick.ts:96-120, 235-282`. The distance-only fallback for a session with no park row (`POST /session/start` direct) goes with it: that path has no walk-away and gets `unknown`.
+2. **One per-stop cap check**, in `moneyGate`. Delete the four copies in row 3.
+3. **One daily cap check**, in `moneyGate`, with one answer to "does dry run skip it" (today: two of five say yes, one reads the session's own flag). Delete the eight copies in row 4. `spentToday` stays the one sum; the Issuing-only sum in `webhooksStripe.ts:119-126` goes.
+4. **One dry-run read** at the gate; the inline `effectiveDryRun()` sites that only choose a branch of a money path collapse into the gate's answer. Sites that only label a decision row keep it.
+5. **One provider-usable check**, at the gate; `applyExtension` gets it by calling the gate.
+6. **One confirmation token** for app, REST and MCP: the assistant's (`tools.ts:2605-2654`), extended to bind the amount (today it binds user, plan, option, duration). E reuses it; nothing new is minted.
+7. **Stored fix freshness**: `location_fixes` gains `measuredAt` (additive migration) and the writer stores it, so item 1's one classifier reads one clock. Until then the worker trusts a re-sent heartbeat as new.
+
+## 4. Do not build (WS-4)
+
+- **No location input from an agent.** The phone is the only source of arrival; `advanceWalk` is the only reader of it. `/agent/*` accepts no `lat/lng`, no `arrived`, no `left_car`.
+- **No new state for an agent's plan.** A street plan with `start: now` is a `pending_parks` row (status `confirmed`, from the plan's spot), and the walk-away lifecycle completes it; the answer is `pending_arrival`, nothing pays.
+- **No second token, no second gate, no second cap sum, no second dry-run read**: items 1–7 above are the owners.
+- **No amount from an agent.** The server prices every option; an agent names an option and gets the price back, as the model does.
+- **No consent column before D's `users.agents_may_act`**; consent today is per request, and the only new durable consent is that one boolean, checked only for `actor: external_agent`.
+
+## 5. Open questions (for the human)
+
+1. **Should the daily cap bind under dry run?** `runStart` skips it, `/parked` does not, extend reads the session's own flag; #226's last comment asks for enforcement on recorded dry-run spend. The gate needs one answer.
+2. **A start that failed after the pay click**: `afterPayClick` reaches only the decision row; the session is `failed` and the hold settled `leg_failed` (`session.ts:568-574`). Should the gate treat `afterPayClick` as "charged, unconfirmed" (no second start today, no hold release) rather than unpaid?
+3. **How much of the phone's clock do we keep trusting?** `/parked` `ts` sets the price and the park order up to 24 h back; `measuredAt` has no future bound (`pendingSession.ts:358`). Clamp both to ±10 min like `/parked`'s future side, or keep the 24 h for late offline parks (`ParkOutbox`)?

@@ -43,7 +43,7 @@ concurrency:
 
 jobs:
   fr:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       FR_API_BASE: ${{ inputs.base || 'https://parkagent-api.fly.dev' }}
     steps:

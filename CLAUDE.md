@@ -182,14 +182,17 @@ cap are #210, not built yet.
     names in app/server sources outside the registries. Take names from
     `CityCatalog` / the provider registry.
   - `server`, `executor`, `ios` (unit tests, the `ParkAgentRelease` scheme,
-    and the Release-binary `strings` check).
+    and the Release-binary `strings` check). On a PR that changes nothing
+    under `ios/` nor `ci.yml`, `ios` reports "skipped", which passes.
   - `boot` runs `scripts/boot-check.sh off`, `on`, and `broken` against a
     migrated PostGIS. `broken` misconfigures every optional feature, and the
     server must still boot.
   - `ui-tests` (`continue-on-error`). A failed UI test runs once more; one
     that passes only on that retry is listed in the job summary and gets a
     "Flaky UI test: <id>" issue (label `flaky-test`), opened or commented
-    on every time it needs the retry again.
+    on every time it needs the retry again. It runs on main, on a manual
+    run, and on a PR only when the PR carries the `ui-tests` label.
+    Label a PR `ui-tests` when it changes iOS UI flows.
   - `supply-chain.yml` (PRs, main, and daily): `audit` fails on a high or
     critical advisory in a production dependency (`scripts/audit.mjs`)
     unless `scripts/audit-allowlist.json` accepts it with a reason and an

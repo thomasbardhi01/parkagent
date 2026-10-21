@@ -1074,21 +1074,28 @@ walk-away it closes as `covered`, with nothing asked.
 
 **The phone is back** when the app reports `returned_to_car` (driving
 again, or CarPlay connected) with a usable fix within 75 m of the car, or
-when every usable fix has been within 30 m of the car for 60 s. The 60 s
-are measured (`measuredAt`), not reported, so they take two separate
-measurements: the heartbeat re-sending one fix beside the car is not a
-minute there. The second rule applies only after a fix put the phone
-clear of the car, so a driver whose errand is right beside the car isn't
-"back" the whole time.
+when fixes at the car even allowing for their own error
+(`distance + accuracy ≤ 30 m`, not at driving speed) span 60 s with no
+other usable fix between them (one farther off, or one at driving speed,
+starts the minute over). A blurry fix within 30 m (more error
+than that allows) neither counts toward the minute nor restarts it: it
+could be a driver in a café down the block, and a return stops the
+session. The 60 s are measured (`measuredAt`), not reported, so they take
+two separate measurements: the heartbeat re-sending one fix beside the
+car is not a minute there. The rule applies only after a fix put the
+phone clear of the car, so a driver whose errand is right beside the car
+isn't "back" the whole time.
 
-**The phone is back at the car** (`back_at`) when, after leaving, a
-usable fix not at driving speed has it at the car even allowing for its
-own error (`distance + accuracy ≤ 30 m`; a blurry fix near the car is what
-GPS does). It stays back until a clear fix with a walking `speedMps`
-(≤ 3), or the app's `left_car` on a fix not at driving speed, says the
-driver is on foot again. A walking pace between two fixes doesn't clear
-it: without the phone's speed, that is also what stop-and-go traffic
-looks like.
+**The phone is back at the car** (`back_at`) when, after leaving, a fix at
+the car by that same rule (`distance + accuracy ≤ 30 m`, not at driving
+speed) is read. It stays back until a clear fix with a walking `speedMps`
+(≤ 3), or the app's `left_car` on a fix not at driving speed (whatever
+the fix's accuracy), says the driver is on foot again. A walking pace
+between two fixes doesn't clear it: without the phone's speed, that is
+also what stop-and-go traffic looks like. A park's `back_at` is cleared
+when its session starts (a tap away from the car, or the app's
+`left_car`): a walk past the car before paying says nothing about the
+session.
 
 **The phone drove off** when, while it is back at the car, a pair of
 usable fixes is clear of it, neither with a walking `speedMps`, and:
@@ -1101,8 +1108,10 @@ usable fixes is clear of it, neither with a walking `speedMps`, and:
 The pair's first fix is kept when the next comes under 10 s after it
 (and, read by speed, is a pair at once). Farther apart than 120 s, or at a
 walking pace, the second fix starts a new pair (the gap may be a subway
-ride). A usable fix that is neither at the car nor clear of it breaks the
-pair; an unusable one (accuracy worse than 65 m) is skipped.
+ride). A usable fix that isn't clear of the car breaks the pair (one at
+the car also reads `back_at` anew); a blurry one within 30 m and an
+unusable one (accuracy worse than 65 m) are skipped, except that the
+app's `left_car` on either still counts.
 
 A drive-off is a return (`why: "drove_off"`) even inside the minute, and
 it cancels a park not yet paid, however it was read (`readBy` on the
@@ -1195,8 +1204,13 @@ With a held park and no session the answer is
   car started now (on this fix's `left_car`).
 - `startFailed` when that start reached the provider and failed.
 
-`status: "cancelled"` means the phone came back (or drove off) before
-anything was paid: the park is over. A park that runs out of its hour is
+`status: "cancelled"` means the phone came back, or a drive-off was read,
+before anything was paid: the park is over, for good. When the drive-off
+was read from pace (`park.readBy: "pace"`) it is a guess one GPS jump can
+make, so the app says so in words (nothing will be paid here; pay at the
+meter or in the provider's app if the car is still there) rather than
+withdrawing the prompt in silence. `park.readBy: "speed"` is a drive-off
+the phone's own speed showed. A park that runs out of its hour is
 answered once with `status: "expired"`, so the app can tell a driver who
 tapped Pay at the car and never left. `409 {"error": "no_active_session"}`
 when there is neither a session nor a held park (the app stops reporting).

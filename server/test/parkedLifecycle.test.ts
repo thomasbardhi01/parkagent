@@ -814,7 +814,9 @@ test("a drive-off read from pace alone closes an unpaid park: the Pay tapped at 
   await post(t.app, "/location", fix(t, 120));
   t.tick(12);
   const gone = await post(t.app, "/location", fix(t, 280));
-  expect(gone.json()).toMatchObject({ park: { status: "cancelled" } });
+  // A guess, and said to be one: the phone tells the driver nothing will
+  // be paid here, rather than dropping the prompt in silence.
+  expect(gone.json()).toMatchObject({ park: { status: "cancelled", readBy: "pace" } });
   expect(gone.json()["prompt"]).toBeUndefined();
   expect(t.state.decisions.filter((d) => d.kind === "park_cancelled_at_return")).toEqual([
     expect.objectContaining({

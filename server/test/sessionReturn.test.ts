@@ -545,6 +545,56 @@ test("back in the seat with no new measurement, then out in stop-and-go traffic:
   expect(t.pushes.at(-1)!.push.body).toContain("back at the car");
 });
 
+test("a walk past the car before the tap is about the walk-away, not the session: the session still extends", async () => {
+  const t = makeApp();
+  const extender = makeExtender({ ...t.deps, log: { info() {}, warn() {} } });
+  const parked = await post(t.app, "/parked", parkedBody({ outcomes: OUTCOMES }));
+  const parkedEventId = parked.json()["parkedEventId"] as string;
+  t.tick(40);
+  await post(t.app, "/location", measured(t, 60));
+  t.tick(20);
+  await post(t.app, "/location", measured(t, 90));
+  // Asked, not yet answered: back past the car, then off again on foot.
+  t.tick(20);
+  await post(t.app, "/location", measured(t, 10));
+  t.tick(20);
+  await post(t.app, "/location", measured(t, 60));
+  t.tick(20);
+  await post(t.app, "/location", measured(t, 100));
+  expect(t.state.pendingParks[0]!.backAt).not.toBeNull();
+  const paid = await post(t.app, `/parked/${parkedEventId}/confirm`, {});
+  expect(paid.json()).toMatchObject({ status: "started" });
+  const session = t.state.sessions.at(-1)!;
+  expect(t.state.pendingParks[0]).toMatchObject({ status: "started", backAt: null, driveAt: null });
+
+  t.clock.now = new Date(session.expiresAt!.getTime() - 6 * 60_000);
+  await post(t.app, "/location", measured(t, 400));
+  await extender.tick();
+  expect(t.state.decisions.filter((d) => d.kind === "extend_tick").at(-1)!.rule).toBe("extend");
+  expect(t.calls.extend).toBe(1);
+  expect(t.pushes.some((p) => p.push.extra?.["reason"] === "back_at_car")).toBe(false);
+});
+
+test("two blurry fixes near the car a minute apart are no return: the session isn't stopped", async () => {
+  const t = makeApp();
+  const { session } = await paidAndAway(t);
+  t.tick(120);
+  // 28 m and 27 m off, each with 60 m of error: a driver in a café down
+  // the block as much as one at the car.
+  await post(t.app, "/location", { ...measured(t, 28), accuracy: 60 });
+  t.tick(61);
+  const second = await post(t.app, "/location", { ...measured(t, 27), accuracy: 60 });
+  expect(second.json()["ended"]).toBeUndefined();
+  expect(session.status).toBe("active");
+  expect(t.calls.stop).toBe(0);
+  // Sharp fixes there a minute apart still are.
+  t.tick(5);
+  await post(t.app, "/location", measured(t, 6));
+  t.tick(61);
+  const back = await post(t.app, "/location", measured(t, 5));
+  expect(back.json()).toMatchObject({ ended: { why: "near_for_60s", stopped: true } });
+});
+
 test("one blurry fix near the car is not the phone back at it: the worker still extends", async () => {
   const t = makeApp();
   const extender = makeExtender({ ...t.deps, log: { info() {}, warn() {} } });

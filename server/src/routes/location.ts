@@ -187,7 +187,14 @@ export function registerLocation(app: FastifyInstance, deps: AppDeps, sessions: 
     if (!seen) return answer(park.status, asked(park));
     const { fix, step } = seen;
 
-    const close = async (status: string, kind: string, rule: string, outcome: Answer) => {
+    /** `said` goes on the answer's `park` too, for the phone to word it. */
+    const close = async (
+      status: string,
+      kind: string,
+      rule: string,
+      outcome: Answer,
+      said: Answer = {},
+    ) => {
       const moved = await deps.db.pendingPark.updateMany({
         where: { id: park.id, status: park.status },
         data: { ...step.state, status, closedAt: at },
@@ -209,7 +216,7 @@ export function registerLocation(app: FastifyInstance, deps: AppDeps, sessions: 
           parkedEventId,
         },
       });
-      return answer(status);
+      return { park: { parkedEventId, status, ...said } };
     };
 
     // Driving again without ever having left, or back at the car before
@@ -218,13 +225,11 @@ export function registerLocation(app: FastifyInstance, deps: AppDeps, sessions: 
     if (step.returned) {
       // A drive-off read from pace closes it too: a tap after it would pay
       // now for a spot the car may have left, and nothing at the confirm
-      // route could tell.
-      return close(
-        "cancelled",
-        "park_cancelled_at_return",
-        step.why ?? "returned",
-        step.droveOffBy ? { readBy: step.droveOffBy } : {},
-      );
+      // route could tell. It is a guess, so the answer says what it was
+      // read from: the phone tells the driver, in words, that nothing will
+      // be paid here (the prompt is withdrawn, and the park stays closed).
+      const readBy = step.droveOffBy ? { readBy: step.droveOffBy } : {};
+      return close("cancelled", "park_cancelled_at_return", step.why ?? "returned", readBy, readBy);
     }
     if (!step.left) {
       await remember(park, step.state);

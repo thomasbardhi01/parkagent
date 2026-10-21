@@ -186,6 +186,10 @@ export function advanceWalk(before: WalkState, fix: WalkFix): WalkStep {
   const speed = typeof fix.speedMps === "number" && fix.speedMps >= 0 ? fix.speedMps : null;
   const fast = speed !== null && speed > MAX_WALK_MPS;
   const near = usable && fix.distanceM <= AT_CAR_RADIUS_M;
+  // At the car even allowing for the fix's own error: what a return (which
+  // stops the session) and `backAt` (which holds extensions) are read
+  // from. A blurry fix near the car is what GPS does, and says nothing.
+  const atCar = near && fix.distanceM + fix.accuracyM <= AT_CAR_RADIUS_M;
   const clear = usable && fix.distanceM - fix.accuracyM > AT_CAR_RADIUS_M;
   const step = (extra: Partial<WalkStep>): WalkStep => ({
     state,
@@ -267,14 +271,12 @@ export function advanceWalk(before: WalkState, fix: WalkFix): WalkStep {
     state.backAt = null;
     forgetDrive();
   }
-  if (near && !fast) {
+  if (near && !fast && !atCar) return step({});
+  if (atCar && !fast) {
     // Measured, not reported: the heartbeat's re-send of one measurement
     // beside the car is not a minute there.
     state.nearSince ??= fix.measuredAt;
-    // Back at the car holds the extension worker for the rest of the stay
-    // (see `backAt`): only a fix at the car even allowing for its own
-    // error says so. A blurry one near it is what GPS does.
-    if (fix.distanceM + fix.accuracyM <= AT_CAR_RADIUS_M) state.backAt = fix.measuredAt;
+    state.backAt = fix.measuredAt;
     forgetDrive();
     if (
       state.farAt !== null &&
@@ -582,6 +584,12 @@ export const walkStateOf = (park: PendingParkRow): WalkState => ({
   driveSpeedMps: park.driveSpeedMps,
 });
 
+/** Written with every move to `started`. A session starts with the phone
+ * away from the car (a tap away from it, or the app's on-foot report), so
+ * a walk past the car before the tap is about the walk-away, not the
+ * session: left in place it would hold the session's extensions. */
+const NOT_BACK = { backAt: null, driveAt: null, driveDistanceM: null, driveSpeedMps: null };
+
 /** A fix as a decisions row records it. */
 export interface FixRecord {
   lat: number;
@@ -700,7 +708,7 @@ async function afterStart(
           },
         });
   if (made?.status === "active") {
-    return { next: { status: "started", sessionId: made.id }, stalePending: null };
+    return { next: { status: "started", sessionId: made.id, ...NOT_BACK }, stalePending: null };
   }
   if (made && !opts.threw && at.getTime() - made.createdAt.getTime() < START_DEADLINE_MS) {
     return { next: null, stalePending: null };
@@ -798,7 +806,7 @@ export async function lifecycleOf(
       // tap, or whose reply was lost): the same park, now with its
       // session, moved only from the state it was read in.
       if (!PARK_RELINKABLE.includes(earlier.status)) return null;
-      const next = { status: "started", sessionId: session.id, closedAt: null };
+      const next = { status: "started", sessionId: session.id, closedAt: null, ...NOT_BACK };
       const linked = await db.pendingPark.updateMany({
         where: { id: earlier.id, status: earlier.status },
         data: next,
@@ -1072,7 +1080,7 @@ export async function startParkSession(
     if (!current || !LATE_SUCCESS_FROM.includes(current.status)) return;
     const moved = await deps.db.pendingPark.updateMany({
       where: { id: park.id, status: current.status },
-      data: { status: "started", sessionId, closedAt: null },
+      data: { status: "started", sessionId, closedAt: null, ...NOT_BACK },
     });
     if (moved.count === 1) {
       await record(
@@ -1186,10 +1194,7 @@ export async function startParkSession(
                   farAt: null,
                   farDistanceM: null,
                   nearSince: null,
-                  backAt: null,
-                  driveAt: null,
-                  driveDistanceM: null,
-                  driveSpeedMps: null,
+                  ...NOT_BACK,
                 },
           stalePending: null,
         };
@@ -1235,7 +1240,7 @@ export async function startParkSession(
   const sessionId = sessionIdOf(reply.body);
   if (reply.status === 200 && sessionId !== null) {
     outcome = { kind: "started", body: reply.body };
-    next = { status: "started", sessionId };
+    next = { status: "started", sessionId, ...NOT_BACK };
   } else if (reply.status === 200) {
     // The provider says the zone isn't charging: nothing to pay here.
     outcome = { kind: "free", body: reply.body };

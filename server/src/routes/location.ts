@@ -215,14 +215,16 @@ export function registerLocation(app: FastifyInstance, deps: AppDeps, sessions: 
     // Driving again without ever having left, or back at the car before
     // anything was paid: the park is over, and so is anything it was asked.
     if (step.droveOff) return close("cancelled", "park_cancelled_at_return", "drove_off", {});
-    if (step.returned && step.droveOffBy === "pace") {
-      // Too weak to close a park that can still be paid: its prompt
-      // stays, and the hour runs out on it if nobody taps.
-      await remember(park, step.state);
-      return answer(park.status, asked(park));
-    }
     if (step.returned) {
-      return close("cancelled", "park_cancelled_at_return", step.why ?? "returned", {});
+      // A drive-off read from pace closes it too: a tap after it would pay
+      // now for a spot the car may have left, and nothing at the confirm
+      // route could tell.
+      return close(
+        "cancelled",
+        "park_cancelled_at_return",
+        step.why ?? "returned",
+        step.droveOffBy ? { readBy: step.droveOffBy } : {},
+      );
     }
     if (!step.left) {
       await remember(park, step.state);

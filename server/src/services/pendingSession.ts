@@ -260,9 +260,10 @@ export function advanceWalk(before: WalkState, fix: WalkFix): WalkStep {
   if (fix.event === "returned_to_car" && usable && fix.distanceM <= RETURN_EVENT_RADIUS_M) {
     return step({ returned: true, why: "returned_event" });
   }
-  if (fix.event === "left_car") {
+  if (fix.event === "left_car" && !fast) {
     // The app has the driver on foot again: whatever brought the phone
-    // back to the car, it isn't driving off.
+    // back to the car, it isn't driving off. (Not on a fix at driving
+    // speed, which no rule reads as on foot.)
     state.backAt = null;
     forgetDrive();
   }
@@ -270,7 +271,10 @@ export function advanceWalk(before: WalkState, fix: WalkFix): WalkStep {
     // Measured, not reported: the heartbeat's re-send of one measurement
     // beside the car is not a minute there.
     state.nearSince ??= fix.measuredAt;
-    state.backAt = fix.measuredAt;
+    // Back at the car holds the extension worker for the rest of the stay
+    // (see `backAt`): only a fix at the car even allowing for its own
+    // error says so. A blurry one near it is what GPS does.
+    if (fix.distanceM + fix.accuracyM <= AT_CAR_RADIUS_M) state.backAt = fix.measuredAt;
     forgetDrive();
     if (
       state.farAt !== null &&
@@ -833,7 +837,13 @@ export type SessionStopper = (
 
 export interface SessionEnd {
   reason: "returned" | "new_park";
-  /** False where the provider can't stop early, or refused to. */
+  /** The rule that saw it: `near_for_60s`, `returned_event`, `drove_off`
+   * (a return), or `new_park_paid`. */
+  why: string;
+  /** For `drove_off`: read from the phone's own speed, or from pace. */
+  readBy?: "speed" | "pace";
+  /** False where the provider can't stop early, or refused to, or (a
+   * drive-off read from pace) was never asked. */
   stopped: boolean;
   error?: unknown;
 }
@@ -868,6 +878,14 @@ export async function endSession(
   // Back at the car and gone again before a return was seen: one rule
   // for it, whichever way the session ended (`outcome.stopped` says).
   const droveOff = args.why === "drove_off";
+  // What the phone is told, beside `stopped`: which rule saw the end, and
+  // for a drive-off what it was read from (the app words a pace-read end
+  // as a guess, not "you're back at your car").
+  const said = {
+    reason: args.reason,
+    why: args.why,
+    ...(args.readBy ? { readBy: args.readBy } : {}),
+  };
   const row = (rule: string, outcome: Record<string, unknown>) =>
     deps.db.decision.create({
       data: {
@@ -901,7 +919,11 @@ export async function endSession(
         kind: "ended_at_return",
         at: args.at,
         dryRun: session.dryRun,
-        details: { reason: args.reason, why: args.why, paidUntil },
+        details: {
+          ...said,
+          paidUntil,
+          ...(args.askProvider === false ? { providerAsked: false } : {}),
+        },
       },
     });
     await row("ended_at_return", {
@@ -909,13 +931,13 @@ export async function endSession(
       paidUntil,
       ...(args.askProvider === false ? { providerAsked: false } : {}),
     });
-    return { reason: args.reason, stopped: false };
+    return { ...said, stopped: false };
   }
 
   const stopped = await stop(session.userId, session);
   if (stopped.status === 200) {
     await row("stopped_at_return", { stopped: true, stoppedAt: args.at.toISOString() });
-    return { reason: args.reason, stopped: true };
+    return { ...said, stopped: true };
   }
   // The provider didn't stop it. The park is over all the same (nothing
   // more is bought); the session runs out on its own, and Stop in the app
@@ -925,7 +947,7 @@ export async function endSession(
     error: stopped.body["error"],
     code: stopped.body["code"],
   });
-  return { reason: args.reason, stopped: false, error: stopped.body["error"] };
+  return { ...said, stopped: false, error: stopped.body["error"] };
 }
 
 /**

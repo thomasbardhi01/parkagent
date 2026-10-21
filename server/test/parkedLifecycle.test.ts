@@ -802,21 +802,35 @@ test("walking past the car is not a return: under a minute within 30 m changes n
   expect(count(t.state, "park_cancelled_at_return")).toBe(0);
 });
 
-test("a drive-off read from pace alone doesn't close a park that can still be paid: its prompt stays", async () => {
+test("a drive-off read from pace alone closes an unpaid park: the Pay tapped at the next light pays nothing", async () => {
   const t = makeApp();
   const parked = await park(t.app);
   await walkAway(t);
+  // Never answered. Back in the seat, then pulling out: 160 m in 12 s,
+  // with no speed to say it was a car.
   t.tick(30);
   await post(t.app, "/location", fix(t, 8));
   t.tick(15);
   await post(t.app, "/location", fix(t, 120));
   t.tick(12);
-  // 160 m in 12 s, and no speed to say it was a car.
-  const jump = await post(t.app, "/location", fix(t, 280));
-  expect(jump.json()).toMatchObject({ park: { status: "prompted" }, prompt: { kind: "confirm" } });
-  expect(count(t.state, "park_cancelled_at_return")).toBe(0);
+  const gone = await post(t.app, "/location", fix(t, 280));
+  expect(gone.json()).toMatchObject({ park: { status: "cancelled" } });
+  expect(gone.json()["prompt"]).toBeUndefined();
+  expect(t.state.decisions.filter((d) => d.kind === "park_cancelled_at_return")).toEqual([
+    expect.objectContaining({
+      rule: "drove_off",
+      parkedEventId: parked.parkedEventId,
+      outcome: { status: "cancelled", paid: false, readBy: "pace" },
+    }),
+  ]);
+
+  // The prompt still on the lock screen is tapped at a light.
+  t.tick(20);
   const tap = await post(t.app, `/parked/${parked.parkedEventId}/confirm`, {});
-  expect(tap.json()).toMatchObject({ status: "started" });
+  expect(tap.statusCode).toBe(409);
+  expect(tap.json()).toMatchObject({ error: "park_closed", status: "cancelled" });
+  expect(t.calls.start).toBe(0);
+  expect(t.state.sessions).toEqual([]);
 });
 
 test("driving off without ever leaving the car cancels the pending park", async () => {

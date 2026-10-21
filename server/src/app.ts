@@ -310,7 +310,7 @@ export function buildApp(deps?: AppDeps, app: FastifyInstance = createFastify())
     const degraded = [...(deps?.health?.degraded ?? [])];
     // Plus the assistant while its last model call failed on billing or
     // auth (services/assistant/health.ts) — no model call from here.
-    if (assistantHealth.degraded(deps?.now?.() ?? new Date()) && !degraded.includes("assistant")) {
+    if (assistantHealth.degraded() && !degraded.includes("assistant")) {
       degraded.push("assistant");
     }
     return {

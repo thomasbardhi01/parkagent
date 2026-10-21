@@ -1,34 +1,35 @@
 /**
- * The assistant's provider health, as this process last saw it: the kind
- * of the last failed model call and when, cleared by the next turn that
- * completes. /health reads it, so a billing or auth outage shows in
- * `degraded` without /health ever calling the model.
+ * The assistant's provider health, as this process last saw it: whether a
+ * model call failed on billing or auth since the last turn that completed.
+ * /health reads it, so a billing or auth outage shows in `degraded`
+ * without /health ever calling the model.
+ *
+ * No time window: neither fixes itself, and on a quiet day the nightly's
+ * turn may be the only call, so the failure stays listed until a turn
+ * succeeds (or the process restarts).
  */
 
 import type { ModelErrorKind } from "./anthropicClient.js";
 
-/** How long a billing or auth failure keeps "assistant" in /health. */
-export const ASSISTANT_FAILURE_WINDOW_MS = 15 * 60_000;
-
 export interface AssistantHealth {
-  failed(kind: ModelErrorKind, at: Date): void;
+  failed(kind: ModelErrorKind): void;
   succeeded(): void;
-  /** The last call failed on billing or auth, within the window. */
-  degraded(at: Date): boolean;
+  /** A call failed on billing or auth, and no turn has completed since. */
+  degraded(): boolean;
 }
 
 export function makeAssistantHealth(): AssistantHealth {
-  let last: { kind: ModelErrorKind; atMs: number } | null = null;
+  let blocked = false;
   return {
-    failed(kind, at) {
-      last = { kind, atMs: at.getTime() };
+    failed(kind) {
+      // A rate limit or overload after it says nothing about billing or auth.
+      if (kind === "billing" || kind === "auth") blocked = true;
     },
     succeeded() {
-      last = null;
+      blocked = false;
     },
-    degraded(at) {
-      if (!last || (last.kind !== "billing" && last.kind !== "auth")) return false;
-      return at.getTime() - last.atMs < ASSISTANT_FAILURE_WINDOW_MS;
+    degraded() {
+      return blocked;
     },
   };
 }

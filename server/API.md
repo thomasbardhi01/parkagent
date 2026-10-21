@@ -1823,9 +1823,10 @@ builtAt, degraded}` (deploys wait on its `commit`). `dryRun` is the
 `link_wallet`, `apple_signin_revoke`, `apple_maps`, `email_signin`,
 `google_signin`, `parkwhiz`, `assistant` (`server/src/env.ts` FEATURES),
 plus `policy_edit` when `policy.json` can't be rewritten, and `assistant`
-while the last assistant turn failed on billing or auth (in this process,
-within 15 minutes; the next turn that completes clears it — `/health`
-never calls the model itself). It's `[]` when all is well. A feature that's simply not configured is off, not degraded. The
+once an assistant turn has failed on billing or auth, until a turn
+completes (in this process; there is no time window, since neither fixes
+itself and the nightly may be the only call all day; `/health` never calls
+the model itself). It's `[]` when all is well. A feature that's simply not configured is off, not degraded. The
 log says why, one line each: `config: apple_maps is off — APPLE_MAPS_KEY is
 not set, but …`. Only core settings refuse boot. See "Settings" below. `/health/ready` is readiness:
 one `SELECT 1` bounded at 3 s → `{ok: true, db: "ok"}`, or `503 {ok:

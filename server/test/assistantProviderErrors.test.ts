@@ -133,19 +133,27 @@ describe("GET /health and the assistant", () => {
     expect(await degraded(t)).toEqual([]);
   });
 
-  test("an auth failure shows for 15 minutes; a rate limit doesn't show", async () => {
-    let at = new Date("2026-10-20T15:00:00Z");
+  test("an auth failure stays listed however long it's quiet; a rate limit neither shows nor clears it", async () => {
+    // The nightly's turn may be the day's only call: a time window would
+    // hide its failure again by morning.
+    let at = new Date("2026-10-20T02:00:00Z");
     const model = switchableModel(httpError(401, "authentication_error", "invalid x-api-key"));
     const t = makeTestApp({ assistantModel: model, now: () => at });
 
     await ask(t);
-    at = new Date("2026-10-20T15:14:59Z");
+    at = new Date("2026-10-21T01:59:00Z");
     expect(await degraded(t)).toEqual(["assistant"]);
-    at = new Date("2026-10-20T15:15:00Z");
-    expect(await degraded(t)).toEqual([]);
 
     model.failure = httpError(429, "rate_limit_error", "Number of request tokens exceeded.");
     expect((await ask(t)).statusCode).toBe(503);
+    expect(await degraded(t)).toEqual(["assistant"]);
+
+    model.failure = null;
+    expect((await ask(t)).statusCode).toBe(200);
+    expect(await degraded(t)).toEqual([]);
+
+    model.failure = httpError(429, "rate_limit_error", "Number of request tokens exceeded.");
+    await ask(t);
     expect(await degraded(t)).toEqual([]);
   });
 });

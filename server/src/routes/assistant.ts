@@ -187,7 +187,7 @@ export function registerAssistant(
   function unavailable(err: unknown, log: FastifyBaseLogger) {
     const failure = classifyModelError(err);
     if (!failure) return null;
-    health.failed(failure.kind, now());
+    health.failed(failure.kind);
     if (!UNAVAILABLE.has(failure.kind)) return null;
     log.warn({ assistantError: failure }, `assistant unavailable: ${failure.kind}`);
     return { error: "assistant_unavailable", reason: failure.kind, requestId: failure.requestId };

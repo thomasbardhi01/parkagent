@@ -1,5 +1,6 @@
 /**
- * FR-53 and FR-54 — where the car parked, against the live API in dry run.
+ * FR-53, FR-54, and FR-55 — where the car parked and when its session
+ * runs, against the live API in dry run.
  *
  * FR-53: the phone classifies the place it parked (street, garage, lot,
  * no-pay, or unknown) and sends that read as `placeHint` with /parked. The
@@ -12,15 +13,23 @@
  * is nothing to pay, never silences a meter that would charge, and
  * `POST /parked/:id/place` records the driver's own answer.
  *
+ * FR-55: a street park from an app that waits for the walk-away
+ * (`outcomes` lists `walk_away`) starts nothing and asks nothing while the
+ * phone is at the car; the phone leaving is what asks, with the server's
+ * own quote; and the one way to pay it is its tap, POST /parked/:id/confirm,
+ * which runs the start path once (refused here: a throwaway has no linked
+ * parking account, so nothing can start).
+ *
  * The garage case needs the target's garages loaded (`pnpm -C server
  * load:garages`, by hand per city) and skips itself until they are, like
- * FR-49's. This file is also where FR-55's live cases go.
+ * FR-49's.
  */
 
 import { beforeAll, describe, expect, it } from "vitest";
 
 import {
   BOS_GARAGE,
+  easternHourWithin,
   easternWeekday,
   frFetch,
   gate,
@@ -264,5 +273,117 @@ describe("FR-54 place outcomes", () => {
     expect(missing.status).toBe(404);
     const invalid = await userFetch(me, "POST", `/parked/${id}/place`, { class: "valet" });
     expect(invalid.status).toBe(400);
+  });
+});
+
+describe("FR-55 street session lifecycle", () => {
+  /** A phone fix `metersNorth` of the fixture block's car, taken now. */
+  const fix = (metersNorth: number, extra: Record<string, unknown> = {}) => ({
+    lat: NYC_AUTOPAY.lat + metersNorth / 111_320,
+    lng: NYC_AUTOPAY.lng,
+    accuracy: 8,
+    ts: new Date().toISOString(),
+    ...extra,
+  });
+
+  it("FR-55 a street park starts and asks nothing at the car; walk-away asks with the quote; only its tap reaches the start path", async () => {
+    const parked = await userFetch(
+      me,
+      "POST",
+      "/parked",
+      parkedBody(NYC_AUTOPAY, { ts: AFTERNOON, outcomes: [...OUTCOMES, "walk_away"] }),
+    );
+    expect(parked.status).toBe(200);
+    expect(parked.body["dryRun"]).toBe(true);
+    if (SUNDAY) {
+      // Nothing to pay on the fixture block: nothing waits on a walk-away.
+      expect(parked.body["action"]).toBe("ignore");
+      expect(parked.body["awaitsWalkAway"]).toBeUndefined();
+      return;
+    }
+    expect(parked.body["action"]).toBe("pay");
+    expect(parked.body["awaitsWalkAway"]).toBe(true);
+    const id = String(parked.body["parkedEventId"]);
+    const zoneId = String((parked.body["candidates"] as { zoneId: string }[])[0]!.zoneId);
+
+    // In the driver's seat: the park waits, and nothing is asked.
+    const seat = await userFetch(me, "POST", "/location", fix(4));
+    expect(seat.status).toBe(200);
+    expect(seat.body["park"]).toEqual({ parkedEventId: id, status: "at_car" });
+    expect(seat.body["prompt"]).toBeUndefined();
+    expect(seat.body["sessionId"]).toBeUndefined();
+
+    // The start route can't pay a waiting park, and nobody else can tap it.
+    const direct = await userFetch(me, "POST", "/session/start", { parkedEventId: id, zoneId });
+    expect(direct.status).toBe(409);
+    expect(direct.body["error"]).toBe("park_awaits_walk_away");
+    const other = await frFetch("POST", `/parked/${id}/confirm`, {});
+    expect(other.status).toBe(404);
+
+    // The phone leaves the car (the app's own report: on foot, 60 m out).
+    const left = await userFetch(me, "POST", "/location", fix(60, { event: "left_car" }));
+    expect(left.status).toBe(200);
+    const park = left.body["park"] as { parkedEventId: string; status: string };
+    expect(park.parkedEventId).toBe(id);
+    if (park.status === "free") {
+      // The quote is for a stay that starts now, and the meters aren't
+      // charging now (the nightly runs before they do): nothing to ask,
+      // and a park that is over is never paid from.
+      expect(easternHourWithin(10, 17)).toBe(false);
+      expect(left.body["prompt"]).toBeUndefined();
+      const closed = await userFetch(me, "POST", `/parked/${id}/confirm`, {});
+      expect(closed.status).toBe(409);
+      expect(closed.body).toMatchObject({ error: "park_closed", status: "free" });
+      return;
+    }
+
+    // Meter hours: asked once, with the server's quote. A throwaway has no
+    // linked account, so the prompt says that instead of offering Pay.
+    expect(park.status).toBe("prompted");
+    const prompt = left.body["prompt"] as Record<string, unknown>;
+    expect(prompt["parkedEventId"]).toBe(id);
+    expect(prompt["kind"]).toBe("attention");
+    expect(prompt["reason"]).toBe("provider_not_linked");
+    expect(prompt["amountUsd"]).toBeGreaterThan(0);
+    expect(prompt["dryRun"]).toBe(true);
+    expect(typeof left.body["decisionId"]).toBe("string");
+    const again = await userFetch(me, "POST", "/location", fix(90));
+    expect(again.status).toBe(200);
+    expect(again.body["prompt"]).toEqual(prompt);
+    expect(again.body["decisionId"]).toBeUndefined();
+
+    // The tap runs the start path, once, and it refuses: nothing started.
+    const tap = await userFetch(me, "POST", `/parked/${id}/confirm`, {});
+    expect(tap.status).toBe(409);
+    expect(tap.body["error"]).toBe("provider_not_linked");
+    expect(typeof tap.body["decisionId"]).toBe("string");
+    const still = await userFetch(me, "POST", "/location", fix(120));
+    expect(still.status).toBe(200);
+    expect((still.body["park"] as { status: string }).status).toBe("prompted");
+    expect(still.body["sessionId"]).toBeUndefined();
+
+    // Not now: nothing paid, and the phone is told to stop reporting.
+    const declined = await userFetch(me, "POST", `/parked/${id}/decline`, {});
+    expect(declined.status).toBe(200);
+    expect(declined.body["status"]).toBe("declined");
+    const after = await userFetch(me, "POST", "/location", fix(150));
+    expect(after.status).toBe(409);
+    expect(after.body).toEqual({ error: "no_active_session" });
+  });
+
+  it("FR-55 an app that doesn't wait for the walk-away is answered as before", async () => {
+    const res = await userFetch(
+      me,
+      "POST",
+      "/parked",
+      parkedBody(NYC_AUTOPAY, { ts: AFTERNOON, outcomes: OUTCOMES }),
+    );
+    expect(res.status).toBe(200);
+    expect(res.body["awaitsWalkAway"]).toBeUndefined();
+    // No park waits, so a fix has nothing to attach to (the lifecycle
+    // case above, whichever ran first, leaves none waiting).
+    const fixed = await userFetch(me, "POST", "/location", fix(4));
+    expect(fixed.status).toBe(409);
+    expect(fixed.body).toEqual({ error: "no_active_session" });
   });
 });

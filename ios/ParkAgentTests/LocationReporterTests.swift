@@ -18,9 +18,12 @@ struct LocationReporterTests {
     final class Server {
         var reports: [LocationReport] = []
         var answer: APIError?
-        func receive(_ report: LocationReport) throws {
+        /// What the server says back to a report it took.
+        var reply = LocationResponse()
+        func receive(_ report: LocationReport) throws -> LocationResponse {
             if let answer { throw answer }
             reports.append(report)
+            return reply
         }
     }
 
@@ -78,10 +81,15 @@ struct LocationReporterTests {
         await reporter.heartbeatDue()
         #expect(server.reports.count == 1)
         // …but a minute on, "still here", so the worker's view doesn't age out.
+        let measured = server.reports[0].ts
         clock.now += 31
         await reporter.heartbeatDue()
         #expect(server.reports.count == 2)
         #expect(server.reports[1].ts == clock.now)
+        // The same measurement, sent again: the server must be able to
+        // tell, or one GPS jump would count as two fixes away from the car.
+        #expect(server.reports[0].measuredAt == measured)
+        #expect(server.reports[1].measuredAt == measured)
         reporter.stop()
     }
 
@@ -110,6 +118,98 @@ struct LocationReporterTests {
         await reporter.handle(ParkFix(latitude: 42.35, longitude: -71.07, accuracy: 5, at: clock.now))
         #expect(server.reports.count == 1, "A failed report must not count as sent")
         reporter.stop()
+    }
+
+    // MARK: - The street session lifecycle (FR-55)
+
+    private func prompt(_ title: String = "Pay $3.65 for zone 417371?") -> ParkPrompt {
+        ParkPrompt(
+            kind: "confirm", parkedEventId: "pe1", title: title, body: "1 h 30 m · ends 3:31 PM",
+            zoneId: "nyc-417371", zoneNumber: "417371", amountUsd: 3.65, minutes: 90, dryRun: true
+        )
+    }
+
+    @Test func whatTheAppSawRidesOnAReportAtOnceAndOnlyOnce() async {
+        let clock = Clock()
+        let server = Server()
+        let reporter = LocationReporter(now: { clock.now }, usesSystemLocation: false)
+        reporter.start(send: { try await server.receive($0) }, carCoordinate: nil)
+        await reporter.handle(ParkFix(latitude: 42.35, longitude: -71.07, accuracy: 5, at: clock.now))
+        #expect(server.reports.last?.event == nil)
+
+        // On foot: reported now, with the freshest fix, not at the next heartbeat.
+        clock.now += 3
+        await reporter.note(.leftCar)
+        #expect(server.reports.count == 2)
+        #expect(server.reports.last?.event == "left_car")
+
+        // Delivered: the next report carries nothing.
+        clock.now += 61
+        await reporter.heartbeatDue()
+        #expect(server.reports.count == 3)
+        #expect(server.reports.last?.event == nil)
+        reporter.stop()
+    }
+
+    @Test func anEventSeenBeforeAnyFixWaitsForTheFirstOne() async {
+        let clock = Clock()
+        let server = Server()
+        let reporter = LocationReporter(now: { clock.now }, usesSystemLocation: false)
+        reporter.start(send: { try await server.receive($0) }, carCoordinate: nil)
+        await reporter.note(.leftCar)
+        #expect(server.reports.isEmpty, "There is no fix to send it with yet")
+        await reporter.handle(ParkFix(latitude: 42.35, longitude: -71.07, accuracy: 5, at: clock.now))
+        #expect(server.reports.map(\.event) == ["left_car"])
+        reporter.stop()
+    }
+
+    @Test func anEventThatDidNotGetOutIsSentAgain() async {
+        let clock = Clock()
+        let server = Server()
+        let reporter = LocationReporter(now: { clock.now }, usesSystemLocation: false)
+        reporter.start(send: { try await server.receive($0) }, carCoordinate: nil)
+        await reporter.handle(ParkFix(latitude: 42.35, longitude: -71.07, accuracy: 5, at: clock.now))
+        server.answer = .transport(URLError(.networkConnectionLost))
+        await reporter.note(.returnedToCar)
+        #expect(server.reports.count == 1)
+        server.answer = nil
+        clock.now += 20
+        await reporter.handle(ParkFix(latitude: 42.3503, longitude: -71.07, accuracy: 5, at: clock.now))
+        #expect(server.reports.last?.event == "returned_to_car")
+        reporter.stop()
+    }
+
+    @Test func theServersAnswerIsHandedOn() async {
+        let clock = Clock()
+        let server = Server()
+        let asked = prompt()
+        server.reply = LocationResponse(park: .init(parkedEventId: "pe1", status: "prompted"), prompt: asked)
+        let reporter = LocationReporter(now: { clock.now }, usesSystemLocation: false)
+        var answers: [LocationResponse] = []
+        reporter.onResponse = { answers.append($0) }
+        reporter.start(send: { try await server.receive($0) }, carCoordinate: nil)
+        await reporter.handle(ParkFix(latitude: 42.35, longitude: -71.07, accuracy: 5, at: clock.now))
+        #expect(answers.count == 1)
+        #expect(answers.first?.prompt == asked)
+        #expect(answers.first?.park?.status == "prompted")
+        reporter.stop()
+    }
+
+    @Test func aWaitingParkIsKeptOnDiskAndDroppedWhenReportingStops() {
+        let clock = Clock()
+        let reporter = LocationReporter(now: { clock.now }, usesSystemLocation: false)
+        var held = MockFixtures.singleQuote()
+        held.awaitsWalkAway = true
+        let waiting = ParkedNotice.Waiting(
+            response: held, latitude: 42.35, longitude: -71.07, savedAt: AppClock.now, shown: nil
+        )
+        reporter.start(send: { _ in LocationResponse() }, carCoordinate: waiting.coordinate, waiting: waiting)
+        #expect(reporter.waiting?.response.parkedEventId == held.parkedEventId)
+        // A relaunch between the park and the walk-away finds it again.
+        #expect(ParkedNotice.restoreWaiting()?.response.parkedEventId == held.parkedEventId)
+        reporter.stop()
+        #expect(reporter.waiting == nil)
+        #expect(ParkedNotice.restoreWaiting() == nil)
     }
 }
 

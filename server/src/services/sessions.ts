@@ -7,6 +7,7 @@
  */
 
 import type { AppDb, SessionRow } from "../db.js";
+import type { ProviderId } from "../providers/registry.js";
 import { cityForZone, providerForCity } from "../providers/registry.js";
 import type { PushSender } from "./apns.js";
 import {
@@ -64,6 +65,21 @@ export async function spentToday(db: AppDb, userId: string, at: Date): Promise<n
     0,
   );
   return streetUsd + (await linkSpentSince(db, userId, since, LINK_COMMITTED_STATUSES));
+}
+
+/**
+ * Whether a provider sells time that can be stopped early. Passport's
+ * Boston operator doesn't (meter time is non-refundable; its stop flow
+ * answers stopNotSupported), so a return there ends the session without
+ * asking the provider anything. Every provider must say: a new one doesn't
+ * compile until it does.
+ */
+const EARLY_STOP: Record<ProviderId, boolean> = { parknyc: true, passport: false };
+
+export function supportsEarlyStop(zoneId: string): boolean {
+  const provider = providerForCity(cityForZone(zoneId));
+  // No provider: the stop path's own executor answers (dry run, or none).
+  return provider ? EARLY_STOP[provider.id] : true;
 }
 
 /** The rate terms the session was sold under (snapshotted at start). The

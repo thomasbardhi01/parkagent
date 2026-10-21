@@ -14,7 +14,7 @@ import { expect, test } from "vitest";
 
 import { haversineM, makeExtender } from "../src/jobs/extendTick.js";
 import type { FakeDbState } from "./helpers.js";
-import { API_KEY, HOURS_MON_SAT, makeTestApp, seedSession } from "./helpers.js";
+import { API_KEY, HOURS_MON_SAT, STEINWAY_A, makeTestApp, seedSession } from "./helpers.js";
 
 const HEADERS = { "x-api-key": API_KEY, "content-type": "application/json" };
 const T = (hhmm: string) => new Date(`2026-01-05T${hhmm}:00-05:00`); // a Monday
@@ -122,4 +122,55 @@ test("the route's walk back reaches the worker as heading to the car, and it hol
 test("the route's spot is the car the walk is measured from", () => {
   const far = ROUTE.find((p) => p.phase === "far")!;
   expect(Math.round(haversineM(CAR.lat, CAR.lng, far.lat, far.lng))).toBeGreaterThanOrEqual(295);
+});
+
+test("a park waiting on the same route is asked about once, as the walk leaves the car", async () => {
+  const t = makeTestApp({
+    now: () => NOW,
+    candidates: [STEINWAY_A],
+    zones: [
+      {
+        zoneId: "nyc-417371",
+        providerZoneNumber: "417371",
+        rateFirstHour: 2.0,
+        rateAdditionalHour: 3.0,
+        maxStayMinutes: 120,
+        hoursJson: HOURS_MON_SAT,
+      },
+    ],
+  });
+  const parked = await t.app.inject({
+    method: "POST",
+    url: "/parked",
+    headers: HEADERS,
+    payload: {
+      lat: CAR.lat,
+      lng: CAR.lng,
+      accuracy: 8,
+      ts: new Date(NOW.getTime() - 4 * 60_000).toISOString(),
+      signals: ["motion_stop"],
+      outcomes: ["garage", "nopay", "walk_away"],
+    },
+  });
+  expect(parked.json()).toMatchObject({ action: "pay", awaitsWalkAway: true });
+
+  // The driver sits through the route's parked minute, then walks.
+  const stay = ROUTE.filter((p) => p.phase === "park");
+  await walk(t.app, stay);
+  expect(t.state.pendingParks[0]).toMatchObject({ status: "at_car", leftCarAt: null });
+  expect(t.state.decisions.some((d) => d.kind === "street_prompt")).toBe(false);
+
+  await walk(
+    t.app,
+    ROUTE.filter((p) => p.phase === "walk_away"),
+  );
+  expect(t.state.pendingParks[0]!.status).toBe("prompted");
+  const asked = t.state.decisions.filter((d) => d.kind === "street_prompt");
+  expect(asked).toHaveLength(1);
+  // Asked while still within the block, not at the far end of the walk.
+  const fix = asked[0]!.inputs["fix"] as { distanceM: number };
+  expect(fix.distanceM).toBeGreaterThan(30);
+  expect(fix.distanceM).toBeLessThan(150);
+  expect(t.state.sessions).toEqual([]);
+  expect(t.pushes).toEqual([]);
 });

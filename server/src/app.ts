@@ -21,6 +21,7 @@ import { registerGarages } from "./routes/garages.js";
 import { registerLocation } from "./routes/location.js";
 import { registerLimits } from "./routes/limits.js";
 import { registerIdempotency } from "./services/idempotency.js";
+import { makeAssistantHealth } from "./services/assistant/health.js";
 import { registerMe } from "./routes/me.js";
 import { registerParked } from "./routes/parked.js";
 import { registerPolicy } from "./routes/policy.js";
@@ -301,33 +302,43 @@ export function buildApp(deps?: AppDeps, app: FastifyInstance = createFastify())
     return { ok: true, db };
   });
 
-  app.get("/health", async () => ({
-    ok: true,
-    dryRun: deps?.health?.dryRun ?? process.env["DRY_RUN"] === "true",
-    // Injected at image build (Dockerfile ARG -> ENV); "dev" under tsx/vitest.
-    commit: process.env["GIT_SHA"] ?? "dev",
-    builtAt: process.env["BUILD_TIME"] ?? "dev",
+  const assistantHealth = makeAssistantHealth();
+  app.get("/health", async () => {
     // Features a missing, partial, or malformed setting switched off
     // (env.ts), plus policy_edit when policy.json can't be rewritten. The
     // server still answers: nothing optional refuses boot.
-    degraded: deps?.health?.degraded ?? [],
-  }));
+    const degraded = [...(deps?.health?.degraded ?? [])];
+    // Plus the assistant while its last model call failed on billing or
+    // auth (services/assistant/health.ts) — no model call from here.
+    if (assistantHealth.degraded() && !degraded.includes("assistant")) {
+      degraded.push("assistant");
+    }
+    return {
+      ok: true,
+      dryRun: deps?.health?.dryRun ?? process.env["DRY_RUN"] === "true",
+      // Injected at image build (Dockerfile ARG -> ENV); "dev" under tsx/vitest.
+      commit: process.env["GIT_SHA"] ?? "dev",
+      builtAt: process.env["BUILD_TIME"] ?? "dev",
+      degraded,
+    };
+  });
   if (deps) {
     registerAuth(app, deps);
-    registerParked(app, deps);
+    // The start and stop paths, for the lifecycle's own callers (FR-55).
+    const sessionOps = registerSession(app, deps);
+    registerParked(app, deps, sessionOps);
     registerCity(app, deps);
     registerZones(app, deps);
     registerGarages(app, deps);
     registerPolicy(app, deps);
-    registerSession(app, deps);
-    registerLocation(app, deps);
+    registerLocation(app, deps, sessionOps);
     registerMe(app, deps);
     registerLimits(app, deps);
     registerDevice(app, deps);
     registerCard(app, deps);
     registerProviders(app, deps);
     registerAdmin(app, deps);
-    registerAssistant(app, deps);
+    registerAssistant(app, deps, assistantHealth);
     registerLink(app, deps);
     registerWallet(app, deps);
     registerStripeWebhook(app, deps);

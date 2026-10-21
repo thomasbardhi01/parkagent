@@ -1,0 +1,10 @@
+{
+  "name": "parkagent-fleet",
+  "version": "0.1.0",
+  "description": "Context, rate-limit and cost band above the prompt; a Fleet pane listing every ParkAgent session on this machine with its branch, context fill and spend, plus the repo's latest CI runs.",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Thomas Bardhi"
+  },
+  "license": "MIT"
+}

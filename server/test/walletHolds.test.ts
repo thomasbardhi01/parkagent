@@ -36,7 +36,6 @@ import {
   seedFundingMethod,
   seedHold,
   seedProviderAccount,
-  seedLeftCar,
   seedSession,
   setFakeRowClock,
 } from "./helpers.js";
@@ -887,10 +886,6 @@ describe("the auto-extend worker", () => {
       carLng: -71.0798,
       parknycConfirmation: "prov-1",
     });
-    seedLeftCar(
-      t.state,
-      t.state.sessions.find((s) => s.id === "s-auto")!,
-    );
     // Far from the car and walking away: ticket risk wins → extend.
     t.state.locationFixes.push(
       ...[0, 1, 2].map((i) => ({
@@ -950,7 +945,6 @@ describe("one extension at a time per session", () => {
       carLng: -71.0798,
       parknycConfirmation: "prov-1",
     });
-    seedLeftCar(t.state, session);
     // Far from the car and walking away: ticket risk wins → auto-extend.
     t.state.locationFixes.push(
       ...[0, 1, 2].map((i) => ({

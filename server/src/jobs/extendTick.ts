@@ -238,13 +238,20 @@ export function makeExtender(deps: ExtenderDeps): Extender {
 
     // Away from the car, at it, back at it, or unknown (FR-55). The
     // lifecycle's own record says whether the phone ever left and whether
-    // it came back; the latest fresh fix says where it is now. Away takes
-    // both: a phone that left and has since gone quiet may be back in the
-    // car or driving off, and a fix far from a car it was never seen
-    // leaving says nothing about the driver.
+    // it came back; the latest fresh fix says where it is now. Away always
+    // takes a fresh usable fix: a phone that left and has since gone quiet
+    // may be back in the car or driving off. With a lifecycle record it
+    // also takes the walk-away that record holds. Without one (an older
+    // build, a start through POST /session/start) a fresh fix clear of the
+    // car is all there is to go on.
     const park = await deps.db.pendingPark.findUnique({ where: { sessionId: session.id } });
     const latest = chronological.at(-1);
     const sharp = latest !== undefined && latest.accuracyM <= FIX_USABLE_ACCURACY_M;
+    const away =
+      sharp &&
+      (park !== null
+        ? park.leftCarAt !== null
+        : distanceM !== null && distanceM - latest.accuracyM > AT_CAR_RADIUS_M);
     const position: PhonePosition =
       park?.status === "ended"
         ? "returned"
@@ -252,7 +259,7 @@ export function makeExtender(deps: ExtenderDeps): Extender {
           ? "moved"
           : sharp && distanceM !== null && distanceM <= AT_CAR_RADIUS_M
             ? "at_car"
-            : (park?.leftCarAt ?? null) !== null && sharp
+            : away
               ? "away"
               : "unknown";
 

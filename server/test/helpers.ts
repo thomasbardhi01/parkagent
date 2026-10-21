@@ -406,44 +406,6 @@ export function seedSession(state: FakeDbState, overrides: Partial<SessionRow>):
   return session;
 }
 
-/** The lifecycle's record that a session's phone left its car (FR-55): the
- * extension worker buys time only for a phone known to have left, and
- * still reporting from away. */
-export function seedLeftCar(
-  state: FakeDbState,
-  session: SessionRow,
-  leftCarAt?: Date,
-): PendingParkRow {
-  const parkedAt = session.startedAt ?? session.createdAt;
-  const row: PendingParkRow = {
-    id: `pp${state.pendingParks.length + 1}`,
-    userId: session.userId,
-    parkedEventId: null,
-    status: "started",
-    candidates: null,
-    quote: null,
-    prompt: null,
-    shownDryRun: null,
-    zoneId: session.zoneId,
-    carLat: session.carLat ?? 0,
-    carLng: session.carLng ?? 0,
-    parkedAt,
-    leftCarAt: leftCarAt ?? new Date(parkedAt.getTime() + 2 * 60_000),
-    farAt: null,
-    farDistanceM: null,
-    nearSince: null,
-    promptedAt: null,
-    confirmedAt: null,
-    startingAt: null,
-    sessionId: session.id,
-    carMovedAt: null,
-    closedAt: null,
-    createdAt: parkedAt,
-  };
-  state.pendingParks.push(row);
-  return row;
-}
-
 function matchesSessionWhere(s: SessionRow, where: SessionWhere): boolean {
   if (where.id?.not !== undefined && s.id === where.id.not) return false;
   if (where.userId !== undefined && s.userId !== where.userId) return false;

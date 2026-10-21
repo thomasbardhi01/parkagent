@@ -809,7 +809,13 @@ export async function noteCarMoved(
 export type ParkStarter = (
   user: { id: string },
   body: { parkedEventId: string; zoneId: string; minutes?: number },
-  opts?: { maxTotalUsd?: number; shownZoneNumber?: string; shownDryRun?: boolean },
+  opts?: {
+    maxTotalUsd?: number;
+    shownZoneNumber?: string;
+    shownDryRun?: boolean;
+    checkOnly?: boolean;
+    replacing?: string;
+  },
 ) => Promise<{ status: number; body: Record<string, unknown>; reachedProvider: boolean }>;
 
 /** The start path's refusals that mean "not what the driver agreed to". */
@@ -893,12 +899,24 @@ export async function startParkSession(
   const sessionIdOf = (body: Record<string, unknown>) =>
     typeof body["sessionId"] === "string" ? body["sessionId"] : null;
 
+  const user = { id: park.userId };
+  const body = { parkedEventId, zoneId: park.zoneId as string, minutes: shown.stayMinutes };
+  const agreed = {
+    maxTotalUsd: shown.totalUsd,
+    shownZoneNumber: shown.providerZoneNumber,
+    ...(park.shownDryRun === true ? { shownDryRun: true } : {}),
+  };
+
   // A session still running for this driver. At the same spot it already
   // pays this park: a second one would pay twice. Somewhere else, the car
-  // has moved, and this tap is the driver saying so: that session ends.
+  // has moved, and this tap is the driver saying so: that session ends —
+  // but only for a start that will run. This start's own refusals (the
+  // caps, a changed amount or zone number, an unlinked account) are asked
+  // first, and a refused start leaves the running session alone.
   const running = await deps.db.session.findFirst({
     where: { userId: park.userId, status: "active" },
   });
+  let refused: Awaited<ReturnType<ParkStarter>> | null = null;
   if (running) {
     const sameSpot =
       running.carLat === null ||
@@ -909,33 +927,35 @@ export async function startParkSession(
       await record("covered", { parkStatus: "covered", coveredBy: running.id }, running.id);
       return { kind: "covered", sessionId: running.id };
     }
-    const lifecycle = await lifecycleOf(deps, running, args.at);
-    const ended = lifecycle
-      ? await deps.db.pendingPark.updateMany({
-          where: { id: lifecycle.id, status: "started" },
-          data: { status: "ended", closedAt: args.at },
-        })
-      : { count: 1 };
-    if (ended.count === 1) {
-      await endSession(deps, ops.stop, running, lifecycle, {
-        reason: "new_park",
-        why: "new_park_paid",
-        ...(args.fix ? { fix: args.fix } : {}),
-        at: args.at,
-      });
+    const check = await ops.start(user, body, {
+      ...agreed,
+      checkOnly: true,
+      replacing: running.id,
+    });
+    if (check.status !== 200) {
+      refused = check;
+    } else {
+      const lifecycle = await lifecycleOf(deps, running, args.at);
+      const ended = lifecycle
+        ? await deps.db.pendingPark.updateMany({
+            where: { id: lifecycle.id, status: "started" },
+            data: { status: "ended", closedAt: args.at },
+          })
+        : { count: 1 };
+      if (ended.count === 1) {
+        await endSession(deps, ops.stop, running, lifecycle, {
+          reason: "new_park",
+          why: "new_park_paid",
+          ...(args.fix ? { fix: args.fix } : {}),
+          at: args.at,
+        });
+      }
     }
   }
 
   let reply: Awaited<ReturnType<ParkStarter>> | null;
-  const starting = ops.start(
-    { id: park.userId },
-    { parkedEventId, zoneId: park.zoneId as string, minutes: shown.stayMinutes },
-    {
-      maxTotalUsd: shown.totalUsd,
-      shownZoneNumber: shown.providerZoneNumber,
-      ...(park.shownDryRun === true ? { shownDryRun: true } : {}),
-    },
-  );
+  // A refused check is this start's answer: nothing reached the provider.
+  const starting = refused ? Promise.resolve(refused) : ops.start(user, body, agreed);
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     reply = await Promise.race([

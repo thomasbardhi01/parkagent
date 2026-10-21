@@ -93,6 +93,13 @@ export interface SessionOps {
       /** The driver was told this is a dry run: a start that would charge
        * for real is refused `dry_run_changed`. */
       shownDryRun?: boolean;
+      /** Run the start's refusals and stop there: `200 {checked: true}`
+       * when it would go on to pay, with nothing written but the refusal's
+       * own decision. */
+      checkOnly?: boolean;
+      /** The running session this start would take over from (ended by
+       * the caller only once the check passes): not a refusal here. */
+      replacing?: string;
     },
   ): Promise<SessionStartReply>;
   stop(userId: string, session: SessionRow): Promise<SessionStopReply>;
@@ -158,7 +165,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
     const existing = await deps.db.session.findFirst({
       where: { userId: user.id, status: "active" },
     });
-    if (existing) {
+    if (existing && existing.id !== opts.replacing) {
       return reply.code(409).send({ error: "session_already_active", sessionId: existing.id });
     }
     const zone = await deps.db.zone.findUnique({ where: { zoneId: body.zoneId } });
@@ -351,6 +358,10 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
           decisionId: decision.id,
         });
       }
+    }
+
+    if (opts.checkOnly) {
+      return reply.code(200).send({ checked: true, totalUsd: price.totalUsd });
     }
 
     // The session's vehicle: the caller's saved plate, passed through the

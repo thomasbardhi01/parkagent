@@ -453,6 +453,45 @@ test("a newer park somewhere else: the old session is no longer extended, the ne
   expect(t.state.sessions.filter((s) => s.status === "active")[0]!.carLat).toBe(ELSEWHERE.lat);
 });
 
+test("a tap elsewhere that its own start would refuse leaves the running session alone", async () => {
+  const t = makeApp();
+  const { session: old } = await paidAndAway(t);
+  t.tick(30 * 60);
+  const parked = await post(
+    t.app,
+    "/parked",
+    parkedBody({ outcomes: OUTCOMES, lat: ELSEWHERE.lat, ts: t.clock.now.toISOString() }),
+  );
+  const newParkId = parked.json()["parkedEventId"] as string;
+  t.tick(30);
+  await post(t.app, "/location", fixAt(t, 60));
+  t.tick(20);
+  const left = await post(t.app, "/location", fixAt(t, 88));
+  expect(left.json()).toMatchObject({ park: { parkedEventId: newParkId, status: "prompted" } });
+
+  // The driver lowered their per-stop limit since: the new start is over it.
+  const at = t.clock.now;
+  t.state.userLimits.push({
+    userId: "u1",
+    sessionCapUsd: 2,
+    dailyCapUsd: null,
+    defaultStayMinutes: null,
+    createdAt: at,
+    updatedAt: at,
+  });
+  const tap = await post(t.app, `/parked/${newParkId}/confirm`, {});
+  expect(tap.statusCode).toBe(409);
+  expect(tap.json()).toMatchObject({ error: "policy_violation", rule: "session_cap_exceeded" });
+
+  // Nothing new was paid, so nothing old was given up.
+  expect(old.status).toBe("active");
+  expect(t.calls.stop).toBe(0);
+  expect(t.calls.start).toBe(1);
+  expect(t.state.decisions.some((d) => d.kind === "session_end_return")).toBe(false);
+  expect(t.state.pendingParks.find((p) => p.sessionId === old.id)!.status).toBe("started");
+  expect(t.state.pendingParks.find((p) => p.parkedEventId === newParkId)!.status).toBe("prompted");
+});
+
 test("a new park at the spot a session already pays is covered: never asked about, never paid twice", async () => {
   const t = makeApp();
   const { session } = await paidAndAway(t);

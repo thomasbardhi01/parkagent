@@ -1054,7 +1054,10 @@ than 100 m from the new park, a `session_car_moved` decision is written
 and the extension worker stops buying time for it; the session itself is
 not stopped on the phone's say-so (the new park may be a car the phone
 rode in). The tap that pays for the new park is the driver saying where
-the car is: it ends that session first, the way a return does. A held park
+the car is: it ends that session first, the way a return does, but only
+once the new start has passed its own refusals (caps, a changed amount or
+zone number, an unlinked account). A tap whose start would be refused
+leaves the running session alone. A held park
 within 100 m of a running session's car is that session's own spot: at
 walk-away it closes as `covered`, with nothing asked.
 

@@ -102,6 +102,31 @@ struct ParkLifecycleTests {
         #expect(model.reporter.waiting == nil)
     }
 
+    /// On foot during a running session: told to the server too, which
+    /// clears its memory of the phone beside the car. Without it, a phone
+    /// standing at a bus stop near the car (no valid speed) and then on a
+    /// bus reads as the car driving off.
+    @Test func aWalkDuringASessionIsToldToTheServer() async {
+        ActiveSession.store(nil)
+        let model = AppModel(authStore: AuthStore(credentials: InMemoryCredentialStore()))
+        defer { tearDown(model) }
+        var reports: [LocationReport] = []
+        model.activeSession = ActiveSession(
+            sessionId: "s9", zoneNumber: "417371", zoneLabel: "Zone 417371", startedAt: .now,
+            expiresAt: .now.addingTimeInterval(3_600), amountUsd: 3.65, extendCount: 0,
+            maxExtendCount: 2, maxStayReached: false
+        )
+        model.reporter.start(
+            send: { reports.append($0); return LocationResponse(sessionId: "s9") },
+            carCoordinate: CLLocationCoordinate2D(latitude: 40.7784, longitude: -73.9819)
+        )
+        await model.reporter.handle(ParkFix(latitude: 40.7786, longitude: -73.9819, accuracy: 6, at: .now))
+        #expect(reports.count == 1)
+        await model.phoneLeftCar(at: .now)
+        #expect(reports.count == 2)
+        #expect(reports.last?.event == "left_car")
+    }
+
     /// A session the app already shows is not read again.
     @Test func aSessionAlreadyHeldIsNotReadAgain() {
         let waiting = waitingPark()

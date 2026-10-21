@@ -82,10 +82,12 @@ extension AppModel {
     /// Motion has the driver walking away (CoreMotion, walking or running
     /// at medium confidence or better, in no vehicle), since `walkedAt`.
     /// Never distance: a car at a red light is two still fixes away from
-    /// where it parked (#226). Only a park still waiting at the car cares;
-    /// the server weighs it against the fix that goes with it.
+    /// where it parked (#226). A park waiting at the car takes it as the
+    /// walk-away; a running session as "not in the car", which clears the
+    /// server's memory of the phone beside it, so a bus pulling away from
+    /// a stop near the car is not read as the car driving off.
     func phoneLeftCar(at walkedAt: Date? = nil) async {
-        guard reporter.waiting != nil, activeSession == nil else { return }
+        guard reporter.isRunning, reporter.waiting != nil || activeSession != nil else { return }
         await reporter.note(.leftCar, at: walkedAt)
     }
 

@@ -294,10 +294,7 @@ extension AppModel {
             case .waitingForWalkAway:
                 // Nothing is paid at the car. The sheet closes; the park
                 // keeps waiting, and Home says what will happen.
-                if var waiting = reporter.waiting, waiting.response.parkedEventId == parked.parkedEventId {
-                    waiting.confirmed = true
-                    reporter.setWaiting(waiting)
-                }
+                keepTappedPark(parked.parkedEventId)
                 pendingParked = nil
                 Haptics.success()
             case .freePeriod(let notice):
@@ -348,6 +345,29 @@ extension AppModel {
         }
     }
 
+    /// A Pay the server kept for the walk-away: remembered with the park
+    /// (in the reporter, or on disk when the tap relaunched the app without
+    /// it), so an hour with no walk-away is said, not forgotten.
+    func keepTappedPark(_ parkedEventId: String) {
+        if var waiting = reporter.waiting, waiting.response.parkedEventId == parkedEventId {
+            waiting.confirmed = true
+            reporter.setWaiting(waiting)
+        } else if var stored = ParkedNotice.restoreWaiting(), stored.response.parkedEventId == parkedEventId {
+            stored.confirmed = true
+            ParkedNotice.storeWaiting(stored)
+        }
+    }
+
+    /// Pay on the notification, answered without a session: kept for the
+    /// next walk-away (the phone was back near the car since it left), or
+    /// free now. Nothing was paid and nothing failed, but iOS has already
+    /// taken the notification away: say what happened.
+    func notificationTapAnswered(_ outcome: ParkConfirmOutcome, tap: PushManager.WalkAwayTap) async {
+        if case .waitingForWalkAway = outcome { keepTappedPark(tap.parkedEventId) }
+        guard let content = ParkedNotice.tapAnswerContent(outcome, zoneNumber: tap.zoneNumber) else { return }
+        await ParkedNotice.postTapAnswer(content, parkedEventId: tap.parkedEventId)
+    }
+
     private func payFromNotification(_ tap: PushManager.WalkAwayTap) async {
         guard !isPaying else { return }
         isPaying = true
@@ -358,8 +378,7 @@ extension AppModel {
                 parkedEventId: tap.parkedEventId, zoneId: tap.zoneId, shownTotalUsd: tap.shownTotalUsd
             )
             guard case .started(let started) = outcome else {
-                // Kept for the next walk-away (the phone is back at the
-                // car), or free now: nothing was paid, nothing failed.
+                await notificationTapAnswered(outcome, tap: tap)
                 return
             }
             if let waiting, waiting.response.parkedEventId == tap.parkedEventId {

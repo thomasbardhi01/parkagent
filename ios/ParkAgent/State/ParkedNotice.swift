@@ -455,6 +455,41 @@ enum ParkedNotice {
         )
     }
 
+    /// Pay on the walk-away notification that the server kept rather than
+    /// paid (#226): the phone was back near the car, or it is free now.
+    /// iOS has already taken the notification away, so without this the
+    /// tap shows nothing at all.
+    static func tapAnswerContent(_ outcome: ParkConfirmOutcome, zoneNumber: String?) -> Content? {
+        let zone = zoneNumber.flatMap { $0.isEmpty ? nil : "Zone \($0)" }
+        switch outcome {
+        case .started:
+            return nil
+        case .waitingForWalkAway:
+            return Content(
+                title: zone.map { "\($0): Pay kept" } ?? "Pay kept",
+                body: "Kept. ParkAgent pays when you walk away."
+            )
+        case .freePeriod(let notice):
+            return Content(
+                title: zone.map { "\($0) is free right now" } ?? "The meter is free right now",
+                body: (notice ?? "Meters here are free right now.") + " Nothing was paid."
+            )
+        }
+    }
+
+    static let tapAnswerType = "walk_away_tap_answer"
+
+    @MainActor
+    static func postTapAnswer(_ content: Content, parkedEventId: String) async {
+        let notification = UNMutableNotificationContent()
+        notification.title = content.title
+        notification.body = content.body
+        notification.interruptionLevel = .passive
+        notification.userInfo = ["type": type, "parkedEventId": parkedEventId]
+        let request = UNNotificationRequest(identifier: tapAnswerType, content: notification, trigger: nil)
+        try? await UNUserNotificationCenter.current().add(request)
+    }
+
     static func expiredContent(zoneNumber: String?) -> Content {
         Content(
             title: zoneNumber.map { "Zone \($0) wasn't paid" } ?? "The meter wasn't paid",

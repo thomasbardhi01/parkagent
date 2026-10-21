@@ -11,7 +11,7 @@ import Testing
 /// and show Stop, not keep the park "waiting".
 @MainActor
 struct ParkLifecycleTests {
-    func waitingPark(id: String = "pe1") -> ParkedNotice.Waiting {
+    func waitingPark(id: String = "pe1", confirmed: Bool = true) -> ParkedNotice.Waiting {
         var held = MockFixtures.singleQuote(zoneNumber: "417371")
         held.parkedEventId = id
         held.awaitsWalkAway = true
@@ -19,7 +19,7 @@ struct ParkLifecycleTests {
             response: held, latitude: 40.7784, longitude: -73.9819, savedAt: AppClock.now, shown: nil
         )
         waiting.parkedAt = AppClock.now
-        waiting.confirmed = true
+        waiting.confirmed = confirmed
         return waiting
     }
 
@@ -125,6 +125,46 @@ struct ParkLifecycleTests {
         await model.phoneLeftCar(at: .now)
         #expect(reports.count == 2)
         #expect(reports.last?.event == "left_car")
+    }
+
+    /// Pay on the lock-screen notification, answered "kept for the walk-away"
+    /// (the phone was back near the car since it left): iOS has already
+    /// taken the notification away, so the tap is answered with a notice,
+    /// and the park remembers the Pay, so an hour with no walk-away is said
+    /// rather than forgotten.
+    @Test func aPayKeptFromTheNotificationIsRememberedAndSaid() async throws {
+        let model = modelWaiting(waitingPark(confirmed: false))
+        defer { tearDown(model) }
+        let tap = PushManager.WalkAwayTap(
+            action: .pay, parkedEventId: "pe1", zoneId: "nyc-417371", zoneNumber: "417371", shownTotalUsd: 3.65
+        )
+        await model.notificationTapAnswered(.waitingForWalkAway, tap: tap)
+        #expect(model.reporter.waiting?.confirmed == true)
+        #expect(ParkedNotice.restoreWaiting()?.confirmed == true)
+
+        let said = try #require(ParkedNotice.tapAnswerContent(.waitingForWalkAway, zoneNumber: "417371"))
+        #expect(said.body == "Kept. ParkAgent pays when you walk away.")
+        #expect(said.title.contains("417371"))
+        #expect(ParkedNotice.tapAnswerContent(.freePeriod(notice: nil), zoneNumber: "417371")?.body.contains("Nothing was paid") == true)
+    }
+
+    /// The tap relaunched the app in the background with the park only on
+    /// disk: remembered there.
+    @Test func aPayKeptWithTheParkOnlyOnDiskIsRememberedThere() async {
+        ActiveSession.store(nil)
+        let model = AppModel(authStore: AuthStore(credentials: InMemoryCredentialStore()))
+        defer {
+            tearDown(model)
+            ParkedNotice.storeWaiting(nil)
+        }
+        ParkedNotice.storeWaiting(waitingPark(confirmed: false))
+        #expect(model.reporter.waiting == nil)
+        model.keepTappedPark("pe1")
+        #expect(ParkedNotice.restoreWaiting()?.confirmed == true)
+        // Another park's tap changes nothing.
+        ParkedNotice.storeWaiting(waitingPark(confirmed: false))
+        model.keepTappedPark("pe-other")
+        #expect(ParkedNotice.restoreWaiting()?.confirmed == false)
     }
 
     /// A session the app already shows is not read again.

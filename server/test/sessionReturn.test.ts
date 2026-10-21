@@ -985,3 +985,39 @@ test("…nor does the next fix: a park mid-start is never superseded by a newer 
     sessionId: t.state.sessions[0]!.id,
   });
 });
+
+test("the phone back at the car while the worker is buying time: the extension is refused, and nothing is bought", async () => {
+  // A return that lands in time ends the session; the phone merely back
+  // within reach of the car (a tap would wait, a drive-off is armed) is no
+  // phone known to be away either.
+  for (const back of ["returned", "at_car"] as const) {
+    const t = makeApp();
+    const extender = makeExtender({ ...t.deps, log: { info() {}, warn() {} } });
+    const { session } = await paidAndAway(t);
+    t.clock.now = new Date(session.expiresAt!.getTime() - 6 * 60_000);
+    await post(t.app, "/location", fix(t, 2_500, { speedMps: 1.2 }));
+
+    // The worker has read the phone as away and priced the extension; the
+    // phone's fixes land while it takes the session's extension lock.
+    const real = t.deps.db.$transaction;
+    let landed = false;
+    t.deps.db.$transaction = (async (...args: Parameters<typeof real>) => {
+      if (!landed) {
+        landed = true;
+        await post(t.app, "/location", fix(t, 5));
+        if (back === "returned") {
+          t.tick(61);
+          await post(t.app, "/location", fix(t, 4));
+        }
+      }
+      return real(...args);
+    }) as typeof real;
+    await extender.tick();
+
+    expect(landed).toBe(true);
+    expect({ back, extend: t.calls.extend }).toEqual({ back, extend: 0 });
+    expect(session.purchasedMinutes).toBe(90);
+    const row = t.state.decisions.filter((d) => d.kind === "extend_tick").at(-1)!;
+    expect(row.outcome).toMatchObject({ ok: false });
+  }
+});

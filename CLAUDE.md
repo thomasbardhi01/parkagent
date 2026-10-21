@@ -343,11 +343,12 @@ Keep new code on those rules.
     confirmation (never for subagents). Edit `.claude/settings.json` by
     hand: the `guard` plugin blocks Claude sessions from changing it.
   - `.claude/settings.json` `permissions.deny` is the **always-on weak layer**:
-    native Claude Code rules that need no mod and apply in every session,
+    native Claude Code rules that need no plugin and apply in every session,
     covering the worst cases (reading `.env`/`Config.xcconfig`, `gh pr merge`,
     `gh secret set`, `fly deploy`/`secrets set`/`ssh`, `git push origin main`).
-    It's a coarse backstop for sessions that haven't loaded the mod; the mod is
-    what actually understands compound commands, wrappers and substitutions.
+    It's a coarse backstop for sessions that haven't installed the guard
+    plugin; the plugin is what actually understands compound commands,
+    wrappers and substitutions.
   Neither changes the working agreement: a human still merges every PR, a
   Claude session never does (see "Working style") — the guards just make the
   slip impossible to run by hand.

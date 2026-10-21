@@ -91,6 +91,10 @@ export const DRIVE_PACE_MAX_MS = 120_000;
  * walk-away. A fix whose own speed (the phone's `speedMps`) is over it is
  * a moving car: it never counts toward leaving. */
 export const MAX_WALK_MPS = 3;
+/** The phone's own speed says "on foot" only from this up: CLLocation
+ * reads 0 for a phone standing still (a car at a light included), and a
+ * few tenths for one sitting in GPS noise. */
+export const MIN_WALK_MPS = 0.5;
 /** The app's "left the car" is refused only by a sharp fix this close. */
 export const DOOR_RADIUS_M = 10;
 export const DOOR_ACCURACY_M = 20;
@@ -310,8 +314,9 @@ export function advanceWalk(before: WalkState, fix: WalkFix): WalkStep {
   // Clear of the car after a measurement at it: back in the car and
   // driving off, or on foot again. Only the phone's own walking speed
   // says on foot: a walking pace between two fixes is also what
-  // stop-and-go traffic looks like.
-  if (speed !== null && !fast) {
+  // stop-and-go traffic looks like, and a speed of (nearly) nothing is a
+  // phone standing still, in a car at a light as much as anywhere.
+  if (speed !== null && speed >= MIN_WALK_MPS && !fast) {
     state.backAt = null;
     forgetDrive();
     return step({});

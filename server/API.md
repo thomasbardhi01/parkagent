@@ -1095,7 +1095,9 @@ for nothing: a tap from the seat would pay at once, the drive-off pair
 would never arm, and the worker would buy time for an empty spot.
 
 **The phone is back at the car** (`back_at`) from such a fix on. It stays
-back until a clear fix with a walking `speedMps` (≤ 3), or the app's
+back until a clear fix with a walking `speedMps` (0.5 to 3 m/s; under
+0.5 is a phone standing still, a car at a light included, and clears
+nothing), or the app's
 `left_car` on a fix not at driving speed, says the driver is on foot
 again (a `left_car` on a fix within 30 m clears it, and that same fix
 sets it again: the phone is still at the door). A walking pace between two fixes

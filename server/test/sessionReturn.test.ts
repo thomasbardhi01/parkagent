@@ -680,6 +680,25 @@ test("the app's on-foot report on a fix at driving speed doesn't clear the phone
   expect(session.status).toBe("stopped");
 });
 
+test("a speed of nothing is a phone standing still, not one on foot: a car at a light 150 m off keeps the hold", async () => {
+  const t = makeApp();
+  const extender = makeExtender({ ...t.deps, log: { info() {}, warn() {} } });
+  const { session } = await paidAndAway(t);
+  t.tick(120);
+  await post(t.app, "/location", fix(t, 6, { speedMps: 0 }));
+  // Pulled out and stopped at a light: clear of the car, speed 0.
+  t.tick(30);
+  await post(t.app, "/location", fix(t, 150, { speedMps: 0 }));
+  expect(t.state.pendingParks[0]!.backAt).not.toBeNull();
+  t.clock.now = new Date(session.expiresAt!.getTime() - 6 * 60_000);
+  await post(t.app, "/location", fix(t, 2_500, { speedMps: 0 }));
+  await extender.tick();
+  expect(t.state.decisions.filter((d) => d.kind === "extend_tick").at(-1)!.rule).toBe(
+    "hold_back_at_car",
+  );
+  expect(t.calls.extend).toBe(0);
+});
+
 test("…and the phone's own walking speed away from the car is what lets the worker extend again", async () => {
   const t = makeApp();
   const extender = makeExtender({ ...t.deps, log: { info() {}, warn() {} } });

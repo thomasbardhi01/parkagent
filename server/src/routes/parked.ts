@@ -22,6 +22,7 @@ import {
 } from "../services/placeClassification.js";
 import { cityForZone, providerForCity, providerStatusUsable } from "../providers/registry.js";
 import {
+  LIFECYCLE_FIX_MAX_AGE_MS,
   PARK_STATUSES,
   noteCarMoved,
   parkCandidates,
@@ -343,8 +344,14 @@ export function registerParked(app: FastifyInstance, deps: AppDeps, sessions: Se
         parkedEvent.id,
       );
     }
+    // Held only when the park's time is one the phone's fixes will be read
+    // against (POST /location's own tolerance, fixCountsFor): a park
+    // reported long after it happened has its walk-away behind it, and one
+    // stamped by a clock that far off would wait on fixes never read.
+    const heldInTime = Math.abs(serverNow.getTime() - at.getTime()) <= LIFECYCLE_FIX_MAX_AGE_MS;
     const awaitsWalkAway =
       isLatestPark &&
+      heldInTime &&
       Array.isArray(rawOutcomes) &&
       rawOutcomes.includes(WALK_AWAY) &&
       located &&

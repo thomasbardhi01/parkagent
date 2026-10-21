@@ -134,6 +134,32 @@ restart or deploy, including `fly secrets set`, reloads the image's copy
 (dry run on, caps 45/60). To go real: flip
 the `DRY_RUN` secret first, then the caps, then the policy.
 
+## Street session lifecycle (FR-55)
+A street session is active from the moment the phone leaves the car until
+it comes back. `/parked` holds a street park for an app that lists
+`walk_away` in `outcomes` (a `pending_parks` row, status `at_car`): the app
+shows nothing at the car and reports its fixes to `POST /location`. The
+server decides when the phone has left (two fixes clear of the car, or the
+app's `left_car`) and answers with the prompt, which the phone shows as
+written ("Pay $4.10 for zone 456?", Pay · Not now · Wrong spot); the
+prompt is a local notification, not an APNs push. The tap is
+`POST /parked/:id/confirm`: it runs `POST /session/start`'s own path, for
+no more than the amount shown, once per park, and a tap at the car waits
+for the walk-away. Coming back (30 m of the car for 60 s, or
+`returned_to_car` at the car) ends the session: stopped where the provider
+can stop early, `ended_at_return` where it can't. The rules are in
+`server/src/services/pendingSession.ts`; the app half is
+`ios/ParkAgent/Detection/ParkLifecycle.swift`. Keep new code on these:
+- nothing asks, pays, or extends on a fix that has the phone at the car;
+- a park is paid only through its tap, and a closed park never again;
+- only the newest `/parked` says where the car is: it closes a park still
+  waiting elsewhere, and stops extensions for a session whose car moved;
+- the tap pays what was shown (amount, zone number, dry run) or nothing;
+- the extension worker buys time only for a phone known to be away.
+
+The YOLO beta (no-tap start within every cap) and dropping the per-stop
+cap are #210, not built yet.
+
 ## Working style
 - Small PRs on feat/* branches, squash-merged into main.
 - **V1 workstreams** (`docs/workstreams.md`): one PR per issue; a session
@@ -317,6 +343,46 @@ when the phone, the network, a provider, or the server fails:
 
 Keep new code on those rules.
 
+## Claude Code tooling in this repo
+- `.claude/agents/`: `ci-watch` (Haiku) polls checks and reads failed logs;
+  `test-run` (Sonnet) runs suites and reports counts; `code-map` (Haiku)
+  sweeps callers, env vars and external calls. A session delegates those
+  steps to them instead of reading the raw output itself. Their `tools:`
+  lines use plain `Bash` (a scoped `Bash(...)` pattern there does not
+  actually restrict which commands run — #221 comment 6305900070); the
+  reader agents keep `disallowedTools: Write, Edit`, and `parkagent-guard`
+  below is the real backstop.
+- There are **two guard layers**, and together they keep a slip from running:
+  - `.claude/mods/parkagent-guard/` is the **strong layer**, but only when the
+    mod is loaded (`CLAUDE_CODE_PLUGIN_DIRS`, its README). It parses every Bash
+    command (in this session and its subagents) and the file tools' target
+    paths, and denies the ones a Claude session must never run — `gh pr merge`,
+    `gh pr review --approve`, `gh secret set`, `gh workflow run` on main, `gh
+    api` writes, `gh repo/release/ruleset/variable` mutations, `git push` to
+    main/master, any non-read-only `fly`, and reads of `.env`/`.env.*`/
+    `ios/Config.xcconfig`. It matches gh/git/fly by basename, fails closed on a
+    command it can't parse or whose name is hidden behind a variable, and its
+    `tool.check` catch never answers "allow". `/guard off` lifts it for 10
+    minutes in one session after a confirmation (never for subagents).
+  - `.claude/settings.json` `permissions.deny` is the **always-on weak layer**:
+    native Claude Code rules that need no mod and apply in every session,
+    covering the worst cases (reading `.env`/`Config.xcconfig`, `gh pr merge`,
+    `gh secret set`, `fly deploy`/`secrets set`/`ssh`, `git push origin main`).
+    It's a coarse backstop for sessions that haven't loaded the mod; the mod is
+    what actually understands compound commands, wrappers and substitutions.
+  Neither changes the working agreement: a human still merges every PR, a
+  Claude session never does (see "Working style") — the guards just make the
+  slip impossible to run by hand.
+- `.claude/mods/parkagent-fleet/`: a mod that draws context %, rate limits
+  and cost above the prompt and a `/fleet` pane of every session on this
+  machine plus the latest CI runs. Load it once via
+  `CLAUDE_CODE_PLUGIN_DIRS` in `~/.claude/settings.json` (its README).
+- Sessions talk to each other with the built-in `ListAgents`/`SendMessage`;
+  one coordinator session hands out one PR per worker worktree.
+- `docs/audit/2026-10-audit-brief.md` is the audit prompt: one session per
+  phase in an audit worktree, outputs in `docs/audit/2026-10/`; only Phase
+  3.5 writes code (tests, on `audit/tests-<area>` in its own worktree).
+
 ## Pinned versions
 Two server deps are deliberately held below `latest`. Don't bump them casually.
 - `prisma` / `@prisma/client` pinned to `^7`. The `latest` npm tag currently
@@ -399,7 +465,9 @@ first, and set only what it calls OK. It runs the server's own checks
   its feature off. The server logs `config: <feature> is off — <the
   variable and why>` and lists the feature in `/health`'s `degraded`.
 - **Afterwards:** `curl -s https://parkagent-api.fly.dev/health` should show
-  `"degraded":[]`.
+  `"degraded":[]`. `assistant` there can also mean an assistant turn failed
+  on Anthropic billing or auth since the last one that succeeded (it clears
+  on the next good turn; server/API.md "GET /health").
 
 The 2026-09-26 outage was `APPLE_MAPS_PRIVATE_KEY` set where the server
 reads `APPLE_MAPS_KEY` (`docs/incidents.md`).

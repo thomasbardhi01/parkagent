@@ -7,7 +7,20 @@ import SwiftUI
 /// failure replaces the content in place.
 struct ParkingDetectedSheet: View {
     @Environment(AppModel.self) private var model
-    let parked: ParkedResponse
+    /// The park the sheet was opened for.
+    private let opened: ParkedResponse
+
+    init(parked: ParkedResponse) {
+        opened = parked
+    }
+
+    /// The freshest answer for that park. A walk-away prompt re-quotes a
+    /// held park (FR-55) while its sheet may already be up, and the Pay
+    /// button must show the amount the tap will send.
+    private var parked: ParkedResponse {
+        if let live = model.pendingParked, live.parkedEventId == opened.parkedEventId { return live }
+        return opened
+    }
 
     @State private var selectedZoneId: String?
     /// The needsZoneNumber flow: what the driver read off the meter.
@@ -399,7 +412,7 @@ struct ParkingDetectedSheet: View {
         var updated = candidate
         updated.providerZoneNumber = applied.number
         updated.quote.providerZoneNumber = applied.number
-        await model.pay(candidate: updated)
+        await pay(updated)
     }
 
     // MARK: - Two candidates
@@ -532,7 +545,7 @@ struct ParkingDetectedSheet: View {
             .accessibilityIdentifier("parkedSheet.saveAndPayButton")
         } else {
             Button {
-                Task { await model.pay(candidate: candidate) }
+                Task { await pay(candidate) }
             } label: {
                 HStack(spacing: Spacing.half) {
                     if model.isPaying {
@@ -546,20 +559,50 @@ struct ParkingDetectedSheet: View {
             .buttonStyle(.primary)
             .disabled(model.isPaying)
             .accessibilityIdentifier("parkedSheet.payButton")
+            if heldAtCar {
+                // The server pays only once the phone has left the car.
+                Text("Nothing is paid while you're at the car. ParkAgent pays when you walk away.")
+                    .font(.captionText)
+                    .foregroundStyle(Color.textSecondary)
+                    .accessibilityIdentifier("parkedSheet.paysAtWalkAwayNote")
+            }
         }
         dismissButton
     }
 
     private var dismissButton: some View {
-        Button("Not parked here") { model.dismissParkedSheet() }
-            .buttonStyle(.secondary)
-            .disabled(model.isPaying)
-            .accessibilityIdentifier("parkedSheet.dismissButton")
+        Button("Not parked here") {
+            if parked.awaitsWalkAway == true {
+                Task { await model.declineWaitingPark(parked) }
+            } else {
+                model.dismissParkedSheet()
+            }
+        }
+        .buttonStyle(.secondary)
+        .disabled(model.isPaying)
+        .accessibilityIdentifier("parkedSheet.dismissButton")
+    }
+
+    /// A park the server holds for the walk-away (FR-55) is paid through
+    /// its own tap, for the total on screen; any other starts the session
+    /// directly, as it always has.
+    private func pay(_ candidate: Candidate) async {
+        if parked.awaitsWalkAway == true {
+            await model.confirmPark(candidate: candidate)
+        } else {
+            await model.pay(candidate: candidate)
+        }
+    }
+
+    /// Held, and not asked about yet: the phone hasn't left the car as
+    /// far as the server has said.
+    private var heldAtCar: Bool {
+        parked.awaitsWalkAway == true && model.reporter.waiting?.shown == nil
     }
 
     private func paySelected() async {
         guard let candidate = selectedCandidate ?? parked.candidates.first else { return }
-        await model.pay(candidate: candidate)
+        await pay(candidate)
     }
 
     private var selectedCandidate: Candidate? {

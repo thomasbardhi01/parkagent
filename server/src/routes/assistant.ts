@@ -23,10 +23,13 @@
 
 import { randomBytes, randomUUID } from "node:crypto";
 
-import type { FastifyInstance, FastifyReply } from "fastify";
+import type { FastifyBaseLogger, FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 
 import type { AppDeps } from "../app.js";
+import { classifyModelError } from "../services/assistant/anthropicClient.js";
+import type { ModelErrorKind } from "../services/assistant/anthropicClient.js";
+import type { AssistantHealth } from "../services/assistant/health.js";
 import { assistantSpendTodayUsd, runAssistantTurn } from "../services/assistant/loop.js";
 import type { AssistantResult } from "../services/assistant/loop.js";
 import {
@@ -168,8 +171,28 @@ function sseWrite(reply: FastifyReply, event: string, data: unknown): void {
   reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
-export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
+/** Provider failures we can't fix by asking again right now: the caller
+ * gets 503 with the reason, not a 500 that reads like our bug. */
+const UNAVAILABLE = new Set<ModelErrorKind>(["billing", "auth", "rate_limit", "overloaded"]);
+
+export function registerAssistant(
+  app: FastifyInstance,
+  deps: AppDeps,
+  health: AssistantHealth,
+): void {
   const now = () => deps.now?.() ?? new Date();
+
+  /** A failed turn: noted for /health when the provider failed it, and the
+   * 503 body when that failure is one of UNAVAILABLE; null otherwise. */
+  function unavailable(err: unknown, log: FastifyBaseLogger) {
+    const failure = classifyModelError(err);
+    if (!failure) return null;
+    health.failed(failure.kind);
+    if (!UNAVAILABLE.has(failure.kind)) return null;
+    log.warn({ assistantError: failure }, `assistant unavailable: ${failure.kind}`);
+    return { error: "assistant_unavailable", reason: failure.kind, requestId: failure.requestId };
+  }
+
   // Each turn is a paid model call; a runaway client shouldn't buy 500.
   const limitMessages = makeRateLimiter({ max: 20, windowMs: 60_000 });
   const limitOther = makeRateLimiter({ max: 60, windowMs: 60_000 });
@@ -259,27 +282,38 @@ export function registerAssistant(app: FastifyInstance, deps: AppDeps): void {
           plan: result.plan,
           suggestions: result.suggestions,
         });
+        health.succeeded();
       } catch (err) {
-        req.log.error(
-          { assistantError: err instanceof Error ? err.message.split("\n")[0] : String(err) },
-          "assistant turn failed",
-        );
-        sseWrite(reply, "error", { error: "assistant_failed" });
+        const unavailableBody = unavailable(err, req.log);
+        if (!unavailableBody) {
+          req.log.error(
+            { assistantError: err instanceof Error ? err.message.split("\n")[0] : String(err) },
+            "assistant turn failed",
+          );
+        }
+        sseWrite(reply, "error", unavailableBody ?? { error: "assistant_failed" });
       }
       reply.raw.end();
       return reply;
     }
 
-    result = await runAssistantTurn({
-      db: deps.db,
-      model: deps.assistantModel,
-      tools: deps.assistantTools,
-      userId: user.id,
-      conversationId,
-      text,
-      location: body.location,
-      now: deps.now,
-    });
+    try {
+      result = await runAssistantTurn({
+        db: deps.db,
+        model: deps.assistantModel,
+        tools: deps.assistantTools,
+        userId: user.id,
+        conversationId,
+        text,
+        location: body.location,
+        now: deps.now,
+      });
+    } catch (err) {
+      const unavailableBody = unavailable(err, req.log);
+      if (!unavailableBody) throw err;
+      return reply.code(503).send(unavailableBody);
+    }
+    health.succeeded();
     return {
       conversationId: result.conversationId,
       reply: result.reply,

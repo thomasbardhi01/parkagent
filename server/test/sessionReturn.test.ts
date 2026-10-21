@@ -295,6 +295,38 @@ test("a session started outside the lifecycle isn't ended at the car it never le
   expect(t.calls.stop).toBe(1);
 });
 
+test("a second session for a park whose first was stopped takes over its lifecycle, on the ledger", async () => {
+  const t = makeApp();
+  const { parkedEventId, session: first } = await paidAndAway(t);
+  const stopped = await post(t.app, "/session/stop", { sessionId: first.id });
+  expect(stopped.statusCode).toBe(200);
+  // The driver pays the same park again (its session started, so the
+  // start path itself is what decides).
+  const again = await post(t.app, "/session/start", { parkedEventId, zoneId: "nyc-417371" });
+  expect(again.statusCode).toBe(200);
+  const second = t.state.sessions.at(-1)!;
+  expect(second.id).not.toBe(first.id);
+
+  t.tick(30);
+  await post(t.app, "/location", fix(t, 260));
+  expect(t.state.pendingParks).toHaveLength(1);
+  expect(t.state.pendingParks[0]).toMatchObject({ status: "started", sessionId: second.id });
+  const linked = t.state.decisions.filter((d) => d.kind === "park_lifecycle");
+  expect(linked).toEqual([
+    expect.objectContaining({
+      rule: "linked_to_session",
+      sessionId: second.id,
+      parkedEventId,
+      inputs: expect.objectContaining({ previousStatus: "started", previousSessionId: first.id }),
+      outcome: { status: "started", sessionId: second.id },
+    }),
+  ]);
+  // Linked once: the next fix finds it by its session.
+  t.tick(30);
+  await post(t.app, "/location", fix(t, 280));
+  expect(t.state.decisions.filter((d) => d.kind === "park_lifecycle")).toHaveLength(1);
+});
+
 test("nobody ends anyone else's session", async () => {
   const t = makeApp();
   const { session } = await paidAndAway(t);

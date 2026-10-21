@@ -23,11 +23,11 @@ import {
 import { cityForZone, providerForCity, providerStatusUsable } from "../providers/registry.js";
 import {
   PARK_STATUSES,
-  PARK_SUPERSEDABLE,
   noteCarMoved,
   parkCandidates,
   settlePark,
   startParkSession,
+  supersedeParks,
 } from "../services/pendingSession.js";
 import type { Quote } from "../services/quote.js";
 import { spentToday } from "../services/sessions.js";
@@ -334,10 +334,7 @@ export function registerParked(app: FastifyInstance, deps: AppDeps, sessions: Se
       // waited at an earlier spot is over, its confirmation with it, and
       // a session still running for a car somewhere else is no longer
       // extended without the driver.
-      await deps.db.pendingPark.updateMany({
-        where: { userId: user.id, status: { in: PARK_SUPERSEDABLE } },
-        data: { status: "superseded", closedAt: serverNow },
-      });
+      await supersedeParks(deps, user.id, { parkedEventId: parkedEvent.id }, serverNow);
       await noteCarMoved(
         deps,
         user.id,

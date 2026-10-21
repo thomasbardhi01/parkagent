@@ -1072,10 +1072,14 @@ Decisions rows, each with the fix that caused it: `street_pending`
 quote the driver agreed to, `inputs.early` when tapped at the car),
 `street_declined`, `session_start_walkaway` (the one start a park gets;
 `rule` is `started`, `free`, `quote_changed`, `covered`, `refused`,
-`failed`, or `error`), `session_end_return` (`stopped_at_return`,
-`ended_at_return`, or `stop_failed`; `inputs.reason` is `returned` or
-`new_park`), `session_car_moved`, and `park_cancelled_at_return`
-(`near_for_60s`, `returned_event`, or `drove_off`).
+`failed`, `error`, `start_timeout`, or `late_success`),
+`session_end_return` (`stopped_at_return`, `ended_at_return`, or
+`stop_failed`; `inputs.reason` is `returned` or `new_park`),
+`session_car_moved`, `park_cancelled_at_return` (`near_for_60s`,
+`returned_event`, or `drove_off`), and `park_lifecycle` for a park moved
+by anything but the phone or a tap (`inputs.previousStatus`,
+`outcome.status`; `rule` is `ttl_expired`, `start_stale`, `newer_park`,
+or `linked_to_session`).
 
 ### POST /location
 

@@ -494,6 +494,69 @@ export interface FixRecord {
 }
 
 /**
+ * A park moved on by the clock, by a newer park, or by its session turning
+ * up, rather than by the phone or a tap: the ledger still says from what,
+ * to what, and by which rule.
+ */
+async function recordParkChange(
+  deps: Pick<LifecycleDeps, "db" | "policy">,
+  park: PendingParkRow,
+  next: PendingParkWrite & { status: string },
+  rule: string,
+  at: Date,
+  inputs: Record<string, unknown> = {},
+): Promise<void> {
+  const sessionId = next.sessionId ?? null;
+  await deps.db.decision.create({
+    data: {
+      kind: "park_lifecycle",
+      inputs: {
+        parkedEventId: park.parkedEventId,
+        previousStatus: park.status,
+        at: at.toISOString(),
+        ...inputs,
+        dryRun: deps.policy.effectiveDryRun(),
+        policyHash: deps.policy.hash(),
+      },
+      rule,
+      outcome: { status: next.status, ...(sessionId !== null ? { sessionId } : {}) },
+      userId: park.userId,
+      ...(park.parkedEventId ? { parkedEventId: park.parkedEventId } : {}),
+      ...(sessionId !== null ? { sessionId } : {}),
+    },
+  });
+}
+
+/**
+ * A newer park says where the car is: every other park of the user's
+ * still waiting is over. Never one mid-start (PARK_SUPERSEDABLE). Each is
+ * closed from the state it was read in, with its own decisions row.
+ */
+export async function supersedeParks(
+  deps: Pick<LifecycleDeps, "db" | "policy">,
+  userId: string,
+  newer: { id?: string; parkedEventId: string },
+  at: Date,
+): Promise<void> {
+  const open = await deps.db.pendingPark.findMany({
+    where: { userId, status: { in: PARK_SUPERSEDABLE } },
+  });
+  for (const park of open) {
+    if (park.id === newer.id) continue;
+    const next = { status: "superseded", closedAt: at };
+    const moved = await deps.db.pendingPark.updateMany({
+      where: { id: park.id, status: park.status },
+      data: next,
+    });
+    if (moved.count === 1) {
+      await recordParkChange(deps, park, next, "newer_park", at, {
+        newerParkedEventId: newer.parkedEventId,
+      });
+    }
+  }
+}
+
+/**
  * What a start that went wrong leaves its park as: `start_failed`, unless
  * a start for this park made a session after all (running, or still being
  * paid for). Then the park has that session: it is never paid twice, and
@@ -527,27 +590,38 @@ async function failedOrStarted(
  * there to say it did.
  */
 export async function settlePark(
-  deps: Pick<LifecycleDeps, "db">,
+  deps: Pick<LifecycleDeps, "db" | "policy">,
   park: PendingParkRow,
   at: Date,
 ): Promise<PendingParkRow> {
   const since = (from: Date | null) => at.getTime() - (from ?? park.createdAt).getTime();
   let next: (PendingParkWrite & { status: string }) | null = null;
+  let rule = "ttl_expired";
+  let inputs: Record<string, unknown> = {};
   if (park.status === "at_car" || park.status === "confirmed") {
     // From when the server heard of it, not from the phone's own clock.
-    if (since(park.createdAt) > PARK_TTL_MS) next = { status: "expired", closedAt: at };
+    if (since(park.createdAt) > PARK_TTL_MS) {
+      next = { status: "expired", closedAt: at };
+      inputs = { createdAt: park.createdAt.toISOString(), ttlMs: PARK_TTL_MS };
+    }
   } else if (park.status === "prompted") {
     if (since(park.promptedAt ?? park.createdAt) > PARK_TTL_MS) {
       next = { status: "expired", closedAt: at };
+      inputs = { promptedAt: park.promptedAt?.toISOString() ?? null, ttlMs: PARK_TTL_MS };
     }
   } else if (park.status === "starting") {
-    if (since(park.startingAt) > STARTING_STALE_MS) next = await failedOrStarted(deps.db, park, at);
+    if (since(park.startingAt) > STARTING_STALE_MS) {
+      next = await failedOrStarted(deps.db, park, at);
+      rule = "start_stale";
+      inputs = { startingAt: park.startingAt?.toISOString() ?? null, staleMs: STARTING_STALE_MS };
+    }
   }
   if (next === null) return park;
-  await deps.db.pendingPark.updateMany({
+  const moved = await deps.db.pendingPark.updateMany({
     where: { id: park.id, status: park.status },
     data: next,
   });
+  if (moved.count === 1) await recordParkChange(deps, park, next, rule, at, inputs);
   return (await deps.db.pendingPark.findUnique({ where: { id: park.id } })) ?? park;
 }
 
@@ -557,7 +631,12 @@ export async function settlePark(
  * session has no car fix to measure from, or when its park is over and
  * can't take a session (declined, cancelled, expired, …).
  */
-export async function lifecycleOf(db: AppDb, session: SessionRow): Promise<PendingParkRow | null> {
+export async function lifecycleOf(
+  deps: Pick<LifecycleDeps, "db" | "policy">,
+  session: SessionRow,
+  at: Date,
+): Promise<PendingParkRow | null> {
+  const db = deps.db;
   const own = await db.pendingPark.findUnique({ where: { sessionId: session.id } });
   if (own) return own;
   if (session.carLat === null || session.carLng === null) return null;
@@ -570,14 +649,18 @@ export async function lifecycleOf(db: AppDb, session: SessionRow): Promise<Pendi
       // tap, or whose reply was lost): the same park, now with its
       // session, moved only from the state it was read in.
       if (!PARK_RELINKABLE.includes(earlier.status)) return null;
+      const next = { status: "started", sessionId: session.id, closedAt: null };
       const linked = await db.pendingPark.updateMany({
         where: { id: earlier.id, status: earlier.status },
-        data: { status: "started", sessionId: session.id, closedAt: null },
+        data: next,
       });
       // Moved meanwhile: linked by another request, or closed.
-      return linked.count === 1
-        ? db.pendingPark.findUnique({ where: { id: earlier.id } })
-        : db.pendingPark.findUnique({ where: { sessionId: session.id } });
+      if (linked.count === 0)
+        return db.pendingPark.findUnique({ where: { sessionId: session.id } });
+      await recordParkChange(deps, earlier, next, "linked_to_session", at, {
+        previousSessionId: earlier.sessionId,
+      });
+      return db.pendingPark.findUnique({ where: { id: earlier.id } });
     }
     return await db.pendingPark.create({
       data: {
@@ -699,7 +782,7 @@ export async function noteCarMoved(
   if (!session || session.carLat === null || session.carLng === null) return;
   const distanceM = metersBetween(point.lat, point.lng, session.carLat, session.carLng);
   if (distanceM <= SAME_SPOT_M) return;
-  const row = await lifecycleOf(deps.db, session);
+  const row = await lifecycleOf(deps, session, at);
   if (!row || row.carMovedAt !== null) return;
   await deps.db.pendingPark.update({ where: { id: row.id }, data: { carMovedAt: at } });
   await deps.db.decision.create({
@@ -826,7 +909,7 @@ export async function startParkSession(
       await record("covered", { parkStatus: "covered", coveredBy: running.id }, running.id);
       return { kind: "covered", sessionId: running.id };
     }
-    const lifecycle = await lifecycleOf(deps.db, running);
+    const lifecycle = await lifecycleOf(deps, running, args.at);
     const ended = lifecycle
       ? await deps.db.pendingPark.updateMany({
           where: { id: lifecycle.id, status: "started" },

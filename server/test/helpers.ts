@@ -1557,6 +1557,10 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
           )[0]?.park;
         return row ? { ...row } : null;
       },
+      findMany: async ({ where }) =>
+        state.pendingParks
+          .filter((park) => park.userId === where.userId && where.status.in.includes(park.status))
+          .map((park) => ({ ...park })),
       update: async ({ where, data }) => {
         const row = state.pendingParks.find((p) => p.id === where.id);
         if (!row) throw new Error(`fake pendingPark.update: no park ${where.id}`);
@@ -1572,11 +1576,7 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
             typeof where.status === "string"
               ? row.status === where.status
               : where.status.in.includes(row.status);
-          const idHit =
-            "userId" in where
-              ? row.userId === where.userId && row.id !== where.id?.not
-              : row.id === where.id;
-          if (!statusHit || !idHit) continue;
+          if (!statusHit || row.id !== where.id) continue;
           Object.assign(row, data);
           count += 1;
         }

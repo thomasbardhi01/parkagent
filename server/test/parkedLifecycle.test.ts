@@ -119,6 +119,9 @@ async function walkAway(t: ReturnType<typeof makeApp>, headers = HEADERS) {
 
 const kinds = (state: FakeDbState) => state.decisions.map((d) => d.kind);
 const count = (state: FakeDbState, kind: string) => kinds(state).filter((k) => k === kind).length;
+/** The rows for what moved a park without the phone or a tap. */
+const lifecycleRows = (state: FakeDbState) =>
+  state.decisions.filter((d) => d.kind === "park_lifecycle");
 
 // ------------------------------------------------------------ at the car
 
@@ -675,6 +678,17 @@ test("the walk-away is measured from the newest park's car: an older park is sup
   });
 
   expect(t.state.pendingParks.map((p) => p.status)).toEqual(["superseded", "at_car"]);
+  expect(lifecycleRows(t.state)).toEqual([
+    expect.objectContaining({
+      rule: "newer_park",
+      parkedEventId: first.parkedEventId,
+      inputs: expect.objectContaining({
+        previousStatus: "confirmed",
+        newerParkedEventId: second.parkedEventId,
+      }),
+      outcome: { status: "superseded" },
+    }),
+  ]);
   // A kilometre from the first spot is the driver's seat at the second.
   t.tick(30);
   const atSecond = { ...fix(t, 0), lat: CAR.lat + 0.01 };
@@ -708,6 +722,14 @@ test("a park nobody walked away from within the hour is not asked about", async 
   expect(tap.statusCode).toBe(409);
   expect(tap.json()).toMatchObject({ error: "park_closed", status: "expired" });
   expect(t.calls.start).toBe(0);
+  // Closed by the clock, once, and on the ledger.
+  expect(lifecycleRows(t.state)).toHaveLength(1);
+  expect(lifecycleRows(t.state)[0]).toMatchObject({
+    rule: "ttl_expired",
+    parkedEventId: parked.parkedEventId,
+    inputs: { previousStatus: "at_car" },
+    outcome: { status: "expired" },
+  });
 });
 
 // ------------------------------------------------------------ before paying
@@ -924,6 +946,14 @@ test("two parks never wait at once: the older of two open ones is closed by the 
   await post(t.app, "/location", fix(t, 4));
   expect(t.state.pendingParks.map((p) => p.status)).toEqual(["superseded", "at_car"]);
   expect((await tap(t, first.parkedEventId)).json()).toMatchObject({ error: "park_closed" });
+  expect(lifecycleRows(t.state)).toEqual([
+    expect.objectContaining({
+      rule: "newer_park",
+      parkedEventId: first.parkedEventId,
+      inputs: expect.objectContaining({ previousStatus: "at_car", newerParkedEventId: "pe-race" }),
+      outcome: { status: "superseded" },
+    }),
+  ]);
 });
 
 // ------------------------------------------------------------ what was agreed to
@@ -1084,6 +1114,14 @@ test("a start whose park never heard back is found by the sweep: started, not fa
   expect(again.json()).toMatchObject({ status: "started", sessionId: session.id });
   expect(t.state.pendingParks[0]).toMatchObject({ status: "started", sessionId: session.id });
   expect(t.calls.start).toBe(1);
+  expect(lifecycleRows(t.state)).toEqual([
+    expect.objectContaining({
+      rule: "start_stale",
+      sessionId: session.id,
+      inputs: expect.objectContaining({ previousStatus: "starting" }),
+      outcome: { status: "started", sessionId: session.id },
+    }),
+  ]);
 });
 
 test("a start that answers after the sweep closed its park: the park takes the session, on the ledger", async () => {
@@ -1106,6 +1144,13 @@ test("a start that answers after the sweep closed its park: the park takes the s
   t.tick(11 * 60);
   await post(t.app, "/location", fix(t, 300));
   expect(t.state.pendingParks[0]!.status).toBe("start_failed");
+  expect(lifecycleRows(t.state)).toEqual([
+    expect.objectContaining({
+      rule: "start_stale",
+      inputs: expect.objectContaining({ previousStatus: "starting" }),
+      outcome: { status: "start_failed" },
+    }),
+  ]);
 
   release();
   expect((await paying).statusCode).toBe(200);

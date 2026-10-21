@@ -28,7 +28,6 @@ import type { PendingParkRow, SessionRow } from "../db.js";
 import type { FixRecord, ParkPrompt } from "../services/pendingSession.js";
 import {
   PARK_OPEN,
-  PARK_SUPERSEDABLE,
   SAME_SPOT_M,
   advanceWalk,
   buildParkPrompt,
@@ -38,6 +37,7 @@ import {
   metersBetween,
   settlePark,
   startParkSession,
+  supersedeParks,
   walkStateOf,
 } from "../services/pendingSession.js";
 import type { SessionOps } from "./session.js";
@@ -116,7 +116,7 @@ export function registerLocation(app: FastifyInstance, deps: AppDeps, sessions: 
       },
     });
     const answer = { sessionId: session.id };
-    const park = await lifecycleOf(deps.db, session);
+    const park = await lifecycleOf(deps, session, at);
     // No car fix to measure from, or a park that already ended (a stop
     // the provider refused): the fix is stored and decides nothing.
     if (!park || park.status !== "started") return answer;
@@ -302,13 +302,15 @@ export function registerLocation(app: FastifyInstance, deps: AppDeps, sessions: 
       where: { userId: user.id, status: { in: PARK_OPEN } },
       orderBy: { createdAt: "desc" },
     });
-    if (newest) {
+    if (newest?.parkedEventId) {
       // One park waits at a time: an older one still open is over, unless
       // it is mid-start (its session may be seconds from existing).
-      await deps.db.pendingPark.updateMany({
-        where: { userId: user.id, status: { in: PARK_SUPERSEDABLE }, id: { not: newest.id } },
-        data: { status: "superseded", closedAt: at },
-      });
+      await supersedeParks(
+        deps,
+        user.id,
+        { id: newest.id, parkedEventId: newest.parkedEventId },
+        at,
+      );
     }
     const park = newest ? await settlePark(deps, newest, at) : null;
     const waiting = park !== null && PARK_OPEN.includes(park.status) && park.parkedEventId !== null;

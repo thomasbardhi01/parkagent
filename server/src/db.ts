@@ -1361,13 +1361,15 @@ export interface AppDb {
       where: { userId: string; status: { in: string[] } };
       orderBy: { createdAt: "desc" };
     }): Promise<PendingParkRow | null>;
+    /** All the user's parks in one of these states. */
+    findMany(args: {
+      where: { userId: string; status: { in: string[] } };
+    }): Promise<PendingParkRow[]>;
     update(args: { where: { id: string }; data: PendingParkWrite }): Promise<PendingParkRow>;
     /** Compare-and-set: the status in `where` is what makes a transition
      * happen once however many requests race for it. */
     updateMany(args: {
-      where:
-        | { id: string; status: string | { in: string[] } }
-        | { userId: string; status: { in: string[] }; id?: { not: string } };
+      where: { id: string; status: string | { in: string[] } };
       data: PendingParkWrite;
     }): Promise<{ count: number }>;
   };

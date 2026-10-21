@@ -1018,6 +1018,9 @@ test("the phone back at the car while the worker is buying time: the extension i
     expect({ back, extend: t.calls.extend }).toEqual({ back, extend: 0 });
     expect(session.purchasedMinutes).toBe(90);
     const row = t.state.decisions.filter((d) => d.kind === "extend_tick").at(-1)!;
-    expect(row.outcome).toMatchObject({ ok: false });
+    expect(row.outcome).toMatchObject({
+      ok: false,
+      code: back === "returned" ? "extension_in_progress" : "phone_not_away",
+    });
   }
 });

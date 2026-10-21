@@ -162,15 +162,16 @@ export type ExtensionOutcome =
     }
   | {
       ok: false;
-      /** Executor codes, plus the parkagent_card hold's own refusals and
-       * extension_in_progress — those happen BEFORE the executor, so
-       * nothing was charged. */
+      /** Executor codes, plus the parkagent_card hold's own refusals,
+       * extension_in_progress and phone_not_away — those happen BEFORE the
+       * executor, so nothing was charged. */
       code:
         | ExecutorErrorCode
         | "card_declined"
         | "wallet_not_ready"
         | "hold_failed"
-        | "extension_in_progress";
+        | "extension_in_progress"
+        | "phone_not_away";
       message: string;
       price: StayPrice;
       durationMs: number;
@@ -251,6 +252,22 @@ export async function applyExtension(
     const fresh = await deps.db.session.findUnique({ where: { id: session.id } });
     if (!fresh || fresh.status !== session.status || fresh.extendCount !== session.extendCount) {
       return null;
+    }
+    if (source === "auto") {
+      // The worker buys time only for a phone known to be away (FR-55), and
+      // read that before it took the lock: a phone back within reach of the
+      // car since, or a car that parked somewhere else, buys nothing.
+      const park = await deps.db.pendingPark.findUnique({ where: { sessionId: session.id } });
+      if (park && (park.status !== "started" || park.backAt !== null || park.carMovedAt !== null)) {
+        const outcome: ExtensionOutcome = {
+          ok: false,
+          code: "phone_not_away",
+          message: "the phone is back at the car since this extension was priced",
+          price,
+          durationMs: 0,
+        };
+        return outcome;
+      }
     }
     return extendLocked(deps, fresh, minutes, price, source);
   });

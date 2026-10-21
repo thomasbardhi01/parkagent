@@ -453,13 +453,13 @@ export function makeExtender(deps: ExtenderDeps): Extender {
           ...(result.shadow ? { shadow: result.shadow } : {}),
           ...(result.hold ? { hold: result.hold } : {}),
         };
-      } else if (result.code === "extension_in_progress") {
-        // The user's own Extend (or a racing tick) got there first; this
-        // one never started — nothing held, nothing charged, no push. It
-        // isn't a rule of ours either, so it must not start the
-        // hysteresis window: the next tick decides afresh from the new
-        // expiry.
-        rule = "extension_in_progress";
+      } else if (result.code === "extension_in_progress" || result.code === "phone_not_away") {
+        // The user's own Extend (or a racing tick) got there first, or the
+        // phone came back to the car while this one was priced; it never
+        // started — nothing held, nothing charged, no push. It isn't a
+        // rule of ours either, so it must not start the hysteresis window:
+        // the next tick decides afresh, from the new expiry or position.
+        rule = result.code;
         outcome = {
           action: "none",
           minutes,
@@ -518,7 +518,7 @@ export function makeExtender(deps: ExtenderDeps): Extender {
       },
     });
 
-    if (changed && rule !== "extension_in_progress") {
+    if (changed && rule !== "extension_in_progress" && rule !== "phone_not_away") {
       await deps.db.session.update({
         where: { id: session.id },
         data: { lastExtenderRule: rule, lastExtenderRuleAt: at },

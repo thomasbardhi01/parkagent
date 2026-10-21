@@ -141,7 +141,13 @@ extension AppModel {
             // covered by a running session, expired, failed: nothing left
             // to ask or pay.
             let unpaidPromise = park.status == "expired" && waiting.confirmed
+            let guessedDriveOff = ParkedNotice.driveOffGuessContent(park, waiting: waiting)
             forgetWaitingPark(parkedEventId: park.parkedEventId)
+            if let guessedDriveOff {
+                // Dropped on a guess: said, not withdrawn in silence.
+                await ParkedNotice.postPayFailed(guessedDriveOff, parkedEventId: park.parkedEventId)
+                return
+            }
             if unpaidPromise {
                 // An early Pay that never got its walk-away: say so.
                 let zone = waiting.response.candidates.first?.providerZoneNumber

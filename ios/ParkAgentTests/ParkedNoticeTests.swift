@@ -217,6 +217,34 @@ final class ParkedNoticeWalkAwayTests: XCTestCase {
         XCTAssertTrue(kept.body.hasPrefix("You're back at your car"), kept.body)
     }
 
+    /// A waiting park dropped on a drive-off read from pace is closed for
+    /// good on a guess: the driver is told, with where to pay instead. One
+    /// read from the phone's own speed, a return, or an older server's
+    /// answer goes quietly, as before.
+    func testAParkDroppedOnAGuessedDriveOffIsSaid() throws {
+        let parked = MockFixtures.singleQuote(zoneNumber: "456")
+        let waiting = ParkedNotice.Waiting(response: parked, latitude: 40.77, longitude: -73.98, savedAt: Date(), shown: nil)
+        let answer = try JSONDecoder().decode(
+            LocationResponse.self,
+            from: Data(#"{"ok": true, "park": {"parkedEventId": "\#(parked.parkedEventId)", "status": "cancelled", "readBy": "pace"}}"#.utf8)
+        )
+        let park = try XCTUnwrap(answer.park)
+        let said = try XCTUnwrap(ParkedNotice.driveOffGuessContent(park, waiting: waiting))
+        XCTAssertEqual(said.title, "Zone 456 won't be paid")
+        XCTAssertTrue(said.body.hasPrefix("It looks like your car moved, so ParkAgent won't pay zone 456."), said.body)
+        let app = try XCTUnwrap(parked.provider?.displayName)
+        XCTAssertTrue(said.body.hasSuffix("pay at the meter or in \(app)."), said.body)
+
+        var quiet = park
+        quiet.readBy = "speed"
+        XCTAssertNil(ParkedNotice.driveOffGuessContent(quiet, waiting: waiting))
+        quiet.readBy = nil
+        XCTAssertNil(ParkedNotice.driveOffGuessContent(quiet, waiting: waiting))
+        var other = park
+        other.parkedEventId = "another-park"
+        XCTAssertNil(ParkedNotice.driveOffGuessContent(other, waiting: waiting))
+    }
+
     /// A drive-off read from the pace between two fixes is a guess (one GPS
     /// jump can make it): never "you're back at your car" for a driver who
     /// may be 300 m away, and a driver still parked is told what to do.

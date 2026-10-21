@@ -436,6 +436,25 @@ enum ParkedNotice {
     /// Pay was tapped at the car and the hour the server keeps a park ran
     /// out with the phone still there: nothing was paid, and the driver
     /// was counting on it.
+    /// A waiting park the server dropped on a drive-off read from the pace
+    /// between two fixes (#226): a guess one GPS jump can make, and the
+    /// park is closed for good. Said in words, so a driver still parked
+    /// knows nothing will pay. Nil for anything else (a drive-off read
+    /// from the phone's own speed, a return, an older server): those go
+    /// quietly, as before.
+    static func driveOffGuessContent(_ park: LocationResponse.Park, waiting: Waiting) -> Content? {
+        guard park.status == "cancelled", park.readBy == "pace",
+              park.parkedEventId == waiting.response.parkedEventId
+        else { return nil }
+        let number = waiting.response.candidates.first?.providerZoneNumber
+        let zone = number.flatMap { $0.isEmpty ? nil : "zone \($0)" } ?? "the meter"
+        let app = waiting.response.provider?.displayName ?? "the parking app"
+        return Content(
+            title: number.flatMap { $0.isEmpty ? nil : "Zone \($0) won't be paid" } ?? "The meter won't be paid",
+            body: "It looks like your car moved, so ParkAgent won't pay \(zone). If you're still parked, pay at the meter or in \(app)."
+        )
+    }
+
     static func expiredContent(zoneNumber: String?) -> Content {
         Content(
             title: zoneNumber.map { "Zone \($0) wasn't paid" } ?? "The meter wasn't paid",

@@ -215,6 +215,9 @@ struct LocationResponse: Codable, Sendable, Equatable {
         var status: String
         /// The session a `started` park became, when the server says so.
         var sessionId: String? = nil
+        /// A park `cancelled` by a drive-off read after the phone was back
+        /// at the car: "speed" or "pace" (a guess). Absent otherwise.
+        var readBy: String? = nil
     }
 
     struct Ended: Codable, Sendable, Equatable {

@@ -151,6 +151,12 @@ export function registerLocation(app: FastifyInstance, deps: AppDeps, sessions: 
         why: seen.step.why ?? "returned",
         fix: seen.fix,
         at,
+        // A drive-off read from pace alone can be one GPS jump: it ends
+        // the session as an unstoppable provider's return does (nothing
+        // more bought, the paid time runs out), and never asks to stop.
+        ...(seen.step.droveOffBy
+          ? { readBy: seen.step.droveOffBy, askProvider: seen.step.droveOffBy === "speed" }
+          : {}),
       }),
     };
   }
@@ -209,6 +215,12 @@ export function registerLocation(app: FastifyInstance, deps: AppDeps, sessions: 
     // Driving again without ever having left, or back at the car before
     // anything was paid: the park is over, and so is anything it was asked.
     if (step.droveOff) return close("cancelled", "park_cancelled_at_return", "drove_off", {});
+    if (step.returned && step.droveOffBy === "pace") {
+      // Too weak to close a park that can still be paid: its prompt
+      // stays, and the hour runs out on it if nobody taps.
+      await remember(park, step.state);
+      return answer(park.status, asked(park));
+    }
     if (step.returned) {
       return close("cancelled", "park_cancelled_at_return", step.why ?? "returned", {});
     }

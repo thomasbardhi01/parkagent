@@ -19,12 +19,7 @@
 import type { SessionRow } from "../db.js";
 import type { ExpiringReason, Push } from "../services/apns.js";
 import { sessionExpiringPush } from "../services/apns.js";
-import {
-  AT_CAR_RADIUS_M,
-  FIX_USABLE_ACCURACY_M,
-  MAX_WALK_MPS,
-  clockLabel,
-} from "../services/pendingSession.js";
+import { AT_CAR_RADIUS_M, FIX_USABLE_ACCURACY_M, clockLabel } from "../services/pendingSession.js";
 import { cityPolicy } from "../services/policy.js";
 import type { SessionDeps } from "../services/sessions.js";
 import {
@@ -246,21 +241,20 @@ export function makeExtender(deps: ExtenderDeps): Extender {
     // it came back; the latest fresh fix says where it is now. Away always
     // takes a fresh usable fix: a phone that left and has since gone quiet
     // may be back in the car or driving off. With a lifecycle record it
-    // also takes the walk-away that record holds, and no fix since the
-    // phone was back at the car going off at the phone's own driving speed
-    // (a drive-off /location hasn't seen the second fix of yet; one
-    // without a speed may yet be someone on foot). Without one (an older
-    // build, a start through POST /session/start) a fresh fix clear of the
-    // car is all there is to go on.
+    // also takes the walk-away that record holds, and nothing since saying
+    // the phone came back to the car (`backAt`): a phone back in the seat
+    // may be driving off, slowly or in stop-and-go traffic, or sitting
+    // there with no new measurement to show for it. Only the phone's own
+    // walking speed or the app's on-foot report clears that. Without a
+    // record (an older build, a start through POST /session/start) a fresh
+    // fix clear of the car is all there is to go on.
     const park = await deps.db.pendingPark.findUnique({ where: { sessionId: session.id } });
     const latest = chronological.at(-1);
     const sharp = latest !== undefined && latest.accuracyM <= FIX_USABLE_ACCURACY_M;
-    const drivingOff =
-      park !== null && park.driveAt !== null && (park.driveSpeedMps ?? 0) > MAX_WALK_MPS;
     const away =
       sharp &&
       (park !== null
-        ? park.leftCarAt !== null && !drivingOff
+        ? park.leftCarAt !== null && park.backAt === null
         : distanceM !== null && distanceM - latest.accuracyM > AT_CAR_RADIUS_M);
     const position: PhonePosition =
       park?.status === "ended"

@@ -82,6 +82,10 @@ export const FIX_USABLE_ACCURACY_M = 65;
  * apart: one fix a hundred metres off is what GPS does between tall
  * buildings. */
 export const LEAVE_CONFIRM_MS = 10_000;
+/** A drive-off read from pace alone takes its two fixes within this (two
+ * of the app's 60 s heartbeats): farther apart, the gap between them may
+ * be a subway ride, not a car. */
+export const DRIVE_PACE_MAX_MS = 120_000;
 /** …and no faster than this between them. A car pulling away covers the
  * same ground as a driver on foot, only quicker, and it is not a
  * walk-away. A fix whose own speed (the phone's `speedMps`) is over it is
@@ -157,6 +161,9 @@ export interface WalkStep {
   returned: boolean;
   /** Driving again without the phone ever having left. */
   droveOff: boolean;
+  /** For a `drove_off` return: read from the phone's own speed on both
+   * fixes, or from the pace between them (which a GPS jump can fake). */
+  droveOffBy?: "speed" | "pace";
   why: WalkReason | null;
 }
 
@@ -253,6 +260,12 @@ export function advanceWalk(before: WalkState, fix: WalkFix): WalkStep {
   if (fix.event === "returned_to_car" && usable && fix.distanceM <= RETURN_EVENT_RADIUS_M) {
     return step({ returned: true, why: "returned_event" });
   }
+  if (fix.event === "left_car") {
+    // The app has the driver on foot again: whatever brought the phone
+    // back to the car, it isn't driving off.
+    state.backAt = null;
+    forgetDrive();
+  }
   if (near && !fast) {
     // Measured, not reported: the heartbeat's re-send of one measurement
     // beside the car is not a minute there.
@@ -274,32 +287,36 @@ export function advanceWalk(before: WalkState, fix: WalkFix): WalkStep {
     return step({});
   }
   // Clear of the car after a measurement at it: back in the car and
-  // driving off, or on foot again.
+  // driving off, or on foot again. Only the phone's own walking speed
+  // says on foot: a walking pace between two fixes is also what
+  // stop-and-go traffic looks like.
   if (speed !== null && !fast) {
     state.backAt = null;
     forgetDrive();
     return step({});
   }
-  if (state.driveAt === null) {
+  const firstOfPair = () => {
     state.driveAt = fix.measuredAt;
     state.driveDistanceM = fix.distanceM;
     state.driveSpeedMps = speed;
     return step({});
-  }
+  };
+  if (state.driveAt === null) return firstOfPair();
   const sinceMs = fix.measuredAt.getTime() - state.driveAt.getTime();
   // The first measurement sent again, or one from before it.
   if (sinceMs <= 0 || fix.distanceM === state.driveDistanceM) return step({});
   const firstFast = state.driveSpeedMps !== null && state.driveSpeedMps > MAX_WALK_MPS;
-  if (fast && firstFast) return step({ returned: true, why: "drove_off" });
-  // Without the phone's speed for both, the pace between them decides,
-  // over long enough that one GPS jump doesn't.
+  if (fast && firstFast) return step({ returned: true, why: "drove_off", droveOffBy: "speed" });
+  // Without the phone's speed for both, the pace between them decides:
+  // over long enough that one GPS jump doesn't, and short enough that a
+  // gap (a subway ride, a phone gone quiet) isn't read as one leg.
   if (sinceMs < LEAVE_CONFIRM_MS) return step({});
+  if (sinceMs > DRIVE_PACE_MAX_MS) return firstOfPair();
   const paceMps = Math.abs(fix.distanceM - (state.driveDistanceM ?? 0)) / (sinceMs / 1000);
-  if (paceMps > MAX_WALK_MPS) return step({ returned: true, why: "drove_off" });
-  // At a walk: on foot again.
-  state.backAt = null;
-  forgetDrive();
-  return step({});
+  if (paceMps > MAX_WALK_MPS) return step({ returned: true, why: "drove_off", droveOffBy: "pace" });
+  // At a walking pace: on foot, or a car in traffic. This fix starts the
+  // next pair, and the phone stays "back at the car".
+  return firstOfPair();
 }
 
 /** Whether a fix may be read at all for this park: measured after the car
@@ -834,7 +851,18 @@ export async function endSession(
   stop: SessionStopper,
   session: SessionRow,
   park: PendingParkRow | null,
-  args: { reason: SessionEnd["reason"]; why: string; fix?: FixRecord; at: Date },
+  args: {
+    reason: SessionEnd["reason"];
+    why: string;
+    fix?: FixRecord;
+    at: Date;
+    /** False: never ask the provider to stop, even where it can: what
+     * showed the return could be wrong (a drive-off read from pace). The
+     * time already bought runs out; nothing more is bought. */
+    askProvider?: boolean;
+    /** What a drive-off was read from, for the ledger. */
+    readBy?: "speed" | "pace";
+  },
 ): Promise<SessionEnd> {
   const paidUntil = session.expiresAt?.toISOString() ?? null;
   // Back at the car and gone again before a return was seen: one rule
@@ -848,6 +876,7 @@ export async function endSession(
           reason: args.reason,
           why: args.why,
           ...(args.fix ? { fix: args.fix } : {}),
+          ...(args.readBy ? { readBy: args.readBy } : {}),
           leftCarAt: park?.leftCarAt?.toISOString() ?? null,
           expiresAt: paidUntil,
           dryRun: deps.policy.effectiveDryRun(),
@@ -861,7 +890,7 @@ export async function endSession(
       },
     });
 
-  if (!supportsEarlyStop(session.zoneId)) {
+  if (!supportsEarlyStop(session.zoneId) || args.askProvider === false) {
     await deps.db.session.update({
       where: { id: session.id },
       data: { status: "stopped", stoppedAt: args.at },
@@ -875,7 +904,11 @@ export async function endSession(
         details: { reason: args.reason, why: args.why, paidUntil },
       },
     });
-    await row("ended_at_return", { stopped: false, paidUntil });
+    await row("ended_at_return", {
+      stopped: false,
+      paidUntil,
+      ...(args.askProvider === false ? { providerAsked: false } : {}),
+    });
     return { reason: args.reason, stopped: false };
   }
 
@@ -1131,6 +1164,10 @@ export async function startParkSession(
                   farAt: null,
                   farDistanceM: null,
                   nearSince: null,
+                  backAt: null,
+                  driveAt: null,
+                  driveDistanceM: null,
+                  driveSpeedMps: null,
                 },
           stalePending: null,
         };

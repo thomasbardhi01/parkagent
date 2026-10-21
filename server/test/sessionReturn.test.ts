@@ -379,9 +379,8 @@ test("a stop the provider refuses leaves the session running, and it is never ex
 
 // ------------------------------------------------------------ driving off, and what isn't a return
 
-test("back at the car and driving off inside a minute ends the session: ended_drove_off, nothing more bought", async () => {
+test("back at the car and driving off inside a minute, at the phone's own speed, stops the session: ended_drove_off", async () => {
   const t = makeApp();
-  const extender = makeExtender({ ...t.deps, log: { info() {}, warn() {} } });
   const { parkedEventId, session } = await paidAndAway(t);
 
   // In the seat, and gone 25 s later: no minute at the car, and no
@@ -410,64 +409,136 @@ test("back at the car and driving off inside a minute ends the session: ended_dr
   });
   expect(ended[0]!.inputs).toMatchObject({
     why: "drove_off",
+    readBy: "speed",
     fix: expect.objectContaining({ speedMps: 11 }),
   });
-
-  // Near the end of what was paid, driving around town: nothing is bought.
-  t.clock.now = new Date(session.expiresAt!.getTime() - 5 * 60_000);
-  await post(t.app, "/location", fix(t, 2_400, { speedMps: 12 }));
-  await extender.tick();
-  expect(t.calls.extend).toBe(0);
-  expect(session.extendCount).toBe(0);
 });
 
-test("a drive-off from a phone that gives no speed is read by pace; where the provider can't stop early it is ended", async () => {
-  const t = makeApp({
-    candidates: [BOYLSTON],
-    zones: [BOYLSTON_ZONE],
-    seedLinkedProvider: false,
-  });
-  seedProviderAccount(t.state, { provider: "passport" });
+/** Like the build in the field today: says when it measured, gives no speed. */
+const measured = (t: { clock: { now: Date } }, distanceM: number) =>
+  fix(t, distanceM, { measuredAt: t.clock.now.toISOString() });
+
+test("a drive-off read from pace alone never asks the provider to stop: ended where it stands, the paid time runs out", async () => {
+  const t = makeApp();
   const { session } = await paidAndAway(t);
   t.tick(120);
-  await post(t.app, "/location", fix(t, 6));
+  await post(t.app, "/location", measured(t, 6));
   t.tick(15);
-  await post(t.app, "/location", fix(t, 120));
-  // 160 m in 12 s.
+  await post(t.app, "/location", measured(t, 120));
+  // 160 m in 12 s: a car, or one GPS jump.
   t.tick(12);
-  const gone = await post(t.app, "/location", fix(t, 280));
+  const gone = await post(t.app, "/location", measured(t, 280));
   expect(gone.json()).toMatchObject({ ended: { reason: "returned", stopped: false } });
+  // The provider could stop this one early, and is not asked to.
   expect(t.calls.stop).toBe(0);
   expect(session.status).toBe("stopped");
   expect(t.state.sessionEvents.at(-1)).toMatchObject({ kind: "ended_at_return" });
   expect(t.state.decisions.filter((d) => d.kind === "session_end_return").at(-1)).toMatchObject({
     rule: "ended_drove_off",
-    outcome: { stopped: false, paidUntil: session.expiresAt!.toISOString() },
+    inputs: expect.objectContaining({ readBy: "pace" }),
+    outcome: {
+      stopped: false,
+      paidUntil: session.expiresAt!.toISOString(),
+      providerAsked: false,
+    },
   });
 });
 
-test("back at the car for a bag and off on foot again is no drive-off, nor is a bus ride after it", async () => {
-  for (const speed of [true, false]) {
-    const t = makeApp();
-    const { session } = await paidAndAway(t);
-    const at = (metres: number, mps: number) => fix(t, metres, speed ? { speedMps: mps } : {});
-    t.tick(120);
-    await post(t.app, "/location", at(8, 0.4));
-    // Walking off again: 25 m in 20 s.
-    t.tick(20);
-    await post(t.app, "/location", at(60, 1.3));
-    t.tick(20);
-    await post(t.app, "/location", at(85, 1.3));
-    // Later, a bus: fast, and clear of the car, but nobody came back to it.
-    t.tick(300);
-    await post(t.app, "/location", at(600, 9));
-    t.tick(12);
-    const bus = await post(t.app, "/location", at(720, 10));
-    expect(bus.json()["ended"]).toBeUndefined();
-    expect(session.status).toBe("active");
-    expect(t.calls.stop).toBe(0);
-    expect(t.state.decisions.some((d) => d.kind === "session_end_return")).toBe(false);
+test("walking past the car to the subway and coming up far away is no drive-off: the gap is not one leg", async () => {
+  const t = makeApp();
+  const { session } = await paidAndAway(t);
+  t.tick(120);
+  await post(t.app, "/location", measured(t, 20));
+  t.tick(18);
+  await post(t.app, "/location", measured(t, 50));
+  // Eight minutes underground, then 3 km away: "6 m/s" across the gap.
+  t.tick(8 * 60);
+  const emerge = await post(t.app, "/location", measured(t, 3_000));
+  expect(emerge.json()["ended"]).toBeUndefined();
+  expect(session.status).toBe("active");
+  expect(t.calls.stop).toBe(0);
+  expect(t.state.decisions.some((d) => d.kind === "session_end_return")).toBe(false);
+});
+
+test("back at the car for a bag and off again at the phone's own walking speed: a bus after it is no drive-off", async () => {
+  const t = makeApp();
+  const { session } = await paidAndAway(t);
+  t.tick(120);
+  await post(t.app, "/location", fix(t, 8, { speedMps: 0.4 }));
+  t.tick(20);
+  await post(t.app, "/location", fix(t, 60, { speedMps: 1.3 }));
+  t.tick(300);
+  await post(t.app, "/location", fix(t, 600, { speedMps: 9 }));
+  t.tick(12);
+  const bus = await post(t.app, "/location", fix(t, 720, { speedMps: 10 }));
+  expect(bus.json()["ended"]).toBeUndefined();
+  expect(session.status).toBe("active");
+  expect(t.calls.stop).toBe(0);
+  expect(t.state.pendingParks[0]).toMatchObject({ status: "started", backAt: null });
+});
+
+test("…without the phone's speed a walking pace proves nothing (traffic crawls too): a bus after it reads as a drive-off, and nothing is asked of the provider", async () => {
+  const t = makeApp();
+  const { session } = await paidAndAway(t);
+  t.tick(120);
+  await post(t.app, "/location", measured(t, 8));
+  t.tick(20);
+  await post(t.app, "/location", measured(t, 60));
+  t.tick(20);
+  await post(t.app, "/location", measured(t, 85));
+  t.tick(300);
+  await post(t.app, "/location", measured(t, 600));
+  t.tick(12);
+  const bus = await post(t.app, "/location", measured(t, 720));
+  expect(bus.json()).toMatchObject({ ended: { reason: "returned", stopped: false } });
+  expect(t.calls.stop).toBe(0);
+  expect(session.status).toBe("stopped");
+});
+
+test("back in the seat with no new measurement, then out in stop-and-go traffic: the worker buys no more time", async () => {
+  const t = makeApp();
+  const extender = makeExtender({ ...t.deps, log: { info() {}, warn() {} } });
+  const { session } = await paidAndAway(t);
+  t.tick(120);
+  const seat = measured(t, 6);
+  await post(t.app, "/location", seat);
+  // The 10 m distance filter: a phone sitting still measures nothing new,
+  // and the heartbeat re-sends the one it has.
+  for (let i = 0; i < 3; i += 1) {
+    t.tick(60);
+    await post(t.app, "/location", { ...seat, ts: t.clock.now.toISOString() });
   }
+  // Pulls out at a crawl: 40 m, 65 m, 140 m, 30 s apart.
+  for (const metres of [40, 65, 140]) {
+    t.tick(30);
+    await post(t.app, "/location", measured(t, metres));
+  }
+  expect(session.status).toBe("active");
+  expect(t.state.pendingParks[0]!.backAt).not.toBeNull();
+
+  // Near the end of what was paid, 2.5 km away with the car.
+  t.clock.now = new Date(session.expiresAt!.getTime() - 6 * 60_000);
+  await post(t.app, "/location", measured(t, 2_500));
+  await extender.tick();
+  expect(t.calls.extend).toBe(0);
+  expect(t.state.decisions.filter((d) => d.kind === "extend_tick").at(-1)!.rule).toBe(
+    "hold_position_unknown",
+  );
+});
+
+test("…and the phone's own walking speed away from the car is what lets the worker extend again", async () => {
+  const t = makeApp();
+  const extender = makeExtender({ ...t.deps, log: { info() {}, warn() {} } });
+  const { session } = await paidAndAway(t);
+  t.tick(120);
+  await post(t.app, "/location", fix(t, 6, { speedMps: 0.2 }));
+  t.tick(30);
+  await post(t.app, "/location", fix(t, 60, { speedMps: 1.3 }));
+  t.clock.now = new Date(session.expiresAt!.getTime() - 6 * 60_000);
+  await post(t.app, "/location", fix(t, 2_500, { speedMps: 1.2 }));
+  await extender.tick();
+  expect(t.state.decisions.filter((d) => d.kind === "extend_tick").at(-1)!.rule).toBe("extend");
+  expect(t.calls.extend).toBe(1);
 });
 
 test("between the two fixes of a drive-off, the extension worker doesn't read driving as away", async () => {

@@ -1082,16 +1082,40 @@ clear of the car, so a driver whose errand is right beside the car isn't
 "back" the whole time.
 
 **The phone drove off** when, after leaving, a usable fix had it within
-30 m of the car (not at driving speed) and the next two usable fixes are
-clear of it faster than a walk: both with `speedMps` over 3 m/s, or,
-without the phone's speed for both, more than 3 m/s apart over at least
-10 s. That is a return (`why: "drove_off"`) even inside the minute: the
-session ends the way a return ends it, and a park not yet paid is
-cancelled. A clear fix at a walk after that at-the-car fix (`speedMps` ≤
-3, or a walking pace) means the driver went off on foot again, and later
-fast fixes (a bus, a taxi) are not a drive-off. Between the two fixes,
-when the first carried a driving `speedMps`, the extension worker doesn't
-read the phone as away.
+30 m of the car (not at driving speed; this sets `back_at`) and then two
+consecutive usable fixes are clear of it, neither with a walking
+`speedMps`, and:
+
+- both carry `speedMps` over 3 m/s (read by speed), or
+- otherwise (no speed on one or both), they are 10 s to 120 s apart
+  (measured) and more than 3 m/s apart in distance from the car (read by
+  pace). Farther apart than 120 s, the second starts a new pair: the gap
+  may be a subway ride.
+
+A usable fix that is neither at the car nor clear of it breaks the pair;
+an unusable one (accuracy worse than 65 m) is skipped. A pair at a
+walking pace starts a new pair from its second fix and keeps `back_at`:
+without the phone's speed, a walking pace is also what stop-and-go
+traffic looks like. Only a clear fix with a walking `speedMps` (≤ 3), or
+the app's `left_car`, says the driver is on foot again and clears
+`back_at`.
+
+A drive-off is a return (`why: "drove_off"`) even inside the minute.
+Read by speed, the session ends the way a return ends it (stopped where
+the provider can stop early). Read by pace, which one GPS jump can fake,
+the provider is never asked to stop: the session ends as it does where a
+provider can't stop early (`stopped`, a `session_events` row
+`ended_at_return`, the paid time runs out, nothing more is bought;
+`outcome.providerAsked: false`), and a park not yet paid stays open with
+its prompt. A drive-off read by speed cancels an unpaid park.
+
+**The extension worker** reads a session's phone as away only while its
+lifecycle row says the phone left and has not since been back at the car
+(`back_at` unset). A phone back in the seat may be driving off in traffic,
+or sitting still with nothing new measured, so once it has been back,
+nothing more is bought until a walking `speedMps` or `left_car` says it
+left again (the worker answers `hold_position_unknown` and tells the
+driver).
 
 Decisions rows, each with the fix that caused it: `street_pending`
 (/parked held a park), `street_prompt` (the walk-away; `rule` is
@@ -1107,8 +1131,9 @@ reached the provider closes the park as `start_failed` at once and fails
 the session it left pending, `outcome.reason: "start_threw"`),
 `session_end_return` (`stopped_at_return`, `ended_at_return`, or
 `stop_failed`, or `ended_drove_off` for any of the three after a
-drive-off, with `outcome.stopped`; `inputs.reason` is `returned` or
-`new_park`, `inputs.why` the rule that saw it),
+drive-off, with `outcome.stopped` and `inputs.readBy` `speed` or
+`pace`; `inputs.reason` is `returned` or `new_park`, `inputs.why` the
+rule that saw it),
 `session_car_moved`, `park_cancelled_at_return` (`near_for_60s`,
 `returned_event`, or `drove_off`), and `park_lifecycle` for a park moved
 by anything but the phone or a tap (`inputs.previousStatus`,

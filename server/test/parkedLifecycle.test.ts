@@ -802,6 +802,23 @@ test("walking past the car is not a return: under a minute within 30 m changes n
   expect(count(t.state, "park_cancelled_at_return")).toBe(0);
 });
 
+test("a drive-off read from pace alone doesn't close a park that can still be paid: its prompt stays", async () => {
+  const t = makeApp();
+  const parked = await park(t.app);
+  await walkAway(t);
+  t.tick(30);
+  await post(t.app, "/location", fix(t, 8));
+  t.tick(15);
+  await post(t.app, "/location", fix(t, 120));
+  t.tick(12);
+  // 160 m in 12 s, and no speed to say it was a car.
+  const jump = await post(t.app, "/location", fix(t, 280));
+  expect(jump.json()).toMatchObject({ park: { status: "prompted" }, prompt: { kind: "confirm" } });
+  expect(count(t.state, "park_cancelled_at_return")).toBe(0);
+  const tap = await post(t.app, `/parked/${parked.parkedEventId}/confirm`, {});
+  expect(tap.json()).toMatchObject({ status: "started" });
+});
+
 test("driving off without ever leaving the car cancels the pending park", async () => {
   const t = makeApp();
   const parked = await park(t.app);

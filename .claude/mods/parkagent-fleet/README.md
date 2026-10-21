@@ -3,15 +3,19 @@
 What it adds to every Claude Code session opened in this repo:
 
 - **A band above the prompt**: `<branch> · ctx 42% · 5h 18% · 7d 6% · $1.20 · 7 turns`.
-  Turns yellow at 75 % context and says `/compact or hand off`. `/fleet-band` hides or shows it.
-- **A status-line entry** with the same figures after every turn.
+  Turns yellow at 75 % context and says `/compact or hand off`; a toast says so once when
+  context crosses 75 %, not every turn. `/fleet-band` hides or shows it.
+- **A status-line entry** with the same figures, updated as Claude Code measures the session.
 - **`/fleet` pane**: every Claude Code session on this machine that has this mod loaded
   (branch, context fill, spend, model, last prompt), this session first, plus the repo's
   last six GitHub Actions runs via `gh`. Sessions publish through the mod's shared store
-  after each turn; a session silent for 6 hours drops off.
+  after each turn and every 5 minutes; a session's row goes when it ends, and one silent
+  for 6 hours drops off.
 
-Nothing leaves the machine: the store is Claude Code's own plugin store, `gh` is the one
-you already use, and the mod reads nothing from the repo but `git branch --show-current`.
+The session figures stay on this machine, in Claude Code's own plugin store. The CI list
+does not: `gh run list` calls the GitHub API with your `gh` login, once when `/fleet`
+opens and every minute while the pane stays open (never while it's closed). Besides that,
+the mod runs only `git branch --show-current`.
 
 ## Load it
 

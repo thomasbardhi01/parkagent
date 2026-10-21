@@ -48,14 +48,21 @@ export interface SessionDeps {
  * paid: street sessions on any source, plus garages approved in Link. The
  * daily cap is measured against this everywhere — quotes, starts,
  * extensions, the assistant, the Wallet. Dry-run sessions are excluded —
- * they moved no money — and failed ones never charged.
+ * they moved no money — and failed ones never charged. Under a dry run
+ * (`opts.dryRun`, the effective one) they count too, so a dry run is
+ * refused wherever the same day for real would be.
  */
-export async function spentToday(db: AppDb, userId: string, at: Date): Promise<number> {
+export async function spentToday(
+  db: AppDb,
+  userId: string,
+  at: Date,
+  opts: { dryRun?: boolean } = {},
+): Promise<number> {
   const since = nycStartOfDay(at);
   const rows = await db.session.findMany({
     where: {
       userId,
-      dryRun: false,
+      ...(opts.dryRun === true ? {} : { dryRun: false }),
       status: { in: ["pending", "active", "stopped", "expired"] },
       createdAt: { gte: since },
     },
@@ -118,9 +125,8 @@ export function extensionPolicyViolation(
   if (sessionSpentUsd(session) + price.totalUsd > policy.session_cap_usd) {
     return "session_cap_exceeded";
   }
-  // Dry-run sessions never count toward the daily cap (no money moved), so
-  // only a real extension can trip it.
-  if (!session.dryRun && spentTodayUsd + price.totalUsd > policy.daily_cap_usd) {
+  // Under a dry run, `spentTodayUsd` counts what dry runs recorded.
+  if (spentTodayUsd + price.totalUsd > policy.daily_cap_usd) {
     return "daily_cap_exceeded";
   }
   return null;
@@ -156,15 +162,16 @@ export type ExtensionOutcome =
     }
   | {
       ok: false;
-      /** Executor codes, plus the parkagent_card hold's own refusals and
-       * extension_in_progress — those happen BEFORE the executor, so
-       * nothing was charged. */
+      /** Executor codes, plus the parkagent_card hold's own refusals,
+       * extension_in_progress and phone_not_away — those happen BEFORE the
+       * executor, so nothing was charged. */
       code:
         | ExecutorErrorCode
         | "card_declined"
         | "wallet_not_ready"
         | "hold_failed"
-        | "extension_in_progress";
+        | "extension_in_progress"
+        | "phone_not_away";
       message: string;
       price: StayPrice;
       durationMs: number;
@@ -245,6 +252,22 @@ export async function applyExtension(
     const fresh = await deps.db.session.findUnique({ where: { id: session.id } });
     if (!fresh || fresh.status !== session.status || fresh.extendCount !== session.extendCount) {
       return null;
+    }
+    if (source === "auto") {
+      // The worker buys time only for a phone known to be away (FR-55), and
+      // read that before it took the lock: a phone back within reach of the
+      // car since, or a car that parked somewhere else, buys nothing.
+      const park = await deps.db.pendingPark.findUnique({ where: { sessionId: session.id } });
+      if (park && (park.status !== "started" || park.backAt !== null || park.carMovedAt !== null)) {
+        const outcome: ExtensionOutcome = {
+          ok: false,
+          code: "phone_not_away",
+          message: "the phone is back at the car since this extension was priced",
+          price,
+          durationMs: 0,
+        };
+        return outcome;
+      }
     }
     return extendLocked(deps, fresh, minutes, price, source);
   });

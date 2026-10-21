@@ -265,6 +265,9 @@ export function advanceWalk(before: WalkState, fix: WalkFix): WalkStep {
     return step({});
   }
 
+  // Measured before the phone left (the outbox or a re-send delivering it
+  // late): where it was then, which says nothing about coming back.
+  if (fix.measuredAt.getTime() < state.leftCarAt.getTime()) return step({});
   if (clear && state.farAt === null) {
     state.farAt = fix.measuredAt;
     state.farDistanceM = fix.distanceM;
@@ -522,8 +525,8 @@ export async function buildParkPrompt(
   else if (provider && zoneNumber === "") reason = "needs_zone_number";
   else if (quote.totalUsd > policy.session_cap_usd) reason = "session_cap_exceeded";
   else if (
-    !dryRun &&
-    (await spentToday(deps.db, park.userId, at)) + quote.totalUsd > policy.daily_cap_usd
+    (await spentToday(deps.db, park.userId, at, { dryRun })) + quote.totalUsd >
+    policy.daily_cap_usd
   ) {
     reason = "daily_cap_exceeded";
   }

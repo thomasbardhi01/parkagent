@@ -185,7 +185,7 @@ test("session and daily caps bind provider_card sessions exactly like any source
   ).toMatchObject({ paymentSource: "provider_card" });
 
   // Daily cap: $58 of real provider_card spend already today + $5.98 > $60.
-  // envDryRun false so the daily-cap check is armed (dry runs don't count).
+  // A real run, so the real spend seeded here is what the cap is measured on.
   const daily = makeApp({ envDryRun: false, policy: { dry_run: false, daily_cap_usd: 60 } });
   seedSession(daily.state, {
     userId: "u1",

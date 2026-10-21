@@ -1431,21 +1431,29 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
         }
         const row = { ...emptySession(`s${state.sessions.length + 1}`), ...data } as SessionRow;
         state.sessions.push(row);
-        return row;
+        return { ...row };
       },
+      // Reads answer with copies, as Postgres does: a caller holding a row
+      // it read earlier holds that moment's row, not a live one, so a
+      // check of "has it changed since I read it" can fail here too.
       update: async ({ where, data }) => {
         const row = state.sessions.find((s) => s.id === where.id);
         if (!row) throw new Error(`no session ${where.id}`);
         Object.assign(row, data);
-        return row;
+        return { ...row };
       },
-      findUnique: async ({ where }) => state.sessions.find((s) => s.id === where.id) ?? null,
-      findFirst: async ({ where }) =>
-        state.sessions.find((s) => matchesSessionWhere(s, where)) ?? null,
+      findUnique: async ({ where }) => {
+        const row = state.sessions.find((s) => s.id === where.id);
+        return row ? { ...row } : null;
+      },
+      findFirst: async ({ where }) => {
+        const row = state.sessions.find((s) => matchesSessionWhere(s, where));
+        return row ? { ...row } : null;
+      },
       findMany: async ({ where, orderBy, take }) => {
         const rows = state.sessions.filter((s) => matchesSessionWhere(s, where));
         if (orderBy) rows.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
-        return take === undefined ? rows : rows.slice(0, take);
+        return (take === undefined ? rows : rows.slice(0, take)).map((row) => ({ ...row }));
       },
       updateMany: async ({ where, data }) => {
         let count = 0;

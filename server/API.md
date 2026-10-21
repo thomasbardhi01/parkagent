@@ -316,6 +316,16 @@ decision, and nothing is asked, pushed, or started. See "Session
 lifecycle". An app that doesn't list it gets no `awaitsWalkAway` and no
 held park, and pays through `POST /session/start` as before.
 
+A park is held only when the phone's own `ts` is within 5 minutes of the
+server's clock, either way (or absent): the tolerance `POST /location`
+reads fixes with. This is the phone's `ts` as sent, not the clamped time
+it is priced at, because its fixes carry the same clock. A park
+delivered late (an outbox, 3 h after it parked) has its walk-away behind
+it, and one from a phone whose clock is further off would wait on fixes
+that are never read. Either is answered as for an app that doesn't list
+`walk_away`: still quoted (at its `ts`, or at server time past the clamp
+below), with no `awaitsWalkAway` and no held park.
+
 `outcomes` (FR-54) lists the actions beyond the street's four that the app
 knows how to show. **An app that lists none is answered exactly as before**:
 `action` stays one of `pay | confirm | ignore | unknown_zone` with the
@@ -951,7 +961,7 @@ guarantees and cannot be confirmed through — raise them via `PUT /policy`):
 | `max_stay_exceeded` | `minutes` > zone max stay |
 | `free_period` | the whole stay prices to $0 (outside enforcement) — nothing to buy, and typing minutes into the provider anyway could charge money the quote never priced |
 | `session_cap_exceeded` | purchase total > `session_cap_usd` |
-| `daily_cap_exceeded` | real (non-dry-run) spend today — sessions plus garages approved in Link — + total > `daily_cap_usd` |
+| `daily_cap_exceeded` | spend today — sessions plus garages approved in Link — + total > `daily_cap_usd`. A real run counts real spend only; under dry run, dry-run sessions count too, so a dry run is refused wherever the same day for real would be (also the walk-away prompt, `/parked`'s auto-pay rule, and extensions) |
 
 Other errors: `404` unknown/foreign `parkedEventId` or `zoneId`, `409
 {"error": "session_already_active"}` (one open session per user — enforced
@@ -1010,6 +1020,16 @@ held, nothing charged, no push (decision rule `extension_in_progress`;
 the worker records the same rule with `action: "none"` and it doesn't
 start the hysteresis window, so the next tick decides from the new
 expiry). Trying again afterwards is safe.
+
+The worker's own extensions also re-read, under that lock, what it read
+"away" from before taking it: the session's lifecycle row. If the row is no
+longer `started`, or the phone is back within reach of the car since
+(`backAt`), or a later park moved the car, the extension is refused with
+code `phone_not_away`. Nothing is held or charged, and there's no push.
+The `extend_tick` row records rule `phone_not_away` with `action:
+"none"`, outside the hysteresis window, and the next tick decides from
+the phone's new position (`hold_back_at_car` and its push, for a phone
+back at the car). A manual Extend is never refused for this.
 
 ## POST /session/stop
 

@@ -253,7 +253,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
       Math.min(policy.default_stay_minutes, maxStayMinutes ?? policy.default_stay_minutes);
     const price = priceStay(terms, policy, at, minutes);
     const dryRun = deps.policy.effectiveDryRun();
-    const spentTodayUsd = await spentToday(deps.db, user.id, at);
+    const spentTodayUsd = await spentToday(deps.db, user.id, at, { dryRun });
 
     let rule: string | null = null;
     if (maxStayMinutes !== null && minutes > maxStayMinutes) {
@@ -265,7 +265,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
       rule = "free_period";
     } else if (price.totalUsd > policy.session_cap_usd) {
       rule = "session_cap_exceeded";
-    } else if (!dryRun && spentTodayUsd + price.totalUsd > policy.daily_cap_usd) {
+    } else if (spentTodayUsd + price.totalUsd > policy.daily_cap_usd) {
       rule = "daily_cap_exceeded";
     } else if (opts.maxTotalUsd !== undefined && price.totalUsd > opts.maxTotalUsd + 0.001) {
       // The tap agreed to an amount; this start would cost more than it.
@@ -790,7 +790,9 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
 
     const policy = await policyFor(deps, user.id);
     const price = priceExtension(session, policy, body.minutes);
-    const spentTodayUsd = await spentToday(deps.db, user.id, at);
+    const spentTodayUsd = await spentToday(deps.db, user.id, at, {
+      dryRun: deps.policy.effectiveDryRun(),
+    });
     const violation = extensionPolicyViolation(policy, session, body.minutes, price, spentTodayUsd);
     const decisionInputs = {
       body,

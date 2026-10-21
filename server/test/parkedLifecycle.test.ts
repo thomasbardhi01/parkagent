@@ -8,13 +8,15 @@
  * 90-minute stay quotes $3.50 + $0.15.
  */
 
-import { expect, test, vi } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 
-import type { ZoneTermsRow } from "../src/db.js";
+import type { PendingParkRow, ZoneTermsRow } from "../src/db.js";
 import type { Executor, ExecutorResult } from "../src/services/executor.js";
 import { DryRunExecutor } from "../src/services/executor.js";
 import type { ParkStarter } from "../src/services/pendingSession.js";
+import type { Quote } from "../src/services/quote.js";
 import {
+  LIFECYCLE_FIX_MAX_AGE_MS,
   START_DEADLINE_MS,
   STARTING_STALE_MS,
   startParkSession,
@@ -53,6 +55,15 @@ const STEINWAY_ZONE: ZoneTermsRow = {
 
 type App = ReturnType<typeof makeTestApp>["app"];
 
+/** What the driver had been shown for a park when its start ran. */
+interface ShownAtStart {
+  quote: Quote;
+  dryRun: boolean;
+}
+
+/** Every app this file makes, for the check after each test. */
+const apps: ReturnType<typeof makeApp>[] = [];
+
 /** A test app whose clock the test moves, and an executor that counts. */
 function makeApp(options: Parameters<typeof makeTestApp>[0] = {}) {
   const clock = { now: new Date(PARKED_AT) };
@@ -61,7 +72,7 @@ function makeApp(options: Parameters<typeof makeTestApp>[0] = {}) {
     () => {},
     () => clock.now,
   );
-  const executor: Executor = {
+  const counted: Executor = {
     startSession: (args) => {
       calls.start += 1;
       return dry.startSession(args);
@@ -75,18 +86,74 @@ function makeApp(options: Parameters<typeof makeTestApp>[0] = {}) {
       return dry.stopSession(args);
     },
   };
+  const { executor: given, ...rest } = options;
+  const inner = given ?? counted;
+  const shownAtStart: ShownAtStart[] = [];
+  const executor: Executor = {
+    startSession: (args) => {
+      shownAtStart.push(shownFor(t.state));
+      return inner.startSession(args);
+    },
+    extendSession: (args) => inner.extendSession(args),
+    stopSession: (args) => inner.stopSession(args),
+  };
   const t = makeTestApp({
     candidates: [STEINWAY_A],
     zones: [STEINWAY_ZONE],
     now: () => clock.now,
     executor,
-    ...options,
+    ...rest,
   });
   const tick = (seconds: number) => {
     clock.now = new Date(clock.now.getTime() + seconds * 1000);
   };
-  return { ...t, clock, calls, tick };
+  const made = { ...t, clock, calls, tick, shownAtStart };
+  apps.push(made);
+  return made;
 }
+
+/**
+ * What the session being started was shown as, read when the executor is
+ * asked: its park's quote and dry run, or (a build that doesn't wait for
+ * the walk-away) what /parked answered.
+ */
+function shownFor(state: FakeDbState): ShownAtStart {
+  const session = state.sessions.at(-1)!;
+  const park = state.pendingParks.find(
+    (p: PendingParkRow) => p.parkedEventId === session.parkedEventId,
+  );
+  if (park) return structuredClone({ quote: park.quote as Quote, dryRun: park.shownDryRun! });
+  const parked = state.decisions.find(
+    (d) => d.kind === "parked_quote" && d.parkedEventId === session.parkedEventId,
+  )!;
+  return structuredClone({
+    quote: parked.outcome["quote"] as Quote,
+    dryRun: parked.inputs["dryRun"] as boolean,
+  });
+}
+
+// Every start, in every test here: the provider is asked for the zone
+// number, the minutes and the amount the driver was shown, and through the
+// dry-run executor exactly when the driver was told it is a dry run.
+afterEach(() => {
+  for (const t of apps.splice(0)) {
+    const starts = t.executorCalls.filter((c) => c.op === "start");
+    expect(starts).toHaveLength(t.shownAtStart.length);
+    starts.forEach((call, i) => {
+      const { quote, dryRun } = t.shownAtStart[i]!;
+      expect(call).toEqual({
+        op: "start",
+        userId: "u1",
+        city: "nyc",
+        dryRun,
+        zoneNumber: quote.providerZoneNumber,
+        minutes: quote.stayMinutes,
+        amountUsd: quote.meterUsd,
+        feeUsd: quote.feeUsd,
+      });
+    });
+  }
+});
 
 function post(app: App, url: string, body: unknown, headers = HEADERS) {
   return app.inject({ method: "POST", url, headers, payload: body as object });
@@ -1590,5 +1657,231 @@ test("an early Pay that runs out of time is said, not dropped in silence", async
     ok: true,
     park: { parkedEventId: parked.parkedEventId, status: "expired" },
   });
+  expect(t.calls.start).toBe(0);
+});
+
+// ------------------------------------------------------------ before DRY_RUN=false (#226)
+
+test("a crash in `starting` after the provider charged: the phone's next fix after the sweep finds the session, and nothing is charged again", async () => {
+  const t = makeApp();
+  const parked = await park(t.app);
+  await tap(t, parked.parkedEventId);
+  // The early Pay starts on the app's on-foot report. The provider charges
+  // and the session goes active; the process dies before the park hears.
+  const real = t.deps.db.pendingPark.updateMany;
+  t.deps.db.pendingPark.updateMany = async (args) => {
+    if (args.data.status === "started") throw new Error("process killed");
+    return real(args);
+  };
+  expect((await walkOff(t)).statusCode).toBe(500);
+  t.deps.db.pendingPark.updateMany = real;
+  const session = t.state.sessions[0]!;
+  expect(session.status).toBe("active");
+  expect(t.state.pendingParks[0]!.status).toBe("starting");
+
+  // The phone keeps reporting on foot, away from the car, minute by minute.
+  // No fix, and no tap, is a second start.
+  for (let i = 0; i < 12; i += 1) {
+    t.tick(60);
+    await post(t.app, "/location", fix(t, 150 + i * 20, { event: "left_car" }));
+    await tap(t, parked.parkedEventId);
+  }
+  expect(t.state.pendingParks[0]).toMatchObject({ status: "started", sessionId: session.id });
+  expect(t.calls.start).toBe(1);
+  expect(t.state.sessions).toHaveLength(1);
+  expect(lifecycleRows(t.state)).toEqual([
+    expect.objectContaining({
+      rule: "start_stale",
+      sessionId: session.id,
+      outcome: { status: "started", sessionId: session.id },
+    }),
+  ]);
+  // …and the adopted session is the lifecycle's: a return now ends it.
+  t.tick(60);
+  await post(t.app, "/location", fix(t, 5));
+  t.tick(61);
+  await post(t.app, "/location", fix(t, 4));
+  expect(session.status).toBe("stopped");
+});
+
+test("a crash in `starting` before the session was marked active: the sweep closes the park, and nothing pays it again", async () => {
+  const t = makeApp();
+  const parked = await park(t.app);
+  await walkAway(t);
+  // The provider has been asked; the process dies while the session row
+  // still says pending. Whether it charged is unknown.
+  const real = t.deps.db.session.update;
+  let die: (err: Error) => void = () => {};
+  const dead = new Promise<never>((_, reject) => (die = reject));
+  t.deps.db.session.update = async (args) => {
+    if (args.data.status === "active") return dead;
+    return real(args);
+  };
+  const paying = tap(t, parked.parkedEventId);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(t.calls.start).toBe(1);
+  expect(t.state.sessions[0]!.status).toBe("pending");
+  t.deps.db.session.update = real;
+
+  // Eleven minutes on, the next fix's sweep finds a start nothing will
+  // answer for: the park is closed with its session, and is never paid
+  // from again, by a fix, a left_car, or a tap.
+  t.tick(11 * 60);
+  await post(t.app, "/location", fix(t, 300, { event: "left_car" }));
+  expect(t.state.pendingParks[0]!.status).toBe("start_failed");
+  expect(t.state.sessions[0]!.status).toBe("failed");
+  for (let i = 0; i < 3; i += 1) {
+    t.tick(60);
+    await post(t.app, "/location", fix(t, 320 + i * 20, { event: "left_car" }));
+    expect((await tap(t, parked.parkedEventId)).statusCode).toBe(409);
+  }
+  expect(t.calls.start).toBe(1);
+  expect(t.state.sessions).toHaveLength(1);
+  die(new Error("process gone"));
+  await paying;
+});
+
+test("a cap lowered between the prompt and the tap: the tap is refused, on the ledger, and nothing is paid", async () => {
+  const t = makeApp();
+  const parked = await park(t.app);
+  const left = await walkAway(t);
+  expect(left.json()["prompt"]).toMatchObject({ amountUsd: 3.65 });
+  const lowered = await t.app.inject({
+    method: "PUT",
+    url: "/me/limits",
+    headers: HEADERS,
+    payload: { sessionCapUsd: 3 },
+  });
+  expect(lowered.statusCode).toBe(200);
+
+  const res = await tap(t, parked.parkedEventId);
+  expect(res.statusCode).toBe(409);
+  expect(res.json()).toMatchObject({ error: "policy_violation", rule: "session_cap_exceeded" });
+  expect(t.calls.start).toBe(0);
+  expect(t.state.sessions).toEqual([]);
+  const refused = t.state.decisions.filter(
+    (d) => d.parkedEventId === parked.parkedEventId && d.rule === "session_cap_exceeded",
+  );
+  expect(refused.length).toBeGreaterThanOrEqual(1);
+  expect(refused[0]!.inputs).toMatchObject({ dryRun: true });
+  // The park isn't paid by a second tap either, until the cap allows it.
+  expect((await tap(t, parked.parkedEventId)).statusCode).toBe(409);
+  expect(t.calls.start).toBe(0);
+});
+
+test("an old measurement at the car, replayed after the walk-away, doesn't end the session", async () => {
+  const t = makeApp();
+  const parked = await park(t.app);
+  const measured = (secondsAfterPark: number) =>
+    new Date(PARKED_AT.getTime() + secondsAfterPark * 1000).toISOString();
+  // In the seat for over a minute, then a walk-away and the tap.
+  t.tick(5);
+  await post(t.app, "/location", fix(t, 4));
+  t.tick(70);
+  await post(t.app, "/location", fix(t, 4));
+  t.tick(20);
+  await post(t.app, "/location", fix(t, 60));
+  t.tick(20);
+  await post(t.app, "/location", fix(t, 90));
+  expect((await tap(t, parked.parkedEventId)).json()).toMatchObject({ status: "started" });
+  const session = t.state.sessions[0]!;
+  t.tick(30);
+  await post(t.app, "/location", fix(t, 200));
+
+  // The outbox delivers the two seat measurements again, freshly stamped:
+  // both from before the phone left, a minute apart.
+  t.tick(10);
+  const first = await post(t.app, "/location", fix(t, 4, { measuredAt: measured(5) }));
+  t.tick(1);
+  const second = await post(t.app, "/location", fix(t, 4, { measuredAt: measured(75) }));
+  expect(first.json()["ended"]).toBeUndefined();
+  expect(second.json()["ended"]).toBeUndefined();
+  expect(session.status).toBe("active");
+  expect(t.calls.stop).toBe(0);
+  expect(t.state.pendingParks[0]).toMatchObject({ status: "started", backAt: null });
+});
+
+test("a park reported three hours late isn't held at the car: the walk-away it waits for is long past", async () => {
+  const t = makeApp();
+  t.tick(3 * 60 * 60);
+  const parked = await park(t.app, { ts: PARKED_AT.toISOString() });
+  // Answered as for a build that doesn't wait: priced for when it parked.
+  expect(parked["action"]).toBe("pay");
+  expect(parked["awaitsWalkAway"]).toBeUndefined();
+  expect(t.state.pendingParks).toEqual([]);
+  expect(count(t.state, "street_pending")).toBe(0);
+});
+
+test("clock skew: a park is held only when its phone's fixes will be read, with one tolerance for both", async () => {
+  // Past the pricing clamp too (over 10 min ahead, over 24 h behind): the
+  // park is priced at server time, and its phone's fixes are still off.
+  for (const skewMs of [
+    -25 * 60 * 60_000,
+    -LIFECYCLE_FIX_MAX_AGE_MS - 60_000,
+    -LIFECYCLE_FIX_MAX_AGE_MS + 60_000,
+    LIFECYCLE_FIX_MAX_AGE_MS - 60_000,
+    LIFECYCLE_FIX_MAX_AGE_MS + 60_000,
+    11 * 60_000,
+  ]) {
+    const t = makeApp();
+    // The phone's clock: every ts it sends is off by the skew.
+    const phone = (distanceM: number) =>
+      fix(t, distanceM, { ts: new Date(t.clock.now.getTime() + skewMs).toISOString() });
+    const parked = await park(t.app, { ts: new Date(PARKED_AT.getTime() + skewMs).toISOString() });
+    t.tick(40);
+    await post(t.app, "/location", phone(60));
+    t.tick(20);
+    const left = await post(t.app, "/location", phone(90));
+    const held = parked["awaitsWalkAway"] === true;
+    const asked = left.json()["prompt"] !== undefined;
+    expect({ skewMs, held, asked }).toEqual({
+      skewMs,
+      held: Math.abs(skewMs) < LIFECYCLE_FIX_MAX_AGE_MS,
+      asked: Math.abs(skewMs) < LIFECYCLE_FIX_MAX_AGE_MS,
+    });
+  }
+});
+
+test("dry run enforces the daily cap on what dry runs recorded today: no Pay offered, and the tap is refused", async () => {
+  const t = makeApp();
+  // $60 a day; $58 of dry-run sessions already today.
+  seedSession(t.state, {
+    userId: "u1",
+    status: "stopped",
+    dryRun: true,
+    amountUsd: 57.85,
+    feeUsd: 0.15,
+    createdAt: new Date(PARKED_AT.getTime() - 3 * 60 * 60_000),
+  });
+  const parked = await park(t.app);
+  const left = await walkAway(t);
+  expect(left.json()["prompt"]).toMatchObject({ kind: "attention", reason: "daily_cap_exceeded" });
+
+  const res = await tap(t, parked.parkedEventId);
+  expect(res.statusCode).toBe(409);
+  expect(res.json()).toMatchObject({ error: "policy_violation", rule: "daily_cap_exceeded" });
+  expect(t.calls.start).toBe(0);
+  expect(t.state.sessions.filter((s) => s.parkedEventId === parked.parkedEventId)).toEqual([]);
+});
+
+test("…and so does a start outside the lifecycle", async () => {
+  const t = makeApp();
+  seedSession(t.state, {
+    userId: "u1",
+    status: "stopped",
+    dryRun: true,
+    amountUsd: 57.85,
+    feeUsd: 0.15,
+    createdAt: new Date(PARKED_AT.getTime() - 3 * 60 * 60_000),
+  });
+  const parked = await park(t.app, { outcomes: ["garage", "nopay"] });
+  expect(parked).toMatchObject({ action: "confirm", rule: "daily_cap_exceeded" });
+  const started = await post(t.app, "/session/start", {
+    parkedEventId: parked.parkedEventId,
+    zoneId: "nyc-417371",
+  });
+  expect(started.statusCode).toBe(409);
+  expect(started.json()).toMatchObject({ rule: "daily_cap_exceeded" });
+  expect(t.state.decisions.at(-1)).toMatchObject({ rule: "daily_cap_exceeded" });
   expect(t.calls.start).toBe(0);
 });

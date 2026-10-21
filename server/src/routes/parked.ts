@@ -22,6 +22,7 @@ import {
 } from "../services/placeClassification.js";
 import { cityForZone, providerForCity, providerStatusUsable } from "../providers/registry.js";
 import {
+  LIFECYCLE_FIX_MAX_AGE_MS,
   PARK_STATUSES,
   noteCarMoved,
   parkCandidates,
@@ -214,7 +215,9 @@ export function registerParked(app: FastifyInstance, deps: AppDeps, sessions: Se
         action = "confirm";
         rule = "session_cap_exceeded";
       } else {
-        const spentTodayUsd = await spentToday(deps.db, user.id, at);
+        const spentTodayUsd = await spentToday(deps.db, user.id, at, {
+          dryRun: deps.policy.effectiveDryRun(),
+        });
         if (spentTodayUsd + quote.totalUsd > policy.daily_cap_usd) {
           action = "confirm";
           rule = "daily_cap_exceeded";
@@ -343,8 +346,19 @@ export function registerParked(app: FastifyInstance, deps: AppDeps, sessions: Se
         parkedEvent.id,
       );
     }
+    // Held only when the park's time is one the phone's fixes will be read
+    // against (POST /location's own tolerance, fixCountsFor): a park
+    // reported long after it happened has its walk-away behind it, and one
+    // stamped by a clock that far off would wait on fixes never read. The
+    // phone's own ts, not `at`: one past the pricing clamp prices at
+    // server time, and its fixes carry that same clock. A park sent
+    // without a ts is the server's time, and its fixes are read as sent.
+    const heldInTime =
+      requestTs === null ||
+      Math.abs(serverNow.getTime() - requestTs.getTime()) <= LIFECYCLE_FIX_MAX_AGE_MS;
     const awaitsWalkAway =
       isLatestPark &&
+      heldInTime &&
       Array.isArray(rawOutcomes) &&
       rawOutcomes.includes(WALK_AWAY) &&
       located &&

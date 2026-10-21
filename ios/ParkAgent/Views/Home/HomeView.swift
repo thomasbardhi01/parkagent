@@ -483,6 +483,47 @@ struct HomeView: View {
         .accessibilityIdentifier("home.curbTermsCard")
     }
 
+    /// A street park the server is holding until the phone leaves the car
+    /// (FR-55). Passive: it asks nothing and opens nothing by itself.
+    @ViewBuilder
+    private func waitingParkCard(_ waiting: ParkedNotice.Waiting) -> some View {
+        let parked = waiting.presentable
+        VStack(alignment: .leading, spacing: Spacing.half) {
+            Text(waitingParkTitle(parked))
+                .font(.bodyTextSemibold)
+                .foregroundStyle(Color.textPrimary)
+            Text(waitingParkLine(parked, waiting: waiting))
+                .font(.secondaryText)
+                .foregroundStyle(Color.textSecondary)
+                .accessibilityIdentifier("home.waitingPark.line")
+            Button("Review") { model.reviewWaitingPark() }
+                .buttonStyle(.secondary)
+                .accessibilityIdentifier("home.waitingPark.reviewButton")
+        }
+        .padding(Spacing.unit)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.surface)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.button, style: .continuous))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("home.waitingPark")
+    }
+
+    private func waitingParkTitle(_ parked: ParkedResponse) -> String {
+        guard let number = parked.candidates.first?.providerZoneNumber, !number.isEmpty,
+              parked.candidates.count == 1
+        else { return "Parked at a meter" }
+        return "Parked in zone \(number)"
+    }
+
+    private func waitingParkLine(_ parked: ParkedResponse, waiting: ParkedNotice.Waiting) -> String {
+        let quote = parked.quote ?? parked.candidates.first?.quote
+        let price = quote.map { "\(Format.money($0.totalUsd)) for \(Format.minutes($0.stayMinutes)). " } ?? ""
+        if waiting.confirmed { return "\(price)Confirmed. ParkAgent pays when you walk away." }
+        return waiting.shown != nil
+            ? "\(price)Not paid yet. Review to pay."
+            : "\(price)Nothing is paid at the car. ParkAgent will ask when you walk away."
+    }
+
     private func curbTermsLine(_ zone: NearbyZone) -> String {
         var parts = [Format.money(zone.rateFirstHourUsd) + "/hr"]
         if zone.rateAdditionalHourUsd != zone.rateFirstHourUsd {
@@ -527,6 +568,10 @@ struct HomeView: View {
                 ItineraryDaySection(day: day)
             }
 
+            if model.activeSession == nil, let waiting = model.reporter.waiting {
+                waitingParkCard(waiting)
+            }
+
             if let session = model.activeSession {
                 NavigationLink(value: session.sessionId) {
                     SessionRow(
@@ -552,6 +597,13 @@ struct HomeView: View {
                 }
                 .buttonStyle(.secondary)
                 .accessibilityIdentifier("home.simulateParkButton")
+                if model.reporter.waiting != nil {
+                    Button("Simulate walk-away") {
+                        Task { await model.simulateWalkAway() }
+                    }
+                    .buttonStyle(.secondary)
+                    .accessibilityIdentifier("home.simulateWalkAwayButton")
+                }
             }
             #endif
         }

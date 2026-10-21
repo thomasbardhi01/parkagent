@@ -13,7 +13,7 @@ started in that PR's worktree.
 |---|---|---|---|---|
 | **WS-1** Assistant brain and plan UX | Tom (@thomasbardhi01) | The assistant holds the request as server-owned state, says no when nothing fits, resolves places with a confidence score, and ranks one list that the map, the cards, and the directions handoff share. | `ws-1` | 7 |
 | **WS-2** Boston data and garage inventory | Nate (@nbtolva-dot) | Garage and lot footprints, garage sources behind modes and a daily budget, Boston zones from the City's CDS feed with a coverage gate, and garage price freshness. | `ws-2` | 4 |
-| **WS-3** Park now: detection, place outcomes, session lifecycle | Tom (@thomasbardhi01) | The phone classifies where it parked, `/parked` answers garage and no-pay outcomes, and a street session runs from walk-away to return with the tap-to-confirm and the YOLO beta. | `ws-3` | 3 |
+| **WS-3** Park now: detection, place outcomes, session lifecycle | Tom (@thomasbardhi01) | The phone classifies where it parked, `/parked` answers garage and no-pay outcomes, and a street session runs from walk-away to return with the tap-to-confirm and the YOLO beta. | `ws-3` | 4 |
 
 The V1 milestone also holds #163, a flaky `AssistantUITests` test in
 WS-1's files. It's upkeep, not one of the PRs below.
@@ -100,7 +100,8 @@ garage seam there), `ios/**` (no WS-2 PR has an iOS change),
 |---|---|---|---|---|
 | 1 | #178 | `feat/place-classifier` | park now PR 2 | **WS-2 #174** before wiring `/garages/near` |
 | 2 | #179 | `feat/parked-place-outcomes` | park now PR 3 | #178, **WS-2 #174** |
-| 3 | #180 | `feat/session-lifecycle-yolo-beta` | decisions 1–4, 9 | #179 |
+| 3 | #180 | `feat/session-lifecycle-yolo-beta` | decisions 1–3 (the lifecycle and tap-to-confirm) | #179 |
+| 4 | #210 | `feat/yolo-beta-and-caps` | decisions 4, 9 (split out of #180, as it said to past 1,500 lines) | #180 |
 
 **Owns:**
 - `ios/ParkAgent/Detection/**`
@@ -177,7 +178,7 @@ file an issue and talk first.
 | WS-1 #171 | WS-2 #175 | WS-1 consumes WS-2's provider capabilities (`capabilities`, `quote`/`book`, `provenance.fetchedAt`, `entrance`, `availability`) after they merge. |
 | WS-1 #171: curb lines on the mini-map | WS-2 #176 (`/zones/near?state_at=`) | Optional. If it hasn't merged, PR 5 ships without curb lines and files the follow-up. |
 | WS-2 #177 | WS-2 #175 | Freshness reads `provenance.fetchedAt` and the read budget. |
-| WS-3 #180: "Walk to …" on the session card | WS-1 #171 (`NavigationHandoff.swift`) | Optional. If it hasn't merged, the button is a follow-up. |
+| WS-3 #211: "Walk to …" on the session card | WS-1 #171 (`NavigationHandoff.swift`) | It hadn't merged when #180's PR was written, so the button is #211. |
 
 ## New FRs, reserved per PR
 
@@ -200,7 +201,7 @@ fills in its row and adds the live test where one is listed.
 | FR-53 | WS-3 #178 | The phone classifies the place it parked |
 | FR-54 | WS-3 #179 | `/parked` answers garage and no-pay outcomes |
 | FR-55 | WS-3 #180 | A street session runs from walk-away to return |
-| FR-56 | WS-3 #180 | YOLO beta mode |
+| FR-56 | WS-3 #210 | YOLO beta mode |
 | FR-57–59 | V2 #181, #182, #183 | Ticket capture, garage stays, the stay budget |
 
 ## Working agreement

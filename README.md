@@ -86,7 +86,7 @@ boundaries, and the working agreement are in
 - **WS-1: assistant brain and plan UX** (Tom, #167–#173).
 - **WS-2: Boston data and garage inventory** (Nate, #174–#177).
 - **WS-3: park now: detection, place outcomes, session lifecycle** (Tom,
-  #178–#180).
+  #178–#180, and #210 for the YOLO beta and caps).
 
 Ticket capture and garage stays are **V2** (#181–#183). By-hand and
 partner work stays in the **Field test**, **TestFlight 1.0**, and **App

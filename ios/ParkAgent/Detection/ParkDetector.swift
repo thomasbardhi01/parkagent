@@ -54,6 +54,15 @@ final class ParkDetector: NSObject, CLLocationManagerDelegate {
     @ObservationIgnored var onUnlocatedPark: ((_ preciseOff: Bool, _ outcome: ParkOutcome, _ place: PlaceClassification) -> Void)?
     /// A drive started, or picked up again after a stop that wasn't a park.
     @ObservationIgnored var onDrivingResumed: (() -> Void)?
+    /// Motion says the driver is on foot, live (the lifecycle's
+    /// `left_car`). CoreMotion reports changes, not a stream: a driver
+    /// already walking when a park is recorded is told by `lastOnFootAt`.
+    @ObservationIgnored var onWalking: (() -> Void)?
+    /// CarPlay connected: the phone is back in the car. (A Bluetooth
+    /// route appearing may be headphones, and says nothing.)
+    @ObservationIgnored var onCarPlayConnected: (() -> Void)?
+    /// When motion last had the driver on foot.
+    @ObservationIgnored private(set) var lastOnFootAt: Date?
     /// Asks for full accuracy for this session (PermissionsManager).
     @ObservationIgnored var requestPrecise: (() async -> Bool)?
 
@@ -202,7 +211,10 @@ final class ParkDetector: NSObject, CLLocationManagerDelegate {
         startMonitoring()
         audio.start(
             onDisconnect: { [weak self] port in self?.engine.audioDisconnected(port: port) },
-            onConnect: { [weak self] in Task { await self?.wake(.carAudioConnected) } }
+            onConnect: { [weak self] port in
+                if port == .carPlay { self?.onCarPlayConnected?() }
+                Task { await self?.wake(.carAudioConnected) }
+            }
         )
         if motion.isAvailable {
             motion.start { [weak self] sample in self?.motionReceived(sample) }
@@ -370,6 +382,10 @@ final class ParkDetector: NSObject, CLLocationManagerDelegate {
         if sample.isDriving {
             lastDriveEvidenceAt = max(lastDriveEvidenceAt ?? sample.at, sample.at)
             if live { beginTracking(reason: "driving") }
+        }
+        if sample.isOnFoot {
+            lastOnFootAt = max(lastOnFootAt ?? sample.at, sample.at)
+            if live { onWalking?() }
         }
         engine.motion(sample)
         motionHistoryThrough = max(motionHistoryThrough ?? sample.at, sample.at)
@@ -771,7 +787,7 @@ final class CarAudioSource {
 
     func start(
         onDisconnect: @escaping @MainActor (ParkFusionEngine.AudioPort) -> Void,
-        onConnect: @escaping @MainActor () -> Void
+        onConnect: @escaping @MainActor (ParkFusionEngine.AudioPort) -> Void
     ) {
         guard observer == nil else { return }
         // queue: .main — AVAudioSession posts on a background thread, and
@@ -787,8 +803,8 @@ final class CarAudioSource {
             MainActor.assumeIsolated {
                 if reason == .oldDeviceUnavailable, let previousPort {
                     onDisconnect(previousPort)
-                } else if reason == .newDeviceAvailable, currentPort != nil {
-                    onConnect()
+                } else if reason == .newDeviceAvailable, let currentPort {
+                    onConnect(currentPort)
                 }
             }
         }

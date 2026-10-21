@@ -265,6 +265,9 @@ export function advanceWalk(before: WalkState, fix: WalkFix): WalkStep {
     return step({});
   }
 
+  // Measured before the phone left (the outbox or a re-send delivering it
+  // late): where it was then, which says nothing about coming back.
+  if (fix.measuredAt.getTime() < state.leftCarAt.getTime()) return step({});
   if (clear && state.farAt === null) {
     state.farAt = fix.measuredAt;
     state.farDistanceM = fix.distanceM;

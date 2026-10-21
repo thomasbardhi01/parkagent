@@ -222,6 +222,13 @@ struct LocationResponse: Codable, Sendable, Equatable {
         /// False where the provider can't stop early, or refused to.
         var stopped: Bool
         var error: String? = nil
+        /// How the return was seen: "near_for_60s" | "returned_event" |
+        /// "drove_off". Absent from a server before #232.
+        var why: String? = nil
+        /// A drive-off only: "speed" (driving speed on both fixes) or
+        /// "pace" (a guess from the distance between fixes; the provider
+        /// is never asked to stop, and the paid time runs out).
+        var readBy: String? = nil
     }
 
     var ok: Bool = true

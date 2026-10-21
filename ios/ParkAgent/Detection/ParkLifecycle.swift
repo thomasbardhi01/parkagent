@@ -187,7 +187,8 @@ extension AppModel {
         }
         if let session = activeSession {
             await ParkedNotice.postSessionEnded(ParkedNotice.sessionEndedContent(
-                zoneNumber: session.zoneNumber, stopped: ended.stopped, paidUntil: session.expiresAt
+                zoneNumber: session.zoneNumber, stopped: ended.stopped, paidUntil: session.expiresAt,
+                why: ended.why, readBy: ended.readBy
             ))
         }
         reporter.stop()

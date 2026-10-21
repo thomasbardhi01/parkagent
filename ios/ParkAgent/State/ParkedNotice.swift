@@ -449,16 +449,25 @@ enum ParkedNotice {
     /// longer being looked after before walking away again.
     static let sessionEndedType = "session_ended_at_return"
 
-    static func sessionEndedContent(zoneNumber: String, stopped: Bool, paidUntil: Date) -> Content {
+    /// `why` and `readBy` are the server's `ended` (#226): a drive-off read
+    /// from the pace between two fixes is a guess (one GPS jump can make
+    /// it), so it isn't said as fact, and a driver still parked is told
+    /// how to keep the time going.
+    static func sessionEndedContent(
+        zoneNumber: String, stopped: Bool, paidUntil: Date, why: String? = nil, readBy: String? = nil
+    ) -> Content {
         let zone = zoneNumber.isEmpty ? "the meter" : "zone \(zoneNumber)"
+        let guessed = why == "drove_off" && readBy == "pace"
+        let what = guessed ? "It looks like your car moved" : why == "drove_off" ? "You drove off" : "You're back at your car"
+        let stillParked = guessed ? " If you're still parked, pay again in the app." : ""
         return stopped
             ? Content(
                 title: "Parking session ended",
-                body: "You're back at your car, so ParkAgent stopped \(zone). If you're staying parked, pay again in the app."
+                body: "\(what), so ParkAgent stopped \(zone). If you're staying parked, pay again in the app."
             )
             : Content(
                 title: "Parking session ended",
-                body: "You're back at your car. \(zone.prefix(1).uppercased() + zone.dropFirst()) stays paid until \(Format.clockTime(paidUntil)), and ParkAgent won't add more time."
+                body: "\(what). \(zone.prefix(1).uppercased() + zone.dropFirst()) stays paid until \(Format.clockTime(paidUntil)), and ParkAgent won't add more time.\(stillParked)"
             )
     }
 

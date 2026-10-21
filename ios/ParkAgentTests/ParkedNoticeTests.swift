@@ -214,6 +214,32 @@ final class ParkedNoticeWalkAwayTests: XCTestCase {
         XCTAssertTrue(kept.body.contains("Zone 456 stays paid until \(Format.clockTime(until))"), kept.body)
         XCTAssertTrue(kept.body.contains("won't add more time"), kept.body)
         XCTAssertFalse(kept.body.contains("stopped"), kept.body)
+        XCTAssertTrue(kept.body.hasPrefix("You're back at your car"), kept.body)
+    }
+
+    /// A drive-off read from the pace between two fixes is a guess (one GPS
+    /// jump can make it): never "you're back at your car" for a driver who
+    /// may be 300 m away, and a driver still parked is told what to do.
+    func testADriveOffReadFromPaceIsNotSaidAsFact() throws {
+        let until = Date(timeIntervalSince1970: 1_790_000_000)
+        let answer = try JSONDecoder().decode(
+            LocationResponse.self,
+            from: Data(#"{"ok": true, "sessionId": "s1", "ended": {"reason": "returned", "why": "drove_off", "readBy": "pace", "stopped": false}}"#.utf8)
+        )
+        let ended = try XCTUnwrap(answer.ended)
+        let guessed = ParkedNotice.sessionEndedContent(
+            zoneNumber: "456", stopped: ended.stopped, paidUntil: until, why: ended.why, readBy: ended.readBy
+        )
+        XCTAssertTrue(guessed.body.hasPrefix("It looks like your car moved"), guessed.body)
+        XCTAssertFalse(guessed.body.contains("back at your car"), guessed.body)
+        XCTAssertTrue(guessed.body.contains("Zone 456 stays paid until \(Format.clockTime(until))"), guessed.body)
+        XCTAssertTrue(guessed.body.contains("If you're still parked, pay again in the app"), guessed.body)
+
+        // Read from driving speed: said plainly.
+        let drove = ParkedNotice.sessionEndedContent(
+            zoneNumber: "456", stopped: true, paidUntil: until, why: "drove_off", readBy: "speed"
+        )
+        XCTAssertTrue(drove.body.hasPrefix("You drove off, so ParkAgent stopped zone 456"), drove.body)
     }
 
     func testAnEarlyPayThatRanOutOfTimeIsSaid() {

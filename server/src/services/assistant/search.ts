@@ -20,6 +20,10 @@
  *    there" (no_data), and "we don't cover there" (outside_coverage) are
  *    three different facts.
  *
+ * A garage-only request (FR-45) is answered with garages. Street reaches
+ * its result one way only: the cheapest block that breaks nothing but the
+ * kind, when it costs less than every garage found — once, as a near-miss.
+ *
  * Every option id carries the request version it was searched at
  * ("v3-bos-seaport-blvd-…"), so an option from before an edit can never
  * be mistaken for a current one. The latest result is the conversation's
@@ -31,19 +35,18 @@
 import { z } from "zod";
 
 import type { GarageOption } from "../garage/garageProvider.js";
+import { intentOf } from "./intentRouter.js";
 import type { ModelTurn } from "./loop.js";
-import type { Violation } from "./plans.js";
+import type { RequestSummary, Violation } from "./plans.js";
 import { violationSchema } from "./plans.js";
 import { KINDS } from "./requestState.js";
-import type { Kind, RequestState } from "./requestState.js";
+import type { Kind, RequestPatch, RequestState } from "./requestState.js";
 import { orderForRequest } from "./streetOptions.js";
 import type { Axis, StreetOption } from "./streetOptions.js";
 
 /** A search older than this is stale: prices are for when they were
  * fetched, and the garage sources' own cache lasts this long. */
 export const SEARCH_FRESH_MS = 10 * 60_000;
-/** The stay a search assumes when the request names none. */
-export const DEFAULT_STAY_MINUTES = 120;
 /** What the model is shown of each list. */
 export const MAX_SATISFYING_SHOWN = 5;
 export const MAX_NEAR_MISSES = 3;
@@ -324,6 +327,46 @@ export function relaxSuggestionsFor(
   return out;
 }
 
+/** Whether the request takes garages only (what makes its intent
+ * garage_or_lot). */
+export function isGarageOnly(hard: RequestState["hard"]): boolean {
+  return hard.kinds?.length === 1 && hard.kinds[0] === "garage";
+}
+
+interface Judged {
+  option: SearchOption;
+  violates: Violation[];
+}
+
+/**
+ * The one street option a garage-only request is shown (FR-45): the
+ * cheapest block whose only broken limit is the kind — it meets the
+ * budget, the walk, and everything else the user set — and only when it
+ * costs less than every garage found. Null when there is none: a block
+ * that breaks another limit too is no alternative, and a meter that costs
+ * as much as a garage isn't worth a line on a garage card.
+ */
+function cheaperStreet(judged: readonly Judged[]): Judged | null {
+  const blocks = judged
+    .filter(
+      (j) =>
+        j.option.type === "street" && j.violates.length === 1 && j.violates[0]!.field === "kinds",
+    )
+    .sort(
+      (a, b) =>
+        a.option.priceUsd - b.option.priceUsd ||
+        a.option.walkMinutes - b.option.walkMinutes ||
+        a.option.distanceM - b.option.distanceM ||
+        (a.option.id < b.option.id ? -1 : 1),
+    );
+  const cheapest = blocks[0];
+  if (!cheapest) return null;
+  const garages = judged.filter((j) => j.option.type === "garage");
+  return garages.every((g) => cheapest.option.priceUsd < g.option.priceUsd - 0.004)
+    ? cheapest
+    : null;
+}
+
 /** Whether any hard constraint is set. */
 export function hasHardConstraint(hard: RequestState["hard"]): boolean {
   return (
@@ -382,17 +425,22 @@ export function buildSearchResult(
     const best = ordered.find((o) => o.type === kind);
     if (best) satisfying[satisfying.length - 1] = best;
   }
-  const nearMisses = judged
-    .filter((j) => j.violates.length > 0)
-    .sort(
-      (a, b) =>
-        a.violates.length - b.violates.length ||
-        overshoot(a.violates) - overshoot(b.violates) ||
-        a.option.priceUsd - b.option.priceUsd ||
-        a.option.walkMinutes - b.option.walkMinutes ||
-        (a.option.id < b.option.id ? -1 : 1),
-    )
-    .slice(0, MAX_NEAR_MISSES);
+  const nearest = (a: Judged, b: Judged) =>
+    a.violates.length - b.violates.length ||
+    overshoot(a.violates) - overshoot(b.violates) ||
+    a.option.priceUsd - b.option.priceUsd ||
+    a.option.walkMinutes - b.option.walkMinutes ||
+    (a.option.id < b.option.id ? -1 : 1);
+  // A garage-only request's near-misses are garages, plus at most one
+  // street option — the cheaper meter — which always keeps its place.
+  const garageOnly = isGarageOnly(state.hard);
+  const street = garageOnly ? cheaperStreet(judged) : null;
+  const broken = judged
+    .filter((j) => j.violates.length > 0 && !(garageOnly && j.option.type === "street"))
+    .sort(nearest);
+  const nearMisses = street
+    ? [...broken.slice(0, MAX_NEAR_MISSES - 1), street].sort(nearest)
+    : broken.slice(0, MAX_NEAR_MISSES);
 
   const searched = KINDS.filter((kind) => pool[kind] !== undefined);
   const verdict: Verdict =
@@ -417,6 +465,67 @@ export function buildSearchResult(
       : {}),
     ...(pool.street ? { street: pool.street.meta } : {}),
     ...(pool.garage ? { garage: pool.garage.meta } : {}),
+  };
+}
+
+/**
+ * A message that IS one of the latest search's relaxations — a tap on a
+ * "no" card's chip sends its `reply` verbatim — and the patch it stands
+ * for (FR-45). The chip's field and value are the server's own, so the
+ * loop applies them itself: the words ("Walk up to 15 min") are never left
+ * for a model to read as some other field (a 15-minute stay). Anything
+ * that only resembles a chip is no match, and is the model's to read.
+ */
+export function relaxationTapped(
+  search: SearchResult | null | undefined,
+  message: string,
+): { field: RelaxSuggestion["field"]; patch: RequestPatch } | null {
+  const plain = (text: string) => text.replace(/\s+/g, " ").trim().toLowerCase();
+  const said = plain(message);
+  if (said.length === 0) return null;
+  // Read back from a stored transcript: trusted for nothing but its shape.
+  for (const raw of search?.relaxSuggestions ?? []) {
+    const { field, to, reply, label } = raw as Partial<RelaxSuggestion>;
+    const matches = [reply, label].some((text) => typeof text === "string" && plain(text) === said);
+    if (!matches) continue;
+    if (field === "maxPriceUsd" && typeof to === "number" && Number.isFinite(to) && to >= 0) {
+      return { field, patch: { maxPriceUsd: to } };
+    }
+    if (field === "maxWalkMinutes" && typeof to === "number" && Number.isInteger(to) && to >= 1) {
+      return { field, patch: { maxWalkMinutes: to } };
+    }
+    if (field === "kinds") return { field, patch: { clear: ["hard.kinds"] } };
+  }
+  return null;
+}
+
+/**
+ * The request a card answered (plans.ts `requestSummarySchema`): the state
+ * without its log, plus what the search assumed that the request doesn't
+ * say — the phone's location as the place, and the stay.
+ */
+export function requestSummaryFor(
+  state: RequestState,
+  search: Pick<SearchResult, "place" | "window">,
+): RequestSummary {
+  const assumed = {
+    ...(search.place.source === "default" ? { place: "phone_location" as const } : {}),
+    ...(search.window.durationSource === "default"
+      ? { durationMinutes: search.window.durationMinutes }
+      : {}),
+  };
+  return {
+    version: state.version,
+    intent: intentOf(state),
+    place: {
+      query: state.place.query,
+      resolved: state.place.resolved ? { ...state.place.resolved } : null,
+      candidates: state.place.candidates ? state.place.candidates.map((c) => ({ ...c })) : null,
+    },
+    window: { ...state.window },
+    hard: { ...state.hard, kinds: state.hard.kinds ? [...state.hard.kinds] : null },
+    soft: { ...state.soft, prefer: state.soft.prefer ? [...state.soft.prefer] : null },
+    ...(Object.keys(assumed).length > 0 ? { assumed } : {}),
   };
 }
 

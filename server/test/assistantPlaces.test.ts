@@ -704,11 +704,13 @@ describe("POST /assistant/message", () => {
   test("the JSON answer carries the suggestions", async () => {
     const { app } = makeTestApp({
       assistantModel: scripted([
+        // Any question but "how long": that one's answers are the
+        // server's own (FR-45, assistantIntentRouter.test.ts).
         tool("t1", "ask_user", {
-          question: "How long will you stay?",
+          question: "Which gate are you using?",
           suggestions: [
-            { label: "1 hour", reply: "1 hour" },
-            { label: "2 hours", reply: "2 hours" },
+            { label: "Gate A", reply: "Gate A" },
+            { label: "Gate D", reply: "Gate D" },
           ],
         }),
       ]),
@@ -721,8 +723,8 @@ describe("POST /assistant/message", () => {
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().suggestions).toEqual([
-      { label: "1 hour", reply: "1 hour" },
-      { label: "2 hours", reply: "2 hours" },
+      { label: "Gate A", reply: "Gate A" },
+      { label: "Gate D", reply: "Gate D" },
     ]);
   });
 });

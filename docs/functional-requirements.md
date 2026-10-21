@@ -89,7 +89,7 @@ started at 11:55 ET). "—" means the FR has no live test.
 | FR-42 | The request is server-owned, versioned state | unit | — | `server/test/requestState.test.ts`, `server/test/assistantLoop.test.ts` (request state, `update_request`) |
 | FR-43 | Options from the latest search; the assistant says no | nightly + unit | — (first run after #168 deploys) | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantSayNo.test.ts`, `server/test/assistantValidators.test.ts`, `server/test/assistantLoop.test.ts`; iOS `AssistantPlanPresentationTests` (the two "no" cards and the labels on the wire) |
 | FR-44 | Place resolution with confidence and walking times | unit | — | `server/test/placeScore.test.ts`, `server/test/assistantPlaceResolution.test.ts`, `server/test/assistantPlaces.test.ts`; `pnpm -C server verify:places` (the real chain, no model); live FR-35/36/40 stay green |
-| FR-45 | Three intents, request chips, near-miss cards | pending | — | #170 |
+| FR-45 | Three intents, request chips, near-miss cards | nightly + unit + UI | — (first run after #170 deploys) | `server/fr/40-assistant.fr.test.ts`, `server/test/assistantIntentRouter.test.ts`; iOS `AssistantIntentCardsTests`, `AssistantUITests` |
 | FR-46 | One ranking; map, list, directions; garages open in-app with their fetched time | pending | — | #171 |
 | FR-47 | Budget-aware search and saved preferences | pending | — | #172 |
 | FR-48 | Golden conversations graded on end state; pass^3 nightly | pending | — | #173 |
@@ -1213,8 +1213,11 @@ and "Walking times").
   word with what the user said is never offered as "the closest thing",
   however near the phone it is, and the answer carries no point at all —
   the phone's location is never substituted for a place that wasn't
-  found. A fragment of a word is not the word: "xyzzy restaurant" is not
-  "W XYZ Bar", and "Pru" alone is not the Prudential Center.
+  found. A fragment of a word is not the word: a name word that is only
+  the start of what was said is no match (a made-up "Blorptastic" is not
+  a place called "Blorp"), and "Pru" alone is not the Prudential Center.
+  A whole word always is the word: "XYZ bar" and "W XYZ" are W XYZ Bar,
+  as sure as its whole name.
 - **A neighborhood's name is the neighborhood.** "Seaport", "Back Bay",
   and "Fenway" resolve to the area, never a business named after it; when
   the first source has only businesses, the next is asked.
@@ -1245,9 +1248,16 @@ and "Walking times").
   St location with confidence at or above `found`.
 - "Starbucks" with six locations is ambiguous with at most three choices,
   nearest the phone first.
-- "xyzzy restaurant" with an unrelated result nearby is none, and the tool
-  result contains neither the phone's coordinates nor that result; so is
-  "xyzzy restaurant" answered by autocomplete with "W XYZ Bar".
+- A name that exists nowhere ("Blorptastic Noodle House", the negative
+  control) with an unrelated result nearby is none, and the tool result
+  contains neither the phone's coordinates nor that result; so is it
+  answered by autocomplete with a place that only starts like it. Answered
+  with a place sharing its common words, it is at most the closest thing,
+  said as that, under the `found` line.
+- "XYZ bar" and "W XYZ" (the positive controls) are W XYZ Bar by name, at
+  the confidence its whole name gets, whether the search or autocomplete
+  found it; and no query made of a name's own whole words scores less
+  than the whole name.
 - "Seaport", "Back Bay", and "Fenway" are the area when the first source
   answers with businesses named after them and the next has the area.
 - Apple answering 429 gives `{ok: false, reason: "quota"}`; the chain
@@ -1264,14 +1274,17 @@ and "Walking times").
 Coverage is unit only; the live FR-35, FR-36, and FR-40 tests run the
 same code on prod with the Apple key.
 
-Evidence: `placeScore.test.ts` (28 tests: each part of the score, the four
+Evidence: `placeScore.test.ts` (34 tests: each part of the score, the four
 outcomes, the name as it was said, initials, words run together,
-fragments, neighborhoods, the clear-winner rule, when a search is weak);
-`assistantPlaceResolution.test.ts` (38 tests:
+fragments, the negative control, the positive controls and the
+whole-word guarantee, neighborhoods, the clear-winner rule, when a
+search is weak);
+`assistantPlaceResolution.test.ts` (46 tests:
 autocomplete and what it may fetch, quota through the chain and onto the
 decision row, `/v1/etas` requests and failures, the scored
-`geocode_place` answers and rows, the W XYZ Bar and neighborhood cases
-through the chain, walking times through the searches onto the card);
+`geocode_place` answers and rows, the negative and positive controls and
+the neighborhood cases through the chain, how `verify:places` judges an
+answer, walking times through the searches onto the card);
 `assistantPlaces.test.ts` (the classifier's earlier cases, unchanged in
 what they find). `pnpm -C server verify:places` prints each device-test
 phrase's source and confidence through the real chain, checks each
@@ -1281,15 +1294,125 @@ Run against Apple on prod with `verify:places` (#198, 2026-10-02):
 autocomplete and walking times work. The three things that run found — "W
 XYZ Bar" taken for "xyzzy restaurant", the Seaport Hotel for "Seaport",
 and Saturday free blocks left with estimates — are fixed and pinned
-above. Not here: the "~7 min" rendering of an estimate is FR-46. A
+above. W XYZ Bar is a real bar (in Boston and in New York), so "not W XYZ
+Bar" was a poor control for "not found": since 2026-10-04 the negative
+control is a made-up name, "Blorptastic Noodle House", and "XYZ bar" and
+"W XYZ" are positive controls that must be that bar
+(`placeControls.ts`). The word-level rule itself is unchanged. Not here:
+the "~7 min" rendering of an estimate is FR-46. A
 cross-street ("Boylston and Dartmouth") still depends on Apple's search:
 Nominatim returns nothing for one.
 
 ### FR-45 — Three intents, request chips, near-miss cards (#170, WS-1)
-**Accepted when** park-now, park-later, and garage-or-lot enable their own
-tools and defaults, a card shows the current request as chips, a
-`none_meets` card shows near-miss badges and relax chips with no Confirm,
-and a street Confirm shows the amount. Unit and UI.
+
+The request's intent — parking now, parking later, or a garage only — is
+the server's, and it decides what the assistant can do, what it assumes,
+and what the card says (server/API.md, "Intents: tools, defaults, and what
+the card says").
+
+- **The intent decides the tools.** The model is offered the intent's
+  tools on every model call: no day planner for a request that isn't for
+  later, and no street quote for a garage-only one. A tool that is off,
+  called anyway, is refused (`tool_not_available_for_intent`) and the
+  refusal is a decisions row. "Garage", then "or street is fine", moves
+  the intent back and the street quote is on again.
+- **The stay is assumed for now and asked for later.** Parking now with
+  no stay is searched for one hour, and the card says it assumed so. A
+  later or garage-only request with no stay isn't searched: the turn ends
+  asking "How long will you park?" with four answers (1 hour, 2 hours, 4
+  hours, all day) — the same question and answers when the model asks
+  about the stay itself. The hour's default is the search's alone and
+  never follows the request into a later time.
+- **A start that has passed is refused (V7).** A later or garage-only
+  request more than five minutes past its start answers `time_in_past`
+  with the current ET time; the model fixes the start or asks.
+- **A garage-only request is answered with garages.** A meter appears one
+  way: the cheapest block that breaks nothing but the kind, when it costs
+  less than every garage found, once, as a near-miss the server adds —
+  never as an option that meets the request, and never confirmable.
+- **The card says what it answered.** Its `verdict`; the request it was
+  built for (`requestSummary`), with what the server assumed that the
+  request doesn't say (the phone's location, the hour's stay), so no
+  default is silent; `primary` on the options that lead; and `warn` on a
+  price over the approval threshold (`confirm_warn_usd` in `policy.json`,
+  default $15.00 — a threshold, not a cap).
+- **Decision 8 on the card.** With an ask, one option leads and the best
+  on the other axis sits below it, labeled ("Closer: …", "Cheaper: …").
+  With no ask, the cheapest and the closest lead together, side by side,
+  each labeled. A rank chip shows only when a rank was asked for.
+- **Request chips.** The app shows the request above the card as chips:
+  the intent, the place, the time window, each limit, and the rank. A tap
+  sends a short message naming what to change ("Change the budget") and
+  no value; nothing is edited on the phone.
+- **A "no" card.** Its headline is the limits nothing met ("Nothing under
+  $2.00"), with up to three near-misses, each badged with what it breaks
+  and by how much ("$2.00 over your $20.00 limit", "4 min past your
+  10-min walk"), and the relax chips on the card. No near-miss has a
+  Confirm, and a garage near-miss opens no checkout.
+- **A relax chip is applied by the server.** A message that is one of the
+  latest search's relaxations is applied to the request before the model
+  runs, and the model can't edit the request again that turn: the chip's
+  words are never read as another field.
+- **Confirming.** A street option's action says the amount it pays ("Pay
+  $4.10"; decision 1). An option marked `warn` takes a long-press: a tap
+  confirms nothing and says how. A garage still opens its own checkout in
+  the app's browser by the user's action, never automated (decision 5).
+  There is no per-trip cap anywhere on a card or chip (decision 9).
+
+**Accepted when** each of these holds:
+
+- A garage-only request calling `quote_street` gets
+  `tool_not_available_for_intent`; after "street is fine" it searches.
+- A later request with no stay ends the turn asking how long, with the
+  four answers, and nothing is searched or priced.
+- A later request six minutes past its start gets `time_in_past` with the
+  ET now; four minutes past, it searches.
+- An $18.00 option with `confirm_warn_usd` 15 carries `warn: true`; one at
+  exactly $15.00 doesn't; `PUT /policy` validates the field.
+- Under a garage-only request, a street option cheaper than every garage
+  appears once, as a near-miss breaking only `kinds`; a block that breaks
+  another limit too never appears.
+- A card for "right here" says `assumed: {place: "phone_location",
+  durationMinutes: 60}` and "near you"; with no phone location it asks
+  where instead.
+- "Allow up to $7.00" raises the budget before the model's first call,
+  and a model edit that turn is refused.
+- On the phone: one chip per set field and no rank chip without a rank; a
+  `none_meets` card shows no Confirm; a `warn` option ignores a tap and
+  confirms on a long-press; two co-primary options sit side by side.
+- Live: the FR-21 card is `verdict: "meets"` with a `park_later` summary
+  of the window and stay asked for, nothing assumed, `primary` on what
+  leads, and `warn` exactly on prices over the policy's threshold; the
+  FR-43 card is `verdict: "none_meets"` with the $2 limit and the phone's
+  location as the assumed place.
+
+Evidence: `assistantIntentRouter.test.ts` (44 tests: the gate and its
+reopening, the per-call tool list, the stay rule and the stay question
+asked by the model itself, V7, `warn` and the policy field, the cheaper
+meter, the card's summary and what leads, the relax tap and its lock, and
+a hostile reader's cases — a tool called while off, a stale chip, a
+transcript relaxation of the wrong shape, the lookup down while parking
+now); `assistantClarify.test.ts` (one set of answers to "how long", and a
+walk question that isn't one). iOS `AssistantIntentCardsTests` (16 tests: decoding the
+`none_meets` and `warn` payloads, a summary this build can't read costing
+only the chips, the badge words, the "no" headline, one chip per set
+field, what leads, the action's words); `AssistantUITests` (the "no" card
+with its chips and no Confirm, the long-press, the labeled alternative and
+the meter with no action, co-primary options and the request chips, a chip
+sending a message). The live FR-21 and FR-43 tests read the card fields;
+FR-45 spends no model call of its own. Run locally against the real
+model before merge (2026-10-04, dry run): the gate and its reopening, a
+tool going off mid-conversation with its earlier calls still in the
+transcript, the stay question, the assumed hour, a relax chip, a request
+chip, and a day of stops planned from a new conversation.
+
+Not here: the "~7 min" rendering of an estimated walk, the shared ranking
+across map and list, and directions are FR-46; budget-aware near-misses
+and saved preferences are FR-47. A day of stops whose first stop is right
+now can't be planned as an itinerary (the request is `park_now`, and
+`build_itinerary` is for a later one): the first stop is a park-now
+request. The server can't tell a stay the model invented from one the
+user said; the prompt forbids inventing one.
 
 ### FR-46 — One ranking, shared by map, list, and directions (#171, WS-1)
 **Accepted when** the server orders options once (an explicit ask first,

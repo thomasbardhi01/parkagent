@@ -397,6 +397,9 @@ export interface UserIdentityRow {
   id: string;
   name: string;
   isAdmin: boolean;
+  /** Consent for an external agent to act on the account (WS-4); the
+   * money gate reads it only when the actor is one. */
+  agentsMayAct: boolean;
   paymentSource: string;
   email: string | null;
   emailVerified: boolean;
@@ -499,6 +502,7 @@ export interface ThrowawayCheckRow {
 
 export interface UserUpdate {
   name?: string;
+  agentsMayAct?: boolean;
   paymentSource?: string;
   stripeCustomerId?: string | null;
   email?: string | null;
@@ -1171,6 +1175,10 @@ export interface AppDb {
         userId?: string | null;
         parkedEventId?: string;
         sessionId?: string;
+        /** Stamped by withDecisionLogging from the current principal; a
+         * caller sets them only to record an actor it knows better. */
+        actor?: string;
+        agentKeyId?: string | null;
       };
     }): Promise<{ id: string }>;
     /** explain_decision's read: one row by id (ownership checked above). */

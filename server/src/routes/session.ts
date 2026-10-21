@@ -17,7 +17,7 @@ import { policyFor } from "../services/limits.js";
 import { executorOutcome } from "../services/executor.js";
 import { PARK_OPEN, settlePark } from "../services/pendingSession.js";
 import type { SessionRow } from "../db.js";
-import { cityForZone, providerForCity, providerStatusUsable } from "../providers/registry.js";
+import { cityForZone, providerForCity } from "../providers/registry.js";
 import {
   cardDeclinedPush,
   freePeriodPush,
@@ -26,12 +26,9 @@ import {
 } from "../services/apns.js";
 import type { HoursInterval } from "../services/hours.js";
 import { priceStay } from "../services/quote.js";
-import {
-  applyExtension,
-  extensionPolicyViolation,
-  priceExtension,
-  spentToday,
-} from "../services/sessions.js";
+import { moneyGate } from "../services/moneyGate.js";
+import { principalFor } from "../services/principal.js";
+import { applyExtension, priceExtension } from "../services/sessions.js";
 import { fireShadowAuthorization } from "../services/shadow.js";
 import type { PlaceHoldResult, SettleReason, SettleResult } from "../services/wallet/holds.js";
 import { placeHold, settleHold } from "../services/wallet/holds.js";
@@ -173,66 +170,8 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
       return reply.code(404).send({ error: "zone_not_found" });
     }
 
-    // The zone's city names its provider; without the user's own linked
-    // account there the executor has nothing to pay with — refuse, naming
-    // the provider so the app can send them to the link flow.
     const city = cityForZone(zone.zoneId);
     const provider = providerForCity(city);
-    if (provider) {
-      const account = await deps.db.providerAccount.findUnique({
-        where: { userId_provider: { userId: user.id, provider: provider.id } },
-      });
-      if (!account || !providerStatusUsable(account.status)) {
-        const decision = await deps.db.decision.create({
-          data: {
-            kind: "session_start",
-            inputs: {
-              body,
-              provider: provider.id,
-              accountStatus: account?.status ?? "none",
-              dryRun: deps.policy.effectiveDryRun(),
-              policyHash: deps.policy.hash(),
-            },
-            rule: "provider_not_linked",
-            outcome: { allowed: false },
-            userId: user.id,
-            parkedEventId: parkedEvent.id,
-          },
-        });
-        return reply.code(409).send({
-          error: "provider_not_linked",
-          provider: provider.id,
-          displayName: provider.displayName,
-          decisionId: decision.id,
-        });
-      }
-    }
-
-    // A provider-covered zone without a known pay-by-app number can't be
-    // typed into the provider's Enter Zone screen — the app must collect
-    // it first (POST /zones/:zoneId/provider-number).
-    if (provider && zone.providerZoneNumber === "") {
-      const decision = await deps.db.decision.create({
-        data: {
-          kind: "session_start",
-          inputs: {
-            body,
-            provider: provider.id,
-            dryRun: deps.policy.effectiveDryRun(),
-            policyHash: deps.policy.hash(),
-          },
-          rule: "needs_zone_number",
-          outcome: { allowed: false },
-          userId: user.id,
-          parkedEventId: parkedEvent.id,
-        },
-      });
-      return reply.code(409).send({
-        error: "needs_zone_number",
-        zoneId: zone.zoneId,
-        decisionId: decision.id,
-      });
-    }
 
     // Terms the provider itself has displayed for this zone number beat
     // the dataset: Boston's data assumed a 2-hour max everywhere, but the
@@ -252,31 +191,73 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
       body.minutes ??
       Math.min(policy.default_stay_minutes, maxStayMinutes ?? policy.default_stay_minutes);
     const price = priceStay(terms, policy, at, minutes);
-    const dryRun = deps.policy.effectiveDryRun();
-    const spentTodayUsd = await spentToday(deps.db, user.id, at, { dryRun });
 
-    let rule: string | null = null;
-    if (maxStayMinutes !== null && minutes > maxStayMinutes) {
-      rule = "max_stay_exceeded";
-    } else if (price.totalUsd === 0) {
-      // A wholly free window: there is nothing to buy, and typing minutes
-      // into the provider anyway could charge real money our quote said
-      // was $0 (/parked answers "ignore" for the same reason).
-      rule = "free_period";
-    } else if (price.totalUsd > policy.session_cap_usd) {
-      rule = "session_cap_exceeded";
-    } else if (spentTodayUsd + price.totalUsd > policy.daily_cap_usd) {
-      rule = "daily_cap_exceeded";
-    } else if (opts.maxTotalUsd !== undefined && price.totalUsd > opts.maxTotalUsd + 0.001) {
-      // The tap agreed to an amount; this start would cost more than it.
-      rule = "quote_changed";
-    } else if (opts.shownZoneNumber && opts.shownZoneNumber !== zone.providerZoneNumber) {
-      // …to a zone number; the table now holds another (a newer report).
-      rule = "zone_number_changed";
-    } else if (opts.shownDryRun === true && !dryRun) {
-      // …to a dry run, "nothing is charged"; this one would charge.
-      rule = "dry_run_changed";
+    // Every refusal a start can meet, in one place and one order
+    // (services/moneyGate.ts): the linked account and its zone number,
+    // max stay, a free window, the caps, and what the tap was shown.
+    const gate = await moneyGate(
+      deps,
+      principalFor(user.id),
+      {
+        kind: "start",
+        provider,
+        zoneNumber: zone.providerZoneNumber,
+        minutes,
+        maxStayMinutes,
+        price,
+        shown: {
+          maxTotalUsd: opts.maxTotalUsd,
+          zoneNumber: opts.shownZoneNumber,
+          dryRun: opts.shownDryRun,
+        },
+      },
+      at,
+    );
+    const { dryRun, spentTodayUsd } = gate;
+    if (!gate.ok && gate.rule === "provider_not_linked" && provider) {
+      // Refused naming the provider, so the app can send them to the link flow.
+      const decision = await deps.db.decision.create({
+        data: {
+          kind: "session_start",
+          inputs: {
+            body,
+            provider: provider.id,
+            accountStatus: gate.accountStatus ?? "none",
+            dryRun,
+            policyHash: deps.policy.hash(),
+          },
+          rule: gate.rule,
+          outcome: { allowed: false },
+          userId: user.id,
+          parkedEventId: parkedEvent.id,
+        },
+      });
+      return reply.code(409).send({
+        error: "provider_not_linked",
+        provider: provider.id,
+        displayName: provider.displayName,
+        decisionId: decision.id,
+      });
     }
+    if (!gate.ok && gate.rule === "needs_zone_number" && provider) {
+      // The app must collect the number first (POST /zones/:zoneId/provider-number).
+      const decision = await deps.db.decision.create({
+        data: {
+          kind: "session_start",
+          inputs: { body, provider: provider.id, dryRun, policyHash: deps.policy.hash() },
+          rule: gate.rule,
+          outcome: { allowed: false },
+          userId: user.id,
+          parkedEventId: parkedEvent.id,
+        },
+      });
+      return reply.code(409).send({
+        error: "needs_zone_number",
+        zoneId: zone.zoneId,
+        decisionId: decision.id,
+      });
+    }
+    const rule: string | null = gate.ok ? null : gate.rule;
 
     // Which card pays this session: the user's Wallet source, snapshotted
     // at start. The executor always pays with the provider account's own
@@ -790,10 +771,14 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
 
     const policy = await policyFor(deps, user.id);
     const price = priceExtension(session, policy, body.minutes);
-    const spentTodayUsd = await spentToday(deps.db, user.id, at, {
-      dryRun: deps.policy.effectiveDryRun(),
-    });
-    const violation = extensionPolicyViolation(policy, session, body.minutes, price, spentTodayUsd);
+    const gate = await moneyGate(
+      deps,
+      req.principal!,
+      { kind: "extend", session, minutes: body.minutes, price, source: "manual" },
+      at,
+    );
+    const { spentTodayUsd } = gate;
+    const violation = gate.ok ? null : gate.rule;
     const decisionInputs = {
       body,
       price,
@@ -819,18 +804,32 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
         .send({ error: "policy_violation", rule: violation, decisionId: decision.id });
     }
 
-    const outcome = await applyExtension(deps, session, body.minutes, price, "manual");
+    const outcome = await applyExtension(
+      deps,
+      req.principal!,
+      session,
+      body.minutes,
+      price,
+      "manual",
+    );
+    const refusedUnderLock =
+      !outcome.ok &&
+      (outcome.code === "max_stay_exceeded" ||
+        outcome.code === "session_cap_exceeded" ||
+        outcome.code === "daily_cap_exceeded");
     const failRule = outcome.ok
       ? "extend_ok"
-      : outcome.code === "free_period"
-        ? "free_period"
-        : outcome.code === "extension_in_progress"
-          ? "extension_in_progress"
-          : outcome.code === "card_declined"
-            ? "hold_declined"
-            : outcome.code === "wallet_not_ready" || outcome.code === "hold_failed"
-              ? "hold_failed"
-              : "executor_failed";
+      : refusedUnderLock
+        ? outcome.code
+        : outcome.code === "free_period"
+          ? "free_period"
+          : outcome.code === "extension_in_progress"
+            ? "extension_in_progress"
+            : outcome.code === "card_declined"
+              ? "hold_declined"
+              : outcome.code === "wallet_not_ready" || outcome.code === "hold_failed"
+                ? "hold_failed"
+                : "executor_failed";
     await deps.db.decision.create({
       data: {
         kind: "session_extend",
@@ -862,6 +861,11 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
       },
     });
     if (!outcome.ok) {
+      if (refusedUnderLock) {
+        // The gate refused the fresh row under the lock: another extension
+        // landed between pricing and now, and this one no longer fits.
+        return reply.code(409).send({ error: "policy_violation", rule: outcome.code });
+      }
       if (outcome.code === "free_period") {
         // Not an executor failure: the provider says this zone is free
         // right now, so there is nothing to extend (and nothing charged).
@@ -895,7 +899,10 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
     };
     const at = now();
 
-    const dryRun = deps.policy.effectiveDryRun();
+    // Stopping buys nothing; the gate asks only who is acting.
+    const gate = await moneyGate(deps, principalFor(userId), { kind: "stop" }, at);
+    if (!gate.ok) return reply.code(403).send({ error: gate.rule });
+    const { dryRun } = gate;
     const startedAtMs = Date.now();
     const result = await deps
       .executorFor({ userId, city: cityForZone(session.zoneId), dryRun })

@@ -53,7 +53,8 @@ import { easternIso, parseEasternTime } from "../hours.js";
 import type { LinkWallet } from "../link/linkWallet.js";
 import { confirmWarnUsd } from "../policy.js";
 import type { PolicyService } from "../policy.js";
-import { spentToday } from "../sessions.js";
+import { moneyGate, spentToday } from "../moneyGate.js";
+import { principalFor } from "../principal.js";
 import type { CandidateFetcher, NearbyZoneFetcher } from "../zoneLookup.js";
 import { currentTimeLine, scrubUngroundedAmounts } from "./loop.js";
 import {
@@ -2536,10 +2537,15 @@ export class AssistantTools {
     ctx: ToolContext,
     proposed: Extract<ProposedPlan, { kind: "itinerary" }>,
   ): Promise<ToolOutcome> {
-    const policy = await policyFor(this.deps, ctx.userId);
     const totalUsd = itineraryTotalUsd(proposed.stops);
-    const spentTodayUsd = await spentToday(this.deps.db, ctx.userId, this.now());
-    if (spentTodayUsd + totalUsd > policy.daily_cap_usd) {
+    const gate = await moneyGate(
+      this.deps,
+      principalFor(ctx.userId),
+      { kind: "plan", stopsUsd: [], totalUsd, perStop: false },
+      this.now(),
+    );
+    const { policy, spentTodayUsd } = gate;
+    if (!gate.ok) {
       await this.audit(ctx, "propose_plan", { kind: proposed.kind, totalUsd }, "over_daily_cap", {
         totalUsd,
         spentTodayUsd,

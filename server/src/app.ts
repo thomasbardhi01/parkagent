@@ -12,6 +12,8 @@ import { registerAdmin } from "./routes/admin.js";
 import { registerAuth } from "./routes/auth.js";
 import { hashApiKey } from "./services/apiKeys.js";
 import { verifyAccessToken } from "./services/authTokens.js";
+import type { Principal } from "./services/principal.js";
+import { runAs, userPrincipal } from "./services/principal.js";
 import type { EmailSender } from "./services/emailer.js";
 import type { IdTokenResult } from "./services/idToken.js";
 import { registerCard } from "./routes/card.js";
@@ -50,6 +52,10 @@ import type { CandidateFetcher, NearbyZoneFetcher } from "./services/zoneLookup.
 declare module "fastify" {
   interface FastifyRequest {
     authedUser?: { id: string; name: string; isAdmin: boolean };
+    /** Who this request acts as (services/principal.ts): the same
+     * identity as `authedUser`, in the shape the money gate and the
+     * decision writer read. Set by makeAuthenticate with it. */
+    principal?: Principal;
   }
 }
 
@@ -164,6 +170,7 @@ export function makeAuthenticate(
         });
         if (user && !user.deletedAt) {
           req.authedUser = { id: user.id, name: user.name, isAdmin: user.isAdmin };
+          req.principal = userPrincipal(user);
           return;
         }
       }
@@ -184,6 +191,7 @@ export function makeAuthenticate(
       return reply.code(401).send({ error: "unauthorized" });
     }
     req.authedUser = { id: user.id, name: user.name, isAdmin: user.isAdmin };
+    req.principal = userPrincipal(user);
   };
 }
 
@@ -280,6 +288,15 @@ export function buildApp(deps?: AppDeps, app: FastifyInstance = createFastify())
       const path = req.url.split("?")[0] ?? req.url;
       if (PUBLIC_PATHS.has(path)) return;
       await authenticate(req, reply);
+    });
+    // The rest of the request runs as its principal, so the one decision
+    // writer can stamp who acted without a request in hand. A callback
+    // hook, because the handler's continuation has to be started inside
+    // the store (`done` called within `runAs`); an awaited async hook
+    // would leave it outside.
+    app.addHook("onRequest", (req, _reply, done) => {
+      if (!req.principal) return done();
+      runAs(req.principal, () => done());
     });
   }
 

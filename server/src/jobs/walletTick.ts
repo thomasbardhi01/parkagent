@@ -46,6 +46,7 @@ export function makeWalletTick(deps: WalletTickDeps): WalletTick {
       for (const row of expired) {
         await deps.db.decision.create({
           data: {
+            actor: "job",
             kind: "link_wallet",
             inputs: { spendRequestId: row.id, amountUsd: row.amountUsd },
             rule: "approval_expired",

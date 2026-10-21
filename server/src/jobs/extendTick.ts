@@ -22,13 +22,9 @@ import { sessionExpiringPush } from "../services/apns.js";
 import { AT_CAR_RADIUS_M, FIX_USABLE_ACCURACY_M, clockLabel } from "../services/pendingSession.js";
 import { cityPolicy } from "../services/policy.js";
 import type { SessionDeps } from "../services/sessions.js";
-import {
-  applyExtension,
-  extensionPolicyViolation,
-  priceExtension,
-  sessionSpentUsd,
-  spentToday,
-} from "../services/sessions.js";
+import { applyExtension, priceExtension } from "../services/sessions.js";
+import { moneyGate, sessionSpentUsd } from "../services/moneyGate.js";
+import { jobPrincipal, runAs } from "../services/principal.js";
 import { policyFor } from "../services/limits.js";
 
 const DECISION_WINDOW_MIN = 12; // only act when expiry is this close
@@ -323,7 +319,21 @@ export function makeExtender(deps: ExtenderDeps): Extender {
     // Ticket risk is priced with the session's city's ticket (a Boston
     // "Meter Fee Unpaid" is $40 where NYC's is $65 — policy city_overrides).
     const costTicketUsd = cityPolicy(policy, session.city).ticketCostUsd * (1 - pReturn);
-    const spentTodayUsd = await spentToday(deps.db, session.userId, at, { dryRun });
+    // The money gate's answer for this extension (caps, max stay); the
+    // ladder below asks it only once the cheaper holds are ruled out.
+    const gate = await moneyGate(
+      deps,
+      jobPrincipal(session.userId),
+      {
+        kind: "extend",
+        session,
+        minutes: Math.floor(desiredMinutes),
+        price,
+        source: "auto",
+      },
+      at,
+    );
+    const { spentTodayUsd } = gate;
 
     // The decision ladder. Max-stay gate: the stay allowance left to buy is
     // either too small to be a meaningful extension or already inside the
@@ -366,13 +376,7 @@ export function makeExtender(deps: ExtenderDeps): Extender {
       rule = "hold_max_extensions";
       expiringReason = "no_auto_extend";
     } else {
-      const violation = extensionPolicyViolation(
-        policy,
-        session,
-        Math.floor(desiredMinutes),
-        price,
-        spentTodayUsd,
-      );
+      const violation = gate.ok ? null : gate.rule;
       if (violation === "session_cap_exceeded") {
         rule = "hold_session_cap";
         expiringReason = "budget";
@@ -441,7 +445,14 @@ export function makeExtender(deps: ExtenderDeps): Extender {
     let outcome: Record<string, unknown> = { action: "hold" };
     if (rule === "extend") {
       const minutes = Math.floor(desiredMinutes);
-      const result = await applyExtension(deps, session, minutes, price, "auto");
+      const result = await applyExtension(
+        deps,
+        jobPrincipal(session.userId),
+        session,
+        minutes,
+        price,
+        "auto",
+      );
       if (result.ok) {
         outcome = {
           action: "extend",
@@ -544,7 +555,9 @@ export function makeExtender(deps: ExtenderDeps): Extender {
       const active = await deps.db.session.findMany({ where: { status: "active" } });
       for (const session of active) {
         try {
-          await evaluateSession(session, at);
+          // Each session's pass runs as a job acting for its owner, so its
+          // decisions say so (services/principal.ts).
+          await runAs(jobPrincipal(session.userId), () => evaluateSession(session, at));
         } catch (err) {
           deps.log.warn(`extend tick failed for session ${session.id}: ${String(err)}`);
         }

@@ -12,6 +12,7 @@ import type { FastifyInstance } from "fastify";
 
 import type { AppDeps, AuthConfig } from "../src/app.js";
 import { buildApp, makeAuthenticate } from "../src/app.js";
+import { withDecisionLogging } from "../src/services/decisionLog.js";
 import { hashApiKey } from "../src/services/apiKeys.js";
 import type {
   AppDb,
@@ -263,6 +264,9 @@ export interface FakeDbState {
     userId?: string | null;
     parkedEventId?: string;
     sessionId?: string;
+    /** Stamped by withDecisionLogging (makeTestApp wraps the fake in it). */
+    actor?: string;
+    agentKeyId?: string | null;
     createdAt?: Date;
   }[];
   snapshots: { hash: string; policy: unknown; source: string }[];
@@ -434,6 +438,7 @@ const seedUser = (
   id,
   name,
   isAdmin,
+  agentsMayAct: false,
   paymentSource: "provider_card",
   email: null,
   emailVerified: false,
@@ -2204,7 +2209,10 @@ export function makeTestApp(options: {
    * capture). The default verifies nothing — auth tests inject their own. */
   auth?: Partial<AuthConfig>;
 }): TestApp {
-  const { db, state } = makeFakeDb();
+  // The one decision writer wraps the fake as it wraps Prisma in index.ts,
+  // so a row written through a test app carries `actor` like prod's.
+  const { db: raw, state } = makeFakeDb();
+  const db = withDecisionLogging(raw, { info: () => {} });
   if (options.paymentSource) {
     state.userPaymentSources["u1"] = options.paymentSource;
   }

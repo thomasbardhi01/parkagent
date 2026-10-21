@@ -19,10 +19,10 @@ import {
 import type { ExecutorDiagnostics, ExecutorErrorCode, ExecutorProvider } from "./executor.js";
 import { executorOutcome } from "./executor.js";
 import type { HoursInterval } from "./hours.js";
-import { nycStartOfDay } from "./hours.js";
 import { policyFor } from "./limits.js";
-import { LINK_COMMITTED_STATUSES, linkSpentSince } from "./link/linkSpend.js";
+import { moneyGate, sessionSpentUsd, spentToday } from "./moneyGate.js";
 import type { Policy } from "./policy.js";
+import type { Principal } from "./principal.js";
 import type { RatedTerms, StayPrice } from "./quote.js";
 import { priceStay } from "./quote.js";
 import type { ShadowResult } from "./shadow.js";
@@ -41,37 +41,6 @@ export interface SessionDeps {
    * shadow results record stripe_not_configured. */
   stripe?: StripeGateway;
   now?: () => Date;
-}
-
-/**
- * Real dollars this user has committed today (NYC calendar day), whatever
- * paid: street sessions on any source, plus garages approved in Link. The
- * daily cap is measured against this everywhere — quotes, starts,
- * extensions, the assistant, the Wallet. Dry-run sessions are excluded —
- * they moved no money — and failed ones never charged. Under a dry run
- * (`opts.dryRun`, the effective one) they count too, so a dry run is
- * refused wherever the same day for real would be.
- */
-export async function spentToday(
-  db: AppDb,
-  userId: string,
-  at: Date,
-  opts: { dryRun?: boolean } = {},
-): Promise<number> {
-  const since = nycStartOfDay(at);
-  const rows = await db.session.findMany({
-    where: {
-      userId,
-      ...(opts.dryRun === true ? {} : { dryRun: false }),
-      status: { in: ["pending", "active", "stopped", "expired"] },
-      createdAt: { gte: since },
-    },
-  });
-  const streetUsd = rows.reduce(
-    (sum, s) => sum + Number(s.amountUsd ?? 0) + Number(s.feeUsd ?? 0),
-    0,
-  );
-  return streetUsd + (await linkSpentSince(db, userId, since, LINK_COMMITTED_STATUSES));
 }
 
 /**
@@ -98,38 +67,6 @@ export function sessionTerms(session: SessionRow): RatedTerms {
     rateAdditionalHourUsd: Number(session.rateAdditionalHour ?? 0),
     hours: (session.hoursJson ?? []) as HoursInterval[],
   };
-}
-
-export function sessionSpentUsd(session: SessionRow): number {
-  return Number(session.amountUsd ?? 0) + Number(session.feeUsd ?? 0);
-}
-
-/**
- * Would this extension violate policy? Returns the rule that fires, or
- * null when the extension is allowed. Order matches /parked's ladder:
- * stay limit, then per-session cap, then daily cap.
- */
-export function extensionPolicyViolation(
-  policy: Policy,
-  session: SessionRow,
-  minutes: number,
-  price: StayPrice,
-  spentTodayUsd: number,
-): "max_stay_exceeded" | "session_cap_exceeded" | "daily_cap_exceeded" | null {
-  if (
-    session.maxStayMinutes !== null &&
-    session.purchasedMinutes + minutes > session.maxStayMinutes
-  ) {
-    return "max_stay_exceeded";
-  }
-  if (sessionSpentUsd(session) + price.totalUsd > policy.session_cap_usd) {
-    return "session_cap_exceeded";
-  }
-  // Under a dry run, `spentTodayUsd` counts what dry runs recorded.
-  if (spentTodayUsd + price.totalUsd > policy.daily_cap_usd) {
-    return "daily_cap_exceeded";
-  }
-  return null;
 }
 
 export function priceExtension(session: SessionRow, policy: Policy, minutes: number): StayPrice {
@@ -163,15 +100,19 @@ export type ExtensionOutcome =
   | {
       ok: false;
       /** Executor codes, plus the parkagent_card hold's own refusals,
-       * extension_in_progress and phone_not_away — those happen BEFORE the
-       * executor, so nothing was charged. */
+       * extension_in_progress, and the money gate's own refusals on the
+       * fresh row under the lock — those happen BEFORE the executor, so
+       * nothing was charged. */
       code:
         | ExecutorErrorCode
         | "card_declined"
         | "wallet_not_ready"
         | "hold_failed"
         | "extension_in_progress"
-        | "phone_not_away";
+        | "phone_not_away"
+        | "max_stay_exceeded"
+        | "session_cap_exceeded"
+        | "daily_cap_exceeded";
       message: string;
       price: StayPrice;
       durationMs: number;
@@ -240,9 +181,14 @@ async function withExtensionLock<T>(
  * held, nothing charged — and so is one priced from a read that another
  * extension has since overtaken: it would reuse that extension's number
  * and hold. Either can simply try again.
+ *
+ * The money gate judges the fresh row under the lock (the caller judged
+ * the one it priced): caps and max stay again, and for the worker the
+ * phone's position, which it read before taking the lock.
  */
 export async function applyExtension(
   deps: SessionDeps,
+  principal: Principal,
   session: SessionRow,
   minutes: number,
   price: StayPrice,
@@ -253,21 +199,24 @@ export async function applyExtension(
     if (!fresh || fresh.status !== session.status || fresh.extendCount !== session.extendCount) {
       return null;
     }
-    if (source === "auto") {
-      // The worker buys time only for a phone known to be away (FR-55), and
-      // read that before it took the lock: a phone back within reach of the
-      // car since, or a car that parked somewhere else, buys nothing.
-      const park = await deps.db.pendingPark.findUnique({ where: { sessionId: session.id } });
-      if (park && (park.status !== "started" || park.backAt !== null || park.carMovedAt !== null)) {
-        const outcome: ExtensionOutcome = {
-          ok: false,
-          code: "phone_not_away",
-          message: "the phone is back at the car since this extension was priced",
-          price,
-          durationMs: 0,
-        };
-        return outcome;
-      }
+    const gate = await moneyGate(
+      deps,
+      principal,
+      { kind: "extend", session: fresh, minutes, price, source, underLock: true },
+      deps.now?.() ?? new Date(),
+    );
+    if (!gate.ok) {
+      const outcome: ExtensionOutcome = {
+        ok: false,
+        code: gate.rule as Extract<ExtensionOutcome, { ok: false }>["code"],
+        message:
+          gate.rule === "phone_not_away"
+            ? "the phone is back at the car since this extension was priced"
+            : `refused under the lock: ${gate.rule}`,
+        price,
+        durationMs: 0,
+      };
+      return outcome;
     }
     return extendLocked(deps, fresh, minutes, price, source);
   });

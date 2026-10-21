@@ -31,7 +31,7 @@ import {
 } from "../services/providerLink.js";
 import type { ProviderStorageState } from "../services/providerOps.js";
 import { normalizeSource } from "../services/wallet/summary.js";
-import { policyFor } from "../services/limits.js";
+import { moneyGate } from "../services/moneyGate.js";
 
 const cookieSchema = z.object({
   name: z.string().min(1).max(256),
@@ -386,7 +386,6 @@ export function registerProviders(app: FastifyInstance, deps: AppDeps): void {
     }
     const amountUsd = Math.round(parsed.data.amountUsd * 100) / 100;
     const user = req.authedUser!;
-    const policy = await policyFor(deps, user.id);
     const dryRun = deps.policy.effectiveDryRun();
 
     const account = await deps.db.providerAccount.findUnique({
@@ -415,9 +414,11 @@ export function registerProviders(app: FastifyInstance, deps: AppDeps): void {
       return reply.code(code).send({ error: rule, decisionId: decision.id, ...extra });
     };
 
-    // Same order as the card funding moves: caps first, dry run last.
-    if (amountUsd > policy.daily_cap_usd) {
-      return refuse("amount_over_daily_cap", 409);
+    // Same order as the card funding moves: the gate's ceiling first, dry
+    // run last.
+    const gate = await moneyGate(deps, req.principal!, { kind: "funding", amountUsd }, now());
+    if (!gate.ok) {
+      return refuse(gate.rule, 409);
     }
     if (dryRun) {
       return refuse("dry_run", 409, { wouldAllow: true });

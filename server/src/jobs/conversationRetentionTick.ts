@@ -37,6 +37,8 @@ export function makeConversationRetention(deps: ConversationRetentionDeps): Conv
     if (count > 0) {
       await deps.db.decision.create({
         data: {
+          // No user to act for: the one job that says its actor itself.
+          actor: "job",
           kind: "assistant_history",
           inputs: { retentionDays: deps.retentionDays, cutoff: cutoff.toISOString() },
           rule: "retention_purge",

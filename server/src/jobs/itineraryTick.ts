@@ -16,6 +16,7 @@ import type { AppDb } from "../db.js";
 import { itineraryGaragePush } from "../services/apns.js";
 import type { PushSender } from "../services/apns.js";
 import { parseEasternTime } from "../services/hours.js";
+import { jobPrincipal, runAs } from "../services/principal.js";
 
 const GARAGE_PUSH_LEAD_MS = 15 * 60_000;
 
@@ -147,7 +148,7 @@ export function makeItineraryWorker(deps: ItineraryTickDeps): ItineraryWorker {
       const active = await deps.db.itinerary.findMany({ where: { status: "signed_off" } });
       for (const itinerary of active) {
         try {
-          await evaluate(itinerary);
+          await runAs(jobPrincipal(itinerary.userId), () => evaluate(itinerary));
         } catch (err) {
           deps.log.warn(`itinerary tick failed for ${itinerary.id}: ${String(err)}`);
         }

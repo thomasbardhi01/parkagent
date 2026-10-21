@@ -24,7 +24,7 @@ import { requireAdmin } from "../app.js";
 import { nycStartOfDay, nycStartOfMonth } from "../services/hours.js";
 import { FundingUnavailableError } from "../services/stripeGateway.js";
 import { ensureParkAgentCard } from "../services/wallet/parkagentCard.js";
-import { policyFor } from "../services/limits.js";
+import { moneyGate } from "../services/moneyGate.js";
 
 const transactionsSchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
@@ -180,14 +180,15 @@ export function registerCard(app: FastifyInstance, deps: AppDeps): void {
     }
     const amountUsd = Math.round(parsed.data.amountUsd * 100) / 100;
     const user = req.authedUser!;
-    const policy = await policyFor(deps, user.id);
     const dryRun = deps.policy.effectiveDryRun();
 
     const found = await requireCard(user.id, reply);
     if (!found) return;
 
     const decisionInputs = { amountUsd, dryRun, policyHash: deps.policy.hash() };
-    if (amountUsd > policy.daily_cap_usd) {
+    // A funding move is an amount-only ceiling at the gate, not spend.
+    const gate = await moneyGate(deps, req.principal!, { kind: "funding", amountUsd }, now());
+    if (!gate.ok) {
       const decision = await deps.db.decision.create({
         data: {
           kind: "card_topup_intent",
@@ -302,7 +303,6 @@ export function registerCard(app: FastifyInstance, deps: AppDeps): void {
       }
       const amountUsd = Math.round(parsed.data.amountUsd * 100) / 100;
       const user = req.authedUser!;
-      const policy = await policyFor(deps, user.id);
       const dryRun = deps.policy.effectiveDryRun();
       const kind = direction === "topup" ? "card_topup" : "card_withdraw";
 
@@ -330,10 +330,11 @@ export function registerCard(app: FastifyInstance, deps: AppDeps): void {
         return reply.code(code).send({ error: rule, decisionId: decision.id, ...extra });
       };
 
-      // Checks in webhook order: policy caps first, dry run last (so the
-      // audit shows what would have happened), then the move itself.
-      if (amountUsd > policy.daily_cap_usd) {
-        return refuse("amount_over_daily_cap", 409);
+      // Checks in webhook order: the gate's ceiling first, dry run last (so
+      // the audit shows what would have happened), then the move itself.
+      const gate = await moneyGate(deps, req.principal!, { kind: "funding", amountUsd }, now());
+      if (!gate.ok) {
+        return refuse(gate.rule, 409);
       }
       try {
         if (direction === "withdraw") {

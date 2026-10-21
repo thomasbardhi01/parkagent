@@ -13,6 +13,7 @@
  */
 
 import type { AppDb } from "../db.js";
+import { jobPrincipal, runAs } from "../services/principal.js";
 import type { StripeGateway } from "../services/stripeGateway.js";
 
 export const ABANDONED_AFTER_DAYS = 7;
@@ -113,7 +114,8 @@ export function makeCardJanitor(deps: CardJanitorDeps): CardJanitor {
     });
     for (const card of stale) {
       try {
-        await sweepCard(card);
+        const owner = card.cardholder?.userId;
+        await (owner ? runAs(jobPrincipal(owner), () => sweepCard(card)) : sweepCard(card));
       } catch (err) {
         deps.log.warn(`card janitor failed on ${card.stripeCardId}: ${String(err)}`);
       }

@@ -19,12 +19,7 @@
 import type { SessionRow } from "../db.js";
 import type { ExpiringReason, Push } from "../services/apns.js";
 import { sessionExpiringPush } from "../services/apns.js";
-import {
-  AT_CAR_RADIUS_M,
-  FIX_USABLE_ACCURACY_M,
-  MAX_WALK_MPS,
-  clockLabel,
-} from "../services/pendingSession.js";
+import { AT_CAR_RADIUS_M, FIX_USABLE_ACCURACY_M, clockLabel } from "../services/pendingSession.js";
 import { cityPolicy } from "../services/policy.js";
 import type { SessionDeps } from "../services/sessions.js";
 import {
@@ -50,8 +45,9 @@ const AT_CAR_ETA_MIN = 2; // within ~2 walking minutes = standing at the car
 export type Heading = "toward" | "away" | "still" | "unknown";
 
 /** Where the phone is, as far as buying more time goes. `moved`: a later
- * park put the car somewhere else. */
-export type PhonePosition = "away" | "at_car" | "returned" | "moved" | "unknown";
+ * park put the car somewhere else. `back`: it left, then was back at the
+ * car, and nothing since says it left on foot again (FR-55). */
+export type PhonePosition = "away" | "at_car" | "back" | "returned" | "moved" | "unknown";
 
 /** The max stay can't be bought past: say when the car has to move. */
 function moveYourCarPush(zoneNumber: string, paidUntil: Date): Push {
@@ -83,6 +79,17 @@ function positionUnknownPush(zoneNumber: string, minutesLeft: number): Push {
     title: "Meter expiring",
     body: `Zone ${zoneNumber} expires in ${minutesLeft} min. ParkAgent can't tell that you've left the car, so it won't add time. Extend in the app if you need to.`,
     extra: { reason: "position_unknown" },
+  };
+}
+
+/** The phone was back at the car since it left, and may have driven off
+ * with it: nothing more is bought on a guess, and the driver is told why. */
+function backAtCarPush(zoneNumber: string, minutesLeft: number): Push {
+  return {
+    type: "session_expiring",
+    title: "Meter expiring",
+    body: `Zone ${zoneNumber} expires in ${minutesLeft} min. Your phone was back at the car since you paid, so ParkAgent won't add time on its own. Extend in the app if the car is still there.`,
+    extra: { reason: "back_at_car" },
   };
 }
 
@@ -246,21 +253,20 @@ export function makeExtender(deps: ExtenderDeps): Extender {
     // it came back; the latest fresh fix says where it is now. Away always
     // takes a fresh usable fix: a phone that left and has since gone quiet
     // may be back in the car or driving off. With a lifecycle record it
-    // also takes the walk-away that record holds, and no fix since the
-    // phone was back at the car going off at the phone's own driving speed
-    // (a drive-off /location hasn't seen the second fix of yet; one
-    // without a speed may yet be someone on foot). Without one (an older
-    // build, a start through POST /session/start) a fresh fix clear of the
-    // car is all there is to go on.
+    // also takes the walk-away that record holds, and nothing since saying
+    // the phone came back to the car (`backAt`): a phone back in the seat
+    // may be driving off, slowly or in stop-and-go traffic, or sitting
+    // there with no new measurement to show for it. Only the phone's own
+    // walking speed or the app's on-foot report clears that. Without a
+    // record (an older build, a start through POST /session/start) a fresh
+    // fix clear of the car is all there is to go on.
     const park = await deps.db.pendingPark.findUnique({ where: { sessionId: session.id } });
     const latest = chronological.at(-1);
     const sharp = latest !== undefined && latest.accuracyM <= FIX_USABLE_ACCURACY_M;
-    const drivingOff =
-      park !== null && park.driveAt !== null && (park.driveSpeedMps ?? 0) > MAX_WALK_MPS;
     const away =
       sharp &&
       (park !== null
-        ? park.leftCarAt !== null && !drivingOff
+        ? park.leftCarAt !== null && park.backAt === null
         : distanceM !== null && distanceM - latest.accuracyM > AT_CAR_RADIUS_M);
     const position: PhonePosition =
       park?.status === "ended"
@@ -269,9 +275,11 @@ export function makeExtender(deps: ExtenderDeps): Extender {
           ? "moved"
           : sharp && distanceM !== null && distanceM <= AT_CAR_RADIUS_M
             ? "at_car"
-            : away
-              ? "away"
-              : "unknown";
+            : park !== null && park.leftCarAt !== null && park.backAt !== null
+              ? "back"
+              : away
+                ? "away"
+                : "unknown";
 
     // How long they usually stay here.
     const past = await deps.db.session.findMany({
@@ -321,7 +329,8 @@ export function makeExtender(deps: ExtenderDeps): Extender {
     // either too small to be a meaningful extension or already inside the
     // no-extend buffer before the legal limit — warn the driver to move.
     let rule: string;
-    let expiringReason: ExpiringReason | "position_unknown" | "car_moved" | null = null;
+    let expiringReason: ExpiringReason | "position_unknown" | "car_moved" | "back_at_car" | null =
+      null;
     const nearMaxStay =
       session.maxStayMinutes !== null &&
       stayLeftMin <=
@@ -344,6 +353,9 @@ export function makeExtender(deps: ExtenderDeps): Extender {
       // At or in the car, where the cost rule alone would still buy a
       // cheap enough extension: they can drive off or pay themselves.
       rule = "hold_at_car";
+    } else if (position === "back") {
+      rule = "hold_back_at_car";
+      expiringReason = "back_at_car";
     } else if (position === "unknown") {
       rule = "hold_position_unknown";
       expiringReason = "position_unknown";
@@ -385,6 +397,10 @@ export function makeExtender(deps: ExtenderDeps): Extender {
       heading,
       position,
       leftCarAt: park?.leftCarAt?.toISOString() ?? null,
+      // What `back` is read from: the phone back at the car since it left,
+      // and the first fix of a drive-off pair since.
+      backAt: park?.backAt?.toISOString() ?? null,
+      driveAt: park?.driveAt?.toISOString() ?? null,
       dwell,
       pReturn,
       desiredMinutes: Math.floor(desiredMinutes),
@@ -480,11 +496,13 @@ export function makeExtender(deps: ExtenderDeps): Extender {
             ? positionUnknownPush(session.providerZoneNumber, minutesLeft)
             : expiringReason === "car_moved"
               ? carMovedPush(session.providerZoneNumber, minutesLeft)
-              : sessionExpiringPush({
-                  zoneNumber: session.providerZoneNumber,
-                  minutesLeft,
-                  reason: expiringReason,
-                }),
+              : expiringReason === "back_at_car"
+                ? backAtCarPush(session.providerZoneNumber, minutesLeft)
+                : sessionExpiringPush({
+                    zoneNumber: session.providerZoneNumber,
+                    minutesLeft,
+                    reason: expiringReason,
+                  }),
       );
       outcome = { action: "warn", pushed: expiringReason };
     }

@@ -106,6 +106,14 @@ export function registerLocation(app: FastifyInstance, deps: AppDeps, sessions: 
     return { fix, step };
   }
 
+  /** The first fix of a drive-off's pair, as the park held it before the
+   * second: with the fix that finished it, the row says both. */
+  const driveFrom = (park: PendingParkRow) => ({
+    measuredAt: park.driveAt?.toISOString() ?? null,
+    distanceM: park.driveDistanceM,
+    speedMps: park.driveSpeedMps,
+  });
+
   /** Where the phone stands, written only while the park is still in the
    * state it was read in: a tap that moved it on meanwhile wins. */
   const remember = (park: PendingParkRow, state: ReturnType<typeof walkStateOf>) =>
@@ -151,6 +159,12 @@ export function registerLocation(app: FastifyInstance, deps: AppDeps, sessions: 
         why: seen.step.why ?? "returned",
         fix: seen.fix,
         at,
+        // A drive-off read from pace alone can be one GPS jump: it ends
+        // the session as an unstoppable provider's return does (nothing
+        // more bought, the paid time runs out), and never asks to stop.
+        ...(seen.step.droveOffBy
+          ? { readBy: seen.step.droveOffBy, askProvider: seen.step.droveOffBy === "speed" }
+          : {}),
       }),
     };
   }
@@ -181,7 +195,14 @@ export function registerLocation(app: FastifyInstance, deps: AppDeps, sessions: 
     if (!seen) return answer(park.status, asked(park));
     const { fix, step } = seen;
 
-    const close = async (status: string, kind: string, rule: string, outcome: Answer) => {
+    /** `said` goes on the answer's `park` too, for the phone to word it. */
+    const close = async (
+      status: string,
+      kind: string,
+      rule: string,
+      outcome: Answer,
+      said: Answer = {},
+    ) => {
       const moved = await deps.db.pendingPark.updateMany({
         where: { id: park.id, status: park.status },
         data: { ...step.state, status, closedAt: at },
@@ -194,6 +215,7 @@ export function registerLocation(app: FastifyInstance, deps: AppDeps, sessions: 
             parkedEventId,
             parkStatus: park.status,
             fix,
+            ...(step.droveOffBy ? { driveFrom: driveFrom(park) } : {}),
             leftCarAt: park.leftCarAt?.toISOString() ?? null,
             ...ledger(),
           },
@@ -203,14 +225,20 @@ export function registerLocation(app: FastifyInstance, deps: AppDeps, sessions: 
           parkedEventId,
         },
       });
-      return answer(status);
+      return { park: { parkedEventId, status, ...said } };
     };
 
     // Driving again without ever having left, or back at the car before
     // anything was paid: the park is over, and so is anything it was asked.
     if (step.droveOff) return close("cancelled", "park_cancelled_at_return", "drove_off", {});
     if (step.returned) {
-      return close("cancelled", "park_cancelled_at_return", step.why ?? "returned", {});
+      // A drive-off read from pace closes it too: a tap after it would pay
+      // now for a spot the car may have left, and nothing at the confirm
+      // route could tell. It is a guess, so the answer says what it was
+      // read from: the phone tells the driver, in words, that nothing will
+      // be paid here (the prompt is withdrawn, and the park stays closed).
+      const readBy = step.droveOffBy ? { readBy: step.droveOffBy } : {};
+      return close("cancelled", "park_cancelled_at_return", step.why ?? "returned", readBy, readBy);
     }
     if (!step.left) {
       await remember(park, step.state);

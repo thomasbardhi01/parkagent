@@ -337,6 +337,7 @@ export interface PendingParkRow {
   farAt: Date | null;
   farDistanceM: number | null;
   nearSince: Date | null;
+  atCarSince: Date | null;
   backAt: Date | null;
   driveAt: Date | null;
   driveDistanceM: number | null;
@@ -362,6 +363,7 @@ export interface PendingParkWrite {
   farAt?: Date | null;
   farDistanceM?: number | null;
   nearSince?: Date | null;
+  atCarSince?: Date | null;
   backAt?: Date | null;
   driveAt?: Date | null;
   driveDistanceM?: number | null;

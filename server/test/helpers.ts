@@ -1490,6 +1490,7 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
           farAt: null,
           farDistanceM: null,
           nearSince: null,
+          atCarSince: null,
           backAt: null,
           driveAt: null,
           driveDistanceM: null,

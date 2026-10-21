@@ -802,6 +802,123 @@ test("walking past the car is not a return: under a minute within 30 m changes n
   expect(count(t.state, "park_cancelled_at_return")).toBe(0);
 });
 
+/** Back at the car on fixes within 30 m but 40 m blurry, as urban returns are. */
+async function blurryReturn(t: ReturnType<typeof makeApp>) {
+  t.tick(120);
+  await post(t.app, "/location", { ...fix(t, 10), accuracy: 40 });
+  t.tick(30);
+  await post(t.app, "/location", { ...fix(t, 8), accuracy: 40 });
+}
+
+test("a tap from the seat on blurry fixes waits for the walk-away, as one on sharp fixes does", async () => {
+  const t = makeApp();
+  const parked = await park(t.app);
+  await walkAway(t);
+  await blurryReturn(t);
+  const tap = await post(t.app, `/parked/${parked.parkedEventId}/confirm`, {});
+  expect(tap.statusCode).toBe(200);
+  expect(tap.json()).toMatchObject({ status: "confirmed", startsAt: "walk_away" });
+  expect(t.calls.start).toBe(0);
+});
+
+test("a tap from the seat waits even after a fix a little past 30 m: the phone was back at the car, and nothing since says it left", async () => {
+  // 40 m with 30 m of error (usable, neither at the car nor clear of it),
+  // and a sharp 35 m: the GPS wobble of a phone in the seat.
+  for (const [metres, accuracy] of [
+    [40, 30],
+    [35, 8],
+  ] as const) {
+    const t = makeApp();
+    const parked = await park(t.app);
+    await walkAway(t);
+    t.tick(120);
+    await post(t.app, "/location", { ...fix(t, 10), accuracy: 40 });
+    t.tick(20);
+    await post(t.app, "/location", { ...fix(t, metres), accuracy });
+    expect(t.state.pendingParks[0]!.nearSince).toBeNull();
+    const tap = await post(t.app, `/parked/${parked.parkedEventId}/confirm`, {});
+    expect(tap.json()).toMatchObject({ status: "confirmed", startsAt: "walk_away" });
+    expect(t.calls.start).toBe(0);
+    // The walk starts over: a stale "back at the car" doesn't ride along.
+    expect(t.state.pendingParks[0]).toMatchObject({
+      status: "confirmed",
+      leftCarAt: null,
+      backAt: null,
+      atCarSince: null,
+    });
+    expect(t.state.decisions.find((d) => d.kind === "street_confirmed")!.inputs["backAt"]).toEqual(
+      expect.any(String),
+    );
+  }
+});
+
+test("a tap from the seat waits after a left_car that was never clear of the car", async () => {
+  const t = makeApp();
+  const parked = await park(t.app);
+  // On foot at 20 m with 25 m of error: left, with no fix clear of the car.
+  t.tick(30);
+  await post(t.app, "/location", { ...fix(t, 20), accuracy: 25, event: "left_car" });
+  expect(t.state.pendingParks[0]).toMatchObject({ status: "prompted", farAt: null });
+  // Back to the car on sharp fixes, and Pay from the seat.
+  t.tick(30);
+  await post(t.app, "/location", fix(t, 5));
+  t.tick(20);
+  await post(t.app, "/location", fix(t, 4));
+  const tap = await post(t.app, `/parked/${parked.parkedEventId}/confirm`, {});
+  expect(tap.json()).toMatchObject({ status: "confirmed", startsAt: "walk_away" });
+  expect(t.calls.start).toBe(0);
+});
+
+test("back at the car on blurry fixes, then a drive-off by pace: the unpaid park closes, and the tap at the next light pays nothing", async () => {
+  const t = makeApp();
+  const parked = await park(t.app);
+  await walkAway(t);
+  await blurryReturn(t);
+  t.tick(15);
+  await post(t.app, "/location", fix(t, 120));
+  t.tick(12);
+  const gone = await post(t.app, "/location", fix(t, 280));
+  expect(gone.json()).toMatchObject({ park: { status: "cancelled", readBy: "pace" } });
+  t.tick(20);
+  const tap = await post(t.app, `/parked/${parked.parkedEventId}/confirm`, {});
+  expect(tap.statusCode).toBe(409);
+  expect(tap.json()).toMatchObject({ error: "park_closed", status: "cancelled" });
+  expect(t.calls.start).toBe(0);
+});
+
+test("a drive-off read from pace alone closes an unpaid park: the Pay tapped at the next light pays nothing", async () => {
+  const t = makeApp();
+  const parked = await park(t.app);
+  await walkAway(t);
+  // Never answered. Back in the seat, then pulling out: 160 m in 12 s,
+  // with no speed to say it was a car.
+  t.tick(30);
+  await post(t.app, "/location", fix(t, 8));
+  t.tick(15);
+  await post(t.app, "/location", fix(t, 120));
+  t.tick(12);
+  const gone = await post(t.app, "/location", fix(t, 280));
+  // A guess, and said to be one: the phone tells the driver nothing will
+  // be paid here, rather than dropping the prompt in silence.
+  expect(gone.json()).toMatchObject({ park: { status: "cancelled", readBy: "pace" } });
+  expect(gone.json()["prompt"]).toBeUndefined();
+  expect(t.state.decisions.filter((d) => d.kind === "park_cancelled_at_return")).toEqual([
+    expect.objectContaining({
+      rule: "drove_off",
+      parkedEventId: parked.parkedEventId,
+      outcome: { status: "cancelled", paid: false, readBy: "pace" },
+    }),
+  ]);
+
+  // The prompt still on the lock screen is tapped at a light.
+  t.tick(20);
+  const tap = await post(t.app, `/parked/${parked.parkedEventId}/confirm`, {});
+  expect(tap.statusCode).toBe(409);
+  expect(tap.json()).toMatchObject({ error: "park_closed", status: "cancelled" });
+  expect(t.calls.start).toBe(0);
+  expect(t.state.sessions).toEqual([]);
+});
+
 test("driving off without ever leaving the car cancels the pending park", async () => {
   const t = makeApp();
   const parked = await park(t.app);

@@ -82,11 +82,19 @@ export const FIX_USABLE_ACCURACY_M = 65;
  * apart: one fix a hundred metres off is what GPS does between tall
  * buildings. */
 export const LEAVE_CONFIRM_MS = 10_000;
+/** A drive-off read from pace alone takes its two fixes within this (two
+ * of the app's 60 s heartbeats): farther apart, the gap between them may
+ * be a subway ride, not a car. */
+export const DRIVE_PACE_MAX_MS = 120_000;
 /** …and no faster than this between them. A car pulling away covers the
  * same ground as a driver on foot, only quicker, and it is not a
  * walk-away. A fix whose own speed (the phone's `speedMps`) is over it is
  * a moving car: it never counts toward leaving. */
 export const MAX_WALK_MPS = 3;
+/** The phone's own speed says "on foot" only from this up: CLLocation
+ * reads 0 for a phone standing still (a car at a light included), and a
+ * few tenths for one sitting in GPS noise. */
+export const MIN_WALK_MPS = 0.5;
 /** The app's "left the car" is refused only by a sharp fix this close. */
 export const DOOR_RADIUS_M = 10;
 export const DOOR_ACCURACY_M = 20;
@@ -117,8 +125,12 @@ export interface WalkState {
   farAt: Date | null;
   /** How far from the car that first measurement was. */
   farDistanceM: number | null;
-  /** Since when every usable fix has been at the car (measured). */
+  /** Since when every usable fix has been within reach of the car
+   * (measured): what keeps a tap at the car waiting. */
   nearSince: Date | null;
+  /** …and at it even allowing for each fix's error: what a return, which
+   * stops the session, is timed from. */
+  atCarSince: Date | null;
   /** After leaving: the last measurement that had the phone at the car,
    * kept until the phone is seen walking away from it again. Driving off
    * is told from it. */
@@ -157,6 +169,9 @@ export interface WalkStep {
   returned: boolean;
   /** Driving again without the phone ever having left. */
   droveOff: boolean;
+  /** For a `drove_off` return: read from the phone's own speed on both
+   * fixes, or from the pace between them (which a GPS jump can fake). */
+  droveOffBy?: "speed" | "pace";
   why: WalkReason | null;
 }
 
@@ -179,6 +194,9 @@ export function advanceWalk(before: WalkState, fix: WalkFix): WalkStep {
   const speed = typeof fix.speedMps === "number" && fix.speedMps >= 0 ? fix.speedMps : null;
   const fast = speed !== null && speed > MAX_WALK_MPS;
   const near = usable && fix.distanceM <= AT_CAR_RADIUS_M;
+  // At the car even allowing for the fix's own error: what a return (which
+  // stops the session) is timed from. `near` alone only holds.
+  const atCar = near && fix.distanceM + fix.accuracyM <= AT_CAR_RADIUS_M;
   const clear = usable && fix.distanceM - fix.accuracyM > AT_CAR_RADIUS_M;
   const step = (extra: Partial<WalkStep>): WalkStep => ({
     state,
@@ -196,6 +214,7 @@ export function advanceWalk(before: WalkState, fix: WalkFix): WalkStep {
   const leave = (why: WalkReason) => {
     state.leftCarAt = fix.at;
     state.nearSince = null;
+    state.atCarSince = null;
     state.backAt = null;
     forgetDrive();
     return step({ left: true, why });
@@ -253,15 +272,33 @@ export function advanceWalk(before: WalkState, fix: WalkFix): WalkStep {
   if (fix.event === "returned_to_car" && usable && fix.distanceM <= RETURN_EVENT_RADIUS_M) {
     return step({ returned: true, why: "returned_event" });
   }
+  if (fix.event === "left_car" && !fast) {
+    // The app has the driver on foot again: whatever brought the phone
+    // back to the car, it isn't driving off. (Not on a fix at driving
+    // speed, which no rule reads as on foot.)
+    state.backAt = null;
+    forgetDrive();
+  }
   if (near && !fast) {
-    // Measured, not reported: the heartbeat's re-send of one measurement
-    // beside the car is not a minute there.
+    // Holding takes any usable fix within reach of the car: urban returns
+    // are often 20–50 m blurry, and a return nobody saw would leave a tap
+    // paying from the seat, a drive-off unseen, and extensions bought for
+    // an empty spot. So the phone may be back: a tap waits (nearSince),
+    // and the drive-off pair and the extension hold are armed (backAt).
     state.nearSince ??= fix.measuredAt;
     state.backAt = fix.measuredAt;
     forgetDrive();
+    // Stopping takes more. A return stops the session, and two blurry
+    // fixes are a driver in a café down the block as much as one at the
+    // car: only fixes at the car even allowing for their error count
+    // toward the minute, and a blurry one neither counts nor restarts it.
+    // Measured, not reported: the heartbeat's re-send of one measurement
+    // beside the car is not a minute there.
+    if (!atCar) return step({});
+    state.atCarSince ??= fix.measuredAt;
     if (
       state.farAt !== null &&
-      fix.measuredAt.getTime() - state.nearSince.getTime() >= RETURN_DWELL_MS
+      fix.measuredAt.getTime() - state.atCarSince.getTime() >= RETURN_DWELL_MS
     ) {
       return step({ returned: true, why: "near_for_60s" });
     }
@@ -269,37 +306,43 @@ export function advanceWalk(before: WalkState, fix: WalkFix): WalkStep {
   }
   if (!usable) return step({});
   state.nearSince = null;
+  state.atCarSince = null;
   if (!clear || state.backAt === null) {
     forgetDrive();
     return step({});
   }
   // Clear of the car after a measurement at it: back in the car and
-  // driving off, or on foot again.
-  if (speed !== null && !fast) {
+  // driving off, or on foot again. Only the phone's own walking speed
+  // says on foot: a walking pace between two fixes is also what
+  // stop-and-go traffic looks like, and a speed of (nearly) nothing is a
+  // phone standing still, in a car at a light as much as anywhere.
+  if (speed !== null && speed >= MIN_WALK_MPS && !fast) {
     state.backAt = null;
     forgetDrive();
     return step({});
   }
-  if (state.driveAt === null) {
+  const firstOfPair = () => {
     state.driveAt = fix.measuredAt;
     state.driveDistanceM = fix.distanceM;
     state.driveSpeedMps = speed;
     return step({});
-  }
+  };
+  if (state.driveAt === null) return firstOfPair();
   const sinceMs = fix.measuredAt.getTime() - state.driveAt.getTime();
   // The first measurement sent again, or one from before it.
   if (sinceMs <= 0 || fix.distanceM === state.driveDistanceM) return step({});
   const firstFast = state.driveSpeedMps !== null && state.driveSpeedMps > MAX_WALK_MPS;
-  if (fast && firstFast) return step({ returned: true, why: "drove_off" });
-  // Without the phone's speed for both, the pace between them decides,
-  // over long enough that one GPS jump doesn't.
+  if (fast && firstFast) return step({ returned: true, why: "drove_off", droveOffBy: "speed" });
+  // Without the phone's speed for both, the pace between them decides:
+  // over long enough that one GPS jump doesn't, and short enough that a
+  // gap (a subway ride, a phone gone quiet) isn't read as one leg.
   if (sinceMs < LEAVE_CONFIRM_MS) return step({});
+  if (sinceMs > DRIVE_PACE_MAX_MS) return firstOfPair();
   const paceMps = Math.abs(fix.distanceM - (state.driveDistanceM ?? 0)) / (sinceMs / 1000);
-  if (paceMps > MAX_WALK_MPS) return step({ returned: true, why: "drove_off" });
-  // At a walk: on foot again.
-  state.backAt = null;
-  forgetDrive();
-  return step({});
+  if (paceMps > MAX_WALK_MPS) return step({ returned: true, why: "drove_off", droveOffBy: "pace" });
+  // At a walking pace: on foot, or a car in traffic. This fix starts the
+  // next pair, and the phone stays "back at the car".
+  return firstOfPair();
 }
 
 /** Whether a fix may be read at all for this park: measured after the car
@@ -555,11 +598,26 @@ export const walkStateOf = (park: PendingParkRow): WalkState => ({
   farAt: park.farAt,
   farDistanceM: park.farDistanceM,
   nearSince: park.nearSince,
+  atCarSince: park.atCarSince,
   backAt: park.backAt,
   driveAt: park.driveAt,
   driveDistanceM: park.driveDistanceM,
   driveSpeedMps: park.driveSpeedMps,
 });
+
+/** Written with every move to `started`. A session starts with the phone
+ * away from the car (a tap away from it, or the app's on-foot report), so
+ * a walk past the car before the tap is about the walk-away, not the
+ * session: left in place it would hold the session's extensions, or (a
+ * minute at the car begun before) stop the new session at once. */
+const NOT_BACK = {
+  nearSince: null,
+  atCarSince: null,
+  backAt: null,
+  driveAt: null,
+  driveDistanceM: null,
+  driveSpeedMps: null,
+};
 
 /** A fix as a decisions row records it. */
 export interface FixRecord {
@@ -679,7 +737,7 @@ async function afterStart(
           },
         });
   if (made?.status === "active") {
-    return { next: { status: "started", sessionId: made.id }, stalePending: null };
+    return { next: { status: "started", sessionId: made.id, ...NOT_BACK }, stalePending: null };
   }
   if (made && !opts.threw && at.getTime() - made.createdAt.getTime() < START_DEADLINE_MS) {
     return { next: null, stalePending: null };
@@ -777,7 +835,7 @@ export async function lifecycleOf(
       // tap, or whose reply was lost): the same park, now with its
       // session, moved only from the state it was read in.
       if (!PARK_RELINKABLE.includes(earlier.status)) return null;
-      const next = { status: "started", sessionId: session.id, closedAt: null };
+      const next = { status: "started", sessionId: session.id, closedAt: null, ...NOT_BACK };
       const linked = await db.pendingPark.updateMany({
         where: { id: earlier.id, status: earlier.status },
         data: next,
@@ -816,7 +874,13 @@ export type SessionStopper = (
 
 export interface SessionEnd {
   reason: "returned" | "new_park";
-  /** False where the provider can't stop early, or refused to. */
+  /** The rule that saw it: `near_for_60s`, `returned_event`, `drove_off`
+   * (a return), or `new_park_paid`. */
+  why: string;
+  /** For `drove_off`: read from the phone's own speed, or from pace. */
+  readBy?: "speed" | "pace";
+  /** False where the provider can't stop early, or refused to, or (a
+   * drive-off read from pace) was never asked. */
   stopped: boolean;
   error?: unknown;
 }
@@ -834,12 +898,31 @@ export async function endSession(
   stop: SessionStopper,
   session: SessionRow,
   park: PendingParkRow | null,
-  args: { reason: SessionEnd["reason"]; why: string; fix?: FixRecord; at: Date },
+  args: {
+    reason: SessionEnd["reason"];
+    why: string;
+    fix?: FixRecord;
+    at: Date;
+    /** False: never ask the provider to stop, even where it can: what
+     * showed the return could be wrong (a drive-off read from pace). The
+     * time already bought runs out; nothing more is bought. */
+    askProvider?: boolean;
+    /** What a drive-off was read from, for the ledger. */
+    readBy?: "speed" | "pace";
+  },
 ): Promise<SessionEnd> {
   const paidUntil = session.expiresAt?.toISOString() ?? null;
   // Back at the car and gone again before a return was seen: one rule
   // for it, whichever way the session ended (`outcome.stopped` says).
   const droveOff = args.why === "drove_off";
+  // What the phone is told, beside `stopped`: which rule saw the end, and
+  // for a drive-off what it was read from (the app words a pace-read end
+  // as a guess, not "you're back at your car").
+  const said = {
+    reason: args.reason,
+    why: args.why,
+    ...(args.readBy ? { readBy: args.readBy } : {}),
+  };
   const row = (rule: string, outcome: Record<string, unknown>) =>
     deps.db.decision.create({
       data: {
@@ -848,6 +931,18 @@ export async function endSession(
           reason: args.reason,
           why: args.why,
           ...(args.fix ? { fix: args.fix } : {}),
+          ...(args.readBy ? { readBy: args.readBy } : {}),
+          // A drive-off's first fix, as the park held it before the one
+          // that finished the pair (`fix`).
+          ...(droveOff && park
+            ? {
+                driveFrom: {
+                  measuredAt: park.driveAt?.toISOString() ?? null,
+                  distanceM: park.driveDistanceM,
+                  speedMps: park.driveSpeedMps,
+                },
+              }
+            : {}),
           leftCarAt: park?.leftCarAt?.toISOString() ?? null,
           expiresAt: paidUntil,
           dryRun: deps.policy.effectiveDryRun(),
@@ -861,7 +956,7 @@ export async function endSession(
       },
     });
 
-  if (!supportsEarlyStop(session.zoneId)) {
+  if (!supportsEarlyStop(session.zoneId) || args.askProvider === false) {
     await deps.db.session.update({
       where: { id: session.id },
       data: { status: "stopped", stoppedAt: args.at },
@@ -872,17 +967,25 @@ export async function endSession(
         kind: "ended_at_return",
         at: args.at,
         dryRun: session.dryRun,
-        details: { reason: args.reason, why: args.why, paidUntil },
+        details: {
+          ...said,
+          paidUntil,
+          ...(args.askProvider === false ? { providerAsked: false } : {}),
+        },
       },
     });
-    await row("ended_at_return", { stopped: false, paidUntil });
-    return { reason: args.reason, stopped: false };
+    await row("ended_at_return", {
+      stopped: false,
+      paidUntil,
+      ...(args.askProvider === false ? { providerAsked: false } : {}),
+    });
+    return { ...said, stopped: false };
   }
 
   const stopped = await stop(session.userId, session);
   if (stopped.status === 200) {
     await row("stopped_at_return", { stopped: true, stoppedAt: args.at.toISOString() });
-    return { reason: args.reason, stopped: true };
+    return { ...said, stopped: true };
   }
   // The provider didn't stop it. The park is over all the same (nothing
   // more is bought); the session runs out on its own, and Stop in the app
@@ -892,7 +995,7 @@ export async function endSession(
     error: stopped.body["error"],
     code: stopped.body["code"],
   });
-  return { reason: args.reason, stopped: false, error: stopped.body["error"] };
+  return { ...said, stopped: false, error: stopped.body["error"] };
 }
 
 /**
@@ -1017,7 +1120,7 @@ export async function startParkSession(
     if (!current || !LATE_SUCCESS_FROM.includes(current.status)) return;
     const moved = await deps.db.pendingPark.updateMany({
       where: { id: park.id, status: current.status },
-      data: { status: "started", sessionId, closedAt: null },
+      data: { status: "started", sessionId, closedAt: null, ...NOT_BACK },
     });
     if (moved.count === 1) {
       await record(
@@ -1130,7 +1233,7 @@ export async function startParkSession(
                   leftCarAt: null,
                   farAt: null,
                   farDistanceM: null,
-                  nearSince: null,
+                  ...NOT_BACK,
                 },
           stalePending: null,
         };
@@ -1176,7 +1279,7 @@ export async function startParkSession(
   const sessionId = sessionIdOf(reply.body);
   if (reply.status === 200 && sessionId !== null) {
     outcome = { kind: "started", body: reply.body };
-    next = { status: "started", sessionId };
+    next = { status: "started", sessionId, ...NOT_BACK };
   } else if (reply.status === 200) {
     // The provider says the zone isn't charging: nothing to pay here.
     outcome = { kind: "free", body: reply.body };

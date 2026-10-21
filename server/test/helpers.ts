@@ -51,7 +51,7 @@ import { LinkWallet } from "../src/services/link/linkWallet.js";
 import type { ProviderAccountOps, ProviderOpsFactory } from "../src/services/providerOps.js";
 import { makeLinkWorker } from "../src/jobs/linkWorker.js";
 import type { Push } from "../src/services/apns.js";
-import type { Executor } from "../src/services/executor.js";
+import type { Executor, ExecutorContext } from "../src/services/executor.js";
 import { DryRunExecutor } from "../src/services/executor.js";
 import { makePendingSessionCheck } from "../src/services/pendingSession.js";
 import type { Policy } from "../src/services/policy.js";
@@ -1893,12 +1893,47 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
   return { db, state };
 }
 
+/** One executor call as the test app saw it: which executor was asked for
+ * (its dry run included) and what it was asked to pay. */
+export type ExecutorCall = ExecutorContext &
+  (
+    | { op: "start"; zoneNumber: string; minutes: number; amountUsd: number; feeUsd: number }
+    | { op: "extend"; minutes: number; amountUsd: number; feeUsd: number }
+    | { op: "stop" }
+  );
+
 export interface TestApp {
   app: FastifyInstance;
   state: FakeDbState;
   deps: AppDeps;
   /** Every push the app tried to send, in order. */
   pushes: { userId: string; push: Push }[];
+  /** Every call made through `deps.executorFor`, in order. */
+  executorCalls: ExecutorCall[];
+}
+
+/** An executor that records each call before passing it on. */
+function recordingExecutor(
+  executor: Executor,
+  context: ExecutorContext,
+  calls: ExecutorCall[],
+): Executor {
+  return {
+    startSession: (args) => {
+      const { zoneNumber, minutes, amountUsd, feeUsd } = args;
+      calls.push({ ...context, op: "start", zoneNumber, minutes, amountUsd, feeUsd });
+      return executor.startSession(args);
+    },
+    extendSession: (args) => {
+      const { minutes, amountUsd, feeUsd } = args;
+      calls.push({ ...context, op: "extend", minutes, amountUsd, feeUsd });
+      return executor.extendSession(args);
+    },
+    stopSession: (args) => {
+      calls.push({ ...context, op: "stop" });
+      return executor.stopSession(args);
+    },
+  };
 }
 
 /**
@@ -2199,6 +2234,7 @@ export function makeTestApp(options: {
     seedProviderAccount(state);
   }
   const pushes: TestApp["pushes"] = [];
+  const executorCalls: TestApp["executorCalls"] = [];
   // Deterministic clock: without it, fixture timestamps (Jan 2026) drift
   // ever further past /parked's ts-clamp window and tests become
   // wall-clock-dependent. Tests that care pass their own `now`.
@@ -2253,7 +2289,10 @@ export function makeTestApp(options: {
     ...(garageFootprints ? { garageFootprints } : {}),
     auth,
     authenticate: makeAuthenticate(db, TEST_PEPPER, TEST_JWT_SECRET, now),
-    executorFor: () => options.executor ?? dryRunExecutor,
+    // Recorded per call, dry run included: `options.executor` stands in
+    // for both paths, so the record is what says which one was asked for.
+    executorFor: (context) =>
+      recordingExecutor(options.executor ?? dryRunExecutor, context, executorCalls),
     sendPush: async (userId, push) => {
       pushes.push({ userId, push });
     },
@@ -2289,7 +2328,7 @@ export function makeTestApp(options: {
     now,
   });
   deps.linkWorker = linkWorker;
-  return { app: buildApp(deps), state, deps, pushes, linkWorker };
+  return { app: buildApp(deps), state, deps, pushes, executorCalls, linkWorker };
 }
 
 export function parkedBody(overrides: Record<string, unknown> = {}) {

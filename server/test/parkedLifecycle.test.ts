@@ -382,6 +382,21 @@ test("Pay starts exactly one session, whatever is retried or raced", async () =>
   expect(walkaway).toHaveLength(1);
   expect(walkaway[0]!.sessionId).toBe(t.state.sessions[0]!.id);
   expect((walkaway[0]!.inputs["leftCar"] as { at: string }).at).toBeTruthy();
+
+  // The provider was asked once, through the dry-run executor, for the
+  // zone and the amount the driver was shown: $3.50 + $0.15 = $3.65.
+  expect(t.executorCalls).toEqual([
+    {
+      op: "start",
+      userId: "u1",
+      city: "nyc",
+      dryRun: true,
+      zoneNumber: "417371",
+      minutes: 90,
+      amountUsd: 3.5,
+      feeUsd: 0.15,
+    },
+  ]);
 });
 
 test("Not now pays nothing, and the phone is told to stop reporting", async () => {

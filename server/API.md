@@ -1028,7 +1028,7 @@ the car. The record is one `pending_parks` row per held park
 | Status | Meaning |
 |---|---|
 | `at_car` | Detected. The phone hasn't left the car. Nothing was asked. |
-| `confirmed` | Pay was tapped at the car. The start waits for the walk-away. |
+| `confirmed` | Pay was tapped at the car. The start waits for the app's `left_car`; a walk-away by distance alone only asks again (`prompted`). |
 | `prompted` | The phone left. The driver was asked (`street_prompt`). |
 | `starting` | One start is running for it. A second can't begin. |
 | `started` | Its session started (`sessionId`). |
@@ -1039,11 +1039,22 @@ the car. The record is one `pending_parks` row per held park
 (`distance − accuracy > 30 m`) and no more than 3 m/s apart (a car pulling
 away covers the same ground, faster, and is not a walk-away), or when the
 app reports `left_car` (motion has the driver on foot) and no sharp fix
-(accuracy ≤ 20 m) has it within 10 m of the car. A fix with accuracy worse
-than 65 m, reported more than 5 minutes off the server's clock, or
-measured before the car stopped says nothing. One measurement sent twice
-(the app's heartbeat re-sends its last fix) is one measurement. A park
-nobody walked away from within an hour is `expired` and never asked about.
+(accuracy ≤ 20 m) has it within 10 m of the car. A fix whose `speedMps` is
+over 3 m/s is a moving car: it never counts toward leaving (its
+`left_car` included) and starts the pair over. A fix with accuracy worse
+than 65 m, reported more than 5 minutes off the server's clock, measured
+more than 5 minutes ago, or measured before the car stopped says nothing.
+One measurement sent twice (the app's heartbeat re-sends its last fix) is
+one measurement. A park nobody walked away from within an hour is
+`expired` and never asked about.
+
+**A Pay tapped at the car starts only on the app's `left_car`.** Two
+fixes at nearly the same distance read like a walk, and so does a car
+stopped at a light a block away. So a walk-away by distance alone moves a
+`confirmed` park to `prompted` (a `street_prompt` with
+`inputs.parkStatus: "confirmed"`), and only a second tap pays it. On a
+fix that carries `left_car` and also finishes a pair, `left_car` is what
+counts.
 
 **Only the latest park says where the car is.** Every `/parked` that is
 the user's newest (held or not: a garage, a free block, no zone)
@@ -1063,21 +1074,41 @@ walk-away it closes as `covered`, with nothing asked.
 
 **The phone is back** when the app reports `returned_to_car` (driving
 again, or CarPlay connected) with a usable fix within 75 m of the car, or
-when every usable fix has been within 30 m of the car for 60 s. The
-second rule applies only after a fix put the phone clear of the car, so a
-driver whose errand is right beside the car isn't "back" the whole time.
+when every usable fix has been within 30 m of the car for 60 s. The 60 s
+are measured (`measuredAt`), not reported, so they take two separate
+measurements: the heartbeat re-sending one fix beside the car is not a
+minute there. The second rule applies only after a fix put the phone
+clear of the car, so a driver whose errand is right beside the car isn't
+"back" the whole time.
+
+**The phone drove off** when, after leaving, a usable fix had it within
+30 m of the car (not at driving speed) and the next two usable fixes are
+clear of it faster than a walk: both with `speedMps` over 3 m/s, or,
+without the phone's speed for both, more than 3 m/s apart over at least
+10 s. That is a return (`why: "drove_off"`) even inside the minute: the
+session ends the way a return ends it, and a park not yet paid is
+cancelled. A clear fix at a walk after that at-the-car fix (`speedMps` ≤
+3, or a walking pace) means the driver went off on foot again, and later
+fast fixes (a bus, a taxi) are not a drive-off. Between the two fixes,
+when the first carried a driving `speedMps`, the extension worker doesn't
+read the phone as away.
 
 Decisions rows, each with the fix that caused it: `street_pending`
 (/parked held a park), `street_prompt` (the walk-away; `rule` is
 `walk_away` or `left_car_event`, with `outcome.prompt` and
-`outcome.quote`; or `already_paid` / `free_now` when nothing was asked),
+`outcome.quote`, and `inputs.parkStatus` the state it was asked from; or
+`already_paid` / `free_now` when nothing was asked),
 `street_confirmed` (the tap; `inputs.mode: "tap"`, `inputs.shown` is the
 quote the driver agreed to, `inputs.early` when tapped at the car),
 `street_declined`, `session_start_walkaway` (the one start a park gets;
 `rule` is `started`, `free`, `quote_changed`, `covered`, `refused`,
-`failed`, `error`, `start_timeout`, or `late_success`),
+`failed`, `error`, `start_timeout`, or `late_success`; an `error` that
+reached the provider closes the park as `start_failed` at once and fails
+the session it left pending, `outcome.reason: "start_threw"`),
 `session_end_return` (`stopped_at_return`, `ended_at_return`, or
-`stop_failed`; `inputs.reason` is `returned` or `new_park`),
+`stop_failed`, or `ended_drove_off` for any of the three after a
+drive-off, with `outcome.stopped`; `inputs.reason` is `returned` or
+`new_park`, `inputs.why` the rule that saw it),
 `session_car_moved`, `park_cancelled_at_return` (`near_for_60s`,
 `returned_event`, or `drove_off`), and `park_lifecycle` for a park moved
 by anything but the phone or a tap (`inputs.previousStatus`,
@@ -1086,18 +1117,22 @@ or `linked_to_session`).
 
 ### POST /location
 
-`{lat, lng, accuracy, ts, measuredAt?, event?}`, sent by the app while a
-park is held and while a session is active (at least every 60 s, sooner
-when moving). `ts` is when the fix was reported and `measuredAt` when it
-was measured (they differ on the heartbeat's re-send). `event` is what the
-app itself saw: `left_car` or `returned_to_car`. A session and a held
+`{lat, lng, accuracy, ts, measuredAt?, speedMps?, event?}`, sent by the
+app while a park is held and while a session is active (at least every
+60 s, sooner when moving). `ts` is when the fix was reported and
+`measuredAt` when it was measured (they differ on the heartbeat's
+re-send). `speedMps` is the phone's own speed at the fix
+(`CLLocation.speed`, in m/s), `null` when it had none; a negative number
+is read as none, and without the field every rule reads as it did before
+it existed. `event` is what the app itself saw: `left_car` or
+`returned_to_car`. A session and a held
 park can both be the caller's at once; the fix is read against each from
 its own car, and the answer carries both parts.
 
 With an active session the fix is stored in `location_fixes` (the
 extension worker reads the latest few) and the answer is
-`{ok: true, sessionId}`. When the fix shows the phone back at the car the
-session ends and the answer adds
+`{ok: true, sessionId}`. When the fix shows the phone back at the car, or
+back and driving off, the session ends and the answer adds
 `ended: {reason: "returned", stopped, error?}`:
 
 - where the provider can stop early, the session is stopped through
@@ -1116,7 +1151,7 @@ With a held park and no session the answer is
   the phone shows a park's prompt once). The transition itself also
   carries `decisionId`.
 - `started: {sessionId, expiresAt, amountUsd}` when a Pay tapped at the
-  car started now.
+  car started now (on this fix's `left_car`).
 - `startFailed` when that start reached the provider and failed.
 
 `status: "cancelled"` means the phone came back (or drove off) before
@@ -1160,7 +1195,8 @@ the candidates disagree, and the total the phone had on screen.
 - At the car (the phone never left, or went away and its fixes have it
   back within reach): `200 {status: "confirmed", startsAt: "walk_away",
   zoneId, quote}`. Nothing is paid. The start runs when `POST /location`
-  sees the phone leave.
+  carries the app's `left_car`; a walk-away seen by distance alone asks
+  again instead (a `prompt`), and the tap on that pays.
 - Away from the car: the session starts through `POST /session/start`'s
   own path, with every refusal, the dry-run switch, and the policy checks
   unchanged, for the shown stay, and for no more than the shown amount

@@ -72,8 +72,9 @@ function lastTick(state: FakeDbState) {
 }
 
 test("driver far away and heading away: extend to the max-stay clamp", async () => {
-  const { state, extender, pushes } = makeTickApp();
+  const { state, deps, extender, pushes } = makeTickApp();
   const session = activeSession(state);
+  await seedPark({ deps }, session, { leftCarAt: T("13:02") });
   addFixes(state, session.id, [100, 300, 600]);
 
   await extender.tick();
@@ -109,7 +110,7 @@ test("driver walking back with time to spare: hold, no push", async () => {
 });
 
 test("auto-extend meeting a provider free period holds and says parking is free", async () => {
-  const { state, extender, pushes } = makeTickApp({
+  const { state, deps, extender, pushes } = makeTickApp({
     executor: {
       startSession: async () => ({
         ok: false as const,
@@ -129,6 +130,7 @@ test("auto-extend meeting a provider free period holds and says parking is free"
     },
   });
   const session = activeSession(state);
+  await seedPark({ deps }, session, { leftCarAt: T("13:02") });
   addFixes(state, session.id, [100, 300, 600]); // away → the worker WOULD extend
 
   await extender.tick();
@@ -158,12 +160,13 @@ test("at the zone max stay: warn to move the car, once", async () => {
 });
 
 test("daily budget exhausted: hold and warn with reason budget", async () => {
-  const { state, extender, pushes } = makeTickApp({
+  const { state, deps, extender, pushes } = makeTickApp({
     policy: { dry_run: false },
     envDryRun: false,
   });
   seedSession(state, { status: "stopped", dryRun: false, amountUsd: 58, feeUsd: 0.3 });
   const session = activeSession(state, { dryRun: false });
+  await seedPark({ deps }, session, { leftCarAt: T("13:02") });
   addFixes(state, session.id, [100, 300, 600]);
 
   await extender.tick();
@@ -175,11 +178,12 @@ test("daily budget exhausted: hold and warn with reason budget", async () => {
 });
 
 test("a fresh contrary decision is held for five minutes", async () => {
-  const { state, extender } = makeTickApp();
+  const { state, deps, extender } = makeTickApp();
   const session = activeSession(state, {
     lastExtenderRule: "hold_return_likely",
     lastExtenderRuleAt: T("14:18"),
   });
+  await seedPark({ deps }, session, { leftCarAt: T("13:02") });
   addFixes(state, session.id, [100, 300, 600]); // now says extend
 
   await extender.tick();
@@ -192,11 +196,12 @@ test("a fresh contrary decision is held for five minutes", async () => {
 });
 
 test("the same contrary decision goes through once the window passes", async () => {
-  const { state, extender } = makeTickApp();
+  const { state, deps, extender } = makeTickApp();
   const session = activeSession(state, {
     lastExtenderRule: "hold_return_likely",
     lastExtenderRuleAt: T("14:10"),
   });
+  await seedPark({ deps }, session, { leftCarAt: T("13:02") });
   addFixes(state, session.id, [100, 300, 600]);
 
   await extender.tick();
@@ -280,7 +285,7 @@ test("drain waits for the pass in progress (shutdown doesn't cut an extension of
 
 /** The lifecycle's record for a session: whether the phone left, or came back. */
 async function seedPark(
-  t: ReturnType<typeof makeTickApp>,
+  t: Pick<ReturnType<typeof makeTickApp>, "deps">,
   session: SessionRow,
   overrides: { status?: string; leftCarAt?: Date | null } = {},
 ) {
@@ -326,6 +331,21 @@ test("at the car holds even for a session whose phone had left earlier", async (
   expect(session.extendCount).toBe(0);
 });
 
+test("far from a car the phone was never seen leaving: nothing is bought", async () => {
+  // A session the lifecycle never saw the phone leave (no fixes while it
+  // did): a far fix now could be a phone riding off in the car.
+  const t = makeTickApp();
+  const session = activeSession(t.state);
+  await seedPark(t, session);
+  addFixes(t.state, session.id, [100, 300, 600]);
+
+  await t.extender.tick();
+
+  expect(lastTick(t.state).inputs).toMatchObject({ position: "unknown", fixCount: 3 });
+  expect(lastTick(t.state).rule).toBe("hold_position_unknown");
+  expect(session.extendCount).toBe(0);
+});
+
 test("no sign of where the phone is: nothing is bought, and the driver is told once", async () => {
   const t = makeTickApp();
   const session = activeSession(t.state);
@@ -345,18 +365,36 @@ test("no sign of where the phone is: nothing is bought, and the driver is told o
   expect(t.pushes[0]!.push.body).toContain("won't add time");
 });
 
-test("a phone that left the car keeps its session extended when its fixes go quiet", async () => {
+test("a phone that left the car but has said nothing for fifteen minutes: nothing is bought", async () => {
+  // It may be back in the car, or driving off: having left once is not
+  // where it is now.
   const t = makeTickApp();
   const session = activeSession(t.state);
   await seedPark(t, session, { leftCarAt: T("13:02") });
+  addFixes(t.state, session.id, [100, 300, 600]);
+  for (const f of t.state.locationFixes) f.ts = new Date(f.ts.getTime() - 15 * 60_000);
 
   await t.extender.tick();
 
   const decision = lastTick(t.state);
-  expect(decision.inputs).toMatchObject({ position: "away", fixCount: 0 });
+  expect(decision.inputs).toMatchObject({ position: "unknown", fixCount: 0, staleFixCount: 3 });
+  expect(decision.rule).toBe("hold_position_unknown");
+  expect(session.extendCount).toBe(0);
+  expect(t.state.sessionEvents).toEqual([]);
+});
+
+test("a phone that left the car and is still reporting away: extended, never past the max stay", async () => {
+  const t = makeTickApp();
+  const session = activeSession(t.state);
+  await seedPark(t, session, { leftCarAt: T("13:02") });
+  addFixes(t.state, session.id, [100, 300, 600]);
+
+  await t.extender.tick();
+
+  const decision = lastTick(t.state);
+  expect(decision.inputs).toMatchObject({ position: "away", fixCount: 3 });
   expect(decision.rule).toBe("extend");
   expect(session.extendCount).toBe(1);
-  // …and never past the zone's max stay.
   expect(session.purchasedMinutes).toBe(120);
 });
 

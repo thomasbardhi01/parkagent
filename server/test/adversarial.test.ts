@@ -26,6 +26,7 @@ import {
   makeTestApp,
   parkedBody,
   seedProviderAccount,
+  seedLeftCar,
   seedSession,
   TEST_PEPPER,
   seedHold,
@@ -345,6 +346,7 @@ describe("extension worker degraded location", () => {
   test("phone 5 km away with fresh fixes: extend", async () => {
     const { state, extender } = tickApp();
     const session = tickSession(state);
+    seedLeftCar(state, session);
     addFix(state, session.id, 4800, 2 * 60_000);
     addFix(state, session.id, 4900, 60_000);
     addFix(state, session.id, 5000, 10_000);

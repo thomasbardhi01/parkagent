@@ -22,6 +22,7 @@ import {
   STEINWAY_B,
   makeTestApp,
   parkedBody,
+  seedLeftCar,
   seedSession,
 } from "./helpers.js";
 import type { FakeDbState } from "./helpers.js";
@@ -356,6 +357,7 @@ describe("sessions read the owner's limits", () => {
     const theirs = session("u1");
     // The driver is far away and walking further: both want an extension.
     for (const s of [mine, theirs]) {
+      seedLeftCar(t.state, s);
       [100, 300, 600].forEach((m, i) =>
         t.state.locationFixes.push({
           id: `f-${s.id}-${i}`,

@@ -207,8 +207,8 @@ test("a Boston start with no reported zone number refuses needs_zone_number", as
 test("the extension worker prices Boston ticket risk with the $40 ticket", async () => {
   const { state, deps } = makeApp();
   const extender = makeExtender({ ...deps, log: { info() {}, warn() {} } });
-  // Started 80 min ago, 10 min left, the phone long gone and its fixes
-  // quiet: heading unknown, dwell falls back to the 90-min default, so
+  // Started 80 min ago, 10 min left, the phone long gone and one fix from
+  // a kilometre off: heading unknown, dwell falls back to the 90-min default, so
   // pReturn = 0.6 and ticket risk uses the city ticket: bos 40 × 0.4 = 16
   // (nyc would be 65 × 0.4 = 26).
   const session = seedSession(state, {
@@ -241,6 +241,15 @@ test("the extension worker prices Boston ticket risk with the $40 ticket", async
       parkedAt: session.createdAt,
       leftCarAt: new Date(NOW.getTime() - 79 * 60_000),
     },
+  });
+  state.locationFixes.push({
+    id: "f-far",
+    sessionId: session.id,
+    userId: "u1",
+    lat: 42.3495 + 1000 / 111_320,
+    lng: -71.0798,
+    accuracyM: 10,
+    ts: new Date(NOW.getTime() - 60_000),
   });
 
   await extender.tick();

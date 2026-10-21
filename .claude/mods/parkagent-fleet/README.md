@@ -29,10 +29,16 @@ or when it is a read-only ask (`what does…`, `where is…`, `explain…`, `sum
 `why is this failing` with a pasted log) and nothing vetoes it. The **veto** blocks the
 automatic path — never a `~` prompt — when the prompt names `server/src/services/{sessions,
 wallet,limits}*`, `server/src/routes/{session,parked,assistant}*` or `prisma/`, or mentions
-merge/deploy/migrate/money/pay/cap. Routing switches the *actual turn's* model (see the
-mechanism note in the PR), so the turn keeps its tools and transcript — it just runs on a
-cheaper model. The band shows `→ haiku` while a turn is routed; `/fleet` shows how many
-turns were routed and the tokens taken off opus.
+merge/deploy/migrate/money/pay/cap. A message that arrives via `session.receive` (a peer,
+a task, the SDK) never routes — only a prompt the person entered. Routing switches the
+*actual turn's* model (see the mechanism note in the PR), so the turn keeps its tools and
+transcript — it just runs on a cheaper model.
+
+A routed turn is **read-only**: while it runs, `Write`/`Edit`/`NotebookEdit` are denied
+("resend without `~` to make changes"), and a Bash command the mod can't see is read-only
+(`rg`, `grep`, `cat`, `ls`, `git log/show/diff/status`, `gh pr view/checks`, `gh run
+view/list`, `pnpm test`/`vitest`) is put to the person. The band shows `→ haiku` while a
+turn is routed; `/route` and `/fleet` show `N turns · X tokens on haiku`.
 
 - `/route off` — disable routing for this session. `/route on` re-enables. `/route` — status.
 

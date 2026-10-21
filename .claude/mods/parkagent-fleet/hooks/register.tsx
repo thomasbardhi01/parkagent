@@ -3,7 +3,7 @@ import type { Register } from "claude-code";
 
 import type { CiRun, ContextBand, FleetRow, NightlyRun, ProdHealth, PrRow } from "../types";
 import { type Engine } from "./shared";
-import { isRouting, registerRoute, routeOnComplete, routeOnSubmit } from "./route";
+import { isRouting, registerRoute, routeOnComplete, routeOnSubmit, routedTally } from "./route";
 import { isLean, registerLean } from "./lean";
 import { ciSummary, markReportsRead, recentReports, registerReport, unreadCount } from "./report";
 
@@ -457,7 +457,7 @@ export const register: Register = (on, options) => {
   // Draws from $.state only: the loop and /fleet do the store, gh and http work.
   on("ui.render", { component: "Pane", requestId: PANE }, async ($, e) => {
     const { Box, Text } = $.ui.resolve(e);
-    const [stored, runs, mine, openPrs, lastNightly, prod, reportRows] = await Promise.all([
+    const [stored, runs, mine, openPrs, lastNightly, prod, reportRows, routed] = await Promise.all([
       read($, fleetRows),
       read($, ci),
       read($, me),
@@ -465,6 +465,7 @@ export const register: Register = (on, options) => {
       read($, nightly),
       read($, health),
       recentReports($),
+      routedTally($),
     ]);
     // This session from its live reading, first; the others as the last sweep found them.
     const rows =
@@ -498,6 +499,12 @@ export const register: Register = (on, options) => {
             </Box>
           );
         })}
+        {routed.turns > 0 && (
+          <Text dimColor>
+            Routed: {routed.turns} turn{routed.turns === 1 ? "" : "s"} ·{" "}
+            {routed.tokens.toLocaleString()} tokens on haiku
+          </Text>
+        )}
         <Text> </Text>
         <Text bold>CI (gh run list)</Text>
         {runs === null && <Text dimColor>gh unavailable or still fetching.</Text>}

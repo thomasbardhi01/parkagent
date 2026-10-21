@@ -196,6 +196,7 @@ function world(on: On, runs: readonly object[] = []): World {
   });
   on("session.receive", (_, e) => ({ text: e.text }));
   on("prompt.compose", () => ({ sections: [{ id: "intro", text: "base", scope: "shared" }] }));
+  on("tool.check", () => ({ decision: "allow" })); // the engine's own verdict
 
   return w;
 }
@@ -449,9 +450,7 @@ test("the band shows → haiku while a turn is routed, and clears and tallies wh
   const ui2 = await $.ui.mount({ ...BAND, surface: "terminal" });
   expect((await ui2.find({ type: "Text", text: /ctx/ }))?.text).not.toContain("→ haiku");
   await ui2.unmount();
-  expect((await $.command.run(cmd("route", ""))).text).toMatch(
-    /1 turn routed to haiku .*1,200 tokens/,
-  );
+  expect((await $.command.run(cmd("route", ""))).text).toMatch(/1 turn · 1,200 tokens on haiku/);
 });
 
 test("/lean on adds a system-prompt section; /lean off removes it", async ($, on) => {
@@ -528,5 +527,86 @@ test("the pane shows a non-empty degraded list in prod health", async ($, on) =>
 
   const pane = await $.ui.mount({ ...PANE, surface: "terminal" });
   expect((await pane.find({ type: "Text", text: /degraded:/ }))?.text).toContain("assistant");
+  await pane.unmount();
+});
+
+const USAGE = (input: number, output: number) => ({
+  model: "claude-haiku-5-5",
+  input_tokens: input,
+  output_tokens: output,
+  cache_read_input_tokens: 0,
+  cache_creation_input_tokens: 0,
+});
+
+test("a routed turn is read-only: writes are denied and risky Bash asks", async ($, on) => {
+  const w = world(on);
+  await $.session.start(START);
+  await $.prompt.submit(prompt("~ summarize the plan"));
+  await w.clock.settle();
+  await $.turn.start({ text: "summarize the plan", turnId: "t-ro" });
+
+  expect((await $.tool.check({ tool: "Write", input: { file_path: "x.ts" } })).decision).toBe(
+    "deny",
+  );
+  expect((await $.tool.check({ tool: "Edit", input: { file_path: "x.ts" } })).decision).toBe(
+    "deny",
+  );
+  expect(
+    (await $.tool.check({ tool: "NotebookEdit", input: { notebook_path: "x.ipynb" } })).decision,
+  ).toBe("deny");
+  expect((await $.tool.check({ tool: "Bash", input: { command: "pnpm build" } })).decision).toBe(
+    "ask",
+  );
+  expect((await $.tool.check({ tool: "Bash", input: { command: "cat x.ts" } })).decision).toBe(
+    "allow",
+  );
+  expect(
+    (await $.tool.check({ tool: "Bash", input: { command: "git status && rg TODO" } })).decision,
+  ).toBe("allow");
+  expect(
+    (await $.tool.check({ tool: "Bash", input: { command: "pnpm -C server test" } })).decision,
+  ).toBe("allow");
+
+  // When the turn ends, the session can write again.
+  await $.turn.complete({ ...TURN, turnId: "t-ro", usage: USAGE(1, 1) });
+  expect((await $.tool.check({ tool: "Write", input: { file_path: "x.ts" } })).decision).toBe(
+    "allow",
+  );
+});
+
+test("an unrouted turn is not read-only", async ($, on) => {
+  const w = world(on);
+  await $.session.start(START);
+  await $.prompt.submit(prompt("implement the feature")); // no ~, not an intent
+  await w.clock.settle();
+  await $.turn.start({ text: "implement the feature", turnId: "t-rw" });
+  expect((await $.tool.check({ tool: "Write", input: { file_path: "x.ts" } })).decision).toBe(
+    "allow",
+  );
+});
+
+test("a message delivered via session.receive never routes, even with a ~", async ($, on) => {
+  const w = world(on);
+  await $.session.start(START);
+  // A peer's message reaches prompt.submit with a non-composer origin.
+  await $.prompt.submit({ text: "~ do the thing", wait: false, origin: { kind: "peer" } });
+  await w.clock.settle();
+  await $.turn.start({ text: "~ do the thing", turnId: "t-peer" });
+  expect(await step($, w, "t-peer")).toBe("claude-opus-5-5"); // stayed on opus
+});
+
+test("the /fleet pane shows the routed tally", async ($, on) => {
+  const w = world(on, RUNS);
+  await $.session.start(START);
+  await $.prompt.submit(prompt("~ summarize"));
+  await w.clock.settle();
+  await $.turn.start({ text: "summarize", turnId: "t1" });
+  await $.turn.complete({ ...TURN, turnId: "t1", usage: USAGE(500, 100) });
+  await $.command.run(FLEET);
+
+  const pane = await $.ui.mount({ ...PANE, surface: "terminal" });
+  expect((await pane.find({ type: "Text", text: /Routed:/ }))?.text).toMatch(
+    /1 turn · 600 tokens on haiku/,
+  );
   await pane.unmount();
 });

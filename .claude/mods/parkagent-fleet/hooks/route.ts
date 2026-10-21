@@ -95,9 +95,22 @@ let pendingRoute = false;
  */
 export async function routeOnSubmit(
   $: Engine,
-  e: { text: string; command?: unknown; isMeta?: true; turnId?: string },
+  e: {
+    text: string;
+    command?: unknown;
+    isMeta?: true;
+    turnId?: string;
+    origin?: { kind?: string };
+  },
 ): Promise<string> {
-  if (e.command !== undefined || e.isMeta === true || e.turnId !== undefined) {
+  // Only a freshly typed prompt the person entered themselves: not a slash
+  // command, not a hidden/meta prompt, not one delivered into a running turn,
+  // and not a message that arrived from elsewhere (a peer, a task, the SDK) —
+  // a message via session.receive becomes a prompt with one of those origins
+  // and must never route.
+  const kind = e.origin?.kind;
+  const fromPerson = kind === undefined || kind === "composer" || kind === "bridge";
+  if (e.command !== undefined || e.isMeta === true || e.turnId !== undefined || !fromPerson) {
     pendingRoute = false;
 
     return e.text;
@@ -128,8 +141,72 @@ export async function isRouting($: Engine): Promise<boolean> {
   return (await read($, routedTurnId)) !== null;
 }
 
+/** The routed-turn tally for /route and the /fleet pane. */
+export async function routedTally($: Engine): Promise<{ turns: number; tokens: number }> {
+  const [turns, tokens] = await Promise.all([read($, routedTurns), read($, routedTokens)]);
+
+  return { turns, tokens };
+}
+
+const READONLY_WRITE_TOOLS = ["Write", "Edit", "NotebookEdit"] as const;
+const READONLY_DENY = "routed to haiku (read-only); resend without ~ to make changes";
+
+const commandOf = (input: unknown): string =>
+  typeof input === "object" &&
+  input !== null &&
+  typeof (input as { command?: unknown }).command === "string"
+    ? (input as { command: string }).command
+    : "";
+
+/** A deliberately small set of commands a routed (haiku) turn may run without a
+ * prompt. Anything else asks the person. Checked per `&&`/`;`/`|` segment. */
+function isReadOnlyCommand(command: string): boolean {
+  const segs = command
+    .split(/\|\||&&|[;|&\n]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (segs.length === 0) return false;
+
+  return segs.every((seg) => {
+    const t = seg.split(/\s+/);
+    const c = (t[0] ?? "").split("/").pop();
+    if (c === "rg" || c === "grep" || c === "cat" || c === "ls" || c === "vitest") return true;
+    if (c === "pnpm") return t.some((x) => x === "test" || x === "vitest");
+    if (c === "git") return ["log", "show", "diff", "status"].includes(t[1] ?? "");
+    if (c === "gh") {
+      if (t[1] === "pr") return t[2] === "view" || t[2] === "checks";
+      if (t[1] === "run") return t[2] === "view" || t[2] === "list";
+    }
+
+    return false;
+  });
+}
+
 /** The routing hooks on events the fleet mod doesn't already own. */
 export function registerRoute(on: On): void {
+  // A routed turn runs on haiku and is read-only: no writes, and Bash it can't
+  // obviously tell is read-only is put to the person. Keyed on a routed turn
+  // being in progress (routedTurnId set), since tool.check carries no turnId.
+  for (const tool of READONLY_WRITE_TOOLS) {
+    on("tool.check", { tool }, async ($, e, next) => {
+      if (e.agentId === undefined && (await isRouting($))) {
+        return { decision: "deny", reason: READONLY_DENY };
+      }
+
+      return next(e);
+    });
+  }
+  on("tool.check", { tool: "Bash" }, async ($, e, next) => {
+    if (e.agentId === undefined && (await isRouting($)) && !isReadOnlyCommand(commandOf(e.input))) {
+      return {
+        decision: "ask",
+        reason: "routed to haiku; this command may change things — confirm, or resend without ~",
+      };
+    }
+
+    return next(e);
+  });
+
   on("turn.start", async ($, e, next) => {
     if (e.agentId !== undefined) return next(e); // subagents are never routed
     if (pendingRoute) {
@@ -171,7 +248,7 @@ export function registerRoute(on: On): void {
     ]);
 
     return {
-      text: `${off ? "Routing is OFF." : "Routing is ON."} ${turns} turn${turns === 1 ? "" : "s"} routed to haiku so far (~${tokens.toLocaleString()} tokens off opus). /route off disables it.`,
+      text: `${off ? "Routing is OFF." : "Routing is ON."} ${turns} turn${turns === 1 ? "" : "s"} · ${tokens.toLocaleString()} tokens on haiku. /route off disables it.`,
     };
   });
 }

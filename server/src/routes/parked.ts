@@ -215,7 +215,9 @@ export function registerParked(app: FastifyInstance, deps: AppDeps, sessions: Se
         action = "confirm";
         rule = "session_cap_exceeded";
       } else {
-        const spentTodayUsd = await spentToday(deps.db, user.id, at);
+        const spentTodayUsd = await spentToday(deps.db, user.id, at, {
+          dryRun: deps.policy.effectiveDryRun(),
+        });
         if (spentTodayUsd + quote.totalUsd > policy.daily_cap_usd) {
           action = "confirm";
           rule = "daily_cap_exceeded";

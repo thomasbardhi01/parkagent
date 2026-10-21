@@ -212,7 +212,7 @@ describe("the auto-pay decision (/parked) reads the caller's limits, not anyone 
   test("per day", async () => {
     const { app, state } = makeTestApp({ candidates: [STEINWAY_A, STEINWAY_B] });
     saveLimits(state, "u2", { dailyCapUsd: 10 });
-    // Real spend (dry-run sessions never count toward a daily cap).
+    // Real spend: it counts toward a daily cap in a dry run and a real one alike.
     seedSession(state, { userId: "u2", status: "stopped", dryRun: false, amountUsd: 7, feeUsd: 0 });
     seedSession(state, { userId: "u1", status: "stopped", dryRun: false, amountUsd: 7, feeUsd: 0 });
     const mine = await app.inject({

@@ -525,8 +525,8 @@ export async function buildParkPrompt(
   else if (provider && zoneNumber === "") reason = "needs_zone_number";
   else if (quote.totalUsd > policy.session_cap_usd) reason = "session_cap_exceeded";
   else if (
-    !dryRun &&
-    (await spentToday(deps.db, park.userId, at)) + quote.totalUsd > policy.daily_cap_usd
+    (await spentToday(deps.db, park.userId, at, { dryRun })) + quote.totalUsd >
+    policy.daily_cap_usd
   ) {
     reason = "daily_cap_exceeded";
   }

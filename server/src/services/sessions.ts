@@ -48,14 +48,21 @@ export interface SessionDeps {
  * paid: street sessions on any source, plus garages approved in Link. The
  * daily cap is measured against this everywhere — quotes, starts,
  * extensions, the assistant, the Wallet. Dry-run sessions are excluded —
- * they moved no money — and failed ones never charged.
+ * they moved no money — and failed ones never charged. Under a dry run
+ * (`opts.dryRun`, the effective one) they count too, so a dry run is
+ * refused wherever the same day for real would be.
  */
-export async function spentToday(db: AppDb, userId: string, at: Date): Promise<number> {
+export async function spentToday(
+  db: AppDb,
+  userId: string,
+  at: Date,
+  opts: { dryRun?: boolean } = {},
+): Promise<number> {
   const since = nycStartOfDay(at);
   const rows = await db.session.findMany({
     where: {
       userId,
-      dryRun: false,
+      ...(opts.dryRun === true ? {} : { dryRun: false }),
       status: { in: ["pending", "active", "stopped", "expired"] },
       createdAt: { gte: since },
     },
@@ -118,9 +125,8 @@ export function extensionPolicyViolation(
   if (sessionSpentUsd(session) + price.totalUsd > policy.session_cap_usd) {
     return "session_cap_exceeded";
   }
-  // Dry-run sessions never count toward the daily cap (no money moved), so
-  // only a real extension can trip it.
-  if (!session.dryRun && spentTodayUsd + price.totalUsd > policy.daily_cap_usd) {
+  // Under a dry run, `spentTodayUsd` counts what dry runs recorded.
+  if (spentTodayUsd + price.totalUsd > policy.daily_cap_usd) {
     return "daily_cap_exceeded";
   }
   return null;

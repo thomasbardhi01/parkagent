@@ -323,7 +323,7 @@ export function makeExtender(deps: ExtenderDeps): Extender {
     // Ticket risk is priced with the session's city's ticket (a Boston
     // "Meter Fee Unpaid" is $40 where NYC's is $65 — policy city_overrides).
     const costTicketUsd = cityPolicy(policy, session.city).ticketCostUsd * (1 - pReturn);
-    const spentTodayUsd = await spentToday(deps.db, session.userId, at);
+    const spentTodayUsd = await spentToday(deps.db, session.userId, at, { dryRun });
 
     // The decision ladder. Max-stay gate: the stay allowance left to buy is
     // either too small to be a meaningful extension or already inside the

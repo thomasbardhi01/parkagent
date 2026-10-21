@@ -316,14 +316,15 @@ decision, and nothing is asked, pushed, or started. See "Session
 lifecycle". An app that doesn't list it gets no `awaitsWalkAway` and no
 held park, and pays through `POST /session/start` as before.
 
-A park is held only when its time (the `ts` it is priced at) is within
-5 minutes of the server's clock, either way: the tolerance `POST
-/location` reads fixes with. A park delivered late (an outbox, 3 h after
-it parked) has its walk-away behind it, and one from a phone whose clock
-is further off would wait on fixes that are never read. Either is
-answered as for an app that doesn't list `walk_away`: still quoted, at
-its own `ts` within the clamp below, with no `awaitsWalkAway` and no held
-park.
+A park is held only when the phone's own `ts` is within 5 minutes of the
+server's clock, either way (or absent): the tolerance `POST /location`
+reads fixes with. This is the phone's `ts` as sent, not the clamped time
+it is priced at, because its fixes carry the same clock. A park
+delivered late (an outbox, 3 h after it parked) has its walk-away behind
+it, and one from a phone whose clock is further off would wait on fixes
+that are never read. Either is answered as for an app that doesn't list
+`walk_away`: still quoted (at its `ts`, or at server time past the clamp
+below), with no `awaitsWalkAway` and no held park.
 
 `outcomes` (FR-54) lists the actions beyond the street's four that the app
 knows how to show. **An app that lists none is answered exactly as before**:

@@ -1813,11 +1813,15 @@ test("a park reported three hours late isn't held at the car: the walk-away it w
 });
 
 test("clock skew: a park is held only when its phone's fixes will be read, with one tolerance for both", async () => {
+  // Past the pricing clamp too (over 10 min ahead, over 24 h behind): the
+  // park is priced at server time, and its phone's fixes are still off.
   for (const skewMs of [
+    -25 * 60 * 60_000,
     -LIFECYCLE_FIX_MAX_AGE_MS - 60_000,
     -LIFECYCLE_FIX_MAX_AGE_MS + 60_000,
     LIFECYCLE_FIX_MAX_AGE_MS - 60_000,
     LIFECYCLE_FIX_MAX_AGE_MS + 60_000,
+    11 * 60_000,
   ]) {
     const t = makeApp();
     // The phone's clock: every ts it sends is off by the skew.

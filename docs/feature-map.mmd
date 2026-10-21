@@ -1,0 +1,128 @@
+%% ParkAgent: phone → routes → services → providers.
+%% Rows and file:line anchors are in docs/feature-map.md.
+%% Every START passes the one money gate (runStart). Extensions and stops
+%% don't: they reach the executor through applyExtension / stop, drawn
+%% dashed, with their own checks.
+flowchart LR
+  subgraph phone["Phone (ios/ParkAgent)"]
+    detector["ParkDetector + ParkFusionEngine"]
+    classifier["PlaceClassifier + FootprintIndex"]
+    lifecycle["ParkLifecycle + LocationReporter"]
+    outbox["ParkOutbox"]
+    assistantUI["Assistant sheet"]
+    walletUI["Wallet tab"]
+    sessionUI["Active session card"]
+    linkUI["Provider link web view"]
+  end
+
+  subgraph routes["Routes (server/src/routes)"]
+    parked["POST /parked"]
+    location["POST /location"]
+    confirm["POST /parked/:id/confirm"]
+    decline["POST /parked/:id/decline"]
+    sessStart["POST /session/start"]
+    sessExtend["POST /session/extend"]
+    sessStop["POST /session/stop"]
+    asst["POST /assistant/message · /assistant/confirm"]
+    garagesR["GET /garages/near"]
+    walletR["/wallet · /card · /link"]
+    providersR["POST /providers/:provider/link"]
+    webhook["POST /webhooks/stripe"]
+  end
+
+  subgraph services["Services and jobs (server/src)"]
+    zoneLookup["zoneLookup + quote + placeClassification"]
+    pending["pendingSession (rules)"]
+    gate{{"MONEY GATE · runStart<br/>caps (policyFor) · dry run · quote/zone/dry-run as shown<br/>CAS before it: parked.ts confirm · location.ts walk-away<br/>one open session: unique index"}}
+    applyExt["applyExtension<br/>own cap check · advisory lock"]
+    extendTick["jobs/extendTick (60 s)<br/>only while the phone is away"]
+    holds["wallet/holds<br/>hold → settle"]
+    issuing["issuing.decideAuthorization<br/>daily cap · hold claim"]
+    linkWallet["link/linkWallet<br/>spend request (garages only)"]
+    linkWorker["jobs/linkWorker"]
+    healthTick["jobs/providerHealthTick"]
+    ledger[("decisions ledger")]
+    execGate["ExecutorGate + CircuitBreaker<br/>DRY_RUN → DryRunExecutor"]
+  end
+
+  subgraph providers["Providers"]
+    passport["executor/src/passport (ParkBoston)"]
+    parknyc["executor/src/parknyc (ParkNYC)"]
+    stripe["Stripe (holds, Issuing)"]
+    stripeLink["Stripe Link"]
+    garagesExt["SpotHero · ParkWhiz (read-only)"]
+  end
+
+  detector --> classifier --> parked
+  outbox -. "offline, Idempotency-Key" .-> parked
+  lifecycle --> location
+  lifecycle --> confirm
+  lifecycle --> decline
+  classifier --> garagesR
+  sessionUI --> sessExtend
+  sessionUI --> sessStop
+  assistantUI --> asst
+  walletUI --> walletR
+  linkUI --> providersR
+
+  parked --> zoneLookup
+  parked --> pending
+  location --> pending
+  confirm --> pending
+  pending -- "startParkSession → start" --> gate
+  sessStart -- "start" --> gate
+  asst -. "street plan: start_via_app, pays nothing" .-> lifecycle
+  asst -- "garage plan" --> linkWallet --> stripeLink
+  asst --> garagesExt
+
+  gate --> holds --> stripe
+  gate --> execGate
+  sessExtend -. "bypasses the gate" .-> applyExt
+  extendTick -. "bypasses the gate" .-> applyExt
+  applyExt --> holds
+  applyExt --> execGate
+  sessStop -. "no money: stop" .-> execGate
+  location -. "return / drive-off: endSession" .-> execGate
+  execGate --> passport
+  execGate --> parknyc
+  stripe --> webhook --> issuing --> holds
+
+  providersR --> linkWorker --> execGate
+  healthTick --> execGate
+
+  gate --> ledger
+  applyExt --> ledger
+  pending --> ledger
+
+  subgraph pp["pending_parks state machine (server/src/services/pendingSession.ts)"]
+    direction TB
+    at_car(["at_car"])
+    prompted(["prompted"])
+    confirmed(["confirmed"])
+    starting(["starting"])
+    started(["started"])
+    ended(["ended"])
+    free(["free"])
+    start_failed(["start_failed"])
+    declined(["declined"])
+    cancelled(["cancelled"])
+    superseded(["superseded"])
+    covered(["covered"])
+    expired(["expired"])
+
+    at_car -- "phone left: two fixes clear, or left_car" --> prompted
+    at_car -- "tap at the car (waits for the walk-away)" --> confirmed
+    prompted -- "tap: CAS → starting" --> starting
+    confirmed -- "walk-away: CAS → starting" --> starting
+    starting -- "start ok (via the money gate)" --> started
+    starting -- "start refused or failed" --> start_failed
+    starting -- "quote now $0" --> free
+    started -- "back at the car 60 s, or drive-off" --> ended
+    at_car -- "returned or drove off before paying" --> cancelled
+    prompted -- "Not now · Wrong spot" --> declined
+    at_car -- "a newer /parked" --> superseded
+    prompted -- "a running session already covers it" --> covered
+    prompted -- "no tap in time" --> expired
+  end
+
+  pending -. "applies" .-> pp

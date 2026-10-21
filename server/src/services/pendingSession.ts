@@ -51,6 +51,11 @@ export const PARK_OPEN = ["at_car", "confirmed", "prompted", "starting"];
 /** …and those a newer park takes the place of. Never one mid-start: its
  * session may be seconds from existing. */
 export const PARK_SUPERSEDABLE = ["at_car", "confirmed", "prompted"];
+/** …and those a session for the park may still be linked to: one already
+ * started (a later start for the same park), or one closed before its
+ * start's reply was in (swept as failed, or superseded). Any other park
+ * that is over stays over. */
+export const PARK_RELINKABLE = ["started", "start_failed", "superseded"];
 /** Every state, for "this user's newest park, whatever became of it". */
 export const PARK_STATUSES = [
   ...PARK_OPEN,
@@ -516,7 +521,8 @@ export async function settlePark(
 /**
  * The lifecycle row of a session: its park's, or one made for a session
  * that started outside the lifecycle (an older build). Null when the
- * session has no car fix to measure from.
+ * session has no car fix to measure from, or when its park is over and
+ * can't take a session (declined, cancelled, expired, …).
  */
 export async function lifecycleOf(db: AppDb, session: SessionRow): Promise<PendingParkRow | null> {
   const own = await db.pendingPark.findUnique({ where: { sessionId: session.id } });
@@ -528,11 +534,17 @@ export async function lifecycleOf(db: AppDb, session: SessionRow): Promise<Pendi
   try {
     if (earlier) {
       // Its own park's row, never linked (a start that ran outside the
-      // tap): the same park, now with its session.
-      return await db.pendingPark.update({
-        where: { id: earlier.id },
+      // tap, or whose reply was lost): the same park, now with its
+      // session, moved only from the state it was read in.
+      if (!PARK_RELINKABLE.includes(earlier.status)) return null;
+      const linked = await db.pendingPark.updateMany({
+        where: { id: earlier.id, status: earlier.status },
         data: { status: "started", sessionId: session.id, closedAt: null },
       });
+      // Moved meanwhile: linked by another request, or closed.
+      return linked.count === 1
+        ? db.pendingPark.findUnique({ where: { id: earlier.id } })
+        : db.pendingPark.findUnique({ where: { sessionId: session.id } });
     }
     return await db.pendingPark.create({
       data: {

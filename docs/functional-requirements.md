@@ -324,7 +324,8 @@ Evidence: live FR-12 test at a $5.50/$9.00 Financial District block;
 `POST /session/start` is the only money-moving path for street parking.
 A park held for its walk-away (FR-55) reaches that same path through its
 tap, `POST /parked/:id/confirm`, and through nothing else: the route
-itself refuses a held park (`409 park_awaits_walk_away`).
+itself refuses a held park (`409 park_awaits_walk_away`), and one that is
+over (`409 park_closed`).
 It refuses before the executor when policy says no (max stay, free
 period, caps), when the zone has no number, or when the caller has no
 linked provider account (`409 provider_not_linked`, dry run included —

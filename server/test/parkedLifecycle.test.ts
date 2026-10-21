@@ -25,6 +25,7 @@ import {
   makeTestApp,
   parkedBody,
   seedProviderAccount,
+  seedSession,
 } from "./helpers.js";
 
 const HEADERS = { "x-api-key": API_KEY };
@@ -556,6 +557,64 @@ test("POST /session/start can't go around the lifecycle: a waiting park is paid 
     kind: "session_start",
     rule: "park_awaits_walk_away",
   });
+});
+
+test("…and a park that is over is never paid through it: declined, expired, superseded, cancelled", async () => {
+  type T = ReturnType<typeof makeApp>;
+  const closers: Record<string, (t: T, parkedEventId: string) => Promise<unknown>> = {
+    declined: (t, id) => post(t.app, `/parked/${id}/decline`, {}),
+    // Nobody walked away within the hour: closed by the start's own read.
+    expired: async (t) => t.tick(61 * 60),
+    superseded: async (t) => {
+      t.tick(300);
+      return park(t.app, { lat: CAR.lat + 0.01, ts: t.clock.now.toISOString() });
+    },
+    cancelled: async (t) => {
+      t.tick(90);
+      return post(t.app, "/location", fix(t, 6, { event: "returned_to_car" }));
+    },
+  };
+  for (const [status, close] of Object.entries(closers)) {
+    const t = makeApp();
+    const parked = await park(t.app);
+    await close(t, parked.parkedEventId);
+
+    const direct = await post(t.app, "/session/start", {
+      parkedEventId: parked.parkedEventId,
+      zoneId: "nyc-417371",
+    });
+    expect(direct.statusCode, status).toBe(409);
+    expect(direct.json(), status).toMatchObject({ error: "park_closed", parkStatus: status });
+    expect(t.state.pendingParks[0]!.status, status).toBe(status);
+    expect(t.calls.start, status).toBe(0);
+    expect(t.state.sessions, status).toEqual([]);
+    expect(t.state.decisions.at(-1), status).toMatchObject({
+      kind: "session_start",
+      rule: "park_closed",
+    });
+  }
+});
+
+test("a session for a park that is over doesn't reopen it: the closed park stays closed", async () => {
+  const t = makeApp();
+  const parked = await park(t.app);
+  await post(t.app, `/parked/${parked.parkedEventId}/decline`, {});
+  // A session for it all the same (made before /session/start refused
+  // closed parks): its fixes are stored, and the declined park stays so.
+  const session = seedSession(t.state, {
+    status: "active",
+    parkedEventId: parked.parkedEventId,
+    carLat: CAR.lat,
+    carLng: CAR.lng,
+    startedAt: t.clock.now,
+    expiresAt: new Date(t.clock.now.getTime() + 90 * 60_000),
+  });
+  t.tick(30);
+  const res = await post(t.app, "/location", fix(t, 200));
+  expect(res.statusCode).toBe(200);
+  expect(res.json()).toMatchObject({ sessionId: session.id });
+  expect(t.state.pendingParks).toHaveLength(1);
+  expect(t.state.pendingParks[0]).toMatchObject({ status: "declined", sessionId: null });
 });
 
 // ------------------------------------------------------------ whose car

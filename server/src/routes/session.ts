@@ -15,7 +15,7 @@ import { z } from "zod";
 import type { AppDeps } from "../app.js";
 import { policyFor } from "../services/limits.js";
 import { executorOutcome } from "../services/executor.js";
-import { PARK_OPEN } from "../services/pendingSession.js";
+import { PARK_OPEN, settlePark } from "../services/pendingSession.js";
 import type { SessionRow } from "../db.js";
 import { cityForZone, providerForCity, providerStatusUsable } from "../providers/registry.js";
 import {
@@ -730,29 +730,34 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
     const user = req.authedUser!;
     // A park that waits for the walk-away (FR-55) is paid only through its
     // own tap, POST /parked/:id/confirm: this route knows neither whether
-    // the phone has left the car nor what amount the driver was shown.
-    const waiting = await deps.db.pendingPark.findUnique({
+    // the phone has left the car nor what amount the driver was shown. One
+    // that is over (declined, cancelled, superseded, expired, failed, …)
+    // is never paid from again. Only a park whose session started passes,
+    // and the start's own one-session rule answers for that.
+    const held = await deps.db.pendingPark.findUnique({
       where: { parkedEventId: parsed.data.parkedEventId },
     });
-    if (waiting && waiting.userId === user.id && PARK_OPEN.includes(waiting.status)) {
+    const park = held && held.userId === user.id ? await settlePark(deps, held, now()) : null;
+    if (park && park.status !== "started") {
+      const error = PARK_OPEN.includes(park.status) ? "park_awaits_walk_away" : "park_closed";
       const decision = await deps.db.decision.create({
         data: {
           kind: "session_start",
           inputs: {
             body: parsed.data,
-            parkStatus: waiting.status,
+            parkStatus: park.status,
             dryRun: deps.policy.effectiveDryRun(),
             policyHash: deps.policy.hash(),
           },
-          rule: "park_awaits_walk_away",
+          rule: error,
           outcome: { allowed: false },
           userId: user.id,
           parkedEventId: parsed.data.parkedEventId,
         },
       });
       return reply.code(409).send({
-        error: "park_awaits_walk_away",
-        parkStatus: waiting.status,
+        error,
+        parkStatus: park.status,
         decisionId: decision.id,
       });
     }

@@ -1177,7 +1177,11 @@ failed closes it (`start_failed`): whether that charged is unknown, so
 this park is not paid from again.
 
 `POST /session/start` for a held park that is still waiting answers
-`409 park_awaits_walk_away`: the tap is the only way to pay it.
+`409 park_awaits_walk_away`: the tap is the only way to pay it. One that
+is over (declined, cancelled, superseded, expired, `start_failed`, …,
+including one that runs out of time on that very request) answers
+`409 park_closed {parkStatus}` and is never paid. Only a park whose
+session started gets through, to the start's own one-session rule.
 
 ### POST /parked/:id/decline
 

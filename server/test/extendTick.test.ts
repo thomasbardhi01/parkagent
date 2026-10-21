@@ -174,6 +174,22 @@ test("daily budget exhausted: hold and warn with reason budget", async () => {
   expect(pushes[0]!.push.extra).toMatchObject({ reason: "budget" });
 });
 
+test("dry run: the daily budget counts what dry runs recorded today, and holds as a real run would", async () => {
+  const { state, extender, pushes } = makeTickApp();
+  // $60 a day: $59.95 of it on this session and an earlier one, all dry run.
+  seedSession(state, { status: "stopped", dryRun: true, amountUsd: 56, feeUsd: 0.3 });
+  const session = activeSession(state);
+  addFixes(state, session.id, [100, 300, 600]);
+
+  await extender.tick();
+
+  expect(lastTick(state).rule).toBe("hold_daily_cap");
+  expect(lastTick(state).inputs).toMatchObject({ dryRun: true });
+  expect(lastTick(state).inputs["spentTodayUsd"]).toBeCloseTo(59.95);
+  expect(session.extendCount).toBe(0);
+  expect(pushes.at(-1)!.push.extra).toMatchObject({ reason: "budget" });
+});
+
 test("a fresh contrary decision is held for five minutes", async () => {
   const { state, extender } = makeTickApp();
   const session = activeSession(state, {

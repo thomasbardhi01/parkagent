@@ -377,6 +377,141 @@ test("a stop the provider refuses leaves the session running, and it is never ex
   );
 });
 
+// ------------------------------------------------------------ driving off, and what isn't a return
+
+test("back at the car and driving off inside a minute ends the session: ended_drove_off, nothing more bought", async () => {
+  const t = makeApp();
+  const extender = makeExtender({ ...t.deps, log: { info() {}, warn() {} } });
+  const { parkedEventId, session } = await paidAndAway(t);
+
+  // In the seat, and gone 25 s later: no minute at the car, and no
+  // automotive report reached the server.
+  t.tick(120);
+  await post(t.app, "/location", fix(t, 8, { speedMps: 0.3 }));
+  t.tick(25);
+  const pulling = await post(t.app, "/location", fix(t, 90, { speedMps: 8 }));
+  expect(pulling.json()["ended"]).toBeUndefined();
+  t.tick(8);
+  const gone = await post(t.app, "/location", fix(t, 170, { speedMps: 11 }));
+  expect(gone.json()).toMatchObject({
+    sessionId: session.id,
+    ended: { reason: "returned", stopped: true },
+  });
+  expect(t.calls.stop).toBe(1);
+  expect(session.status).toBe("stopped");
+  expect(t.state.pendingParks[0]!.status).toBe("ended");
+  const ended = t.state.decisions.filter((d) => d.kind === "session_end_return");
+  expect(ended).toHaveLength(1);
+  expect(ended[0]).toMatchObject({
+    rule: "ended_drove_off",
+    sessionId: session.id,
+    parkedEventId,
+    outcome: expect.objectContaining({ stopped: true }),
+  });
+  expect(ended[0]!.inputs).toMatchObject({
+    why: "drove_off",
+    fix: expect.objectContaining({ speedMps: 11 }),
+  });
+
+  // Near the end of what was paid, driving around town: nothing is bought.
+  t.clock.now = new Date(session.expiresAt!.getTime() - 5 * 60_000);
+  await post(t.app, "/location", fix(t, 2_400, { speedMps: 12 }));
+  await extender.tick();
+  expect(t.calls.extend).toBe(0);
+  expect(session.extendCount).toBe(0);
+});
+
+test("a drive-off from a phone that gives no speed is read by pace; where the provider can't stop early it is ended", async () => {
+  const t = makeApp({
+    candidates: [BOYLSTON],
+    zones: [BOYLSTON_ZONE],
+    seedLinkedProvider: false,
+  });
+  seedProviderAccount(t.state, { provider: "passport" });
+  const { session } = await paidAndAway(t);
+  t.tick(120);
+  await post(t.app, "/location", fix(t, 6));
+  t.tick(15);
+  await post(t.app, "/location", fix(t, 120));
+  // 160 m in 12 s.
+  t.tick(12);
+  const gone = await post(t.app, "/location", fix(t, 280));
+  expect(gone.json()).toMatchObject({ ended: { reason: "returned", stopped: false } });
+  expect(t.calls.stop).toBe(0);
+  expect(session.status).toBe("stopped");
+  expect(t.state.sessionEvents.at(-1)).toMatchObject({ kind: "ended_at_return" });
+  expect(t.state.decisions.filter((d) => d.kind === "session_end_return").at(-1)).toMatchObject({
+    rule: "ended_drove_off",
+    outcome: { stopped: false, paidUntil: session.expiresAt!.toISOString() },
+  });
+});
+
+test("back at the car for a bag and off on foot again is no drive-off, nor is a bus ride after it", async () => {
+  for (const speed of [true, false]) {
+    const t = makeApp();
+    const { session } = await paidAndAway(t);
+    const at = (metres: number, mps: number) => fix(t, metres, speed ? { speedMps: mps } : {});
+    t.tick(120);
+    await post(t.app, "/location", at(8, 0.4));
+    // Walking off again: 25 m in 20 s.
+    t.tick(20);
+    await post(t.app, "/location", at(60, 1.3));
+    t.tick(20);
+    await post(t.app, "/location", at(85, 1.3));
+    // Later, a bus: fast, and clear of the car, but nobody came back to it.
+    t.tick(300);
+    await post(t.app, "/location", at(600, 9));
+    t.tick(12);
+    const bus = await post(t.app, "/location", at(720, 10));
+    expect(bus.json()["ended"]).toBeUndefined();
+    expect(session.status).toBe("active");
+    expect(t.calls.stop).toBe(0);
+    expect(t.state.decisions.some((d) => d.kind === "session_end_return")).toBe(false);
+  }
+});
+
+test("between the two fixes of a drive-off, the extension worker doesn't read driving as away", async () => {
+  const t = makeApp();
+  const extender = makeExtender({ ...t.deps, log: { info() {}, warn() {} } });
+  const { session } = await paidAndAway(t);
+  t.clock.now = new Date(session.expiresAt!.getTime() - 6 * 60_000);
+  await post(t.app, "/location", fix(t, 8, { speedMps: 0.2 }));
+  t.tick(20);
+  await post(t.app, "/location", fix(t, 150, { speedMps: 9 }));
+  await extender.tick();
+  expect(t.calls.extend).toBe(0);
+  expect(t.state.decisions.filter((d) => d.kind === "extend_tick").at(-1)!.rule).toBe(
+    "hold_position_unknown",
+  );
+});
+
+test("one measurement beside the car, re-sent by the heartbeat for a minute, is not a return", async () => {
+  const t = makeApp();
+  const { session } = await paidAndAway(t);
+  // Walking past the car: one fix within 30 m, then the phone goes quiet
+  // and re-sends it with a fresh report time.
+  t.tick(120);
+  const measuredAt = t.clock.now.toISOString();
+  const past = fix(t, 10, { measuredAt });
+  await post(t.app, "/location", past);
+  for (let i = 0; i < 4; i += 1) {
+    t.tick(20);
+    const again = await post(t.app, "/location", { ...past, ts: t.clock.now.toISOString() });
+    expect(again.json()["ended"]).toBeUndefined();
+  }
+  expect(session.status).toBe("active");
+  expect(t.calls.stop).toBe(0);
+
+  // A second measurement there, a minute after the first, is a return.
+  t.tick(1);
+  const stayed = await post(t.app, "/location", fix(t, 6));
+  expect(stayed.json()).toMatchObject({ ended: { reason: "returned", stopped: true } });
+  expect(t.state.decisions.filter((d) => d.kind === "session_end_return").at(-1)).toMatchObject({
+    rule: "stopped_at_return",
+    inputs: expect.objectContaining({ why: "near_for_60s" }),
+  });
+});
+
 // ------------------------------------------------------------ the car moved without a return being seen
 
 /** A second park, a kilometre north of the first. */

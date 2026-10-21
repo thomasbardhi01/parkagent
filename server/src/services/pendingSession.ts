@@ -84,12 +84,14 @@ export const FIX_USABLE_ACCURACY_M = 65;
 export const LEAVE_CONFIRM_MS = 10_000;
 /** …and no faster than this between them. A car pulling away covers the
  * same ground as a driver on foot, only quicker, and it is not a
- * walk-away. */
+ * walk-away. A fix whose own speed (the phone's `speedMps`) is over it is
+ * a moving car: it never counts toward leaving. */
 export const MAX_WALK_MPS = 3;
 /** The app's "left the car" is refused only by a sharp fix this close. */
 export const DOOR_RADIUS_M = 10;
 export const DOOR_ACCURACY_M = 20;
-/** A report older than this describes where the phone was. */
+/** A report, or a measurement, older than this describes where the phone
+ * was. */
 export const LIFECYCLE_FIX_MAX_AGE_MS = 5 * 60_000;
 /** A park nobody walked away from in this long is not asked about. */
 export const PARK_TTL_MS = 60 * 60_000;
@@ -115,8 +117,18 @@ export interface WalkState {
   farAt: Date | null;
   /** How far from the car that first measurement was. */
   farDistanceM: number | null;
-  /** Since when every usable fix has been at the car. */
+  /** Since when every usable fix has been at the car (measured). */
   nearSince: Date | null;
+  /** After leaving: the last measurement that had the phone at the car,
+   * kept until the phone is seen walking away from it again. Driving off
+   * is told from it. */
+  backAt: Date | null;
+  /** After `backAt`: the first fix clear of the car not at a walk, its
+   * distance, and its speed when the phone gave one. A second one makes a
+   * drive-off. */
+  driveAt: Date | null;
+  driveDistanceM: number | null;
+  driveSpeedMps: number | null;
 }
 
 export interface WalkFix {
@@ -127,6 +139,9 @@ export interface WalkFix {
   /** When it was measured. The app re-sends its last fix on a heartbeat
    * with a fresh report time: the same measurement, not a second one. */
   measuredAt: Date;
+  /** The phone's own speed at the fix (CLLocation.speed); null or absent
+   * when it gave none. */
+  speedMps?: number | null | undefined;
   event?: PhoneEvent | undefined;
 }
 
@@ -137,7 +152,8 @@ export interface WalkStep {
   state: WalkState;
   /** This fix is the one that showed the phone leaving the car. */
   left: boolean;
-  /** …or back at it, after having left. */
+  /** …or back at it, after having left (`drove_off`: back, and gone again
+   * in the car). */
   returned: boolean;
   /** Driving again without the phone ever having left. */
   droveOff: boolean;
@@ -149,14 +165,19 @@ export interface WalkStep {
  *
  * Leaving: two separate measurements clear of the car even allowing for
  * their own error, at walking pace between them, or the app's own report
- * (on foot) unless a sharp fix has it at the door.
- * Returning: the app's report beside the car, or a minute within reach of
- * it — and that only after a fix put the phone clear of the car, so a
- * driver whose errand is right beside the car isn't "back" the whole time.
+ * (on foot) unless a sharp fix has it at the door. A fix at driving speed
+ * is never part of leaving.
+ * Returning: the app's report beside the car, or a minute of measurements
+ * within reach of it — and that only after a fix put the phone clear of
+ * the car, so a driver whose errand is right beside the car isn't "back"
+ * the whole time. Or driving off: a measurement at the car, then two clear
+ * of it faster than anyone walks.
  */
 export function advanceWalk(before: WalkState, fix: WalkFix): WalkStep {
   const state = { ...before };
   const usable = fix.accuracyM <= FIX_USABLE_ACCURACY_M;
+  const speed = typeof fix.speedMps === "number" && fix.speedMps >= 0 ? fix.speedMps : null;
+  const fast = speed !== null && speed > MAX_WALK_MPS;
   const near = usable && fix.distanceM <= AT_CAR_RADIUS_M;
   const clear = usable && fix.distanceM - fix.accuracyM > AT_CAR_RADIUS_M;
   const step = (extra: Partial<WalkStep>): WalkStep => ({
@@ -167,9 +188,37 @@ export function advanceWalk(before: WalkState, fix: WalkFix): WalkStep {
     why: null,
     ...extra,
   });
+  const forgetDrive = () => {
+    state.driveAt = null;
+    state.driveDistanceM = null;
+    state.driveSpeedMps = null;
+  };
+  const leave = (why: WalkReason) => {
+    state.leftCarAt = fix.at;
+    state.nearSince = null;
+    state.backAt = null;
+    forgetDrive();
+    return step({ left: true, why });
+  };
 
   if (state.leftCarAt === null) {
     if (fix.event === "returned_to_car") return step({ droveOff: true, why: "drove_off" });
+    if (fast) {
+      // In a moving car: nothing about it is a driver on foot, and the
+      // pair it would have finished starts over.
+      state.farAt = null;
+      state.farDistanceM = null;
+      return step({});
+    }
+    const atTheDoor = usable && fix.accuracyM <= DOOR_ACCURACY_M && fix.distanceM <= DOOR_RADIUS_M;
+    if (fix.event === "left_car" && !atTheDoor) {
+      // The app's own word first, even on a fix that also finishes a pair:
+      // only it starts an early Pay. On foot, not necessarily far: a
+      // return by distance waits for a fix that is clear of the car.
+      state.farAt = clear ? fix.measuredAt : null;
+      state.farDistanceM = clear ? fix.distanceM : null;
+      return leave("left_car_event");
+    }
     if (clear) {
       const first = state.farAt;
       const sinceMs = first === null ? 0 : fix.measuredAt.getTime() - first.getTime();
@@ -183,11 +232,7 @@ export function advanceWalk(before: WalkState, fix: WalkFix): WalkStep {
       } else if (sinceMs >= LEAVE_CONFIRM_MS) {
         const paceMps =
           Math.abs(fix.distanceM - (state.farDistanceM ?? fix.distanceM)) / (sinceMs / 1000);
-        if (paceMps <= MAX_WALK_MPS) {
-          state.leftCarAt = fix.at;
-          state.nearSince = null;
-          return step({ left: true, why: "fix_away" });
-        }
+        if (paceMps <= MAX_WALK_MPS) return leave("fix_away");
         // Too fast for someone on foot. This measurement is the first of
         // the next pair; a car that keeps driving never makes one.
         state.farAt = fix.measuredAt;
@@ -197,16 +242,6 @@ export function advanceWalk(before: WalkState, fix: WalkFix): WalkStep {
     } else if (usable) {
       state.farAt = null;
       state.farDistanceM = null;
-    }
-    const atTheDoor = usable && fix.accuracyM <= DOOR_ACCURACY_M && fix.distanceM <= DOOR_RADIUS_M;
-    if (fix.event === "left_car" && !atTheDoor) {
-      state.leftCarAt = fix.at;
-      // On foot, not necessarily far: a return by distance waits for a fix
-      // that is clear of the car.
-      state.farAt = clear ? fix.measuredAt : null;
-      state.farDistanceM = clear ? fix.distanceM : null;
-      state.nearSince = null;
-      return step({ left: true, why: "left_car_event" });
     }
     return step({});
   }
@@ -218,19 +253,58 @@ export function advanceWalk(before: WalkState, fix: WalkFix): WalkStep {
   if (fix.event === "returned_to_car" && usable && fix.distanceM <= RETURN_EVENT_RADIUS_M) {
     return step({ returned: true, why: "returned_event" });
   }
-  if (near) {
-    state.nearSince ??= fix.at;
-    if (state.farAt !== null && fix.at.getTime() - state.nearSince.getTime() >= RETURN_DWELL_MS) {
+  if (near && !fast) {
+    // Measured, not reported: the heartbeat's re-send of one measurement
+    // beside the car is not a minute there.
+    state.nearSince ??= fix.measuredAt;
+    state.backAt = fix.measuredAt;
+    forgetDrive();
+    if (
+      state.farAt !== null &&
+      fix.measuredAt.getTime() - state.nearSince.getTime() >= RETURN_DWELL_MS
+    ) {
       return step({ returned: true, why: "near_for_60s" });
     }
-  } else if (usable) {
-    state.nearSince = null;
+    return step({});
   }
+  if (!usable) return step({});
+  state.nearSince = null;
+  if (!clear || state.backAt === null) {
+    forgetDrive();
+    return step({});
+  }
+  // Clear of the car after a measurement at it: back in the car and
+  // driving off, or on foot again.
+  if (speed !== null && !fast) {
+    state.backAt = null;
+    forgetDrive();
+    return step({});
+  }
+  if (state.driveAt === null) {
+    state.driveAt = fix.measuredAt;
+    state.driveDistanceM = fix.distanceM;
+    state.driveSpeedMps = speed;
+    return step({});
+  }
+  const sinceMs = fix.measuredAt.getTime() - state.driveAt.getTime();
+  // The first measurement sent again, or one from before it.
+  if (sinceMs <= 0 || fix.distanceM === state.driveDistanceM) return step({});
+  const firstFast = state.driveSpeedMps !== null && state.driveSpeedMps > MAX_WALK_MPS;
+  if (fast && firstFast) return step({ returned: true, why: "drove_off" });
+  // Without the phone's speed for both, the pace between them decides,
+  // over long enough that one GPS jump doesn't.
+  if (sinceMs < LEAVE_CONFIRM_MS) return step({});
+  const paceMps = Math.abs(fix.distanceM - (state.driveDistanceM ?? 0)) / (sinceMs / 1000);
+  if (paceMps > MAX_WALK_MPS) return step({ returned: true, why: "drove_off" });
+  // At a walk: on foot again.
+  state.backAt = null;
+  forgetDrive();
   return step({});
 }
 
 /** Whether a fix may be read at all for this park: measured after the car
- * stopped, and reported now. Anything else describes another moment. */
+ * stopped, measured lately, and reported now. Anything else describes
+ * another moment. */
 export function fixCountsFor(
   parkedAt: Date,
   measuredAt: Date,
@@ -239,6 +313,7 @@ export function fixCountsFor(
 ): boolean {
   return (
     measuredAt.getTime() >= parkedAt.getTime() &&
+    now.getTime() - measuredAt.getTime() <= LIFECYCLE_FIX_MAX_AGE_MS &&
     Math.abs(now.getTime() - reportedAt.getTime()) <= LIFECYCLE_FIX_MAX_AGE_MS
   );
 }
@@ -480,6 +555,10 @@ export const walkStateOf = (park: PendingParkRow): WalkState => ({
   farAt: park.farAt,
   farDistanceM: park.farDistanceM,
   nearSince: park.nearSince,
+  backAt: park.backAt,
+  driveAt: park.driveAt,
+  driveDistanceM: park.driveDistanceM,
+  driveSpeedMps: park.driveSpeedMps,
 });
 
 /** A fix as a decisions row records it. */
@@ -489,6 +568,7 @@ export interface FixRecord {
   accuracyM: number;
   ts: string;
   measuredAt?: string;
+  speedMps?: number;
   distanceM: number;
   event?: PhoneEvent;
 }
@@ -577,9 +657,17 @@ interface StartLeft {
  * still be paid for, and the park keeps waiting. Pending past the
  * deadline, or none: nothing will pay it, and the park is `start_failed`;
  * a pending session that old is one whose start died with the process
- * that ran it.
+ * that ran it. So is one whose start `threw` here: it is that start's own
+ * (one start runs per park, under the `starting` compare-and-set, and a
+ * user has one open session at most), and nothing is left to answer for
+ * it.
  */
-async function afterStart(db: AppDb, park: PendingParkRow, at: Date): Promise<StartLeft> {
+async function afterStart(
+  db: AppDb,
+  park: PendingParkRow,
+  at: Date,
+  opts: { threw?: boolean } = {},
+): Promise<StartLeft> {
   const made =
     park.parkedEventId === null
       ? null
@@ -593,7 +681,7 @@ async function afterStart(db: AppDb, park: PendingParkRow, at: Date): Promise<St
   if (made?.status === "active") {
     return { next: { status: "started", sessionId: made.id }, stalePending: null };
   }
-  if (made && at.getTime() - made.createdAt.getTime() < START_DEADLINE_MS) {
+  if (made && !opts.threw && at.getTime() - made.createdAt.getTime() < START_DEADLINE_MS) {
     return { next: null, stalePending: null };
   }
   return { next: { status: "start_failed", closedAt: at }, stalePending: made };
@@ -749,6 +837,9 @@ export async function endSession(
   args: { reason: SessionEnd["reason"]; why: string; fix?: FixRecord; at: Date },
 ): Promise<SessionEnd> {
   const paidUntil = session.expiresAt?.toISOString() ?? null;
+  // Back at the car and gone again before a return was seen: one rule
+  // for it, whichever way the session ended (`outcome.stopped` says).
+  const droveOff = args.why === "drove_off";
   const row = (rule: string, outcome: Record<string, unknown>) =>
     deps.db.decision.create({
       data: {
@@ -762,7 +853,7 @@ export async function endSession(
           dryRun: deps.policy.effectiveDryRun(),
           policyHash: deps.policy.hash(),
         },
-        rule,
+        rule: droveOff ? "ended_drove_off" : rule,
         outcome,
         userId: session.userId,
         sessionId: session.id,
@@ -938,17 +1029,18 @@ export async function startParkSession(
   };
   const sessionIdOf = (body: Record<string, unknown>) =>
     typeof body["sessionId"] === "string" ? body["sessionId"] : null;
-  /** A session pending past the deadline goes with its closed park. */
-  const failStale = async (session: SessionRow) => ({
-    reason: "stale_pending",
+  /** A session pending past the deadline, or left by a start that threw,
+   * goes with its closed park. */
+  const failStale = async (session: SessionRow, reason = "stale_pending") => ({
+    reason,
     staleSessionId: session.id,
     sessionFailed: await failStalePending(deps.db, session),
   });
   /** Settle as `afterStart` said: left `starting` when its next is null. */
-  const settleAfterStart = async (left: StartLeft) => {
+  const settleAfterStart = async (left: StartLeft, reason?: string) => {
     if (left.next === null) return null;
     const moved = await settle(left.next);
-    return moved.count === 1 && left.stalePending ? failStale(left.stalePending) : null;
+    return moved.count === 1 && left.stalePending ? failStale(left.stalePending, reason) : null;
   };
 
   const user = { id: park.userId };
@@ -1019,11 +1111,13 @@ export async function startParkSession(
   } catch (err) {
     // The start itself blew up. If the provider was never asked, nothing
     // was charged and the park goes back to waiting: for its tap, or (an
-    // early tap) for the next two fixes that show the phone away. If it
-    // was asked, whether it charged is unknown, unless its session says.
+    // early tap) for the app's next on-foot report, or a prompt from the
+    // next fixes that show the phone away. If it was asked, whether it
+    // charged is unknown, unless its session says; nothing else will
+    // answer for a session it left pending, so the park doesn't wait on it.
     const reached = (err as { reachedProvider?: boolean }).reachedProvider === true;
     const left: StartLeft = reached
-      ? await afterStart(deps.db, park, args.at).catch(() => ({
+      ? await afterStart(deps.db, park, args.at, { threw: true }).catch(() => ({
           next: { status: "start_failed", closedAt: args.at },
           stalePending: null,
         }))
@@ -1040,7 +1134,7 @@ export async function startParkSession(
                 },
           stalePending: null,
         };
-    const stale = await settleAfterStart(left).catch(() => null);
+    const stale = await settleAfterStart(left, "start_threw").catch(() => null);
     await record(
       "error",
       {

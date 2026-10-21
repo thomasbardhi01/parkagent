@@ -5,9 +5,10 @@
  * lifecycle (FR-55, services/pendingSession.ts):
  *
  *  - the phone leaving the car is when the driver is asked to pay (or,
- *    for a Pay tapped early, when the session starts);
+ *    for a Pay tapped early, when the session starts, on the app's own
+ *    on-foot report only);
  *  - the phone coming back ends the session, or cancels a park nobody
- *    paid for.
+ *    paid for, and so does coming back and driving off.
  *
  * Nothing here asks, pays, or ends anything on a fix that shows the phone
  * at the car, is older than the park, or belongs to someone else: every
@@ -50,6 +51,9 @@ const bodySchema = z.object({
   // When the fix was measured, when that isn't now: the app re-sends its
   // last fix on a heartbeat, and a re-sent fix is not a second one.
   measuredAt: z.iso.datetime({ offset: true }).optional(),
+  // The phone's own speed at the fix (CLLocation.speed), null when it had
+  // none. A fix at driving speed is never someone walking away.
+  speedMps: z.number().lte(1_000).nullable().optional(),
   // What the app itself saw: on foot after the park, or back at the car
   // (its audio reconnecting, driving again).
   event: z.enum(["left_car", "returned_to_car"]).optional(),
@@ -65,13 +69,20 @@ export function registerLocation(app: FastifyInstance, deps: AppDeps, sessions: 
     policyHash: deps.policy.hash(),
   });
 
+  /** The phone's speed, when it gave a real one (iOS reports -1 for
+   * none; the app sends null, and a negative means the same). */
+  const speedOf = (body: Body) =>
+    typeof body.speedMps === "number" && body.speedMps >= 0 ? body.speedMps : null;
+
   function measure(park: PendingParkRow, body: Body): FixRecord {
+    const speedMps = speedOf(body);
     return {
       lat: body.lat,
       lng: body.lng,
       accuracyM: body.accuracy,
       ts: body.ts,
       ...(body.measuredAt ? { measuredAt: body.measuredAt } : {}),
+      ...(speedMps !== null ? { speedMps } : {}),
       distanceM: Math.round(metersBetween(body.lat, body.lng, park.carLat, park.carLng) * 10) / 10,
       ...(body.event ? { event: body.event } : {}),
     };
@@ -89,6 +100,7 @@ export function registerLocation(app: FastifyInstance, deps: AppDeps, sessions: 
       accuracyM: fix.accuracyM,
       at: reportedAt,
       measuredAt,
+      speedMps: speedOf(body),
       event: body.event,
     });
     return { fix, step };
@@ -218,8 +230,11 @@ export function registerLocation(app: FastifyInstance, deps: AppDeps, sessions: 
       return close("covered", "street_prompt", "already_paid", { coveredBy: session.id });
     }
 
-    if (park.status === "confirmed") {
-      // Pay was tapped at the car: this is the moment it waited for.
+    if (park.status === "confirmed" && step.why === "left_car_event") {
+      // Pay was tapped at the car, and the app has the driver on foot:
+      // this is the moment it waited for. Distance alone never pays it: a
+      // car stopped at a light a block away reads like a walk-away, so
+      // that only asks again (below), and a second tap pays.
       const won = await deps.db.pendingPark.updateMany({
         where: { id: park.id, status: "confirmed" },
         data: { ...step.state, status: "starting", startingAt: at },
@@ -254,8 +269,9 @@ export function registerLocation(app: FastifyInstance, deps: AppDeps, sessions: 
       // The meters stopped charging while the car sat: nothing to ask.
       return close("free", "street_prompt", "free_now", {});
     }
+    // From at_car, or from an early Pay that distance alone can't start.
     const moved = await deps.db.pendingPark.updateMany({
-      where: { id: park.id, status: "at_car" },
+      where: { id: park.id, status: park.status },
       data: {
         ...step.state,
         status: "prompted",
@@ -272,6 +288,7 @@ export function registerLocation(app: FastifyInstance, deps: AppDeps, sessions: 
         kind: "street_prompt",
         inputs: {
           parkedEventId,
+          parkStatus: park.status,
           fix,
           parkedAt: park.parkedAt.toISOString(),
           quotedAtPark: park.quote,

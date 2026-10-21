@@ -492,6 +492,12 @@ model PendingPark {
   farAt         DateTime? @map("far_at") @db.Timestamptz(6)
   farDistanceM  Float?    @map("far_distance_m")
   nearSince     DateTime? @map("near_since") @db.Timestamptz(6)
+  // After leaving: the phone back at the car, and the first fix clear of
+  // it at more than a walk since: what a drive-off is told from.
+  backAt         DateTime? @map("back_at") @db.Timestamptz(6)
+  driveAt        DateTime? @map("drive_at") @db.Timestamptz(6)
+  driveDistanceM Float?    @map("drive_distance_m")
+  driveSpeedMps  Float?    @map("drive_speed_mps")
   promptedAt    DateTime? @map("prompted_at") @db.Timestamptz(6)
   confirmedAt   DateTime? @map("confirmed_at") @db.Timestamptz(6)
   startingAt    DateTime? @map("starting_at") @db.Timestamptz(6)

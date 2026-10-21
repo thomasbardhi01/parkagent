@@ -489,3 +489,49 @@ test("a park detected while a start is in flight doesn't orphan it: the paid par
     sessionId: t.state.sessions[0]!.id,
   });
 });
+
+test("…nor does the next fix: a park mid-start is never superseded by a newer one", async () => {
+  let release = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
+  const t = makeApp();
+  const dryStart = t.deps.executorFor({ userId: "u1", city: "nyc", dryRun: true });
+  t.deps.executorFor = () => ({
+    startSession: async (args) => {
+      await held;
+      return dryStart.startSession(args);
+    },
+    extendSession: (args) => dryStart.extendSession(args),
+    stopSession: (args) => dryStart.stopSession(args),
+  });
+
+  const parked = await post(t.app, "/parked", parkedBody({ outcomes: OUTCOMES }));
+  const id = parked.json()["parkedEventId"] as string;
+  t.tick(40);
+  await post(t.app, "/location", fix(t, 60));
+  t.tick(20);
+  await post(t.app, "/location", fix(t, 90));
+  const paying = post(t.app, `/parked/${id}/confirm`, {});
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(t.state.pendingParks[0]!.status).toBe("starting");
+
+  // A newer park elsewhere, then a fix: the newer one is what waits, and
+  // the one being paid for is left to finish.
+  const newer = await post(
+    t.app,
+    "/parked",
+    parkedBody({ outcomes: OUTCOMES, lat: ELSEWHERE.lat, ts: t.clock.now.toISOString() }),
+  );
+  t.tick(20);
+  const seat = await post(t.app, "/location", fixAt(t, 3));
+  expect(seat.json()).toMatchObject({
+    park: { parkedEventId: newer.json()["parkedEventId"], status: "at_car" },
+  });
+  expect(t.state.pendingParks[0]!.status).toBe("starting");
+
+  release();
+  expect((await paying).statusCode).toBe(200);
+  expect(t.state.pendingParks[0]).toMatchObject({
+    status: "started",
+    sessionId: t.state.sessions[0]!.id,
+  });
+});

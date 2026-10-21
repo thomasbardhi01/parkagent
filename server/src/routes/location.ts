@@ -28,6 +28,7 @@ import type { PendingParkRow, SessionRow } from "../db.js";
 import type { FixRecord, ParkPrompt } from "../services/pendingSession.js";
 import {
   PARK_OPEN,
+  PARK_SUPERSEDABLE,
   SAME_SPOT_M,
   advanceWalk,
   buildParkPrompt,
@@ -302,9 +303,10 @@ export function registerLocation(app: FastifyInstance, deps: AppDeps, sessions: 
       orderBy: { createdAt: "desc" },
     });
     if (newest) {
-      // One park waits at a time: an older one still open is over.
+      // One park waits at a time: an older one still open is over, unless
+      // it is mid-start (its session may be seconds from existing).
       await deps.db.pendingPark.updateMany({
-        where: { userId: user.id, status: { in: PARK_OPEN }, id: { not: newest.id } },
+        where: { userId: user.id, status: { in: PARK_SUPERSEDABLE }, id: { not: newest.id } },
         data: { status: "superseded", closedAt: at },
       });
     }

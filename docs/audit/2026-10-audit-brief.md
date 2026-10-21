@@ -1,8 +1,17 @@
 # ParkAgent codebase audit — brief for the auditing session
 
-Paste the "PROMPT" section below into a fresh Claude Code session opened at the repo
-root (model: Opus). Expect several hours of wall time; the session may compact more than
-once, so Phase outputs are written to disk as they finish, never held in the chat.
+**One session per phase, in a worktree, never in the main checkout.** Phases 1–5 share one
+audit worktree, made once:
+
+    git -C ~/Documents/parkagent worktree add .claude/worktrees/audit -b audit/report origin/main
+
+Open each phase as a fresh Claude Code session in that folder (model: Opus), one after
+the other, never two at once. Paste the "PROMPT" section below, then that phase's line
+from "SESSIONS". Each phase writes its file to disk as it finishes and the next session
+starts by reading the earlier ones, so no phase depends on a chat that compacted.
+Phase 3.5 is the exception: it is the only phase that writes code, and it runs in a
+worktree of its own (see SESSIONS). Remove both worktrees once their branches are merged
+or dropped.
 
 Why now: main has not moved since 2026-10-05, the nightly FR suite has been red since at
 least 2026-10-15 with every model-backed test (FR-21…FR-43, FR-38) failing together, the
@@ -18,7 +27,9 @@ weight for a Boston-first MVP.
 CODEBASE AUDIT — ParkAgent
 
 TARGET
-Repo/path: thomasbardhi01/parkagent, the checkout at ~/Documents/parkagent, branch main.
+Repo/path: thomasbardhi01/parkagent, in the audit worktree
+(~/Documents/parkagent/.claude/worktrees/audit, branch audit/report, made from main), or
+for Phase 3.5 its own worktree. Never work in the main checkout at ~/Documents/parkagent.
 Version/commit: whatever `git rev-parse HEAD` says; write it on line 1 of the report.
 What it does: an iOS app + Fastify server that detects a parked car, quotes the meter, pays
 through the driver's own ParkBoston/ParkNYC account via a Playwright executor, auto-extends,
@@ -53,8 +64,10 @@ Postgres with `DRY_RUN=true` and NO `ANTHROPIC_API_KEY` (the assistant will 503;
 fine), `gh pr view/checks/diff` and `gh run view --log-failed` (read-only).
 
 GROUND RULES
-- Read-only on code until the report is done. Don't fix anything yet. The one exception is
-  Phase 3.5 (adding tests), on a branch named `audit/tests-<area>`, never on main.
+- Read-only on code. Don't fix anything. **Phase 3.5 is the only phase that writes code**:
+  tests only, on a branch named `audit/tests-<area>` in its own worktree, never on main
+  and never in the audit worktree. Every other phase writes only its `docs/audit/2026-10/`
+  file (and Phase 5 the report).
 - Never run anything that writes to production, sends a push, charges money, deletes data,
   comments on GitHub, or merges. Dry runs and local tests only.
 - Every claim needs evidence: `file:line`, a command and its output, or a test result. What
@@ -62,8 +75,10 @@ GROUND RULES
   CLAUDE.md, API.md or a PR body says so.
 - Stop and ask before: adding a dependency, touching `.github/`, `fly.toml`, a migration,
   or anything irreversible.
-- Write each phase's output to `docs/audit/2026-10/<phase>.md` as you finish it (create the
-  folder). If the session compacts, the next turn reads those files and continues.
+- This session does ONE phase (named after this prompt) and stops. Before starting, read
+  every earlier phase's file in `docs/audit/2026-10/`. Write this phase's output to
+  `docs/audit/2026-10/<phase>.md` as you finish it (create the folder). If the session
+  compacts, the next turn reads those files and continues.
 - Use subagents to keep your own context small: `code-map` (Haiku) for sweeps and callers,
   `test-run` (Sonnet) for suites, `ci-watch` (Haiku) for GitHub logs. You keep the judgement.
 
@@ -134,10 +149,11 @@ PHASE 3 — TESTING  → `03-tests.md`
    (`gh run view <id> --log-failed`, issue #216). Determine whether the nine failing
    assistant FRs share one cause (model backend) or several. Do NOT run the FR suite
    against prod.
-3.5 Add tests for the highest-risk gaps found in Phase 2, offline only, on
-   `audit/tests-<area>`. Each new test must fail when the behaviour it covers is broken:
-   prove it by breaking the code, running, restoring, running again, and record both
-   outputs.
+3.5 (its own session and worktree; the only phase that writes code) Add tests for the
+   highest-risk gaps found in Phase 2, offline only, on `audit/tests-<area>`. Each new
+   test must fail when the behaviour it covers is broken: prove it by breaking the code,
+   running, restoring, running again, and record both outputs in
+   `docs/audit/2026-10/035-tests-added.md` in the audit worktree.
 
 PHASE 4 — SYSTEM MAP  → `04-system-map.md` (+ `04-system-map.html`)
 From the code, not the docs: a Mermaid diagram of entry points (routes, jobs, iOS
@@ -162,8 +178,31 @@ PHASE 5 — REPORT  → `docs/audit/AUDIT-2026-10.md`
 7. What to do with the three open PRs (#212, #213, #214) and the two Dependabot PRs
    (#219, #220): merge as-is, rebase, split, or close — with the reason from the code.
 
-FINISH
+FINISH (Phase 5's session)
 Re-read your own report and spot-check 5 findings against the code; delete any you
 cannot reproduce. Print the list of files you added (nothing else should have changed:
-`git status --short` must show only `docs/audit/**` and, on the tests branch, test files).
-Don't merge, don't push main, don't comment on GitHub. Stop.
+`git status --short` in the audit worktree must show only `docs/audit/**`, and in the
+Phase 3.5 worktree only test files). Don't merge, don't push main, don't comment on
+GitHub. Stop.
+
+---
+
+## SESSIONS
+
+Each is a fresh session: paste the PROMPT above, then the one line.
+
+1. In the audit worktree: "Do PHASE 1 only; write `01-inventory.md`, then stop."
+2. In the audit worktree: "Do PHASE 2 only; read `01-…`; write `02-modules.md`, then stop."
+3. In the audit worktree: "Do PHASE 3 steps 1–5 only; read `01-…`, `02-…`; write
+   `03-tests.md`, then stop."
+4. Phase 3.5, in a worktree of its own, made for the area Phase 2 rated riskiest:
+
+       git -C ~/Documents/parkagent worktree add .claude/worktrees/audit-tests-<area> -b audit/tests-<area> origin/main
+
+   "Do PHASE 3.5 only, in this worktree; read the phase files in
+   ~/Documents/parkagent/.claude/worktrees/audit/docs/audit/2026-10/; add tests only;
+   write `035-tests-added.md` there, then stop." One worktree and branch per area.
+5. In the audit worktree: "Do PHASE 4 only; read the phase files; write
+   `04-system-map.md` (+ `.html`), then stop."
+6. In the audit worktree: "Do PHASE 5 and FINISH; read every phase file; write
+   `docs/audit/AUDIT-2026-10.md`, then stop."

@@ -1335,11 +1335,13 @@ export interface AppDb {
       take?: number;
     }): Promise<SessionRow[]>;
     /** Vehicle/account deletion: detach sessions from vehicles being
-     * deleted (sessions themselves stay — they are the money audit). */
-    updateMany(args: {
-      where: { userId: string } | { vehicleId: string };
-      data: { vehicleId: null };
-    }): Promise<{ count: number }>;
+     * deleted (sessions themselves stay — they are the money audit). Or a
+     * compare-and-set of one session's status. */
+    updateMany(
+      args:
+        | { where: { userId: string } | { vehicleId: string }; data: { vehicleId: null } }
+        | { where: { id: string; status: string }; data: { status: string } },
+    ): Promise<{ count: number }>;
   };
   /** The street session lifecycle (FR-55). */
   pendingPark: {

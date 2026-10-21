@@ -1181,12 +1181,15 @@ own answers (`409 provider_not_linked`, `409 policy_violation`,
 `502 executor_failed`, …). A refusal, or an error, before the provider was
 asked leaves the park payable. A start that reached the provider and
 failed closes it (`start_failed`): whether that charged is unknown, so
-this park is not paid from again — unless the start left a session
-(pending or active) for the park, which the park then takes (`started`).
-A start with no answer in 3 minutes answers `504 start_timeout` and closes
-the park the same way; if it then pays, the park is linked to its session
-and a `late_success` decision says so. A park stuck `starting` for 10
-minutes (a crash mid-start) is swept on its next read by the same rule.
+this park is not paid from again. The session the start left decides
+first: an active one means it paid, and the park takes it (`started`); a
+pending one younger than the 3-minute start deadline may still be paid
+for, and the park stays `starting`; a pending one older than that is
+failed along with the park (`stale_pending` on the decision). A start
+with no answer in 3 minutes answers `504 start_timeout` and closes the
+park; if it then pays, the park is linked to its session and a
+`late_success` decision says so. A park stuck `starting` for 10 minutes
+(a crash mid-start) is swept on its next read by the same rule.
 
 `POST /session/start` for a held park that is still waiting answers
 `409 park_awaits_walk_away`: the tap is the only way to pay it. One that

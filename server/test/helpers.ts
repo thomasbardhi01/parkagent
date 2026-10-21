@@ -1451,7 +1451,11 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
         let count = 0;
         for (const s of state.sessions) {
           const hit =
-            "userId" in where ? s.userId === where.userId : s.vehicleId === where.vehicleId;
+            "id" in where
+              ? s.id === where.id && s.status === where.status
+              : "userId" in where
+                ? s.userId === where.userId
+                : s.vehicleId === where.vehicleId;
           if (hit) {
             Object.assign(s, data);
             count += 1;

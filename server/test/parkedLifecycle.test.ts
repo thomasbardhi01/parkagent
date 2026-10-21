@@ -1139,6 +1139,82 @@ test("a start whose park never heard back is found by the sweep: started, not fa
   ]);
 });
 
+test("a start whose session is still pending inside its deadline is left to finish: the sweep waits", async () => {
+  const t = makeApp();
+  const parked = await park(t.app);
+  await walkAway(t);
+  // Starting for eleven minutes, with a session made a minute ago (the
+  // start reached its row late): still being paid for, not paid.
+  const row = t.state.pendingParks[0]!;
+  Object.assign(row, {
+    status: "starting",
+    startingAt: new Date(t.clock.now.getTime() - 11 * 60_000),
+    zoneId: "nyc-417371",
+  });
+  const session = seedSession(t.state, {
+    userId: "u1",
+    status: "pending",
+    zoneId: "nyc-417371",
+    parkedEventId: parked.parkedEventId,
+    createdAt: new Date(t.clock.now.getTime() - 60_000),
+  });
+
+  const again = await tap(t, parked.parkedEventId);
+  expect(again.statusCode).toBe(409);
+  expect(again.json()).toMatchObject({ error: "confirm_in_progress" });
+  expect(row.status).toBe("starting");
+  expect(session.status).toBe("pending");
+  expect(lifecycleRows(t.state)).toEqual([]);
+  expect(t.calls.start).toBe(0);
+});
+
+test("a start that throws leaves its session pending: the park waits out the deadline, then the sweep fails both", async () => {
+  const crashing: Executor = {
+    startSession: async () => {
+      throw new Error("browser crashed");
+    },
+    extendSession: async () => {
+      throw new Error("not in this test");
+    },
+    stopSession: async () => {
+      throw new Error("not in this test");
+    },
+  };
+  const t = makeApp({ executor: crashing });
+  const parked = await park(t.app);
+  await walkAway(t);
+
+  expect((await tap(t, parked.parkedEventId)).statusCode).toBe(500);
+  const session = t.state.sessions[0]!;
+  expect(session.status).toBe("pending");
+  // A pending session is not a paid one: the park neither starts nor
+  // closes while it could still be paid for, and nothing is retried.
+  expect(t.state.pendingParks[0]!.status).toBe("starting");
+  const retried = await tap(t, parked.parkedEventId);
+  expect(retried.json()).toMatchObject({ error: "confirm_in_progress" });
+
+  // Ten minutes on, nothing answers for it: the park is a failed start,
+  // the session is failed with it, and the ledger says why.
+  t.tick(11 * 60);
+  const late = await tap(t, parked.parkedEventId);
+  expect(late.statusCode).toBe(409);
+  expect(late.json()).toMatchObject({ error: "park_closed", status: "start_failed" });
+  expect(session.status).toBe("failed");
+  expect(lifecycleRows(t.state)).toEqual([
+    expect.objectContaining({
+      rule: "start_stale",
+      sessionId: session.id,
+      inputs: expect.objectContaining({ previousStatus: "starting" }),
+      outcome: {
+        status: "start_failed",
+        reason: "stale_pending",
+        sessionId: session.id,
+        sessionFailed: true,
+      },
+    }),
+  ]);
+});
+
 test("a start that answers after the sweep closed its park: the park takes the session, on the ledger", async () => {
   const t = makeApp();
   const parked = await park(t.app);

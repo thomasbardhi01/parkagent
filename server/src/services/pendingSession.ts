@@ -505,8 +505,9 @@ async function recordParkChange(
   rule: string,
   at: Date,
   inputs: Record<string, unknown> = {},
+  extra: { sessionId?: string; outcome?: Record<string, unknown> } = {},
 ): Promise<void> {
-  const sessionId = next.sessionId ?? null;
+  const sessionId = next.sessionId ?? extra.sessionId ?? null;
   await deps.db.decision.create({
     data: {
       kind: "park_lifecycle",
@@ -519,7 +520,11 @@ async function recordParkChange(
         policyHash: deps.policy.hash(),
       },
       rule,
-      outcome: { status: next.status, ...(sessionId !== null ? { sessionId } : {}) },
+      outcome: {
+        status: next.status,
+        ...extra.outcome,
+        ...(sessionId !== null ? { sessionId } : {}),
+      },
       userId: park.userId,
       ...(park.parkedEventId ? { parkedEventId: park.parkedEventId } : {}),
       ...(sessionId !== null ? { sessionId } : {}),
@@ -556,17 +561,25 @@ export async function supersedeParks(
   }
 }
 
+/** Where a park goes after its start failed or never answered. */
+interface StartLeft {
+  /** Null: the park keeps waiting on a start still being paid for. */
+  next: (PendingParkWrite & { status: string }) | null;
+  /** A session pending past the start's deadline, for the caller to fail
+   * once the park is closed. */
+  stalePending: SessionRow | null;
+}
+
 /**
- * What a start that went wrong leaves its park as: `start_failed`, unless
- * a start for this park made a session after all (running, or still being
- * paid for). Then the park has that session: it is never paid twice, and
- * the return, the extension worker, and a retried tap all find it.
+ * Where a park goes when its start failed or never answered, by the
+ * session that start left for it. Active: it paid, and the park is
+ * `started` with it. Pending, younger than START_DEADLINE_MS: it may
+ * still be paid for, and the park keeps waiting. Pending past the
+ * deadline, or none: nothing will pay it, and the park is `start_failed`;
+ * a pending session that old is one whose start died with the process
+ * that ran it.
  */
-async function failedOrStarted(
-  db: AppDb,
-  park: PendingParkRow,
-  at: Date,
-): Promise<PendingParkWrite & { status: string }> {
+async function afterStart(db: AppDb, park: PendingParkRow, at: Date): Promise<StartLeft> {
   const made =
     park.parkedEventId === null
       ? null
@@ -577,17 +590,32 @@ async function failedOrStarted(
             status: { in: ["pending", "active"] },
           },
         });
-  return made
-    ? { status: "started", sessionId: made.id }
-    : { status: "start_failed", closedAt: at };
+  if (made?.status === "active") {
+    return { next: { status: "started", sessionId: made.id }, stalePending: null };
+  }
+  if (made && at.getTime() - made.createdAt.getTime() < START_DEADLINE_MS) {
+    return { next: null, stalePending: null };
+  }
+  return { next: { status: "start_failed", closedAt: at }, stalePending: made };
+}
+
+/** Fail a pending session nothing will ever answer for, from pending only:
+ * one that went active meanwhile stays active. */
+async function failStalePending(db: AppDb, session: SessionRow): Promise<boolean> {
+  const failed = await db.session.updateMany({
+    where: { id: session.id, status: "pending" },
+    data: { status: "failed" },
+  });
+  return failed.count === 1;
 }
 
 /**
  * Close what time has closed, and answer with the row as it now stands: a
  * park nobody walked away from (or answered) within the hour is not asked
  * about, and a start that never came back stops blocking the park — as a
- * failed one, since whether it charged is unknown, unless its session is
- * there to say it did.
+ * failed one, since whether it charged is unknown, unless its active
+ * session says it did, or a session still within the start's deadline
+ * says it may yet (see afterStart).
  */
 export async function settlePark(
   deps: Pick<LifecycleDeps, "db" | "policy">,
@@ -598,6 +626,7 @@ export async function settlePark(
   let next: (PendingParkWrite & { status: string }) | null = null;
   let rule = "ttl_expired";
   let inputs: Record<string, unknown> = {};
+  let stalePending: SessionRow | null = null;
   if (park.status === "at_car" || park.status === "confirmed") {
     // From when the server heard of it, not from the phone's own clock.
     if (since(park.createdAt) > PARK_TTL_MS) {
@@ -611,7 +640,7 @@ export async function settlePark(
     }
   } else if (park.status === "starting") {
     if (since(park.startingAt) > STARTING_STALE_MS) {
-      next = await failedOrStarted(deps.db, park, at);
+      ({ next, stalePending } = await afterStart(deps.db, park, at));
       rule = "start_stale";
       inputs = { startingAt: park.startingAt?.toISOString() ?? null, staleMs: STARTING_STALE_MS };
     }
@@ -621,7 +650,18 @@ export async function settlePark(
     where: { id: park.id, status: park.status },
     data: next,
   });
-  if (moved.count === 1) await recordParkChange(deps, park, next, rule, at, inputs);
+  if (moved.count === 1) {
+    const stale = stalePending
+      ? {
+          sessionId: stalePending.id,
+          outcome: {
+            reason: "stale_pending",
+            sessionFailed: await failStalePending(deps.db, stalePending),
+          },
+        }
+      : {};
+    await recordParkChange(deps, park, next, rule, at, inputs, stale);
+  }
   return (await deps.db.pendingPark.findUnique({ where: { id: park.id } })) ?? park;
 }
 
@@ -898,6 +938,18 @@ export async function startParkSession(
   };
   const sessionIdOf = (body: Record<string, unknown>) =>
     typeof body["sessionId"] === "string" ? body["sessionId"] : null;
+  /** A session pending past the deadline goes with its closed park. */
+  const failStale = async (session: SessionRow) => ({
+    reason: "stale_pending",
+    staleSessionId: session.id,
+    sessionFailed: await failStalePending(deps.db, session),
+  });
+  /** Settle as `afterStart` said: left `starting` when its next is null. */
+  const settleAfterStart = async (left: StartLeft) => {
+    if (left.next === null) return null;
+    const moved = await settle(left.next);
+    return moved.count === 1 && left.stalePending ? failStale(left.stalePending) : null;
+  };
 
   const user = { id: park.userId };
   const body = { parkedEventId, zoneId: park.zoneId as string, minutes: shown.stayMinutes };
@@ -970,29 +1022,34 @@ export async function startParkSession(
     // early tap) for the next two fixes that show the phone away. If it
     // was asked, whether it charged is unknown, unless its session says.
     const reached = (err as { reachedProvider?: boolean }).reachedProvider === true;
-    const next: PendingParkWrite & { status: string } = reached
-      ? await failedOrStarted(deps.db, park, args.at).catch(() => ({
-          status: "start_failed",
-          closedAt: args.at,
+    const left: StartLeft = reached
+      ? await afterStart(deps.db, park, args.at).catch(() => ({
+          next: { status: "start_failed", closedAt: args.at },
+          stalePending: null,
         }))
-      : args.trigger === "confirm"
-        ? { status: "prompted" }
-        : {
-            status: "confirmed",
-            leftCarAt: null,
-            farAt: null,
-            farDistanceM: null,
-            nearSince: null,
-          };
-    await settle(next).catch(() => undefined);
+      : {
+          next:
+            args.trigger === "confirm"
+              ? { status: "prompted" }
+              : {
+                  status: "confirmed",
+                  leftCarAt: null,
+                  farAt: null,
+                  farDistanceM: null,
+                  nearSince: null,
+                },
+          stalePending: null,
+        };
+    const stale = await settleAfterStart(left).catch(() => null);
     await record(
       "error",
       {
-        parkStatus: next.status,
+        parkStatus: left.next?.status ?? "starting",
         reachedProvider: reached,
         error: String(err).split("\n")[0],
+        ...stale,
       },
-      next.sessionId ?? undefined,
+      left.next?.sessionId ?? undefined,
     ).catch(() => undefined);
     throw err;
   } finally {
@@ -1020,7 +1077,8 @@ export async function startParkSession(
   }
 
   let outcome: ParkStartOutcome;
-  let next: PendingParkWrite & { status: string };
+  let next: (PendingParkWrite & { status: string }) | null;
+  let stalePending: SessionRow | null = null;
   const sessionId = sessionIdOf(reply.body);
   if (reply.status === 200 && sessionId !== null) {
     outcome = { kind: "started", body: reply.body };
@@ -1031,7 +1089,7 @@ export async function startParkSession(
     next = { status: "free", closedAt: args.at };
   } else if (reply.reachedProvider) {
     outcome = { kind: "failed", status: reply.status, body: reply.body };
-    next = await failedOrStarted(deps.db, park, args.at);
+    ({ next, stalePending } = await afterStart(deps.db, park, args.at));
   } else {
     // Nothing reached the provider: the park goes back to waiting for a
     // tap, with a prompt that says where it stands now.
@@ -1055,21 +1113,23 @@ export async function startParkSession(
               : {}),
           };
   }
-  const settled = await settle(next);
+  const moved = next === null ? null : await settle(next);
+  const stale = moved?.count === 1 && stalePending ? await failStale(stalePending) : null;
   await record(
     outcome.kind,
     {
       status: reply.status,
       reachedProvider: reply.reachedProvider,
-      parkStatus: next.status,
-      ...(settled.count === 0 ? { parkMovedOn: true } : {}),
+      parkStatus: next?.status ?? "starting",
+      ...(moved?.count === 0 ? { parkMovedOn: true } : {}),
+      ...stale,
       ...(sessionId !== null ? { sessionId } : {}),
       ...(reply.status === 200 ? {} : { error: reply.body["error"], rule: reply.body["rule"] }),
     },
     sessionId ?? undefined,
   );
   // The park stopped waiting on this start before it answered.
-  if (settled.count === 0 && outcome.kind === "started" && sessionId !== null) {
+  if (moved?.count === 0 && outcome.kind === "started" && sessionId !== null) {
     await adopt(sessionId);
   }
   return outcome;

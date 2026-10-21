@@ -17,6 +17,7 @@ import { describe, expect, test } from "vitest";
 import type { ModelClient, ModelResponse, ModelTurn } from "../src/services/assistant/loop.js";
 import type { GeocoderProvider } from "../src/services/assistant/geocoder.js";
 import { requestedTimeIn } from "../src/services/assistant/requestedTime.js";
+import type { ToolContext } from "../src/services/assistant/tools.js";
 import { API_KEY, BOYLSTON_BOS, makeTestApp } from "./helpers.js";
 
 const HEADERS = { "x-api-key": API_KEY, "content-type": "application/json" };
@@ -327,28 +328,30 @@ describe("a day's stops keep their own times", () => {
   test("build_itinerary's street quotes aren't held to the message's one requested time", async () => {
     const NOW = new Date("2026-09-28T15:00:00-04:00");
     const t = makeTestApp({ candidates: [BOYLSTON_BOS], now: () => NOW });
-    const out = await t.deps.assistantTools!.execute(
-      {
-        userId: "u1",
-        conversationId: "c1",
-        timeRequest: requestedTimeIn("dinner at 7 PM", NOW)!,
-      },
-      "build_itinerary",
-      {
-        stops: [
-          {
-            label: "Museum",
-            address: "Boylston St",
-            lat: LOLA.lat,
-            lng: LOLA.lng,
-            // Earlier than the requested 7 PM: exactly what the quote guard
-            // refuses for a single spot, and fine for a day's first stop.
-            arrival: "2026-09-28T16:00:00-04:00",
-            duration_minutes: 60,
-          },
-        ],
-      },
-    );
+    const ctx: ToolContext = {
+      userId: "u1",
+      conversationId: "c1",
+      timeRequest: requestedTimeIn("dinner at 7 PM", NOW)!,
+    };
+    // A day is planned for a request that starts later (FR-45): its first
+    // arrival is on the request before build_itinerary is available.
+    await t.deps.assistantTools!.execute(ctx, "update_request", {
+      startsAt: "2026-09-28T16:00:00-04:00",
+    });
+    const out = await t.deps.assistantTools!.execute(ctx, "build_itinerary", {
+      stops: [
+        {
+          label: "Museum",
+          address: "Boylston St",
+          lat: LOLA.lat,
+          lng: LOLA.lng,
+          // Earlier than the requested 7 PM: exactly what the quote guard
+          // refuses for a single spot, and fine for a day's first stop.
+          arrival: "2026-09-28T16:00:00-04:00",
+          duration_minutes: 60,
+        },
+      ],
+    });
     const stops = (out.result as { stops: { street: { found?: boolean; error?: string } }[] })
       .stops;
     expect(stops[0]!.street.error).toBeUndefined();

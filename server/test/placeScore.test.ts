@@ -15,9 +15,11 @@ import { carriesTheName, classifyPlaceMatches } from "../src/services/assistant/
 import {
   RESOLUTION_THRESHOLDS,
   WEAK_SEARCH_BELOW,
+  nameOf,
   scoreCandidates,
   searchIsWeak,
 } from "../src/services/assistant/placeScore.js";
+import { isGenericWord, nameMatch, nameTokens } from "../src/services/assistant/placeTokens.js";
 
 const T = RESOLUTION_THRESHOLDS;
 /** Where a Braintree phone's search looks: the city's center. */
@@ -60,6 +62,11 @@ const SEAPORT_AREA: GeocodeResult = {
 /** Something a search returns for a name it has never heard: nearby,
  * listed first, and nothing to do with what was asked. */
 const UNRELATED = poi("Yankee Lobster", 42.3489, -71.0379, "300 Northern Ave", "Seaport");
+/** The negative control: a name no place has, in any city. (It used to be
+ * "xyzzy restaurant", judged against W XYZ Bar — which is a real bar, in
+ * Boston and in New York, and so no control for "not found". W XYZ Bar is
+ * a positive control now, below.) */
+const NOWHERE = "Blorptastic Noodle House";
 
 /** Metres north of a point, as degrees of latitude. */
 const north = (from: { lat: number; lng: number }, meters: number) => ({
@@ -202,32 +209,32 @@ describe("one place, several, the closest thing, or nothing", () => {
     expect(match.scores).toHaveLength(3);
   });
 
-  test("'xyzzy restaurant' with an unrelated result nearby: nothing, not the closest thing", () => {
-    const [scored] = scoreCandidates("xyzzy restaurant", [UNRELATED], SEAPORT_PHONE);
+  test("a name that exists nowhere, with an unrelated result nearby: nothing, not the closest thing", () => {
+    const [scored] = scoreCandidates(NOWHERE, [UNRELATED], SEAPORT_PHONE);
     // Near the phone, a business, listed first: its score alone reaches
     // the floor. What rules it out is that it shares no word with the ask.
     expect(scored!.score).toBeGreaterThanOrEqual(T.closestFloor);
     expect(scored!.evidence).toBe(false);
-    expect(classifyPlaceMatches("xyzzy restaurant", [UNRELATED], SEAPORT_PHONE)).toEqual({
+    expect(classifyPlaceMatches(NOWHERE, [UNRELATED], SEAPORT_PHONE)).toEqual({
       kind: "none",
     });
     // And the chain keeps asking: a source that answered with this hasn't
     // found the name.
-    expect(carriesTheName("xyzzy restaurant", [UNRELATED], SEAPORT_PHONE)).toBe(false);
+    expect(carriesTheName(NOWHERE, [UNRELATED], SEAPORT_PHONE)).toBe(false);
   });
 
-  test("naming the city is not a reason to offer a result: 'xyzzy restaurant in Boston'", () => {
-    const scored = scoreCandidates("xyzzy restaurant in Boston", [UNRELATED], SEAPORT_PHONE);
+  test("naming the city is not a reason to offer a result: a name that exists nowhere 'in Boston'", () => {
+    const scored = scoreCandidates(`${NOWHERE} in Boston`, [UNRELATED], SEAPORT_PHONE);
     // It IS in Boston, and scores for it — like every other result.
     expect(scored[0]!.parts.area).toBe(0.2);
     expect(scored[0]!.evidence).toBe(false);
-    expect(classifyPlaceMatches("xyzzy restaurant in Boston", [UNRELATED], SEAPORT_PHONE)).toEqual({
+    expect(classifyPlaceMatches(`${NOWHERE} in Boston`, [UNRELATED], SEAPORT_PHONE)).toEqual({
       kind: "none",
     });
   });
 
   test("the neighborhood the user named is the closest thing, said as that", () => {
-    const match = classifyPlaceMatches("xyzzy restaurant in Seaport", [SEAPORT_AREA], BOSTON);
+    const match = classifyPlaceMatches(`${NOWHERE} in Seaport`, [SEAPORT_AREA], BOSTON);
     expect(match).toEqual({
       kind: "found",
       place: SEAPORT_AREA,
@@ -353,11 +360,16 @@ describe("one place, several, the closest thing, or nothing", () => {
   });
 });
 
+/** A real bar (in Boston and in New York): what autocomplete offered for
+ * "xyzzy restaurant" on prod (2026-10-02), taken at 0.80 because "XYZ"
+ * spells the start of "xyzzy". A positive control: said by its words, it
+ * is the place. */
+const W_XYZ = poi("W XYZ Bar", 42.3517, -71.0645, "100 Stuart St", "Bay Village");
+
 describe("a fragment of a word is not the word", () => {
-  /** "W XYZ Bar": what autocomplete offered for "xyzzy restaurant" on
-   * prod (2026-10-02), resolved at 0.80 because "XYZ" spells the start of
-   * "xyzzy". */
-  const W_XYZ = poi("W XYZ Bar", 42.3517, -71.0645, "100 Stuart St", "Bay Village");
+  /** A place that exists nowhere either, whose one name word is the start
+   * of the control's first word: the shape the prod mismatch had. */
+  const BLORP = poi("Blorp Bar", 42.3517, -71.0645, "100 Stuart St", "Bay Village");
   const PRUDENTIAL = poi("Prudential Center", 42.3471, -71.0825, "800 Boylston St", "Back Bay");
   const MASS_AVE: GeocodeResult = {
     lat: 42.3466,
@@ -370,15 +382,42 @@ describe("a fragment of a word is not the word", () => {
     kind: "area",
   };
 
-  test("'xyzzy restaurant' is not W XYZ Bar: not found, at no confidence", () => {
-    const [scored] = scoreCandidates("xyzzy restaurant", [W_XYZ], SEAPORT_PHONE);
+  test("a name word that is only the START of what was said is no match: not found, at no confidence", () => {
+    // "Blorp" spells the start of "Blorptastic", and that is all it does.
+    expect(nameMatch(nameOf(BLORP), nameTokens("Blorptastic")[0]!)).toBeNull();
+    const [scored] = scoreCandidates(NOWHERE, [BLORP], SEAPORT_PHONE);
     expect(scored!.parts.name).toBe(0);
     expect(scored!.nameMatched).toBe(false);
     expect(scored!.evidence).toBe(false);
-    expect(classifyPlaceMatches("xyzzy restaurant", [W_XYZ], SEAPORT_PHONE)).toEqual({
-      kind: "none",
-    });
-    expect(carriesTheName("xyzzy restaurant", [W_XYZ], SEAPORT_PHONE)).toBe(false);
+    expect(classifyPlaceMatches(NOWHERE, [BLORP], SEAPORT_PHONE)).toEqual({ kind: "none" });
+    expect(carriesTheName(NOWHERE, [BLORP], SEAPORT_PHONE)).toBe(false);
+  });
+
+  test("the negative control is never the place, whatever a search returns for it", () => {
+    // What a search might answer a made-up name with: something unrelated,
+    // something that starts like it, and something sharing its common
+    // words — alone and together.
+    const noodles = poi("Pho Noodle House", 42.3512, -71.0603, "8 Tyler St", "Chinatown");
+    const sets = [[UNRELATED], [BLORP], [noodles], [noodles, BLORP, UNRELATED], [SEAPORT_AREA]];
+    for (const results of sets) {
+      const about = `← ${results.map((r) => r.name).join(", ")}`;
+      // The control as it is asked: not found — or only "the closest
+      // thing", said as that, under the line a place is taken at.
+      const match = classifyPlaceMatches(NOWHERE, results, SEAPORT_PHONE);
+      expect(match.kind, about).not.toBe("ambiguous");
+      if (match.kind === "found") {
+        expect(match.nameMatched, about).toBe(false);
+        expect(match.confidence, about).toBeLessThan(T.found);
+      }
+      // With a city or an area said too, it is still never the place by
+      // name, and the chain keeps asking the next source.
+      for (const query of [NOWHERE, `${NOWHERE} Boston`, `${NOWHERE} in Seaport`]) {
+        const named = classifyPlaceMatches(query, results, SEAPORT_PHONE);
+        expect(named.kind, `${query} ${about}`).not.toBe("ambiguous");
+        if (named.kind === "found") expect(named.nameMatched, `${query} ${about}`).toBe(false);
+        expect(carriesTheName(query, results, SEAPORT_PHONE), `${query} ${about}`).toBe(false);
+      }
+    }
   });
 
   test("a word that is only the start of a name word counts half, and alone is never the place", () => {
@@ -534,5 +573,127 @@ describe("when a search is too weak to stand on", () => {
   test("a query that names nothing has nothing to complete", () => {
     expect(searchIsWeak("a cafe", [], BOSTON)).toBe(false);
     expect(searchIsWeak("the bar", [UNRELATED], BOSTON)).toBe(false);
+  });
+});
+
+describe("a whole word is the word: positive controls", () => {
+  const confidenceOf = (query: string, results: GeocodeResult[]) => {
+    const match = classifyPlaceMatches(query, results, SEAPORT_PHONE);
+    return match.kind === "found" && match.nameMatched ? match.confidence : null;
+  };
+  /** What the name said in full comes to: nothing can be surer of it. */
+  const FULL = confidenceOf("W XYZ Bar", [W_XYZ]);
+
+  test("'XYZ bar' and 'W XYZ' are W XYZ Bar, as sure as its whole name", () => {
+    // Near the phone, a business, listed first, every name word carried:
+    // the most a query naming no area can score.
+    expect(FULL).toBe(0.8);
+    expect(FULL!).toBeGreaterThanOrEqual(T.found);
+    for (const query of ["XYZ bar", "W XYZ", "xyz", "w xyz bar", "The W XYZ Bar"]) {
+      const [scored] = scoreCandidates(query, [W_XYZ], SEAPORT_PHONE);
+      expect(scored!.parts.name, query).toBe(0.5);
+      expect(scored!.nameMatched, query).toBe(true);
+      expect(scored!.evidence, query).toBe(true);
+      expect(classifyPlaceMatches(query, [W_XYZ], SEAPORT_PHONE), query).toEqual({
+        kind: "found",
+        place: W_XYZ,
+        nameMatched: true,
+        confidence: FULL,
+      });
+      expect(carriesTheName(query, [W_XYZ], SEAPORT_PHONE), query).toBe(true);
+      // A search that answers with it is not weak: autocomplete isn't asked.
+      expect(searchIsWeak(query, [W_XYZ], SEAPORT_PHONE), query).toBe(false);
+    }
+  });
+
+  test("it is the place among other results too, and wherever its source listed it", () => {
+    const stuart = poi("Stuart Street Tavern", 42.3515, -71.0668, "80 Stuart St", "Bay Village");
+    for (const query of ["XYZ bar", "W XYZ"]) {
+      for (const results of [
+        [W_XYZ, UNRELATED, stuart],
+        [UNRELATED, stuart, W_XYZ],
+      ]) {
+        const match = classifyPlaceMatches(query, results, SEAPORT_PHONE);
+        expect(match).toMatchObject({ kind: "found", place: W_XYZ, nameMatched: true });
+        const scored = scoreCandidates(query, results, SEAPORT_PHONE).find(
+          (s) => s.result === W_XYZ,
+        )!;
+        // The name is carried in full either way; only the 0.05 for being
+        // listed first moves.
+        expect(scored.parts.name).toBe(0.5);
+        expect(scored.score).toBe(results[0] === W_XYZ ? FULL : FULL! - 0.05);
+        expect(scored.score).toBeGreaterThanOrEqual(T.found);
+      }
+    }
+  });
+
+  test("an exact word is exact even when a longer name word starts with it, and whatever its length", () => {
+    // The fragment rule looks for a name word that STARTS with the query
+    // word. A name can hold the word whole as well: whole wins.
+    expect(nameMatch(["mass", "massachusetts", "hall"], "mass")).toBe("exact");
+    expect(nameMatch(["park", "parking"], "park")).toBe("exact");
+    expect(nameMatch(["w", "xyz", "bar"], "w")).toBe("exact");
+    expect(nameMatch(["lola", "42"], "42")).toBe("exact");
+    expect(nameMatch(["q", "restaurant"], "q")).toBe("exact");
+    // And the rule still tells a fragment from a word, both ways.
+    expect(nameMatch(["massachusetts", "hall"], "mass")).toBe("fragment");
+    expect(nameMatch(["mass", "hall"], "massachusetts")).toBeNull();
+  });
+
+  test("no query made of a name's own whole words ever loses credit to the fragment rule", () => {
+    const places = [
+      W_XYZ,
+      LOLA_42,
+      MOOO_SEAPORT,
+      UNRELATED,
+      poi("TD Garden", 42.36621, -71.06216, "100 Legends Way", "West End"),
+      poi("Legal Sea Foods", 42.3519, -71.0447, "270 Northern Ave", "Seaport"),
+      poi("Trader Joe's", 42.3489, -71.0889, "899 Boylston St", "Back Bay"),
+      poi("Prudential Center", 42.3471, -71.0825, "800 Boylston St", "Back Bay"),
+      poi("Museum of Fine Arts", 42.3394, -71.094, "465 Huntington Ave", "Fenway"),
+      // Names built to tempt the rule: a word that is the start of its
+      // neighbor, and one-letter words.
+      poi("Park Parking Garage", 42.35, -71.06, "1 Park St", "Downtown"),
+      poi("Mass Massachusetts Hall", 42.35, -71.07, "2 Hall St", "Back Bay"),
+      poi("A B Sea Grill", 42.35, -71.05, "3 Sea St", "Seaport"),
+    ];
+    let checked = 0;
+    for (const place of places) {
+      const words = nameOf(place);
+      // Every run of consecutive words of the name, said back as a query.
+      for (let from = 0; from < words.length; from += 1) {
+        for (let to = from + 1; to <= words.length; to += 1) {
+          const query = words.slice(from, to).join(" ");
+          const said = nameTokens(query);
+          const about = `"${query}" for ${place.name}`;
+          for (const word of said) {
+            expect(nameMatch(words, word), `${about}: ${word}`).toBe("exact");
+          }
+          // A query of kind words alone ("bar", "the") names nothing: the
+          // score has no name to weigh, by a rule older than this one.
+          if (said.every(isGenericWord)) continue;
+          const [scored] = scoreCandidates(query, [place], SEAPORT_PHONE);
+          expect(scored!.parts.name, about).toBe(0.5);
+          expect(scored!.nameMatched, about).toBe(true);
+          expect(scored!.evidence, about).toBe(true);
+          // As sure as the whole name, to the last digit.
+          const [whole] = scoreCandidates(words.join(" "), [place], SEAPORT_PHONE);
+          expect(scored!.score, about).toBe(whole!.score);
+          checked += 1;
+        }
+      }
+    }
+    // The loop really ran over real queries.
+    expect(checked).toBeGreaterThan(40);
+  });
+
+  test("a whole word keeps its full credit beside a fragment: only the fragment counts half", () => {
+    const prudential = poi("Prudential Center", 42.3471, -71.0825, "800 Boylston St", "Back Bay");
+    const [mixed] = scoreCandidates("Pru Center", [prudential], BOSTON);
+    // "Center" whole (1) + "Pru" half (0.5), of two words.
+    expect(mixed!.parts.name).toBe(0.375);
+    expect(mixed!.nameMatched).toBe(true);
+    const [whole] = scoreCandidates("Center", [prudential], BOSTON);
+    expect(whole!.parts.name).toBe(0.5);
   });
 });

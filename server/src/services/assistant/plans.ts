@@ -8,6 +8,10 @@
  * the user can act on, and the two honest non-answers the server decides —
  * `none_meets` (options exist, none meets the request's limits) and
  * `no_data` (we have nothing there to offer). Neither can be confirmed.
+ *
+ * A single-place card also says what it answered (FR-45): the request it
+ * was built for (`requestSummary`), a `verdict`, which options lead
+ * (`primary`), and `warn` on a price over the approval threshold.
  */
 
 import { z } from "zod";
@@ -23,6 +27,55 @@ export const violationSchema = z.object({
   field: z.enum(["maxPriceUsd", "maxWalkMinutes", "kinds", "entryType", "covered"]),
   actual: limitValue,
   limit: limitValue,
+});
+
+/**
+ * The request a card answered (FR-45): the conversation's RequestState
+ * without its log, as it stood at the search the card was built from —
+ * what the app's request chips show. `assumed` is what the server filled
+ * in that the request doesn't say, so no default is silent: the phone's
+ * location as the place, and the stay a search for right now assumed.
+ * SERVER-ATTACHED; the app never edits it (a chip sends a message).
+ */
+export const requestSummarySchema = z.object({
+  version: z.number().int().nonnegative(),
+  intent: z.enum(["park_now", "park_later", "garage_or_lot"]),
+  place: z.object({
+    query: z.string().nullable(),
+    resolved: z
+      .object({
+        lat: z.number(),
+        lng: z.number(),
+        label: z.string(),
+        city: z.string().nullable(),
+      })
+      .nullable(),
+    candidates: z
+      .array(z.object({ label: z.string(), reply: z.string(), lat: z.number(), lng: z.number() }))
+      .nullable(),
+  }),
+  window: z.object({
+    startsAt: z.string().nullable(),
+    durationMinutes: z.number().nullable(),
+    source: z.enum(["user", "default"]),
+  }),
+  hard: z.object({
+    maxPriceUsd: z.number().nullable(),
+    maxWalkMinutes: z.number().nullable(),
+    kinds: z.array(z.enum(["street", "garage"])).nullable(),
+    entryType: z.enum(["self", "valet"]).nullable(),
+    covered: z.boolean().nullable(),
+  }),
+  soft: z.object({
+    rank: z.enum(["cheapest", "closest", "balanced"]).nullable(),
+    prefer: z.array(z.enum(["valet", "covered", "garage", "street"])).nullable(),
+  }),
+  assumed: z
+    .object({
+      place: z.literal("phone_location").optional(),
+      durationMinutes: z.number().int().positive().optional(),
+    })
+    .optional(),
 });
 
 export const singleSpotOptionSchema = z.object({
@@ -85,6 +138,14 @@ export const singleSpotOptionSchema = z.object({
   /** SERVER-ATTACHED: the best option on the axis the user did NOT ask
    * about. An alternative: never the recommended option. */
   secondary: z.literal(true).optional(),
+  /** SERVER-ATTACHED (FR-45, decision 8): the option leads the card. One
+   * option when the user asked for something (it honors the ask); the
+   * cheapest and the closest, both, when they didn't. */
+  primary: z.literal(true).optional(),
+  /** SERVER-ATTACHED (FR-45): the price is over the approval threshold
+   * (policy `confirm_warn_usd`), so the app asks for a long-press where a
+   * tap would otherwise confirm. Nothing is refused for it. */
+  warn: z.literal(true).optional(),
   /** The option breaks a limit of the request. Shown for information, with
    * `violates` saying which limit and by how much; it has no Confirm, and
    * the confirm route refuses it. */
@@ -125,9 +186,13 @@ export const singleSpotPlanSchema = z.object({
    * free, 4 min walk"). */
   recommendedReason: z.string().max(200).optional(),
   /** SERVER-ATTACHED: what the plan assumed, in one line — the window and
-   * the place ("Sat 7:00–10:00 PM, near LoLa 42, Seaport"). */
+   * the place ("Sat 7:00–10:00 PM, near LoLa 42, Seaport"; "near you" when
+   * the place is the phone's location). */
   assumptions: z.string().max(200).optional(),
   note: z.string().max(400).optional(),
+  /** SERVER-ATTACHED (FR-45): options on this card meet the request. */
+  verdict: z.literal("meets").optional(),
+  requestSummary: requestSummarySchema.optional(),
 });
 
 export const itineraryStopSchema = z.object({
@@ -212,6 +277,9 @@ export const noneMeetsPlanSchema = z.object({
   provenance: singleSpotPlanSchema.shape.provenance,
   assumptions: z.string().max(200).optional(),
   note: z.string().max(400).optional(),
+  /** SERVER-ATTACHED (FR-45). */
+  verdict: z.literal("none_meets").optional(),
+  requestSummary: requestSummarySchema.optional(),
 });
 
 /**
@@ -242,6 +310,8 @@ export const noDataPlanSchema = z.object({
   destination: singleSpotPlanSchema.shape.destination,
   provenance: singleSpotPlanSchema.shape.provenance,
   assumptions: z.string().max(200).optional(),
+  /** SERVER-ATTACHED (FR-45): the request this gap was found for. */
+  requestSummary: requestSummarySchema.optional(),
 });
 
 export const planSchema = z.discriminatedUnion("kind", [
@@ -330,6 +400,7 @@ export const MODEL_PLAN_JSON_SCHEMA: Record<string, unknown> = (() => {
 })();
 
 export type Violation = z.infer<typeof violationSchema>;
+export type RequestSummary = z.infer<typeof requestSummarySchema>;
 export type SingleSpotOption = z.infer<typeof singleSpotOptionSchema>;
 export type SingleSpotPlan = z.infer<typeof singleSpotPlanSchema>;
 export type ItineraryStop = z.infer<typeof itineraryStopSchema>;

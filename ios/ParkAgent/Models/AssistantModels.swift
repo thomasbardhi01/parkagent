@@ -79,6 +79,11 @@ struct SingleSpotPlan: Decodable, Sendable {
     /// What the plan assumed — the window and the place ("Sat 7:00–10:00
     /// PM, near LoLa 42, Seaport") — computed by the server from the plan.
     var assumptions: String?
+    /// "meets": the options on this card meet the request (FR-45).
+    var verdict: String?
+    /// The request the card answered, for the request chips. Lenient: a
+    /// summary this build can't read costs the chips, never the card.
+    var requestSummary: Lenient<RequestSummary>?
 
     struct Destination: Decodable, Sendable {
         let lat: Double
@@ -158,6 +163,12 @@ struct SingleSpotOption: Decodable, Identifiable, Sendable {
     var violates: [PlanViolation]?
     /// When this option's price was fetched (ISO).
     var fetchedAt: String?
+    /// Server-attached (decision 8): the option leads the card — the one
+    /// that honors the ask, or with no ask both the cheapest and the closest.
+    var primary: Bool?
+    /// Server-attached: the price is over the approval threshold, so
+    /// confirming takes a long-press where a tap would do.
+    var warn: Bool?
 
     struct PriceBreakdown: Decodable, Equatable, Sendable {
         let meterUsd: Double
@@ -238,6 +249,9 @@ struct NoneMeetsPlan: Decodable, Sendable {
     let destination: SingleSpotPlan.Destination?
     let provenance: SingleSpotPlan.Provenance?
     var assumptions: String?
+    /// "none_meets" (FR-45).
+    var verdict: String?
+    var requestSummary: Lenient<RequestSummary>?
 
     struct ConstraintFailed: Decodable, Sendable {
         let field: String
@@ -270,6 +284,7 @@ struct NoDataPlan: Decodable, Sendable {
     let destination: SingleSpotPlan.Destination?
     let provenance: SingleSpotPlan.Provenance?
     var assumptions: String?
+    var requestSummary: Lenient<RequestSummary>?
 
     struct NearestZone: Decodable, Identifiable, Sendable {
         let zoneId: String
@@ -281,6 +296,70 @@ struct NoDataPlan: Decodable, Sendable {
         let lng: Double?
 
         var id: String { zoneId }
+    }
+}
+
+/// The request a card answered (server/API.md "The request a card
+/// answered"): the conversation's request as the server held it, without
+/// its log, plus what the server assumed that the request doesn't say. The
+/// app shows it as chips and never edits it — a chip sends a message.
+struct RequestSummary: Decodable, Equatable, Sendable {
+    let version: Int
+    /// "park_now" | "park_later" | "garage_or_lot"
+    let intent: String
+    let place: Place
+    let window: Window
+    let hard: Hard
+    let soft: Soft
+    var assumed: Assumed?
+
+    struct Place: Decodable, Equatable, Sendable {
+        /// What the user called it.
+        let query: String?
+        let resolved: Resolved?
+
+        struct Resolved: Decodable, Equatable, Sendable {
+            let label: String
+        }
+    }
+
+    struct Window: Decodable, Equatable, Sendable {
+        /// ISO start; nil is now.
+        let startsAt: String?
+        let durationMinutes: Int?
+    }
+
+    /// The limits an option must meet; nil is unset.
+    struct Hard: Decodable, Equatable, Sendable {
+        let maxPriceUsd: Double?
+        let maxWalkMinutes: Int?
+        /// "street" | "garage"
+        let kinds: [String]?
+        /// "self" | "valet"
+        let entryType: String?
+        let covered: Bool?
+    }
+
+    struct Soft: Decodable, Equatable, Sendable {
+        /// "cheapest" | "closest" | "balanced"; nil when the user asked for none.
+        let rank: String?
+    }
+
+    /// What the server filled in: the phone's location as the place
+    /// ("phone_location"), and the stay a search for right now assumed.
+    struct Assumed: Decodable, Equatable, Sendable {
+        let place: String?
+        let durationMinutes: Int?
+    }
+}
+
+/// A value that decodes to nil instead of failing its parent: for a part
+/// of a payload the screen can do without.
+struct Lenient<Value: Decodable & Sendable>: Decodable, Sendable {
+    let value: Value?
+
+    init(from decoder: Decoder) throws {
+        value = try? Value(from: decoder)
     }
 }
 

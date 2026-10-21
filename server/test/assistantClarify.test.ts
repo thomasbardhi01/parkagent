@@ -153,11 +153,25 @@ describe("the assumptions line", () => {
 
 describe("questions asked in prose still get taps", () => {
   test("how long", () => {
+    // One set of answers to "how long", whoever asks (FR-45): the same
+    // four a search offers when it needs the stay.
     expect(suggestionsForQuestion("How long will you stay?")?.map((s) => s.label)).toEqual([
       "1 hour",
       "2 hours",
-      "3 hours",
+      "4 hours",
+      "All day",
     ]);
+  });
+
+  test("how long a WALK is not how long a stay", () => {
+    for (const question of [
+      "How long a walk is OK?",
+      "How far are you willing to walk?",
+      "How long until you get there?",
+    ]) {
+      const labels = suggestionsForQuestion(question)?.map((s) => s.label) ?? [];
+      expect(labels, question).not.toContain("All day");
+    }
   });
 
   test("what time", () => {
@@ -213,7 +227,8 @@ describe("questions asked in prose still get taps", () => {
     expect(result.suggestions?.map((s) => s.reply)).toEqual([
       "For 1 hour",
       "For 2 hours",
-      "For 3 hours",
+      "For 4 hours",
+      "For 12 hours",
     ]);
   });
 });

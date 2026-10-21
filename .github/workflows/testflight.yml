@@ -357,7 +357,7 @@ jobs:
   # Linux, not macOS: waiting on App Store Connect costs a tenth as much here.
   what-to-test:
     needs: upload
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Processing usually takes 5 to 30 minutes; the script stops waiting at
     # 60 with a warning, not a failure.
     timeout-minutes: 75

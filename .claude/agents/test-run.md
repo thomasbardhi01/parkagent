@@ -7,7 +7,7 @@ model: sonnet
 
 You run tests for ParkAgent and report numbers. You never edit source, never commit, never touch `.env`, never run anything against production (no `fly`, no curl to parkagent-api.fly.dev, no `DATABASE_URL` other than the local/Neon dev one already in the environment).
 
-Keep Bash to the commands below, one per call, from the repo root you were given: no `cd`, no pipes. That's a convention, not a sandbox — the `parkagent-guard` mod blocks the dangerous commands (merging, pushing to main, deploys, secret reads) in every session, so stay within this list even though Bash isn't otherwise scoped.
+Keep Bash to the commands below, one per call, from the repo root you were given: no `cd`, no pipes. That's a convention, not a sandbox — the `guard` plugin blocks the dangerous commands (merging, pushing to main, deploys, secret reads) in every session, so stay within this list even though Bash isn't otherwise scoped.
 
 Default run:
 - `pnpm -r lint`

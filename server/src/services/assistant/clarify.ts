@@ -6,7 +6,8 @@
  * the model asks in prose anyway — "How long will you stay?" — the loop
  * recognizes the three questions a parking request actually needs (which
  * city, what time, how long) and attaches the usual answers, so the reply
- * is still one tap.
+ * is still one tap. "How long" has one set of answers, whoever asks: the
+ * model, or a search that needs the stay before it can run (FR-45).
  *
  * And every plan says what it assumed — "Sat 7:00–10:00 PM, near LoLa 42,
  * Seaport" — computed from the plan itself (the window its options were
@@ -20,6 +21,18 @@ import type { AssistantPlanBody } from "./plans.js";
 import { assumedDay, type TimeRequest } from "./requestedTime.js";
 import type { Suggestion } from "./tools.js";
 
+/** Whether a question asks how long the user will park. "How long a walk
+ * is OK?" and "how far?" ask about the walk, not the stay, and "how long
+ * until you get there?" about the time: none of them is this question. */
+export function asksAboutStay(question: string): boolean {
+  if (/\bwalk|\bdistance\b|\bfar\b|\bblocks?\b|\buntil\b|\bbefore you\b/i.test(question)) {
+    return false;
+  }
+  return /\bhow long\b|\bhow many (hours|minutes)\b|\bduration\b|\bstay(ing)? for\b/i.test(
+    question,
+  );
+}
+
 /** The usual answers to the three questions a parking request needs. */
 export function suggestionsForQuestion(reply: string): Suggestion[] | null {
   const text = reply.trim();
@@ -29,12 +42,10 @@ export function suggestionsForQuestion(reply: string): Suggestion[] | null {
   if (/\b(which|what) city\b/i.test(text) || namesTwoCities) {
     return cities.map((city) => ({ label: city, reply: `In ${city}` }));
   }
-  if (/\bhow long\b|\bhow many (hours|minutes)\b|\bduration\b|\bstay(ing)? for\b/i.test(text)) {
-    return [
-      { label: "1 hour", reply: "For 1 hour" },
-      { label: "2 hours", reply: "For 2 hours" },
-      { label: "3 hours", reply: "For 3 hours" },
-    ];
+  if (asksAboutStay(text)) {
+    // The same answers whoever asked: the model in prose, the model with
+    // ask_user, or a search that needs the stay (STAY_SUGGESTIONS).
+    return [...STAY_SUGGESTIONS];
   }
   if (/\bwhat time\b|\bwhen (will|do|would|are|should|can) you\b|\barriv(e|ing|al)\b/i.test(text)) {
     return [
@@ -45,6 +56,19 @@ export function suggestionsForQuestion(reply: string): Suggestion[] | null {
   }
   return null;
 }
+
+/** The question a search asks itself when a later or garage-only request
+ * names no stay (FR-45), and its four answers. Each reply is a plain
+ * sentence in the user's voice: a tap sends it like any message, and the
+ * stay reaches the request through update_request. "All day" is the
+ * longest stay a request holds, twelve hours. */
+export const STAY_QUESTION = "How long will you park?";
+export const STAY_SUGGESTIONS: readonly Suggestion[] = [
+  { label: "1 hour", reply: "For 1 hour" },
+  { label: "2 hours", reply: "For 2 hours" },
+  { label: "4 hours", reply: "For 4 hours" },
+  { label: "All day", reply: "For 12 hours" },
+];
 
 const etDay = new Intl.DateTimeFormat("en-CA", {
   timeZone: "America/New_York",

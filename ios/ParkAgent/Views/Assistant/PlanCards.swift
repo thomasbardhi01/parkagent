@@ -1,11 +1,17 @@
 import MapKit
 import SwiftUI
 
-/// Single-spot results: a mini map, the recommended option as ONE hero
-/// card carrying the only coral action (and one line on why it's the
-/// recommendation), the rest as compact rows, and the provider note once
-/// under the list. A street option for a future time has no button at all
-/// — the detector pays at the curb when the car arrives.
+/// Single-spot results: a mini map, the options that lead, the rest as
+/// compact rows, and the provider note once under the list. A street
+/// option for a future time has no button at all — the detector pays at
+/// the curb when the car arrives.
+///
+/// What leads is the server's call (decision 8, FR-45). When the user
+/// asked for something — a rank, a budget — ONE option honors it: the hero
+/// card, with the coral action and one line on why it leads. Its
+/// alternative on the other axis sits below, subordinate ("Closer: …",
+/// "Cheaper: …"). When they asked for neither, the cheapest and the
+/// closest lead together, side by side, each labeled.
 ///
 /// Choosing: tapping an option's row or its map pin selects it — the pin
 /// is highlighted, the map recenters on it with a walking route from the
@@ -25,6 +31,8 @@ struct SingleSpotPlanCards: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
+        let primaries = plan.primaryOptions
+        let alternatives = plan.alternativeOptions
         VStack(alignment: .leading, spacing: Spacing.unit) {
             if let assumptions = plan.assumptions {
                 AssumptionsLine(text: assumptions)
@@ -35,7 +43,9 @@ struct SingleSpotPlanCards: View {
                     .clipShape(RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
             }
 
-            if let hero = plan.recommendedOption {
+            if primaries.count >= 2 {
+                coPrimary(primaries)
+            } else if let hero = primaries.first {
                 HeroOptionCard(
                     option: hero,
                     reason: plan.recommendedReason,
@@ -51,9 +61,9 @@ struct SingleSpotPlanCards: View {
                 )
             }
 
-            if !plan.otherOptions.isEmpty {
+            if !alternatives.isEmpty {
                 VStack(spacing: 0) {
-                    ForEach(Array(plan.otherOptions.enumerated()), id: \.element.id) { index, option in
+                    ForEach(Array(alternatives.enumerated()), id: \.element.id) { index, option in
                         CompactOptionRow(
                             option: option,
                             isExpanded: selectedOptionID == option.id,
@@ -64,7 +74,7 @@ struct SingleSpotPlanCards: View {
                             onToggle: { select(option) },
                             onChoose: { onConfirm(option) }
                         )
-                        if index < plan.otherOptions.count - 1 { Divider() }
+                        if index < alternatives.count - 1 { Divider() }
                     }
                 }
                 .cardStyle()
@@ -88,6 +98,46 @@ struct SingleSpotPlanCards: View {
         .animation(reduceMotion ? .easeInOut(duration: 0.2) : Motion.settle, value: selectedOptionID)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("assistant.singleSpotPlan")
+    }
+
+    /// No ask: the cheapest and the closest lead together, equals. The one
+    /// the user picks opens its detail under the pair.
+    @ViewBuilder
+    private func coPrimary(_ primaries: [SingleSpotOption]) -> some View {
+        HStack(alignment: .top, spacing: Spacing.half) {
+            ForEach(primaries) { option in
+                CoPrimaryOptionTile(
+                    option: option,
+                    isSelected: selectedOptionID == option.id,
+                    confirming: confirming,
+                    onSelect: { select(option) },
+                    onConfirm: { onConfirm(option) }
+                )
+            }
+        }
+        // Two tiles the same height, whatever each one holds.
+        .fixedSize(horizontal: false, vertical: true)
+
+        if let chosen = primaries.first(where: { $0.id == selectedOptionID }) {
+            VStack(alignment: .leading, spacing: Spacing.half) {
+                if !chosen.detailLine.isEmpty {
+                    Text(chosen.detailLine)
+                        .font(.secondaryText)
+                        .foregroundStyle(Color.textSecondary)
+                        .accessibilityIdentifier("assistant.optionDetail.\(chosen.id)")
+                }
+                OptionDetailCard(
+                    option: chosen,
+                    destinationLabel: plan.destination?.label,
+                    paymentSource: paymentSource,
+                    linkPays: linkConnected
+                )
+                if linkConnected && chosen.type == "garage" && chosen.priceUsd > 0 {
+                    LinkPayBadge()
+                }
+            }
+            .transition(.opacity)
+        }
     }
 
     private func select(_ option: SingleSpotOption) {
@@ -127,9 +177,57 @@ struct AssumptionsLine: View {
     }
 }
 
-/// The recommended option, full width, with the single coral action and
-/// the server's one line on why it's the recommendation. Tapping its
-/// header selects it like any other option.
+/// An option's action: a tap confirms — or, for a price over the approval
+/// threshold (`warn`), a press held (HoldToConfirmButton), with a line
+/// saying so. `leading` is the coral action of an option that leads the
+/// card; an alternative's is neutral.
+private struct OptionAction: View {
+    let option: SingleSpotOption
+    let identifier: String
+    var leading = true
+    var compact = false
+    let confirming: Bool
+    let onConfirm: () -> Void
+
+    var body: some View {
+        let title = ConfirmCopy.title(option, compact: compact)
+        if option.warn == true {
+            let band = compact ? ConfirmCopy.warnBandCompact : ConfirmCopy.warnBand
+            VStack(alignment: .leading, spacing: Spacing.quarter) {
+                Label(band, systemImage: "hand.tap")
+                    .font(.captionTextSemibold)
+                    .foregroundStyle(Color.warningGold)
+                    .labelStyle(.titleAndIcon)
+                    .fixedSize(horizontal: false, vertical: true)
+                    // On the text: a Label's identifier would land on its icon.
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(band)
+                    .accessibilityIdentifier("assistant.warn.\(option.id)")
+                HoldToConfirmButton(
+                    title: title,
+                    identifier: identifier,
+                    prominent: leading,
+                    disabled: confirming,
+                    onConfirm: onConfirm
+                )
+            }
+        } else if leading {
+            Button(title) { onConfirm() }
+                .buttonStyle(.primary)
+                .disabled(confirming)
+                .accessibilityIdentifier(identifier)
+        } else {
+            Button(title) { onConfirm() }
+                .buttonStyle(.secondary)
+                .disabled(confirming)
+                .accessibilityIdentifier(identifier)
+        }
+    }
+}
+
+/// The option that honors the ask, full width, with the single coral
+/// action and the server's one line on why it leads. Tapping its header
+/// selects it like any other option.
 private struct HeroOptionCard: View {
     let option: SingleSpotOption
     let reason: String?
@@ -196,10 +294,12 @@ private struct HeroOptionCard: View {
                 // when the car actually parks there.
                 AutoPayNote(optionID: option.id)
             } else {
-                Button(confirmLabel) { onConfirm() }
-                    .buttonStyle(.primary)
-                    .disabled(confirming)
-                    .accessibilityIdentifier("assistant.confirm.\(option.id)")
+                OptionAction(
+                    option: option,
+                    identifier: "assistant.confirm.\(option.id)",
+                    confirming: confirming,
+                    onConfirm: onConfirm
+                )
             }
 
             // Link pays garages only; a street meter stays on the card on
@@ -223,17 +323,88 @@ private struct HeroOptionCard: View {
         // Confirm button, the Link badge, and the auto-pay note inside it.
         // The hero is identified by its Recommended pill and its action.
     }
+}
 
-    private var confirmLabel: String {
-        option.type == "garage"
-            ? "Confirm — open \(option.provider.flatMap(GarageSource.displayName) ?? "checkout") (\(Format.money(option.priceUsd)))"
-            : "Confirm \(Format.money(option.priceUsd)) for \(option.durationMinutes) min"
+/// One of the two options that lead when the user asked for neither
+/// cheapest nor closest: half the width, labeled with what it is the best
+/// on, with its own action. Tapping its header selects it; the detail
+/// opens under the pair.
+private struct CoPrimaryOptionTile: View {
+    let option: SingleSpotOption
+    let isSelected: Bool
+    let confirming: Bool
+    let onSelect: () -> Void
+    let onConfirm: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.half) {
+            VStack(alignment: .leading, spacing: Spacing.quarter) {
+                if let axis = NoCardPresentation.axisLabel(option) {
+                    TagPill(label: axis, color: .success)
+                        .accessibilityIdentifier("assistant.axis.\(option.id)")
+                }
+                HStack(alignment: .firstTextBaseline, spacing: Spacing.quarter) {
+                    Image(systemName: option.type == "garage" ? "building.2.fill" : "parkingsign")
+                        .font(.captionText)
+                        .foregroundStyle(Color.textSecondary)
+                        .accessibilityHidden(true)
+                    Text(option.label)
+                        .font(.secondaryText.weight(.semibold))
+                        .foregroundStyle(Color.textPrimary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityAddTraits(.isButton)
+                        .accessibilityValue(isSelected ? "selected" : "")
+                        .accessibilityAction { onSelect() }
+                        .accessibilityIdentifier("assistant.heroHeader.\(option.id)")
+                }
+                Text(Format.money(option.priceUsd))
+                    .font(.bodyTextSemibold)
+                    .monospacedDigit()
+                    .foregroundStyle(Color.textPrimary)
+                if let walk = option.walkMinutes {
+                    Text("\(walk) min walk")
+                        .font(.captionText)
+                        .foregroundStyle(Color.textSecondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture { onSelect() }
+
+            Spacer(minLength: 0)
+
+            if option.payOnArrival == true {
+                AutoPayNote(optionID: option.id)
+            } else {
+                OptionAction(
+                    option: option,
+                    identifier: "assistant.confirm.\(option.id)",
+                    compact: true,
+                    confirming: confirming,
+                    onConfirm: onConfirm
+                )
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .cardStyle()
+        .overlay(
+            RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
+                .strokeBorder(
+                    isSelected ? Color.success.opacity(0.6) : Color.separator,
+                    lineWidth: isSelected ? 2 : 1
+                )
+        )
+        // No identifier on the container, as on the hero: it would swallow
+        // the action inside.
     }
 }
 
 /// An alternative: name, price, walk time. Tapping it (or its pin) selects
-/// it: it opens into its detail card and a NEUTRAL Choose — the coral
-/// action stays with the hero.
+/// it: it opens into its detail card and a NEUTRAL action — the coral one
+/// stays with what leads. The best option on the axis the user didn't ask
+/// about says so ("Closer: …", "Cheaper: …").
 private struct CompactOptionRow: View {
     let option: SingleSpotOption
     let isExpanded: Bool
@@ -254,16 +425,25 @@ private struct CompactOptionRow: View {
                     .font(.captionText)
                     .foregroundStyle(isExpanded ? Color.actionCoralLink : Color.textSecondary)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(option.label)
-                        .font(.secondaryText)
-                        .foregroundStyle(Color.textPrimary)
-                        .lineLimit(1)
-                    // "Closest" / "Cheapest": what this option is the best
-                    // on, from the server's ranking.
-                    if let axis = NoCardPresentation.axisLabel(option) {
-                        Text(axis)
-                            .font(.captionTextSemibold)
-                            .foregroundStyle(Color.textSecondary)
+                    if let lead = NoCardPresentation.alternativeLead(option) {
+                        // "Closer: Museum Underground Deck" — an
+                        // alternative, said as one.
+                        (Text("\(lead): ").foregroundStyle(Color.textSecondary) + Text(option.label))
+                            .font(.secondaryText)
+                            .foregroundStyle(Color.textPrimary)
+                            .lineLimit(2)
+                    } else {
+                        Text(option.label)
+                            .font(.secondaryText)
+                            .foregroundStyle(Color.textPrimary)
+                            .lineLimit(1)
+                        // "Closest" / "Cheapest": what this option is the
+                        // best on, from the server's ranking.
+                        if let axis = NoCardPresentation.axisLabel(option) {
+                            Text(axis)
+                                .font(.captionTextSemibold)
+                                .foregroundStyle(Color.textSecondary)
+                        }
                     }
                 }
                 Spacer(minLength: Spacing.half)
@@ -324,10 +504,14 @@ private struct CompactOptionRow: View {
                     } else if option.payOnArrival == true {
                         AutoPayNote(optionID: option.id)
                     } else {
-                        Button("Choose") { onChoose() }
-                            .buttonStyle(.secondary)
-                            .disabled(confirming)
-                            .accessibilityIdentifier("assistant.choose.\(option.id)")
+                        OptionAction(
+                            option: option,
+                            identifier: "assistant.choose.\(option.id)",
+                            leading: false,
+                            compact: true,
+                            confirming: confirming,
+                            onConfirm: onChoose
+                        )
                     }
                 }
                 .padding(.horizontal, Spacing.unit)

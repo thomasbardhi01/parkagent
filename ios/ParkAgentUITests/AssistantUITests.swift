@@ -540,7 +540,15 @@ final class AssistantUITests: ParkAgentUITestCase {
 
         XCTAssertTrue(element(app, "assistant.noneMeetsPlan").waitForExistence(timeout: 10))
         XCTAssertFalse(element(app, "assistant.singleSpotPlan").exists)
-        XCTAssertEqual(element(app, "assistant.noneMeets.title").label, "Nothing meets your request")
+        // The headline is the limit nothing met, and how near anything came.
+        XCTAssertEqual(element(app, "assistant.noneMeets.title").label, "Nothing under $2.00")
+        XCTAssertEqual(element(app, "assistant.noneMeets.nearest").label, "Lowest price found: $4.50")
+
+        // The request the card answered, as chips above it: one a set
+        // field, and no rank chip when none was asked for.
+        XCTAssertEqual(element(app, "assistant.requestChip.hard.maxPriceUsd").label, "Under $2.00")
+        XCTAssertEqual(element(app, "assistant.requestChip.place").label, "Near Cambridge Common")
+        XCTAssertFalse(element(app, "assistant.requestChip.soft.rank").exists)
 
         // Each near-miss says what it breaks, with the server's numbers.
         let meter = element(app, "assistant.nearMiss.v3-bos-mass-ave-1")
@@ -558,15 +566,148 @@ final class AssistantUITests: ParkAgentUITestCase {
         XCTAssertEqual(actions.count, 0, "A near-miss has no Confirm")
 
         // Relaxing the limit is the user's tap, sent as their own words.
-        let relax = element(app, "assistant.suggestion.0")
+        // The chip is on the card it belongs to, and only there.
+        let relax = scrollTo(app, "assistant.suggestion.0")
         XCTAssertTrue(relax.waitForExistence(timeout: 5))
         XCTAssertEqual(relax.label, "Allow up to $7.00")
+        XCTAssertEqual(
+            app.buttons.matching(NSPredicate(format: "label == %@", "Allow up to $7.00")).count, 1,
+            "The relax chip is shown once"
+        )
+        let card = element(app, "assistant.noneMeetsPlan").frame
+        XCTAssertTrue(card.contains(relax.frame), "The chip sits inside the card: \(relax.frame) in \(card)")
         attachScreenshot(of: app, named: "assistant-none-meets")
         relax.tap()
         let sent = app.descendants(matching: .any).matching(NSPredicate(
             format: "identifier == 'assistant.userMessage' AND label == %@", "Allow up to $7.00"
         )).firstMatch
         XCTAssertTrue(sent.waitForExistence(timeout: 5), "The chip sends its reply as the user's message")
+    }
+
+    /// An option over the approval threshold takes a deliberate hold: a
+    /// tap confirms nothing (it says how), and only the long-press reaches
+    /// the confirm — here, the garage's own checkout opening in the app.
+    func testAPriceOverTheThresholdTakesALongPressToConfirm() {
+        let app = openAssistant("warn")
+        ask(app, "the closest garage to Fenway Park for three hours")
+        XCTAssertTrue(element(app, "assistant.singleSpotPlan").waitForExistence(timeout: 10))
+
+        // The option that honors the ask leads, and says what it takes.
+        let confirm = scrollTo(app, "assistant.confirm.opt-warn-garage")
+        XCTAssertEqual(confirm.label, "Hold to open SpotHero ($32.00)")
+        XCTAssertEqual(
+            element(app, "assistant.warn.opt-warn-garage").label,
+            "A larger amount — press and hold to confirm"
+        )
+        attachScreenshot(of: app, named: "assistant-warn")
+
+        // A tap alone does not confirm: nothing opens, no note is added,
+        // and the button says to hold.
+        let probe = element(app, "assistant.externalLinkProbe")
+        let hint = element(app, "assistant.confirm.opt-warn-garage.holdHint")
+        XCTAssertFalse(hint.exists)
+        confirm.tap()
+        XCTAssertTrue(hint.waitForExistence(timeout: 3), "The tap landed, and was answered with how to confirm")
+        XCTAssertEqual(hint.label, "Press and hold to confirm")
+        XCTAssertFalse(probe.waitForExistence(timeout: 2), "A tap must not reach /assistant/confirm")
+        XCTAssertTrue(confirm.exists, "The card is still there to confirm")
+
+        // The hold does.
+        scrollTo(app, "assistant.confirm.opt-warn-garage").press(forDuration: 1.5)
+        XCTAssertTrue(probe.waitForExistence(timeout: 5), "The long-press confirms")
+        XCTAssertEqual(probe.label, "garageCheckout")
+    }
+
+    /// Under a garage-only request, the cheaper garage is the labeled
+    /// alternative, and a cheaper meter rides along as a near-miss: seen,
+    /// badged with what it breaks, and with nothing to tap.
+    func testAnAlternativeIsLabeledAndTheCheaperMeterHasNoAction() {
+        let app = openAssistant("warn")
+        ask(app, "the closest garage to Fenway Park for three hours")
+        XCTAssertTrue(element(app, "assistant.singleSpotPlan").waitForExistence(timeout: 10))
+
+        // The request, as chips: garage-only is said once, by the intent.
+        XCTAssertEqual(element(app, "assistant.requestChip.intent").label, "Garage or lot")
+        XCTAssertEqual(element(app, "assistant.requestChip.soft.rank").label, "Closest first")
+        XCTAssertFalse(element(app, "assistant.requestChip.hard.kinds").exists)
+
+        let cheaper = scrollTo(app, "assistant.optionRow.opt-cheaper-garage")
+        XCTAssertTrue(cheaper.label.hasPrefix("Cheaper: Ipswich St Garage"), cheaper.label)
+
+        let meter = scrollTo(app, "assistant.optionRow.opt-cheaper-street")
+        XCTAssertEqual(
+            element(app, "assistant.nearMissBadge.opt-cheaper-street").label,
+            "Street parking, not a garage"
+        )
+        meter.tap()
+        // Opened, it shows its facts — and still no way to take it.
+        XCTAssertTrue(element(app, "assistant.detail.price.opt-cheaper-street").waitForExistence(timeout: 3))
+        XCTAssertFalse(element(app, "assistant.choose.opt-cheaper-street").exists)
+        XCTAssertFalse(element(app, "assistant.confirm.opt-cheaper-street").exists)
+
+        // The alternative that does meet the request can be taken, by a tap:
+        // $14.00 is under the threshold.
+        scrollTo(app, "assistant.optionRow.opt-cheaper-garage").tap()
+        let choose = scrollTo(app, "assistant.choose.opt-cheaper-garage")
+        XCTAssertEqual(choose.label, "Open ParkWhiz")
+        choose.tap()
+        XCTAssertTrue(element(app, "assistant.externalLinkProbe").waitForExistence(timeout: 5))
+    }
+
+    /// With nothing asked for, the cheapest and the closest lead together,
+    /// each labeled; the street one's action says the amount it pays; and
+    /// the request chips say what the server assumed. A chip tap sends a
+    /// short message — the request is the server's to change.
+    func testWithNoAskTheCheapestAndTheClosestLeadAndTheRequestShowsAsChips() {
+        let app = openAssistant("coPrimary")
+        ask(app, "park me")
+        XCTAssertTrue(element(app, "assistant.singleSpotPlan").waitForExistence(timeout: 10))
+
+        // What was assumed is said, and marked as assumed.
+        XCTAssertEqual(element(app, "assistant.requestChip.intent").label, "Parking now")
+        XCTAssertEqual(element(app, "assistant.requestChip.place").label, "Near you, assumed")
+        XCTAssertEqual(element(app, "assistant.requestChip.window").label, "Now · 1 hr, assumed")
+        XCTAssertFalse(element(app, "assistant.requestChip.soft.rank").exists, "No rank was asked for")
+
+        // Two options lead, as equals: no single "Recommended".
+        let cheapest = scrollTo(app, "assistant.confirm.opt-cheapest")
+        let closest = element(app, "assistant.confirm.opt-closest")
+        XCTAssertTrue(closest.exists)
+        XCTAssertEqual(element(app, "assistant.axis.opt-cheapest").label, "Cheapest")
+        XCTAssertEqual(element(app, "assistant.axis.opt-closest").label, "Closest")
+        XCTAssertEqual(app.staticTexts.matching(identifier: "Recommended").count, 0)
+        // Side by side.
+        XCTAssertEqual(cheapest.frame.midY, closest.frame.midY, accuracy: 2)
+        XCTAssertLessThan(cheapest.frame.maxX, closest.frame.minX)
+        // The street option's action carries the amount (decision 1); the
+        // garage, at $18.00, is over the threshold and takes a hold.
+        XCTAssertEqual(cheapest.label, "Pay $4.10")
+        XCTAssertEqual(closest.label, "Hold to open")
+        XCTAssertEqual(element(app, "assistant.warn.opt-closest").label, "A larger amount — hold to confirm")
+        XCTAssertFalse(element(app, "assistant.warn.opt-cheapest").exists)
+        attachScreenshot(of: app, named: "assistant-co-primary")
+
+        // Its tap pays nothing more than it says: the street confirm.
+        cheapest.tap()
+        let note = app.staticTexts.containing(
+            NSPredicate(format: "label CONTAINS 'session starts when you park'")
+        ).firstMatch
+        XCTAssertTrue(note.waitForExistence(timeout: 5))
+    }
+
+    /// A request chip sends a short message naming what to change, with no
+    /// value: nothing is edited on the phone.
+    func testARequestChipSendsAMessageNotAnEdit() {
+        let app = openAssistant("coPrimary")
+        ask(app, "park me")
+        let chip = element(app, "assistant.requestChip.window")
+        XCTAssertTrue(chip.waitForExistence(timeout: 10))
+        let sent = app.descendants(matching: .any).matching(NSPredicate(
+            format: "identifier == 'assistant.userMessage' AND label == %@", "Change the time"
+        )).firstMatch
+        XCTAssertFalse(sent.exists)
+        scrollTo(app, "assistant.requestChip.window").tap()
+        XCTAssertTrue(sent.waitForExistence(timeout: 5), "The chip sends its message as the user's own")
     }
 
     /// Saved conversations: newest first, titled by the first request, with

@@ -41,6 +41,12 @@ export const policySchema = z.strictObject({
   link_wallet_for_plans: z.boolean().optional(),
   session_cap_usd: z.number().positive(),
   daily_cap_usd: z.number().positive(),
+  // WS-1 (FR-45). The approval threshold for an assistant card: an option
+  // priced above it is marked `warn` and the app asks for a long-press
+  // instead of a tap. Not a cap — nothing is refused for it. Optional so
+  // documents written before it stay valid (absent = DEFAULT_CONFIRM_WARN_USD);
+  // read it through confirmWarnUsd().
+  confirm_warn_usd: z.number().nonnegative().optional(),
   auto_pay_max_rate_per_hour: z.number().nonnegative(),
   default_stay_minutes: z.number().int().positive().max(720),
   // DEPRECATED, accepted for one release: the pay-by-app fee is per city and
@@ -98,6 +104,15 @@ export function cityPolicy(policy: Policy, city: string | undefined): CityPolicy
     parkingFeeUsd: overrides?.parking_fee_usd ?? policy.parknyc_fee_usd ?? DEFAULT_PARKING_FEE_USD,
     ticketCostUsd: overrides?.ticket_cost_usd ?? policy.ticket_cost_usd,
   };
+}
+
+/** The approval threshold when the policy document names none. */
+export const DEFAULT_CONFIRM_WARN_USD = 15;
+
+/** The price above which an assistant option needs a long-press to
+ * confirm (FR-45). An approval threshold, never a cap. */
+export function confirmWarnUsd(policy: Policy): number {
+  return policy.confirm_warn_usd ?? DEFAULT_CONFIRM_WARN_USD;
 }
 
 // Sorted keys at every level. (JSON.stringify's replacer-array form filters

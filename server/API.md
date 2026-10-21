@@ -1088,21 +1088,32 @@ isn't "back" the whole time.
 
 **Holding takes less than stopping.** Any usable fix within 30 m of the
 car, not at driving speed and however blurry (urban returns are often
-20–50 m), says the phone may be back: a tap then waits for the walk-away
-(the confirm route answers `confirmed`, as it does at the car), and
-`back_at` is set. Only the sharp rule above counts toward a return,
+20–50 m), says the phone may be back, and sets `back_at`. Only the sharp
+rule above counts toward a return,
 which stops the session. A return nobody saw costs more than one held
 for nothing: a tap from the seat would pay at once, the drive-off pair
 would never arm, and the worker would buy time for an empty spot.
 
 **The phone is back at the car** (`back_at`) from such a fix on. It stays
 back until a clear fix with a walking `speedMps` (≤ 3), or the app's
-`left_car` on a fix not at driving speed (whatever the fix's accuracy),
-says the driver is on foot again. A walking pace between two fixes
+`left_car` on a fix not at driving speed, says the driver is on foot
+again (a `left_car` on a fix within 30 m clears it, and that same fix
+sets it again: the phone is still at the door). A walking pace between two fixes
 doesn't clear it: without the phone's speed, that is also what
 stop-and-go traffic looks like. A park's `back_at` is cleared when its
 session starts (a tap away from the car, or the app's `left_car`): a
 walk past the car before paying says nothing about the session.
+
+**A tap waits while `back_at` is set.** `POST /parked/:id/confirm` reads
+the phone as at the car when it never left, or when `back_at` is set: it
+was back within reach of the car since it left, and nothing since says
+it left on foot again. Not "the latest fix is at the car": a GPS wobble a
+few metres past 30 m after a fix in the seat would otherwise let a tap
+from the seat pay at once. The tap is kept (`confirmed`) and the walk
+starts over (`back_at` and the rest of the walk state cleared); the start
+runs on the app's `left_car`, or the next walk-away by distance asks
+again. After a walk past the car with no `left_car`, that is a second
+prompt and tap.
 
 **The phone drove off** when, while it is back at the car, a pair of
 usable fixes is clear of it, neither with a walking `speedMps`, and:
@@ -1259,8 +1270,9 @@ car sat, nothing is asked and the park closes as `free`.
 The tap. Body `{zoneId?, shownTotalUsd?}`: the side of the street when
 the candidates disagree, and the total the phone had on screen.
 
-- At the car (the phone never left, or went away and its fixes have it
-  back within reach): `200 {status: "confirmed", startsAt: "walk_away",
+- At the car (the phone never left, or went away and has been back within
+  reach of the car since, `back_at`; see "A tap waits while `back_at` is
+  set"): `200 {status: "confirmed", startsAt: "walk_away",
   zoneId, quote}`. Nothing is paid. The start runs when `POST /location`
   carries the app's `left_car`; a walk-away seen by distance alone asks
   again instead (a `prompt`), and the tap on that pays.

@@ -417,8 +417,11 @@ test("back at the car and driving off inside a minute, at the phone's own speed,
 });
 
 /** Like the build in the field today: says when it measured, gives no speed. */
-const measured = (t: { clock: { now: Date } }, distanceM: number) =>
-  fix(t, distanceM, { measuredAt: t.clock.now.toISOString() });
+const measured = (
+  t: { clock: { now: Date } },
+  distanceM: number,
+  extra: Record<string, unknown> = {},
+) => fix(t, distanceM, { measuredAt: t.clock.now.toISOString(), ...extra });
 
 test("a drive-off read from pace alone never asks the provider to stop: ended where it stands, the paid time runs out", async () => {
   const t = makeApp();
@@ -545,7 +548,7 @@ test("back in the seat with no new measurement, then out in stop-and-go traffic:
   expect(t.pushes.at(-1)!.push.body).toContain("back at the car");
 });
 
-test("a walk past the car before the tap is about the walk-away, not the session: the session still extends", async () => {
+test("a walk past the car before the tap: the tap waits for the walk-away, and the session it then starts still extends", async () => {
   const t = makeApp();
   const extender = makeExtender({ ...t.deps, log: { info() {}, warn() {} } });
   const parked = await post(t.app, "/parked", parkedBody({ outcomes: OUTCOMES }));
@@ -554,7 +557,8 @@ test("a walk past the car before the tap is about the walk-away, not the session
   await post(t.app, "/location", measured(t, 60));
   t.tick(20);
   await post(t.app, "/location", measured(t, 90));
-  // Asked, not yet answered: back past the car, then off again on foot.
+  // Asked, not yet answered: back past the car, then off again on foot,
+  // with no speed to say so.
   t.tick(20);
   await post(t.app, "/location", measured(t, 10));
   t.tick(20);
@@ -562,8 +566,14 @@ test("a walk past the car before the tap is about the walk-away, not the session
   t.tick(20);
   await post(t.app, "/location", measured(t, 100));
   expect(t.state.pendingParks[0]!.backAt).not.toBeNull();
-  const paid = await post(t.app, `/parked/${parkedEventId}/confirm`, {});
-  expect(paid.json()).toMatchObject({ status: "started" });
+  // The phone was at the car since it left: the tap is kept, not paid.
+  const tap = await post(t.app, `/parked/${parkedEventId}/confirm`, {});
+  expect(tap.json()).toMatchObject({ status: "confirmed", startsAt: "walk_away" });
+  expect(t.calls.start).toBe(0);
+  // The app's on-foot report starts it, with nothing of the walk-by kept.
+  t.tick(20);
+  const left = await post(t.app, "/location", measured(t, 110, { event: "left_car" }));
+  expect(left.json()).toMatchObject({ park: { status: "started" } });
   const session = t.state.sessions.at(-1)!;
   expect(t.state.pendingParks[0]).toMatchObject({ status: "started", backAt: null, driveAt: null });
 
@@ -625,7 +635,6 @@ test("one blurry fix near the car holds, and stops nothing: the worker buys no m
 
 test("back in the car on blurry fixes, then a drive-off by pace: the session ends, and nothing is bought for the empty spot", async () => {
   const t = makeApp();
-  const extender = makeExtender({ ...t.deps, log: { info() {}, warn() {} } });
   const { session } = await paidAndAway(t);
   t.tick(600);
   // An urban canyon: four minutes within 30 m of the car, every fix 45 m
@@ -649,11 +658,11 @@ test("back in the car on blurry fixes, then a drive-off by pace: the session end
   ).toMatchObject({
     driveFrom: { distanceM: expect.closeTo(120, 0), measuredAt: expect.any(String) },
   });
-
-  t.clock.now = new Date(session.expiresAt!.getTime() - 6 * 60_000);
-  await post(t.app, "/location", { ...measured(t, 2_500), accuracy: 45 });
-  await extender.tick();
-  expect(t.calls.extend).toBe(0);
+  // Ended at the return, not stopped at the provider: nothing more can be
+  // bought for it, and the lifecycle is over.
+  expect(session.status).toBe("stopped");
+  expect(t.state.sessionEvents.at(-1)).toMatchObject({ kind: "ended_at_return" });
+  expect(t.state.pendingParks[0]!.status).toBe("ended");
 });
 
 test("the app's on-foot report on a fix at driving speed doesn't clear the phone being back at the car", async () => {

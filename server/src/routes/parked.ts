@@ -515,6 +515,8 @@ export function registerParked(app: FastifyInstance, deps: AppDeps, sessions: Se
             parkStatus: park.status,
             leftCarAt: park.leftCarAt?.toISOString() ?? null,
             nearCarSince: park.nearSince?.toISOString() ?? null,
+            // What decides at the car or away (see backAtCar below).
+            backAt: park.backAt?.toISOString() ?? null,
             dryRun,
             policyHash: deps.policy.hash(),
           },
@@ -525,9 +527,15 @@ export function registerParked(app: FastifyInstance, deps: AppDeps, sessions: Se
         },
       });
 
-    // At the car: it never left, or it went away and its fixes have it
-    // back within reach of the car right now.
-    const backAtCar = park.leftCarAt !== null && park.farAt !== null && park.nearSince !== null;
+    // At the car: it never left, or it went away and has been back within
+    // reach of the car since, with nothing after that saying it left on
+    // foot again (`backAt`). Not "the latest fix is at the car": one GPS
+    // wobble a few metres past 30 m after a fix in the seat would let a
+    // tap from the seat pay at once, and the session it started would have
+    // no record of the car being reached, so no drive-off would ever be
+    // seen. The cost is a second prompt (or the app's left_car) after a
+    // walk past the car.
+    const backAtCar = park.leftCarAt !== null && park.backAt !== null;
     if (park.leftCarAt === null || backAtCar) {
       // The confirmation is kept and nothing is paid: the start waits for
       // the phone to leave (again).
@@ -545,8 +553,19 @@ export function registerParked(app: FastifyInstance, deps: AppDeps, sessions: Se
           zoneId: candidate.zoneId,
           quote: shown,
           confirmedAt: at,
+          // The walk starts over: the start waits for the next leaving.
           ...(backAtCar
-            ? { leftCarAt: null, farAt: null, farDistanceM: null, nearSince: null }
+            ? {
+                leftCarAt: null,
+                farAt: null,
+                farDistanceM: null,
+                nearSince: null,
+                atCarSince: null,
+                backAt: null,
+                driveAt: null,
+                driveDistanceM: null,
+                driveSpeedMps: null,
+              }
             : {}),
         },
       });

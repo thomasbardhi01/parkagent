@@ -603,8 +603,16 @@ export const walkStateOf = (park: PendingParkRow): WalkState => ({
 /** Written with every move to `started`. A session starts with the phone
  * away from the car (a tap away from it, or the app's on-foot report), so
  * a walk past the car before the tap is about the walk-away, not the
- * session: left in place it would hold the session's extensions. */
-const NOT_BACK = { backAt: null, driveAt: null, driveDistanceM: null, driveSpeedMps: null };
+ * session: left in place it would hold the session's extensions, or (a
+ * minute at the car begun before) stop the new session at once. */
+const NOT_BACK = {
+  nearSince: null,
+  atCarSince: null,
+  backAt: null,
+  driveAt: null,
+  driveDistanceM: null,
+  driveSpeedMps: null,
+};
 
 /** A fix as a decisions row records it. */
 export interface FixRecord {
@@ -1220,8 +1228,6 @@ export async function startParkSession(
                   leftCarAt: null,
                   farAt: null,
                   farDistanceM: null,
-                  nearSince: null,
-                  atCarSince: null,
                   ...NOT_BACK,
                 },
           stalePending: null,

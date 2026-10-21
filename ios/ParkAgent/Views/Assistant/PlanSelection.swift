@@ -184,6 +184,54 @@ struct OptionDetailPresentation: Equatable {
     }
 }
 
+extension SingleSpotPlan {
+    /// The options that lead the card (decision 8): the ones the server
+    /// marked `primary` — the one that honors the ask, or the cheapest and
+    /// the closest together when the user asked for neither. A plan from
+    /// before the flag leads with its recommended option.
+    var primaryOptions: [SingleSpotOption] {
+        let flagged = options.filter { $0.primary == true && $0.nearMiss != true }
+        if !flagged.isEmpty { return Array(flagged.prefix(2)) }
+        return recommendedOption.map { [$0] } ?? []
+    }
+
+    /// Everything else, in the server's order: the alternative on the
+    /// other axis, further options, and any near-miss.
+    var alternativeOptions: [SingleSpotOption] {
+        let leading = Set(primaryOptions.map(\.id))
+        return options.filter { !leading.contains($0.id) }
+    }
+}
+
+/// The words on an option's action. A street option says the amount it
+/// pays (decision 1); a garage says where its checkout opens — in the app's
+/// own browser, by the user's tap, never automated (decision 5). An option
+/// over the approval threshold (`warn`) says to hold: a tap doesn't confirm it.
+enum ConfirmCopy {
+    static let holdHint = "Press and hold to confirm"
+    static let warnBand = "A larger amount — press and hold to confirm"
+    /// The same, for a half-width tile or a row.
+    static let warnBandCompact = "A larger amount — hold to confirm"
+
+    /// `compact` is the short form, for a half-width tile or a row whose
+    /// price is already on show.
+    static func title(_ option: SingleSpotOption, compact: Bool = false) -> String {
+        let hold = option.warn == true
+        let amount = Format.money(option.priceUsd)
+        if option.type == "garage" {
+            let site = option.provider.flatMap(GarageSource.displayName) ?? "checkout"
+            // Short enough for a half-width tile: the site is named in
+            // the option's detail, and "Hold to open SpotHero" was cut off.
+            if compact { return hold ? "Hold to open" : "Open \(site)" }
+            return hold ? "Hold to open \(site) (\(amount))" : "Confirm — open \(site) (\(amount))"
+        }
+        if option.priceUsd == 0 { return "Confirm — free" }
+        if compact { return hold ? "Hold to pay \(amount)" : "Pay \(amount)" }
+        let stay = Format.minutes(option.durationMinutes)
+        return hold ? "Hold to pay \(amount) for \(stay)" : "Pay \(amount) for \(stay)"
+    }
+}
+
 extension SingleSpotPlan.Destination {
     var coordinate: CLLocationCoordinate2D {
         CLLocationCoordinate2D(latitude: lat, longitude: lng)

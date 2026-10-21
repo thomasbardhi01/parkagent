@@ -182,7 +182,7 @@ struct StoredPlanCard: View {
                     Text(Format.money(day.totalUsd)).font(.secondaryText).monospacedDigit()
                 }
             case .noneMeets(let none):
-                Label(NoCardPresentation.title(none), systemImage: "exclamationmark.circle")
+                Label(NoCardPresentation.headline(none), systemImage: "exclamationmark.circle")
                     .font(.secondaryText)
                 ForEach(none.nearMisses) { option in
                     NearMissRow(option: option)

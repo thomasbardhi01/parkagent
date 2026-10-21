@@ -24,6 +24,13 @@ enum AssistantMockScenario: String, Sendable {
     /// Nothing under the budget: the server's "no" card with its
     /// near-misses, and the ways to relax the request as chips.
     case noneMeets
+    /// A garage-only request whose closest garage is over the approval
+    /// threshold: confirming it takes a long-press. With the cheaper
+    /// garage as its alternative, and a cheaper meter as a near-miss.
+    case warn
+    /// No ask: the cheapest and the closest lead together, and the request
+    /// chips show what the server assumed.
+    case coPrimary
     /// The parking-only refusal sentence.
     case refuse
     case error
@@ -279,6 +286,17 @@ enum MockAssistantFixtures {
               "destination": {"lat": 42.3765, "lng": -71.1190, "label": "Cambridge Common"},
               "provenance": {"provider": "spothero", "searchedAt": "2026-01-05T14:00:00-05:00"},
               "assumptions": "Now–4:00 PM, near Cambridge Common",
+              "verdict": "none_meets",
+              "requestSummary": {
+                "version": 3, "intent": "park_now",
+                "place": {"query": "Cambridge Common",
+                          "resolved": {"lat": 42.3765, "lng": -71.1190, "label": "Cambridge Common", "city": "bos"},
+                          "candidates": null},
+                "window": {"startsAt": null, "durationMinutes": 120, "source": "user"},
+                "hard": {"maxPriceUsd": 2, "maxWalkMinutes": null, "kinds": null,
+                         "entryType": null, "covered": null},
+                "soft": {"rank": null, "prefer": null}
+              },
               "nearMisses": [
                 {"id": "v3-bos-mass-ave-1", "type": "street", "label": "Street — Mass Ave",
                  "detail": "$4.15/hr on Mass Ave — 5 min walk", "priceUsd": 4.50,
@@ -295,6 +313,108 @@ enum MockAssistantFixtures {
               "relaxSuggestions": [
                 {"field": "maxPriceUsd", "to": 7, "wouldYield": 1,
                  "label": "Allow up to $7.00", "reply": "Allow up to $7.00"}
+              ]
+            }
+            """
+        )
+    }
+
+    /// "The closest garage to Fenway Park for three hours": the closest
+    /// honors the ask and leads — at $32.00 it is over the approval
+    /// threshold, so confirming it takes a long-press. The cheaper garage
+    /// is its alternative, and a meter that costs less than either rides
+    /// along as a near-miss: street parking, not a garage.
+    static var warnPlan: AssistantReply.ProposedPlan {
+        plan(
+            id: "mock-plan-warn",
+            json: """
+            {
+              "kind": "single_spot",
+              "verdict": "meets",
+              "destination": {"lat": 42.3467, "lng": -71.0972, "label": "Fenway Park"},
+              "provenance": {"provider": "spothero", "searchedAt": "2026-01-05T14:00:00-05:00"},
+              "recommendedReason": "Closest — $32.00, 2 min walk",
+              "assumptions": "Now–5:00 PM, near Fenway Park",
+              "requestSummary": {
+                "version": 2, "intent": "garage_or_lot",
+                "place": {"query": "Fenway Park",
+                          "resolved": {"lat": 42.3467, "lng": -71.0972, "label": "Fenway Park", "city": "bos"},
+                          "candidates": null},
+                "window": {"startsAt": null, "durationMinutes": 180, "source": "user"},
+                "hard": {"maxPriceUsd": null, "maxWalkMinutes": null, "kinds": ["garage"],
+                         "entryType": null, "covered": null},
+                "soft": {"rank": "closest", "prefer": null}
+              },
+              "options": [
+                {"id": "opt-warn-garage", "type": "garage", "label": "Lansdowne Garage",
+                 "detail": "Self park", "priceUsd": 32.00, "durationMinutes": 180,
+                 "walkMinutes": 2, "entryType": "self", "garageOptionId": "g9",
+                 "lat": 42.3475, "lng": -71.0989, "provider": "spothero",
+                 "deepLink": "\(museumDeepLink)", "fetchedAt": "2026-01-05T19:00:00.000Z",
+                 "axis": "closest", "primary": true, "warn": true, "recommended": true},
+                {"id": "opt-cheaper-garage", "type": "garage", "label": "Ipswich St Garage",
+                 "detail": "Self park", "priceUsd": 14.00, "durationMinutes": 180,
+                 "walkMinutes": 7, "entryType": "self", "garageOptionId": "g10",
+                 "lat": 42.3478, "lng": -71.0921, "provider": "parkwhiz",
+                 "deepLink": "\(valetDeepLink)", "fetchedAt": "2026-01-05T19:00:00.000Z",
+                 "axis": "cheapest", "secondary": true, "recommended": false},
+                {"id": "opt-cheaper-street", "type": "street", "label": "Street — Van Ness St",
+                 "detail": "$2.50/hr, 3 hr max on Van Ness St — 3 min walk", "priceUsd": 7.50,
+                 "durationMinutes": 180, "walkMinutes": 3, "zoneId": "bos-van-ness-st-a-1",
+                 "lat": 42.3461, "lng": -71.0965, "recommended": false, "nearMiss": true,
+                 "violates": [{"field": "kinds", "actual": "street", "limit": ["garage"]}]}
+              ]
+            }
+            """
+        )
+    }
+
+    /// "Park me": no place, no stay, no ranking. The server assumed the
+    /// phone's location and one hour, and — with nothing asked for — the
+    /// cheapest and the closest lead together. The closest, a garage at
+    /// $18.00, is over the approval threshold, as is the valet below it.
+    static var coPrimaryPlan: AssistantReply.ProposedPlan {
+        plan(
+            id: "mock-plan-coprimary",
+            json: """
+            {
+              "kind": "single_spot",
+              "verdict": "meets",
+              "provenance": {"provider": "parkwhiz+spothero", "searchedAt": "2026-01-05T14:00:00-05:00"},
+              "recommendedReason": "Cheapest — $4.10, 6 min walk",
+              "assumptions": "Now–3:00 PM, near you",
+              "requestSummary": {
+                "version": 0, "intent": "park_now",
+                "place": {"query": null, "resolved": null, "candidates": null},
+                "window": {"startsAt": null, "durationMinutes": null, "source": "default"},
+                "hard": {"maxPriceUsd": null, "maxWalkMinutes": null, "kinds": null,
+                         "entryType": null, "covered": null},
+                "soft": {"rank": null, "prefer": null},
+                "assumed": {"place": "phone_location", "durationMinutes": 60}
+              },
+              "options": [
+                {"id": "opt-cheapest", "type": "street", "label": "Street — Boylston St",
+                 "detail": "Boylston St meter", "priceUsd": 4.10, "durationMinutes": 60,
+                 "walkMinutes": 6, "zoneId": "bos-boylston-st-e-d-819305",
+                 "lat": 42.3399, "lng": -71.0951,
+                 "street": "Boylston St", "zoneNumber": "81234", "streetState": "metered",
+                 "streetSummary": "$3.75/hr, 2 hr max on Boylston St — 6 min walk",
+                 "priceBreakdown": {"meterUsd": 3.75, "feeUsd": 0.35}, "ratePerHourUsd": 3.75,
+                 "hoursToday": [{"start": "08:00", "end": "20:00"}], "maxStayMinutes": 120,
+                 "exceedsMaxStay": false,
+                 "axis": "cheapest", "primary": true, "recommended": true},
+                {"id": "opt-closest", "type": "garage", "label": "Museum Underground Deck",
+                 "detail": "Self park, covered", "priceUsd": 18.00, "durationMinutes": 60,
+                 "walkMinutes": 1, "entryType": "self", "garageOptionId": "g1",
+                 "lat": 42.3385, "lng": -71.0925, "provider": "spothero",
+                 "deepLink": "\(museumDeepLink)", "fetchedAt": "2026-01-05T19:00:00.000Z",
+                 "axis": "closest", "primary": true, "warn": true, "recommended": false},
+                {"id": "opt-valet", "type": "garage", "label": "Fenway Valet Plaza",
+                 "detail": "Valet", "priceUsd": 24.00, "durationMinutes": 60,
+                 "walkMinutes": 6, "entryType": "valet", "garageOptionId": "g2",
+                 "lat": 42.3428, "lng": -71.0972, "provider": "parkwhiz",
+                 "deepLink": "\(valetDeepLink)", "fetchedAt": "2026-01-05T19:00:00.000Z",
+                 "warn": true, "recommended": false}
               ]
             }
             """
@@ -389,13 +509,16 @@ extension MockAPI {
                     || (scenario == .auto
                         && (lower.contains("day") || lower.contains("stops") || lower.contains("errand")))
                 if scenario == .askDuration, !lower.hasPrefix("for ") {
+                    // The server's own question and its four answers
+                    // (a later or garage-only request that names no stay).
                     await finish(
-                        reply: "Got it — how long will you stay?",
+                        reply: "How long will you park?",
                         plan: nil,
                         suggestions: [
                             AssistantSuggestion(label: "1 hour", reply: "For 1 hour"),
                             AssistantSuggestion(label: "2 hours", reply: "For 2 hours"),
-                            AssistantSuggestion(label: "3 hours", reply: "For 3 hours"),
+                            AssistantSuggestion(label: "4 hours", reply: "For 4 hours"),
+                            AssistantSuggestion(label: "All day", reply: "For 12 hours"),
                         ]
                     )
                     return
@@ -406,6 +529,12 @@ extension MockAPI {
                         plan: nil,
                         suggestions: MockAssistantFixtures.mooChoices
                     )
+                    return
+                }
+                // A tap on a request chip names what to change and gives
+                // no value: the server asks for one, and so does the mock.
+                if lower.hasPrefix("change ") {
+                    await finish(reply: "Sure — what would you like instead?", plan: nil)
                     return
                 }
                 switch scenario {
@@ -428,6 +557,16 @@ extension MockAPI {
                         suggestions: none.relaxSuggestions
                             .filter { $0.wouldYield > 0 }
                             .map { AssistantSuggestion(label: $0.label, reply: $0.reply) }
+                    )
+                case .warn:
+                    await finish(
+                        reply: "The closest garage to Fenway Park is $32.00; there's a cheaper one a few minutes farther.",
+                        plan: MockAssistantFixtures.warnPlan
+                    )
+                case .coPrimary:
+                    await finish(
+                        reply: "Here are the cheapest and the closest near you, for an hour.",
+                        plan: MockAssistantFixtures.coPrimaryPlan
                     )
                 case .itinerary, .singleSpot, .auto, .placeChoices, .askDuration:
                     if scenario == .refuse { return }
@@ -516,6 +655,8 @@ extension MockAPI {
         let candidates: [SingleSpotOption] = [
             MockAssistantFixtures.singleSpotPlan.plan,
             MockAssistantFixtures.futureStreetPlan.plan,
+            MockAssistantFixtures.warnPlan.plan,
+            MockAssistantFixtures.coPrimaryPlan.plan,
         ].flatMap { planCase -> [SingleSpotOption] in
             guard case .singleSpot(let single) = planCase else { return [] }
             return single.options
@@ -525,6 +666,10 @@ extension MockAPI {
         }
         if option.payOnArrival == true {
             throw APIError.refused(code: "street_pay_on_arrival")
+        }
+        // Like the server: a near-miss is on the card to be seen, not taken.
+        if option.nearMiss == true {
+            throw APIError.refused(code: "near_miss_not_confirmable")
         }
         if option.type == "garage" {
             let approval: AssistantConfirmResponse.LinkApproval? = linkActive

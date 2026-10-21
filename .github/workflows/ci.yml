@@ -1,20 +1,61 @@
 name: ci
 on:
   pull_request:
+    # `labeled` so that adding the `ui-tests` label starts the UI tests (see
+    # the ui-tests job). Any label starts a full run, never a partial one: a
+    # skipped job reports success under the same check name, so a run that
+    # skipped server or executor would mask an earlier run's failure.
+    types: [opened, synchronize, reopened, labeled]
   push:
     branches: [main]
+  workflow_dispatch:
+
+# A new push to a PR cancels the run it supersedes. Main never cancels and
+# never queues: each of its runs gets a group of its own, because one group
+# for main would hold a merge's deploy behind the previous merge's ui-tests
+# (~90 min), and GitHub keeps one pending run per group, so a third merge
+# would cancel the second's run outright.
+concurrency:
+  group: ci-${{ github.ref }}${{ github.ref == 'refs/heads/main' && format('-{0}', github.run_id) || '' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  # What this PR changes, for the jobs that skip work it doesn't touch. The
+  # diff is the PR's merge commit against its first parent (the base branch
+  # tip): exactly what merging would change. --no-renames lists a file moved
+  # out of ios/ under its old path too. Anything but a pull_request answers
+  # true, and so does a merge commit that isn't one.
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      ios: ${{ steps.diff.outputs.ios }}
+    steps:
+      - uses: actions/checkout@v7
+        if: github.event_name == 'pull_request'
+        with: { fetch-depth: 2 }
+      - id: diff
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != pull_request ] || ! git rev-parse -q --verify HEAD^2 >/dev/null; then
+            echo "ios=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git diff --no-renames --name-only HEAD^1 HEAD | tee changed.txt
+          if grep -qE '^(ios/|\.github/workflows/ci\.yml$)' changed.txt; then
+            echo "ios=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ios=false" >> "$GITHUB_OUTPUT"
+          fi
+
   # The app runs in more than one city: user-facing copy must take city and
   # provider names from the provider registry, never hardcode one.
   city-neutral:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - run: ./scripts/check-city-neutral.sh
 
   server:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
@@ -41,7 +82,7 @@ jobs:
   # still boot: the 2026-09-26 outage) — and deploy waits on it. See
   # scripts/boot-check.sh.
   boot:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     services:
       postgres:
         image: postgis/postgis:17-3.5
@@ -73,7 +114,7 @@ jobs:
       - run: scripts/boot-check.sh broken
 
   executor:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
@@ -88,14 +129,19 @@ jobs:
       - run: pnpm -C executor test
 
   ios:
+    needs: changes
+    # A required check, so it stays in this workflow (no workflow-level
+    # `paths:`): on a PR that touches nothing under ios/ nor this file it
+    # reports "skipped", which branch protection accepts, instead of never
+    # reporting. It skips only on a definite "false" from `changes`; if that
+    # job failed its output is empty and ios runs.
+    if: ${{ !cancelled() && (needs.changes.outputs.ios != 'false' || github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
       # The .xcodeproj is gitignored and generated from ios/project.yml.
       # Caching Homebrew's download cache spares the bottle fetch on a warm
-      # run; the pour itself is quick. (Nothing in CI downloads Chromium:
-      # playwright's postinstall is blocked by allowBuilds and no job runs
-      # `playwright install` — revisit when Phase 5 adds executor tests.)
+      # run; the pour itself is quick.
       - uses: actions/cache@v6
         with:
           path: ~/Library/Caches/Homebrew/downloads
@@ -106,11 +152,25 @@ jobs:
       - run: cp ios/Config.example.xcconfig ios/Config.xcconfig
       - run: xcodegen generate
         working-directory: ios
-      - run: xcodebuild -project ios/ParkAgent.xcodeproj -scheme ParkAgent -destination 'generic/platform=iOS Simulator' build CODE_SIGNING_ALLOWED=NO
-      # The Release build is what TestFlight ships: it must carry no mock,
-      # scenario, or Diagnostics code (FR-34). ParkAgentReleaseTests runs
-      # inside the Release build and checks its own binary; the script
-      # runs `strings` over it with the same denylist.
+      # DerivedData (build/, both configurations) holds the Stripe SDK's
+      # checkout under build/SourcePackages and its compiled modules. The
+      # key is the generated project (its files, settings, and package
+      # requirement), any Package.resolved, and the Xcode build, so a hit
+      # never crosses a change to the file list or the toolchain. Checkout
+      # gives every repo file a new mtime, so the app's own sources always
+      # recompile; the cache spares the package fetch and, with inode
+      # changes ignored, the package build.
+      - id: xcode
+        run: |
+          echo "version=$(xcodebuild -version | awk 'NR==1 {v=$2} /Build version/ {b=$3} END {print v "-" b}')" >> "$GITHUB_OUTPUT"
+          defaults write com.apple.dt.XCBuild IgnoreFileSystemDeviceInodeChanges -bool YES
+      - uses: actions/cache@v6
+        with:
+          path: |
+            build
+            !build/Logs
+            !build/Index.noindex
+          key: ios-deriveddata-${{ runner.arch }}-xcode-${{ steps.xcode.outputs.version }}-${{ hashFiles('ios/**/*.pbxproj', 'ios/**/Package.resolved') }}
       - id: sim
         run: |
           DEVICE="iPhone 17 Pro Max"
@@ -120,27 +180,46 @@ jobs:
           UDID=$(xcrun simctl list devices available | grep -F "$DEVICE (" | head -1 | grep -oE '[0-9A-F]{8}(-[0-9A-F]{4}){3}-[0-9A-F]{12}')
           echo "udid=$UDID" >> "$GITHUB_OUTPUT"
           echo "Using simulator: $DEVICE ($UDID)"
-      # The unit tests gate here (the ui-tests job may fail without
-      # blocking). ReleaseDenylistTests among them proves every type the
-      # Release check says is absent really exists in Debug, so that
-      # absence can't pass vacuously.
+      # One Debug build, which is also the app's compile check. The unit
+      # tests gate here (the ui-tests job may fail without blocking).
+      # ReleaseDenylistTests among them proves every type the Release check
+      # says is absent really exists in Debug, so that absence can't pass
+      # vacuously.
+      - name: Build for testing (Debug)
+        run: >
+          xcodebuild -project ios/ParkAgent.xcodeproj -scheme ParkAgent
+          -destination "id=${{ steps.sim.outputs.udid }}"
+          -derivedDataPath build
+          build-for-testing CODE_SIGNING_ALLOWED=NO
       - name: Unit tests (Debug)
         run: >
           xcodebuild -project ios/ParkAgent.xcodeproj -scheme ParkAgent
           -destination "id=${{ steps.sim.outputs.udid }}"
-          -derivedDataPath build-debug
+          -derivedDataPath build
           -only-testing:ParkAgentTests
-          test CODE_SIGNING_ALLOWED=NO
+          test-without-building CODE_SIGNING_ALLOWED=NO
+      # The Release build is what TestFlight ships: it must carry no mock,
+      # scenario, or Diagnostics code (FR-34). ParkAgentReleaseTests runs
+      # inside the Release build and checks its own binary; the script
+      # runs `strings` over it with the same denylist.
       - name: Release binary tests (ParkAgentRelease)
         run: >
           xcodebuild -project ios/ParkAgent.xcodeproj -scheme ParkAgentRelease
           -destination "id=${{ steps.sim.outputs.udid }}"
-          -derivedDataPath build-release
+          -derivedDataPath build
           test CODE_SIGNING_ALLOWED=NO
       - name: No dev strings in the Release binary
-        run: ios/Tools/check-release-binary.sh build-release/Build/Products/Release-iphonesimulator/ParkAgent.app
+        run: ios/Tools/check-release-binary.sh build/Build/Products/Release-iphonesimulator/ParkAgent.app
 
   ui-tests:
+    needs: changes
+    # Pushes to main and manual runs always. A PR only when it carries the
+    # `ui-tests` label (put it on a PR that changes iOS UI flows; adding it
+    # starts a run) and touches ios/: the suite holds a macOS runner for
+    # ~90 minutes, and on every PR it queued the required ios job behind it.
+    if: >-
+      ${{ !cancelled() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' ||
+      (needs.changes.outputs.ios != 'false' && contains(github.event.pull_request.labels.*.name, 'ui-tests'))) }}
     runs-on: macos-latest
     # Simulator boot on hosted runners is historically flaky (and the device
     # roster shifts with the Xcode image), so a red run here doesn't block the
@@ -160,6 +239,19 @@ jobs:
       - run: cp ios/Config.example.xcconfig ios/Config.xcconfig
       - run: xcodegen generate
         working-directory: ios
+      # The ios job's DerivedData, read but never written here (that job
+      # saves it): same key, so the same project and Xcode build.
+      - id: xcode
+        run: |
+          echo "version=$(xcodebuild -version | awk 'NR==1 {v=$2} /Build version/ {b=$3} END {print v "-" b}')" >> "$GITHUB_OUTPUT"
+          defaults write com.apple.dt.XCBuild IgnoreFileSystemDeviceInodeChanges -bool YES
+      - uses: actions/cache/restore@v6
+        with:
+          path: |
+            build
+            !build/Logs
+            !build/Index.noindex
+          key: ios-deriveddata-${{ runner.arch }}-xcode-${{ steps.xcode.outputs.version }}-${{ hashFiles('ios/**/*.pbxproj', 'ios/**/Package.resolved') }}
       # Fall back to any iPhone the image ships if the preferred device is
       # missing, rather than hard-failing on the name. Everything after
       # this pins the device by UDID, so boot, install, and test all hit
@@ -190,7 +282,8 @@ jobs:
         run: |
           xcrun simctl boot "$UDID" || true
           xcrun simctl bootstatus "$UDID" -b
-          APP=$(find build/Build/Products -maxdepth 2 -type d -name 'ParkAgent.app' -path '*iphonesimulator*' | head -1)
+          # Debug by name: a restored DerivedData also holds the Release app.
+          APP=build/Build/Products/Debug-iphonesimulator/ParkAgent.app
           echo "Installing $APP"
           xcrun simctl install "$UDID" "$APP"
           xcrun simctl launch "$UDID" com.thomasbardhi.parkagent -uiTesting YES -useMockAPI YES -resetState YES
@@ -268,7 +361,7 @@ jobs:
     # Merging to main deploys; nobody needs the Fly token locally.
     needs: [server, boot, ios]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     concurrency:
       group: deploy-parkagent-api
       cancel-in-progress: false

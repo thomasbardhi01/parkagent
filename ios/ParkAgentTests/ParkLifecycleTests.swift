@@ -142,10 +142,10 @@ struct ParkLifecycleTests {
         #expect(model.reporter.waiting?.confirmed == true)
         #expect(ParkedNotice.restoreWaiting()?.confirmed == true)
 
-        let said = try #require(ParkedNotice.tapAnswerContent(.waitingForWalkAway, zoneNumber: "417371"))
+        let said = try #require(ParkedNotice.tapAnswerContent(.waitingForWalkAway, zoneNumber: "417371", paysAtWalkAway: true))
         #expect(said.body == "Kept. ParkAgent pays when you walk away.")
         #expect(said.title.contains("417371"))
-        #expect(ParkedNotice.tapAnswerContent(.freePeriod(notice: nil), zoneNumber: "417371")?.body.contains("Nothing was paid") == true)
+        #expect(ParkedNotice.tapAnswerContent(.freePeriod(notice: nil), zoneNumber: "417371", paysAtWalkAway: true)?.body.contains("Nothing was paid") == true)
     }
 
     /// The tap relaunched the app in the background with the park only on
@@ -159,11 +159,11 @@ struct ParkLifecycleTests {
         }
         ParkedNotice.storeWaiting(waitingPark(confirmed: false))
         #expect(model.reporter.waiting == nil)
-        model.keepTappedPark("pe1")
+        await model.keepTappedPark("pe1")
         #expect(ParkedNotice.restoreWaiting()?.confirmed == true)
         // Another park's tap changes nothing.
         ParkedNotice.storeWaiting(waitingPark(confirmed: false))
-        model.keepTappedPark("pe-other")
+        await model.keepTappedPark("pe-other")
         #expect(ParkedNotice.restoreWaiting()?.confirmed == false)
     }
 
@@ -184,5 +184,99 @@ struct ParkLifecycleTests {
         #expect(LostStart.sessionToAdopt(gone, waiting: waiting, holding: nil) == .init(sessionId: "s9", parkClosed: true))
         let other = LocationResponse(sessionId: "s9", park: .init(parkedEventId: "pe2", status: "started", sessionId: "s7"))
         #expect(LostStart.sessionToAdopt(other, waiting: waiting, holding: nil) == .init(sessionId: "s9", parkClosed: false))
+    }
+
+    // MARK: - Review of #231 (#226)
+
+    /// A model holding a waiting park, reporting to `reports`, with one fix
+    /// `metersFromCar` north of the car.
+    func modelReporting(
+        _ waiting: ParkedNotice.Waiting, metersFromCar: Double, accuracy: Double = 5,
+        into reports: @escaping (LocationReport) -> Void
+    ) async -> AppModel {
+        ActiveSession.store(nil)
+        let model = AppModel(authStore: AuthStore(credentials: InMemoryCredentialStore()))
+        model.reporter.start(
+            send: { reports($0); return LocationResponse(park: .init(parkedEventId: "pe1", status: "at_car")) },
+            carCoordinate: waiting.coordinate, waiting: waiting
+        )
+        let fix = ParkFix(
+            latitude: waiting.latitude + metersFromCar / 111_320, longitude: waiting.longitude,
+            accuracy: accuracy, at: .now
+        )
+        await model.reporter.handle(fix)
+        return model
+    }
+
+    /// The car's audio coming back (CarPlay, or a route learned as the
+    /// car's, which can be headphones) is a hint only, never the return by
+    /// itself: for a park still waiting at the car the server takes
+    /// `returned_to_car` as the car driving off, wherever the phone is.
+    /// The drive CoreMotion then sees is the return.
+    @Test func theCarsAudioComingBackSendsNothingByItself() async throws {
+        var events: [String?] = []
+        let model = await modelReporting(waitingPark(confirmed: false), metersFromCar: 60) { events.append($0.event) }
+        defer { tearDown(model) }
+        model.resumeParkLifecycle()
+        model.detector.carAudio.remember("stereo")
+        model.detector.carAudioConnected(.carPlay, uid: nil)
+        model.detector.carAudioConnected(.bluetooth, uid: "stereo")
+        for _ in 0..<20 { await Task.yield() }
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(!events.contains("returned_to_car"))
+        model.detector.carAudio.forget()
+    }
+
+    /// Pay kept while the driver is already walking: CoreMotion won't say
+    /// "walking" again, so the walk they're on is told now.
+    @Test func aPayKeptWhileAlreadyWalkingIsTheWalkAway() async {
+        var waiting = waitingPark(confirmed: false)
+        waiting.parkedAt = Date.now.addingTimeInterval(-120)
+        var events: [String?] = []
+        let model = await modelReporting(waiting, metersFromCar: 25, accuracy: 10) { events.append($0.event) }
+        defer { tearDown(model) }
+        model.detector.track(MotionSample(at: .now.addingTimeInterval(-30), walking: true), live: false)
+        await model.keepTappedPark("pe1")
+        #expect(events.last == "left_car")
+    }
+
+    /// Which walk is a walk away from the park.
+    @Test func onlyAWalkSinceTheCarStoppedIsAWalkAway() {
+        let parked = Date(timeIntervalSince1970: 1_800_000_000)
+        let walk = { (offset: TimeInterval) in MotionSample(at: parked.addingTimeInterval(offset), walking: true) }
+        let stop = parked.addingTimeInterval(-20)
+        #expect(WalkAway.since(stop: stop, parkedAt: parked, newest: walk(-10)) != nil)
+        #expect(WalkAway.since(stop: stop, parkedAt: parked, newest: walk(-40)) == nil, "A walk to the trunk before the stop")
+        // No stop seen: a minute before the park's time.
+        #expect(WalkAway.since(stop: nil, parkedAt: parked, newest: walk(-50)) != nil)
+        #expect(WalkAway.since(stop: nil, parkedAt: parked, newest: walk(-90)) == nil)
+        // Another park's stop, long before: the minute rule instead.
+        #expect(WalkAway.since(stop: parked.addingTimeInterval(-3_600), parkedAt: parked, newest: walk(-90)) == nil)
+        #expect(WalkAway.since(stop: stop, parkedAt: parked, newest: MotionSample(at: parked, automotive: true)) == nil)
+    }
+
+    /// Without motion a Pay tapped at the car never starts on its own (no
+    /// `left_car`); nothing may say it does.
+    @Test func withoutMotionNothingPromisesToPayAtTheWalkAway() {
+        var caps = DetectionCapabilities()
+        caps.motion = .authorized
+        #expect(caps.paysAtWalkAway)
+        for motion in [DetectionCapabilities.Motion.denied, .restricted, .notDetermined, .unavailable] {
+            caps.motion = motion
+            #expect(!caps.paysAtWalkAway, "\(motion)")
+        }
+        #expect(ParkedNotice.walkAwayPromise(paysAtWalkAway: true) == "ParkAgent pays when you walk away.")
+        #expect(ParkedNotice.walkAwayPromise(paysAtWalkAway: false) == "You'll be asked again when you walk away.")
+        let kept = ParkedNotice.tapAnswerContent(.waitingForWalkAway, zoneNumber: "456", paysAtWalkAway: false)
+        #expect(kept?.body == "Kept. You'll be asked again when you walk away.")
+        #expect(ParkedNotice.payButtonTitle(totalUsd: 3.65, minutes: 90, heldAtCar: true, paysAtWalkAway: false)
+            == "Pay $3.65 — you'll be asked again when you walk away")
+        #expect(ParkedNotice.payButtonTitle(totalUsd: 3.65, minutes: 90, heldAtCar: true, paysAtWalkAway: true).hasPrefix("Pay $3.65 for"))
+        #expect(ParkedNotice.payButtonTitle(totalUsd: 3.65, minutes: 90, heldAtCar: false, paysAtWalkAway: false).hasPrefix("Pay $3.65 for"))
+        #expect(ParkedNotice.atCarNote(paysAtWalkAway: false).contains("Motion & Fitness"))
+        #expect(!ParkedNotice.atCarNote(paysAtWalkAway: false).contains("pays when you walk away."))
+        #expect(ParkedNotice.atCarNote(paysAtWalkAway: true).hasSuffix("ParkAgent pays when you walk away."))
+        #expect(CapabilityIssue.motionDenied.consequence.contains("Pay tapped at the car is asked again"))
+        #expect(CapabilityIssue.motionRestricted.consequence.contains("Pay tapped at the car is asked again"))
     }
 }

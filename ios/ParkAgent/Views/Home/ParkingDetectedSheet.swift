@@ -553,7 +553,10 @@ struct ParkingDetectedSheet: View {
                     }
                     Text(model.isPaying
                         ? "Paying…"
-                        : "Pay \(Format.money(candidate.quote.totalUsd)) for \(Format.minutes(candidate.quote.stayMinutes))")
+                        : ParkedNotice.payButtonTitle(
+                            totalUsd: candidate.quote.totalUsd, minutes: candidate.quote.stayMinutes,
+                            heldAtCar: heldAtCar, paysAtWalkAway: model.permissions.capabilities.paysAtWalkAway
+                        ))
                 }
             }
             .buttonStyle(.primary)
@@ -561,7 +564,7 @@ struct ParkingDetectedSheet: View {
             .accessibilityIdentifier("parkedSheet.payButton")
             if heldAtCar {
                 // The server pays only once the phone has left the car.
-                Text("Nothing is paid while you're at the car. ParkAgent pays when you walk away.")
+                Text(ParkedNotice.atCarNote(paysAtWalkAway: model.permissions.capabilities.paysAtWalkAway))
                     .font(.captionText)
                     .foregroundStyle(Color.textSecondary)
                     .accessibilityIdentifier("parkedSheet.paysAtWalkAwayNote")

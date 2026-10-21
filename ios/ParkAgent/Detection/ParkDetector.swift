@@ -61,10 +61,23 @@ final class ParkDetector: NSObject, CLLocationManagerDelegate {
     /// changes, not a stream: a driver already walking when a park is
     /// recorded is told by `isOnFootNow`.
     @ObservationIgnored var onWalking: ((Date) -> Void)?
-    /// The car's own audio connected (CarPlay, or the Bluetooth route that
-    /// went away when the last drive ended): the phone is back in the car.
-    /// Any other Bluetooth route may be headphones, and says nothing.
-    @ObservationIgnored var onCarAudioConnected: (() -> Void)?
+    /// The car's own audio connected (CarPlay, or a Bluetooth route learned
+    /// as the car's), with which kind. A hint only: no lifecycle event goes
+    /// out on it alone (#226); `returned_to_car` waits for CoreMotion's
+    /// drive. Any other Bluetooth route may be headphones, and says nothing.
+    @ObservationIgnored var onCarAudioConnected: ((ParkFusionEngine.AudioPort) -> Void)?
+    /// When the car stopped, for the last park (`ParkOutcome.stopAt`): a
+    /// walk before it was not away from this park.
+    @ObservationIgnored private(set) var lastParkStopAt: Date?
+    /// The walk last told to `onWalking` (each reading is told once).
+    @ObservationIgnored private var toldWalkAt: Date?
+    /// The Bluetooth route that was playing while the car drove: the only
+    /// one that can be learned as the car's when it goes away.
+    @ObservationIgnored private var routeWhileDriving: String?
+    /// The Bluetooth output now (AVAudioSession's route); tests set it.
+    @ObservationIgnored var currentBluetoothRoute: () -> String? = {
+        CarAudioSource.bluetoothUID(of: AVAudioSession.sharedInstance().currentRoute)
+    }
     /// When motion last had the driver on foot.
     @ObservationIgnored private(set) var lastOnFootAt: Date?
     /// The newest reading CoreMotion was at least fairly sure of. A low
@@ -175,6 +188,7 @@ final class ParkDetector: NSObject, CLLocationManagerDelegate {
         engine.onOutcome = { [weak self] outcome in
             guard let self else { return }
             let place = self.classify(outcome)
+            self.lastParkStopAt = outcome.stopAt
             if let fix = outcome.fix {
                 // The spot is known; the reporter takes over if a session
                 // starts. Back to near-free monitoring until the next drive.
@@ -226,7 +240,7 @@ final class ParkDetector: NSObject, CLLocationManagerDelegate {
             onDisconnect: { [weak self] port, uid in self?.carAudioDisconnected(port, uid: uid) },
             onConnect: { [weak self] port, uid in
                 guard let self else { return }
-                if self.carAudio.isCar(port, uid: uid) { self.onCarAudioConnected?() }
+                self.carAudioConnected(port, uid: uid)
                 Task { await self.wake(.carAudioConnected) }
             }
         )
@@ -274,6 +288,9 @@ final class ParkDetector: NSObject, CLLocationManagerDelegate {
         lastDriveEvidenceAt = nil
         lastConfidentMotion = nil
         lastOnFootAt = nil
+        lastParkStopAt = nil
+        toldWalkAt = nil
+        routeWhileDriving = nil
         motionChain?.cancel()
         motionChain = nil
     }
@@ -337,10 +354,12 @@ final class ParkDetector: NSObject, CLLocationManagerDelegate {
         await serially {
             await self.replayMotionHistory(through: .now)
             // Suspended through the walk-away: the history says so, once
-            // the app is back to hear it.
-            if self.isOnFootNow, let walk = self.lastConfidentMotion { self.onWalking?(walk.at) }
+            // the app is back to hear it. Once per reading; and never on
+            // the car's audio coming back, which is the driver in the car.
+            if reason != .carAudioConnected, self.isOnFootNow, let walk = self.lastConfidentMotion {
+                self.tellWalk(walk.at)
+            }
         }
-        let drivingRecently = lastDriveEvidenceAt.map { Date.now.timeIntervalSince($0) < 3 * 60 } ?? false
         if simulated || drivingRecently || engine.hasPendingStop
             || reason == .visitDeparture || reason == .carAudioConnected {
             beginTracking(reason: reason.rawValue)
@@ -411,7 +430,10 @@ final class ParkDetector: NSObject, CLLocationManagerDelegate {
     private func handle(_ sample: MotionSample, live: Bool) {
         if sample.isDriving {
             lastDriveEvidenceAt = max(lastDriveEvidenceAt ?? sample.at, sample.at)
-            if live { beginTracking(reason: "driving") }
+            if live {
+                beginTracking(reason: "driving")
+                routeWhileDriving = currentBluetoothRoute()
+            }
         }
         track(sample, live: live)
         engine.motion(sample)
@@ -419,23 +441,43 @@ final class ParkDetector: NSObject, CLLocationManagerDelegate {
     }
 
     /// What the reading says the driver is doing now, for the lifecycle.
-    private func track(_ sample: MotionSample, live: Bool) {
+    /// Internal for tests (a replayed reading, `live: false`, tells nothing).
+    func track(_ sample: MotionSample, live: Bool) {
         if sample.confidence != .low, sample.at >= (lastConfidentMotion?.at ?? .distantPast) {
             lastConfidentMotion = sample
         }
         if sample.isOnFoot {
             lastOnFootAt = max(lastOnFootAt ?? sample.at, sample.at)
         }
-        if live, sample.isWalkingAway { onWalking?(sample.at) }
+        if live, sample.isWalkingAway { tellWalk(sample.at) }
     }
 
-    /// A Bluetooth route that goes away while the car was just driving is
-    /// the car's (the engine's own rule for it as a park signal), and its
-    /// coming back is the phone back in the car.
-    private func carAudioDisconnected(_ port: ParkFusionEngine.AudioPort, uid: String?) {
-        let drivingRecently = lastDriveEvidenceAt.map { Date.now.timeIntervalSince($0) < 3 * 60 } ?? false
-        if port == .bluetooth, drivingRecently, let uid { carAudio.remember(uid) }
+    /// Each walk is told once: a wake that finds the driver still on the
+    /// same walk says nothing new.
+    private func tellWalk(_ at: Date) {
+        guard toldWalkAt != at else { return }
+        toldWalkAt = at
+        onWalking?(at)
+    }
+
+    var drivingRecently: Bool {
+        lastDriveEvidenceAt.map { Date.now.timeIntervalSince($0) < 3 * 60 } ?? false
+    }
+
+    /// A Bluetooth route that played while the car drove, and went away as
+    /// the drive ended, is the car's. Headphones put away at the end of a
+    /// drive they weren't playing in are not (#226): learned as the car,
+    /// their next connect would read as the driver back in it.
+    func carAudioDisconnected(_ port: ParkFusionEngine.AudioPort, uid: String?) {
+        if port == .bluetooth, drivingRecently, let uid, uid == routeWhileDriving { carAudio.remember(uid) }
         engine.audioDisconnected(port: port)
+    }
+
+    /// A route coming up mid-drive is the one playing while the car drives;
+    /// one already the car's is the phone back in it.
+    func carAudioConnected(_ port: ParkFusionEngine.AudioPort, uid: String?) {
+        if port == .bluetooth, engine.state.wasDriving, let uid { routeWhileDriving = uid }
+        if carAudio.isCar(port, uid: uid) { onCarAudioConnected?(port) }
     }
 
     // MARK: - Modes

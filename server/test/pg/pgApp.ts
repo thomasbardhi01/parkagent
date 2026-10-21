@@ -206,10 +206,11 @@ async function seedUser(): Promise<{ id: string; apiKey: string }> {
 export async function makePgApp(
   options: { candidates?: Candidate[]; policy?: Partial<Policy>; executor?: Executor } = {},
 ) {
-  const candidates = options.candidates ?? [STEINWAY];
+  // Metered at every hour, as their zone rows are: CI runs at any time.
+  const candidates = (options.candidates ?? [STEINWAY]).map((c) => ({ ...c, hours: ALWAYS }));
   for (const c of candidates) {
     if (c.zoneId !== STEINWAY.zoneId && !extraZones.some((z) => z.zoneId === c.zoneId)) {
-      extraZones.push({ ...c, hours: ALWAYS });
+      extraZones.push(c);
       zonesSeeded = null;
     }
   }

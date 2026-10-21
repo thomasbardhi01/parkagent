@@ -321,7 +321,21 @@ Keep new code on those rules.
 - `.claude/agents/`: `ci-watch` (Haiku) polls checks and reads failed logs;
   `test-run` (Sonnet) runs suites and reports counts; `code-map` (Haiku)
   sweeps callers, env vars and external calls. A session delegates those
-  steps to them instead of reading the raw output itself.
+  steps to them instead of reading the raw output itself. Their `tools:`
+  lines use plain `Bash` (a scoped `Bash(...)` pattern there does not
+  actually restrict which commands run — #221 comment 6305900070); the
+  reader agents keep `disallowedTools: Write, Edit`, and `parkagent-guard`
+  below is the real backstop.
+- `.claude/mods/parkagent-guard/`: the **enforcement layer**. It parses every
+  Bash command (in this session and its subagents) and denies the ones a
+  Claude session must never run — `gh pr merge`, `gh pr review --approve`,
+  `gh secret set`, `gh workflow run` on main, `git push` to main/master,
+  `fly deploy|secrets|ssh|postgres connect`, and reads of `.env`/`.env.*`/
+  `ios/Config.xcconfig`. This does not change the working agreement: a human
+  still merges every PR, a Claude session never does (see "Working style");
+  the guard just makes the slip impossible to run by hand. `/guard off`
+  lifts it for 10 minutes in one session after a confirmation (never for
+  subagents). Load it via `CLAUDE_CODE_PLUGIN_DIRS` (its README).
 - `.claude/mods/parkagent-fleet/`: a mod that draws context %, rate limits
   and cost above the prompt and a `/fleet` pane of every session on this
   machine plus the latest CI runs. Load it once via

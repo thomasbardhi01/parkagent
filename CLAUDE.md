@@ -34,6 +34,8 @@ under `.claude/worktrees/`, which is gitignored. Remove them, and any
 `~/Documents/pa-*` worktree, once their branch has merged.
 
 ## Layout
+Read docs/feature-map.md before exploring; update the row when you change a feature.
+
 - data/      Python scripts that fetch NYC/Boston open data and build zone GeoJSON,
              and garage and lot footprints from OSM (the `garages` table, FR-49)
 - server/    Fastify + TypeScript API on Fly.io; Prisma + Postgres/PostGIS
@@ -43,7 +45,9 @@ under `.claude/worktrees/`, which is gitignored. Remove them, and any
 - policy.json  Spending and extension rules; server reads it at boot
 - docs/decisions/  dated decision records (V1 scope); docs/research/  the
              three research reports the V1 issues come from;
-             docs/workstreams.md  who owns which files in V1
+             docs/workstreams.md  who owns which files in V1;
+             docs/feature-map.md  every feature's routes, code, guardrails,
+             tests and status (diagram: docs/feature-map.mmd)
 
 ## Prerequisites
     brew install git gh nvm pnpm xcodegen flyctl stripe/stripe-cli/stripe
@@ -180,7 +184,9 @@ cap are #210, not built yet.
 - CI (`.github/workflows/ci.yml`):
   - `city-neutral` runs `scripts/check-city-neutral.sh`. No city or provider
     names in app/server sources outside the registries. Take names from
-    `CityCatalog` / the provider registry.
+    `CityCatalog` / the provider registry. The same job runs
+    `scripts/check-feature-map.mjs`: a path in `docs/feature-map.md` that
+    doesn't exist, or a route or job in no row, fails it.
   - `server`, `executor`, `ios` (unit tests, the `ParkAgentRelease` scheme,
     and the Release-binary `strings` check). On a PR that changes nothing
     under `ios/` nor `ci.yml`, `ios` reports "skipped", which passes.

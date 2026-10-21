@@ -53,6 +53,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: ./scripts/check-city-neutral.sh
+      # The runner's own Node; the check uses built-ins only.
+      - run: node --test scripts/check-feature-map.test.mjs
+      - run: node scripts/check-feature-map.mjs
 
   server:
     runs-on: ubuntu-24.04

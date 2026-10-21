@@ -23,6 +23,7 @@ import type {
   GarageBookingRow,
   ItineraryRow,
   LinkSpendRequestRow,
+  PendingParkRow,
   SessionHoldRow,
   ProviderAccountRow,
   RefreshTokenRow,
@@ -50,7 +51,7 @@ import { LinkWallet } from "../src/services/link/linkWallet.js";
 import type { ProviderAccountOps, ProviderOpsFactory } from "../src/services/providerOps.js";
 import { makeLinkWorker } from "../src/jobs/linkWorker.js";
 import type { Push } from "../src/services/apns.js";
-import type { Executor } from "../src/services/executor.js";
+import type { Executor, ExecutorContext } from "../src/services/executor.js";
 import { DryRunExecutor } from "../src/services/executor.js";
 import { makePendingSessionCheck } from "../src/services/pendingSession.js";
 import type { Policy } from "../src/services/policy.js";
@@ -327,6 +328,8 @@ export interface FakeDbState {
   sessionHolds: SessionHoldRow[];
   garageBookings: GarageBookingRow[];
   linkJobs: LinkJobRow[];
+  /** The street session lifecycle's rows (FR-55). */
+  pendingParks: PendingParkRow[];
 }
 
 /** The link-job WHERE shapes in use (LinkJobWhere), over the fake rows. */
@@ -407,6 +410,7 @@ function matchesSessionWhere(s: SessionRow, where: SessionWhere): boolean {
   if (where.id?.not !== undefined && s.id === where.id.not) return false;
   if (where.userId !== undefined && s.userId !== where.userId) return false;
   if (where.zoneId !== undefined && s.zoneId !== where.zoneId) return false;
+  if (where.parkedEventId !== undefined && s.parkedEventId !== where.parkedEventId) return false;
   if (where.dryRun !== undefined && s.dryRun !== where.dryRun) return false;
   if (typeof where.status === "string" && s.status !== where.status) return false;
   if (
@@ -486,6 +490,7 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
     fundingMethods: [],
     sessionHolds: [],
     garageBookings: [],
+    pendingParks: [],
   };
   const cardholderFor = (userId: string) => {
     const explicit = state.issuingCardholders.find((c) => c.userId === userId);
@@ -1446,11 +1451,100 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
         let count = 0;
         for (const s of state.sessions) {
           const hit =
-            "userId" in where ? s.userId === where.userId : s.vehicleId === where.vehicleId;
+            "id" in where
+              ? s.id === where.id && s.status === where.status
+              : "userId" in where
+                ? s.userId === where.userId
+                : s.vehicleId === where.vehicleId;
           if (hit) {
             Object.assign(s, data);
             count += 1;
           }
+        }
+        return { count };
+      },
+    },
+    pendingPark: {
+      // Every read hands out a copy, like a row read from Postgres: a
+      // request holding one doesn't see what another wrote since.
+      create: async ({ data }) => {
+        // Mirrors the two unique indexes (parked_event_id, session_id).
+        if (
+          (data.parkedEventId &&
+            state.pendingParks.some((p) => p.parkedEventId === data.parkedEventId)) ||
+          (data.sessionId && state.pendingParks.some((p) => p.sessionId === data.sessionId))
+        ) {
+          throw Object.assign(new Error("Unique constraint failed: pending_parks"), {
+            code: "P2002",
+          });
+        }
+        const row: PendingParkRow = {
+          id: `pp${state.pendingParks.length + 1}`,
+          parkedEventId: null,
+          candidates: null,
+          quote: null,
+          prompt: null,
+          shownDryRun: null,
+          zoneId: null,
+          leftCarAt: null,
+          farAt: null,
+          farDistanceM: null,
+          nearSince: null,
+          carMovedAt: null,
+          promptedAt: null,
+          confirmedAt: null,
+          startingAt: null,
+          sessionId: null,
+          closedAt: null,
+          createdAt: holdClock(),
+          ...data,
+        };
+        state.pendingParks.push(row);
+        return { ...row };
+      },
+      findUnique: async ({ where }) => {
+        const row = state.pendingParks.find((p) =>
+          "id" in where
+            ? p.id === where.id
+            : "parkedEventId" in where
+              ? p.parkedEventId === where.parkedEventId
+              : p.sessionId === where.sessionId,
+        );
+        return row ? { ...row } : null;
+      },
+      findFirst: async ({ where }) => {
+        // Insertion order breaks a created_at tie: the fake clock is fixed.
+        const row = state.pendingParks
+          .map((park, index) => ({ park, index }))
+          .filter(({ park }) => park.userId === where.userId)
+          .filter(({ park }) => where.status.in.includes(park.status))
+          .sort(
+            (a, b) => b.park.createdAt.getTime() - a.park.createdAt.getTime() || b.index - a.index,
+          )[0]?.park;
+        return row ? { ...row } : null;
+      },
+      findMany: async ({ where }) =>
+        state.pendingParks
+          .filter((park) => park.userId === where.userId && where.status.in.includes(park.status))
+          .map((park) => ({ ...park })),
+      update: async ({ where, data }) => {
+        const row = state.pendingParks.find((p) => p.id === where.id);
+        if (!row) throw new Error(`fake pendingPark.update: no park ${where.id}`);
+        Object.assign(row, data);
+        return { ...row };
+      },
+      // One synchronous pass, like the single UPDATE … WHERE status = …
+      // it stands in for: of two racing callers, one gets count 1.
+      updateMany: async ({ where, data }) => {
+        let count = 0;
+        for (const row of state.pendingParks) {
+          const statusHit =
+            typeof where.status === "string"
+              ? row.status === where.status
+              : where.status.in.includes(row.status);
+          if (!statusHit || row.id !== where.id) continue;
+          Object.assign(row, data);
+          count += 1;
         }
         return { count };
       },
@@ -1765,12 +1859,47 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
   return { db, state };
 }
 
+/** One executor call as the test app saw it: which executor was asked for
+ * (its dry run included) and what it was asked to pay. */
+export type ExecutorCall = ExecutorContext &
+  (
+    | { op: "start"; zoneNumber: string; minutes: number; amountUsd: number; feeUsd: number }
+    | { op: "extend"; minutes: number; amountUsd: number; feeUsd: number }
+    | { op: "stop" }
+  );
+
 export interface TestApp {
   app: FastifyInstance;
   state: FakeDbState;
   deps: AppDeps;
   /** Every push the app tried to send, in order. */
   pushes: { userId: string; push: Push }[];
+  /** Every call made through `deps.executorFor`, in order. */
+  executorCalls: ExecutorCall[];
+}
+
+/** An executor that records each call before passing it on. */
+function recordingExecutor(
+  executor: Executor,
+  context: ExecutorContext,
+  calls: ExecutorCall[],
+): Executor {
+  return {
+    startSession: (args) => {
+      const { zoneNumber, minutes, amountUsd, feeUsd } = args;
+      calls.push({ ...context, op: "start", zoneNumber, minutes, amountUsd, feeUsd });
+      return executor.startSession(args);
+    },
+    extendSession: (args) => {
+      const { minutes, amountUsd, feeUsd } = args;
+      calls.push({ ...context, op: "extend", minutes, amountUsd, feeUsd });
+      return executor.extendSession(args);
+    },
+    stopSession: (args) => {
+      calls.push({ ...context, op: "stop" });
+      return executor.stopSession(args);
+    },
+  };
 }
 
 /**
@@ -2071,6 +2200,7 @@ export function makeTestApp(options: {
     seedProviderAccount(state);
   }
   const pushes: TestApp["pushes"] = [];
+  const executorCalls: TestApp["executorCalls"] = [];
   // Deterministic clock: without it, fixture timestamps (Jan 2026) drift
   // ever further past /parked's ts-clamp window and tests become
   // wall-clock-dependent. Tests that care pass their own `now`.
@@ -2125,7 +2255,10 @@ export function makeTestApp(options: {
     ...(garageFootprints ? { garageFootprints } : {}),
     auth,
     authenticate: makeAuthenticate(db, TEST_PEPPER, TEST_JWT_SECRET, now),
-    executorFor: () => options.executor ?? dryRunExecutor,
+    // Recorded per call, dry run included: `options.executor` stands in
+    // for both paths, so the record is what says which one was asked for.
+    executorFor: (context) =>
+      recordingExecutor(options.executor ?? dryRunExecutor, context, executorCalls),
     sendPush: async (userId, push) => {
       pushes.push({ userId, push });
     },
@@ -2161,7 +2294,7 @@ export function makeTestApp(options: {
     now,
   });
   deps.linkWorker = linkWorker;
-  return { app: buildApp(deps), state, deps, pushes, linkWorker };
+  return { app: buildApp(deps), state, deps, pushes, executorCalls, linkWorker };
 }
 
 export function parkedBody(overrides: Record<string, unknown> = {}) {

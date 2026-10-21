@@ -50,6 +50,13 @@ protocol APIClient: Sendable {
     func stopSession(sessionId: String) async throws -> SessionStopResponse
     func extendSession(sessionId: String, minutes: Int) async throws -> SessionExtendResponse
     func reportLocation(_ report: LocationReport) async throws
+    /// The same report, with the server's answer: where the waiting park
+    /// or the session stands, and the walk-away prompt (FR-55).
+    func reportParkLocation(_ report: LocationReport) async throws -> LocationResponse
+    /// The tap: pay a waiting park, for no more than the amount shown.
+    func confirmPark(parkedEventId: String, zoneId: String?, shownTotalUsd: Double?) async throws -> ParkConfirmOutcome
+    /// "Not now": nothing is paid and the park stops waiting.
+    func declinePark(parkedEventId: String) async throws
     func registerDevice(_ registration: DeviceRegistration) async throws
     /// GET /me/limits — this user's own caps and default stay, with the
     /// operator's ceilings.
@@ -164,6 +171,21 @@ extension APIClient {
 
     /// Garage outlines: a test double that never drives inherits a refusal,
     /// which the footprint cache treats like any failed fetch.
+    /// A client from before the lifecycle: the report goes out, and the
+    /// answer says nothing.
+    func reportParkLocation(_ report: LocationReport) async throws -> LocationResponse {
+        try await reportLocation(report)
+        return LocationResponse()
+    }
+
+    func confirmPark(parkedEventId: String, zoneId: String?, shownTotalUsd: Double?) async throws -> ParkConfirmOutcome {
+        throw APIError.notConfigured
+    }
+
+    func declinePark(parkedEventId: String) async throws {
+        throw APIError.notConfigured
+    }
+
     func nearbyGarages(lat: Double, lng: Double, radiusM: Double, limit: Int) async throws -> NearbyGaragesResponse {
         throw APIError.notConfigured
     }
@@ -361,6 +383,12 @@ enum APIError: Error, LocalizedError {
         case "vehicle_not_found": "That car isn't on your account any more."
         case "parked_event_not_found", "zone_not_found": "That parking spot is no longer available to pay. Park again to get a fresh quote."
         case "street_pay_on_arrival": "Street parking is paid when you park, not ahead of time."
+        // The walk-away tap (server/API.md "Session lifecycle").
+        case "park_closed", "no_pending_park": "That park is over, so nothing was paid. Park again to get a fresh quote."
+        case "quote_changed": "The price changed since you were asked, so nothing was paid. Check the new amount and tap Pay again."
+        case "confirm_in_progress": "That payment is already going through."
+        case "side_required", "zone_not_offered": "Pick the side of the street you're on first."
+        case "park_awaits_walk_away": "ParkAgent pays this one when you walk away from the car."
         default: fallbackRefusal(code)
         }
     }

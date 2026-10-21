@@ -56,13 +56,26 @@ and you pay the meter by hand as usual.
 1. Park normally. Turn the car off, unplug/step away as you normally
    would. **Don't open the app first** — the point is unattended
    detection.
-2. Within a few minutes of walking away you should get a **"Parked in
-   zone …"** notification (only where there's something to pay — an
-   unmetered spot or a free period stays silent). Tap it for the sheet.
-   Note, on paper or in a message to yourself:
-   - Did it fire at all? How long after shutdown?
+2. **Sit in the car for two minutes first** (FR-55). Nothing may arrive
+   while you are in it: no notification, no sheet. If you open the app,
+   the Park tab shows the park quietly ("ParkAgent will ask when you walk
+   away"). Then walk away. Within about a minute of leaving you should get
+   **"Pay $… for zone …?"** with **Pay · Not now · Wrong spot** (only
+   where there's something to pay; an unmetered spot or a free period
+   stays silent). Note, on paper or in a message to yourself:
+   - Did anything arrive while you were still in the car? (It must not.)
+   - How far from the car, and how long after leaving, did it arrive?
    - The quoted zone number vs the number **posted on the meter/sign**.
    - The quoted rate and max stay vs the sign.
+   - Park once **right in front of where you're going** (under 30 m from
+     the door). The prompt must still come: the phone reports that you
+     are on foot. If it doesn't within three minutes, note the time and
+     the block.
+   - Once, long-press the notification with the phone **locked** and tap
+     Pay: it must ask for Face ID or the passcode first.
+   - Once, tap **Pay in the app while still in the car** (Park tab →
+     Review). It must say it pays when you walk away, and the session
+     must appear only after you do.
 3. **Boston only**: the first park on any block will ask for the zone
    number (`needsZoneNumber`) — read the posted number off the meter and
    enter it. That's the crowdsourced bootstrap working as designed; the
@@ -74,7 +87,13 @@ and you pay the meter by hand as usual.
    the extension worker's inputs (distance, heading) come from the
    session's location reports (every 25 m moved, at most every 15 s, and a
    60-second heartbeat standing still); you'll read its decisions in the
-   evening.
+   evening. **Coming back ends the session** (FR-55): stand at the car for
+   a minute, or start driving. Note what the app showed, and check in the
+   provider's own app what happened to the meter (New York: stopped;
+   Boston: still paid until its end, with nothing more bought). Two that
+   must not end it: walking **past** the car without stopping, and sitting
+   somewhere within 30 m of it the whole time. If either ends the session,
+   note the time: in New York that is a stopped meter you didn't ask for.
 6. Drive through at least one red light and one drive-through/pickup lane
    during the day — these must NOT fire a park. If a sheet appears, note
    the time and what you were doing.

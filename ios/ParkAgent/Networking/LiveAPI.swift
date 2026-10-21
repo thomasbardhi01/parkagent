@@ -294,6 +294,27 @@ struct LiveAPI: APIClient {
         let _: Ignored = try await send("location", method: "POST", body: report)
     }
 
+    func reportParkLocation(_ report: LocationReport) async throws -> LocationResponse {
+        try await send("location", method: "POST", body: report)
+    }
+
+    func confirmPark(parkedEventId: String, zoneId: String?, shownTotalUsd: Double?) async throws -> ParkConfirmOutcome {
+        struct Body: Encodable {
+            let zoneId: String?
+            let shownTotalUsd: Double?
+        }
+        let wire: ParkConfirmWire = try await send(
+            "parked/\(parkedEventId)/confirm", method: "POST",
+            body: Body(zoneId: zoneId, shownTotalUsd: shownTotalUsd), policy: .payment
+        )
+        return try wire.outcome()
+    }
+
+    func declinePark(parkedEventId: String) async throws {
+        struct Ignored: Decodable {}
+        let _: Ignored = try await send("parked/\(parkedEventId)/decline", method: "POST", body: [String: String]())
+    }
+
     func registerDevice(_ registration: DeviceRegistration) async throws {
         struct Ignored: Decodable {}
         let _: Ignored = try await send("device", method: "POST", body: registration)

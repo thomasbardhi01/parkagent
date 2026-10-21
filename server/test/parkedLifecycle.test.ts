@@ -8,11 +8,17 @@
  * 90-minute stay quotes $3.50 + $0.15.
  */
 
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 
 import type { ZoneTermsRow } from "../src/db.js";
 import type { Executor, ExecutorResult } from "../src/services/executor.js";
 import { DryRunExecutor } from "../src/services/executor.js";
+import type { ParkStarter } from "../src/services/pendingSession.js";
+import {
+  START_DEADLINE_MS,
+  STARTING_STALE_MS,
+  startParkSession,
+} from "../src/services/pendingSession.js";
 import type { FakeDbState } from "./helpers.js";
 import {
   API_KEY,
@@ -1027,7 +1033,7 @@ test("a start that throws before the provider is asked leaves the park payable",
   expect(t.state.sessions.filter((s) => s.status === "active")).toHaveLength(1);
 });
 
-test("a start that throws after the provider was asked closes the park: it may have charged", async () => {
+test("a start that throws after its session went active keeps it: the park has it, and no second one", async () => {
   const t = makeApp();
   const parked = await park(t.app);
   await walkAway(t);
@@ -1044,10 +1050,119 @@ test("a start that throws after the provider was asked closes the park: it may h
   const first = await tap(t, parked.parkedEventId);
   expect(first.statusCode).toBe(500);
   expect(t.calls.start).toBe(1);
-  expect(t.state.pendingParks[0]!.status).toBe("start_failed");
+  // The provider charged and the session is running: the park is paid,
+  // whatever the reply said.
+  const session = t.state.sessions[0]!;
+  expect(session.status).toBe("active");
+  expect(t.state.pendingParks[0]).toMatchObject({ status: "started", sessionId: session.id });
   const second = await tap(t, parked.parkedEventId);
-  expect(second.statusCode).toBe(409);
+  expect(second.json()).toMatchObject({ status: "started", sessionId: session.id });
   expect(t.calls.start).toBe(1);
+});
+
+test("a start whose park never heard back is found by the sweep: started, not failed", async () => {
+  const t = makeApp();
+  const parked = await park(t.app);
+  await walkAway(t);
+  // The start goes through, and the process dies before the park hears.
+  const real = t.deps.db.pendingPark.updateMany;
+  t.deps.db.pendingPark.updateMany = async (args) => {
+    if (args.data.status === "started") throw new Error("connection reset");
+    return real(args);
+  };
+  expect((await tap(t, parked.parkedEventId)).statusCode).toBe(500);
+  t.deps.db.pendingPark.updateMany = real;
+  const session = t.state.sessions[0]!;
+  expect(session.status).toBe("active");
+  expect(t.state.pendingParks[0]!.status).toBe("starting");
+
+  // Ten minutes on, a retried tap's read sweeps the start that never came
+  // back: it finds the session, and answers with it.
+  t.tick(11 * 60);
+  const again = await tap(t, parked.parkedEventId);
+  expect(again.statusCode).toBe(200);
+  expect(again.json()).toMatchObject({ status: "started", sessionId: session.id });
+  expect(t.state.pendingParks[0]).toMatchObject({ status: "started", sessionId: session.id });
+  expect(t.calls.start).toBe(1);
+});
+
+test("a start that answers after the sweep closed its park: the park takes the session, on the ledger", async () => {
+  const t = makeApp();
+  const parked = await park(t.app);
+  await walkAway(t);
+  // The start stalls before it has made its session row.
+  const real = t.deps.db.vehicle.findFirst;
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  t.deps.db.vehicle.findFirst = async (args) => {
+    await gate;
+    return real(args);
+  };
+  const paying = tap(t, parked.parkedEventId);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(t.state.pendingParks[0]!.status).toBe("starting");
+  expect(t.state.sessions).toEqual([]);
+
+  t.tick(11 * 60);
+  await post(t.app, "/location", fix(t, 300));
+  expect(t.state.pendingParks[0]!.status).toBe("start_failed");
+
+  release();
+  expect((await paying).statusCode).toBe(200);
+  const session = t.state.sessions[0]!;
+  expect(session.status).toBe("active");
+  expect(t.state.pendingParks[0]).toMatchObject({ status: "started", sessionId: session.id });
+  const late = t.state.decisions.find((d) => d.rule === "late_success")!;
+  expect(late).toMatchObject({
+    kind: "session_start_walkaway",
+    sessionId: session.id,
+    parkedEventId: parked.parkedEventId,
+    outcome: { previousStatus: "start_failed", parkStatus: "started", sessionId: session.id },
+  });
+  expect(t.calls.start).toBe(1);
+});
+
+test("a start with no answer by its deadline stops holding the park; a success after that is adopted", async () => {
+  const t = makeApp();
+  await park(t.app);
+  await walkAway(t);
+  // Where the tap leaves it: starting, for the side and amount shown.
+  const row = t.state.pendingParks[0]!;
+  Object.assign(row, { status: "starting", startingAt: t.clock.now, zoneId: "nyc-417371" });
+  type StartReply = Awaited<ReturnType<ParkStarter>>;
+  let answer: (reply: StartReply) => void = () => {};
+  const stalled = new Promise<StartReply>((resolve) => (answer = resolve));
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const outcome = startParkSession(
+      t.deps,
+      { start: () => stalled, stop: async () => ({ status: 200, body: {} }) },
+      { ...row },
+      { at: t.clock.now, mode: "tap", trigger: "confirm" },
+    );
+    await vi.advanceTimersByTimeAsync(START_DEADLINE_MS);
+    expect(await outcome).toMatchObject({
+      kind: "failed",
+      status: 504,
+      body: { error: "start_timeout" },
+    });
+    expect(START_DEADLINE_MS).toBeLessThan(STARTING_STALE_MS / 2);
+  } finally {
+    vi.useRealTimers();
+  }
+  expect(row.status).toBe("start_failed");
+  expect(t.state.decisions.at(-1)).toMatchObject({
+    kind: "session_start_walkaway",
+    rule: "start_timeout",
+  });
+
+  answer({ status: 200, body: { sessionId: "s-late" }, reachedProvider: true });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(row).toMatchObject({ status: "started", sessionId: "s-late" });
+  expect(t.state.decisions.at(-1)).toMatchObject({
+    rule: "late_success",
+    outcome: { previousStatus: "start_failed", sessionId: "s-late" },
+  });
 });
 
 test("an early Pay whose start throws at walk-away is tried again by the next fixes", async () => {

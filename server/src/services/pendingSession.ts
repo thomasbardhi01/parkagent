@@ -6,7 +6,7 @@
  * window in which the executor's ParkNYC charge should arrive.
  */
 
-import type { AppDb, PendingParkRow, SessionRow } from "../db.js";
+import type { AppDb, PendingParkRow, PendingParkWrite, SessionRow } from "../db.js";
 import { cityForZone, providerForCity, providerStatusUsable } from "../providers/registry.js";
 import type { HoursInterval } from "./hours.js";
 import { easternWallClock } from "./hours.js";
@@ -95,6 +95,10 @@ export const LIFECYCLE_FIX_MAX_AGE_MS = 5 * 60_000;
 export const PARK_TTL_MS = 60 * 60_000;
 /** A start that never came back (a crash mid-start) stops blocking. */
 export const STARTING_STALE_MS = 10 * 60_000;
+/** A start not answered in this long stops holding its park: well inside
+ * STARTING_STALE_MS, so the sweep never closes a start still running
+ * here. An answer that comes later is adopted then. */
+export const START_DEADLINE_MS = 3 * 60_000;
 /** Two car fixes this close are the same spot; farther, the car moved. */
 export const SAME_SPOT_M = 100;
 
@@ -490,10 +494,37 @@ export interface FixRecord {
 }
 
 /**
+ * What a start that went wrong leaves its park as: `start_failed`, unless
+ * a start for this park made a session after all (running, or still being
+ * paid for). Then the park has that session: it is never paid twice, and
+ * the return, the extension worker, and a retried tap all find it.
+ */
+async function failedOrStarted(
+  db: AppDb,
+  park: PendingParkRow,
+  at: Date,
+): Promise<PendingParkWrite & { status: string }> {
+  const made =
+    park.parkedEventId === null
+      ? null
+      : await db.session.findFirst({
+          where: {
+            userId: park.userId,
+            parkedEventId: park.parkedEventId,
+            status: { in: ["pending", "active"] },
+          },
+        });
+  return made
+    ? { status: "started", sessionId: made.id }
+    : { status: "start_failed", closedAt: at };
+}
+
+/**
  * Close what time has closed, and answer with the row as it now stands: a
  * park nobody walked away from (or answered) within the hour is not asked
  * about, and a start that never came back stops blocking the park — as a
- * failed one, since whether it charged is unknown.
+ * failed one, since whether it charged is unknown, unless its session is
+ * there to say it did.
  */
 export async function settlePark(
   deps: Pick<LifecycleDeps, "db">,
@@ -501,19 +532,21 @@ export async function settlePark(
   at: Date,
 ): Promise<PendingParkRow> {
   const since = (from: Date | null) => at.getTime() - (from ?? park.createdAt).getTime();
-  let closed: string | null = null;
+  let next: (PendingParkWrite & { status: string }) | null = null;
   if (park.status === "at_car" || park.status === "confirmed") {
     // From when the server heard of it, not from the phone's own clock.
-    if (since(park.createdAt) > PARK_TTL_MS) closed = "expired";
+    if (since(park.createdAt) > PARK_TTL_MS) next = { status: "expired", closedAt: at };
   } else if (park.status === "prompted") {
-    if (since(park.promptedAt ?? park.createdAt) > PARK_TTL_MS) closed = "expired";
+    if (since(park.promptedAt ?? park.createdAt) > PARK_TTL_MS) {
+      next = { status: "expired", closedAt: at };
+    }
   } else if (park.status === "starting") {
-    if (since(park.startingAt) > STARTING_STALE_MS) closed = "start_failed";
+    if (since(park.startingAt) > STARTING_STALE_MS) next = await failedOrStarted(deps.db, park, at);
   }
-  if (closed === null) return park;
+  if (next === null) return park;
   await deps.db.pendingPark.updateMany({
     where: { id: park.id, status: park.status },
-    data: { status: closed, closedAt: at },
+    data: next,
   });
   return (await deps.db.pendingPark.findUnique({ where: { id: park.id } })) ?? park;
 }
@@ -698,6 +731,9 @@ export type ParkStarter = (
 
 /** The start path's refusals that mean "not what the driver agreed to". */
 const CHANGED_RULES = ["quote_changed", "zone_number_changed", "dry_run_changed"];
+/** Where a park can be when its start's success arrives late: swept as a
+ * failed start, timed out, or superseded. */
+const LATE_SUCCESS_FROM = ["start_failed", "superseded"];
 
 export type ParkStartOutcome =
   | { kind: "started"; body: Record<string, unknown> }
@@ -726,7 +762,7 @@ export async function startParkSession(
 ): Promise<ParkStartOutcome> {
   const shown = park.quote as Quote;
   const parkedEventId = park.parkedEventId as string;
-  const settle = (data: Parameters<AppDb["pendingPark"]["updateMany"]>[0]["data"]) =>
+  const settle = (data: PendingParkWrite) =>
     deps.db.pendingPark.updateMany({ where: { id: park.id, status: "starting" }, data });
   const record = (rule: string, outcome: Record<string, unknown>, sessionId?: string) =>
     deps.db.decision.create({
@@ -753,6 +789,26 @@ export async function startParkSession(
         ...(sessionId ? { sessionId } : {}),
       },
     });
+  /** A start that paid after its park stopped waiting on it (a sweep, its
+   * own deadline, a newer park): the session is real, so the park takes
+   * it, from the state it was read in. */
+  const adopt = async (sessionId: string) => {
+    const current = await deps.db.pendingPark.findUnique({ where: { id: park.id } });
+    if (!current || !LATE_SUCCESS_FROM.includes(current.status)) return;
+    const moved = await deps.db.pendingPark.updateMany({
+      where: { id: park.id, status: current.status },
+      data: { status: "started", sessionId, closedAt: null },
+    });
+    if (moved.count === 1) {
+      await record(
+        "late_success",
+        { previousStatus: current.status, parkStatus: "started", sessionId },
+        sessionId,
+      );
+    }
+  };
+  const sessionIdOf = (body: Record<string, unknown>) =>
+    typeof body["sessionId"] === "string" ? body["sessionId"] : null;
 
   // A session still running for this driver. At the same spot it already
   // pays this park: a second one would pay twice. Somewhere else, the car
@@ -787,25 +843,35 @@ export async function startParkSession(
     }
   }
 
-  let reply: Awaited<ReturnType<ParkStarter>>;
+  let reply: Awaited<ReturnType<ParkStarter>> | null;
+  const starting = ops.start(
+    { id: park.userId },
+    { parkedEventId, zoneId: park.zoneId as string, minutes: shown.stayMinutes },
+    {
+      maxTotalUsd: shown.totalUsd,
+      shownZoneNumber: shown.providerZoneNumber,
+      ...(park.shownDryRun === true ? { shownDryRun: true } : {}),
+    },
+  );
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    reply = await ops.start(
-      { id: park.userId },
-      { parkedEventId, zoneId: park.zoneId as string, minutes: shown.stayMinutes },
-      {
-        maxTotalUsd: shown.totalUsd,
-        shownZoneNumber: shown.providerZoneNumber,
-        ...(park.shownDryRun === true ? { shownDryRun: true } : {}),
-      },
-    );
+    reply = await Promise.race([
+      starting,
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), START_DEADLINE_MS);
+      }),
+    ]);
   } catch (err) {
     // The start itself blew up. If the provider was never asked, nothing
     // was charged and the park goes back to waiting: for its tap, or (an
     // early tap) for the next two fixes that show the phone away. If it
-    // was asked, whether it charged is unknown.
+    // was asked, whether it charged is unknown, unless its session says.
     const reached = (err as { reachedProvider?: boolean }).reachedProvider === true;
-    const next = reached
-      ? { status: "start_failed", closedAt: args.at }
+    const next: PendingParkWrite & { status: string } = reached
+      ? await failedOrStarted(deps.db, park, args.at).catch(() => ({
+          status: "start_failed",
+          closedAt: args.at,
+        }))
       : args.trigger === "confirm"
         ? { status: "prompted" }
         : {
@@ -816,17 +882,43 @@ export async function startParkSession(
             nearSince: null,
           };
     await settle(next).catch(() => undefined);
-    await record("error", {
-      parkStatus: next.status,
-      reachedProvider: reached,
-      error: String(err).split("\n")[0],
-    }).catch(() => undefined);
+    await record(
+      "error",
+      {
+        parkStatus: next.status,
+        reachedProvider: reached,
+        error: String(err).split("\n")[0],
+      },
+      next.sessionId ?? undefined,
+    ).catch(() => undefined);
     throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+
+  if (reply === null) {
+    // No answer in time. Whether it charges is unknown until it answers:
+    // the park stops waiting on it as a failed start (its session, still
+    // pending, is this very start), and an answer that comes later and
+    // paid is adopted.
+    await settle({ status: "start_failed", closedAt: args.at });
+    await record("start_timeout", {
+      parkStatus: "start_failed",
+      reachedProvider: "unknown",
+      deadlineMs: START_DEADLINE_MS,
+    });
+    void starting
+      .then(async (late) => {
+        const sessionId = sessionIdOf(late.body);
+        if (late.status === 200 && sessionId !== null) await adopt(sessionId);
+      })
+      .catch(() => undefined);
+    return { kind: "failed", status: 504, body: { error: "start_timeout" } };
   }
 
   let outcome: ParkStartOutcome;
-  let next: Parameters<typeof settle>[0];
-  const sessionId = typeof reply.body["sessionId"] === "string" ? reply.body["sessionId"] : null;
+  let next: PendingParkWrite & { status: string };
+  const sessionId = sessionIdOf(reply.body);
   if (reply.status === 200 && sessionId !== null) {
     outcome = { kind: "started", body: reply.body };
     next = { status: "started", sessionId };
@@ -836,7 +928,7 @@ export async function startParkSession(
     next = { status: "free", closedAt: args.at };
   } else if (reply.reachedProvider) {
     outcome = { kind: "failed", status: reply.status, body: reply.body };
-    next = { status: "start_failed", closedAt: args.at };
+    next = await failedOrStarted(deps.db, park, args.at);
   } else {
     // Nothing reached the provider: the park goes back to waiting for a
     // tap, with a prompt that says where it stands now.
@@ -860,17 +952,22 @@ export async function startParkSession(
               : {}),
           };
   }
-  await settle(next);
+  const settled = await settle(next);
   await record(
     outcome.kind,
     {
       status: reply.status,
       reachedProvider: reply.reachedProvider,
       parkStatus: next.status,
+      ...(settled.count === 0 ? { parkMovedOn: true } : {}),
       ...(sessionId !== null ? { sessionId } : {}),
       ...(reply.status === 200 ? {} : { error: reply.body["error"], rule: reply.body["rule"] }),
     },
     sessionId ?? undefined,
   );
+  // The park stopped waiting on this start before it answered.
+  if (settled.count === 0 && outcome.kind === "started" && sessionId !== null) {
+    await adopt(sessionId);
+  }
   return outcome;
 }

@@ -448,6 +448,7 @@ function matchesSessionWhere(s: SessionRow, where: SessionWhere): boolean {
   if (where.id?.not !== undefined && s.id === where.id.not) return false;
   if (where.userId !== undefined && s.userId !== where.userId) return false;
   if (where.zoneId !== undefined && s.zoneId !== where.zoneId) return false;
+  if (where.parkedEventId !== undefined && s.parkedEventId !== where.parkedEventId) return false;
   if (where.dryRun !== undefined && s.dryRun !== where.dryRun) return false;
   if (typeof where.status === "string" && s.status !== where.status) return false;
   if (

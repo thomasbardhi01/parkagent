@@ -80,6 +80,7 @@ export interface SessionWhere {
   id?: { not: string };
   userId?: string;
   zoneId?: string;
+  parkedEventId?: string;
   dryRun?: boolean;
   status?: string | { in: string[] };
   createdAt?: { gte?: Date; lt?: Date };

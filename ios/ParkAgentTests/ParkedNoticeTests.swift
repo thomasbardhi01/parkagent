@@ -273,7 +273,9 @@ final class ParkedNoticeWalkAwayTests: XCTestCase {
     func testAnEarlyPayThatRanOutOfTimeIsSaid() {
         let content = ParkedNotice.expiredContent(zoneNumber: "456")
         XCTAssertEqual(content.title, "Zone 456 wasn't paid")
-        XCTAssertTrue(content.body.contains("pays when you walk away"), content.body)
+        XCTAssertTrue(content.body.contains("nothing was paid"), content.body)
+        // Without motion a kept Pay never starts on its own: no promise it would have.
+        XCTAssertFalse(content.body.contains("pays when you walk away"), content.body)
         XCTAssertEqual(ParkedNotice.expiredContent(zoneNumber: nil).title, "The meter wasn't paid")
     }
 

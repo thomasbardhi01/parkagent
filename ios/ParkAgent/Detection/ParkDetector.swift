@@ -460,6 +460,12 @@ final class ParkDetector: NSObject, CLLocationManagerDelegate {
         onWalking?(at)
     }
 
+    /// The walk last told wasn't taken up (a return was still to be said):
+    /// the next wake tells it again.
+    func forgetToldWalk() {
+        toldWalkAt = nil
+    }
+
     var drivingRecently: Bool {
         lastDriveEvidenceAt.map { Date.now.timeIntervalSince($0) < 3 * 60 } ?? false
     }

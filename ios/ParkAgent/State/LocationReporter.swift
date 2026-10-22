@@ -89,6 +89,10 @@ final class LocationReporter: NSObject, CLLocationManagerDelegate {
     @ObservationIgnored private var pendingEventTried = false
     /// The last few minutes of fixes, oldest first.
     @ObservationIgnored private var recentFixes: [ParkFix] = []
+    /// When a usable fix last had the phone within reach of the car (the
+    /// server's AT_CAR_RADIUS_M): a walk older than it is over.
+    @ObservationIgnored private(set) var lastNearCarAt: Date?
+    static let nearCarM: Double = 30
     @ObservationIgnored private var capabilities = DetectionCapabilities()
     @ObservationIgnored private let now: () -> Date
     @ObservationIgnored private let usesSystemLocation: Bool
@@ -153,6 +157,7 @@ final class LocationReporter: NSObject, CLLocationManagerDelegate {
         lastFix = nil
         lastReport = nil
         recentFixes = []
+        lastNearCarAt = nil
         clearPendingEvent()
         setWaiting(nil)
         isRunning = false
@@ -175,17 +180,22 @@ final class LocationReporter: NSObject, CLLocationManagerDelegate {
     /// (now when nil). Sent at once with a fix that can carry it, or with
     /// the next one; the server decides what it means from where that fix
     /// is.
-    func note(_ event: PhoneEvent, at seenAt: Date? = nil) async {
-        guard isRunning else { return }
+    /// False when the event wasn't taken up (not reporting, or a walk that
+    /// arrived while a return is still to be said): whoever told it tells
+    /// it again later.
+    @discardableResult
+    func note(_ event: PhoneEvent, at seenAt: Date? = nil) async -> Bool {
+        guard isRunning else { return false }
         // Back in the car, not yet said: a walk told meanwhile (a wake, a
         // stale reading) must not replace it. Sent with the fix at the
         // car, it could start a confirmed park as the car pulls away.
-        if event == .leftCar, pendingEvent == .returnedToCar, !pendingEventTried { return }
+        if event == .leftCar, pendingEvent == .returnedToCar, !pendingEventTried { return false }
         pendingEvent = event
         pendingEventAt = seenAt ?? now()
         pendingEventTried = false
-        guard let fix = lastFix, canCarry(event, fix) else { return }
+        guard let fix = lastFix, canCarry(event, fix) else { return true }
         await report(fix)
+        return true
     }
 
     private func clearPendingEvent() {
@@ -257,6 +267,10 @@ final class LocationReporter: NSObject, CLLocationManagerDelegate {
 
     private func remember(_ fix: ParkFix) {
         lastFix = fix
+        if let car = carCoordinate, fix.accuracy <= Self.usableAccuracyM,
+           fix.distance(to: ParkFix(coordinate: car, accuracy: 0, at: fix.at)) <= Self.nearCarM {
+            lastNearCarAt = max(lastNearCarAt ?? fix.at, fix.at)
+        }
         recentFixes.append(fix)
         let since = fix.at.addingTimeInterval(-Self.recentFixesKept)
         recentFixes.removeAll { $0.at < since }

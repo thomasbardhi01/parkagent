@@ -92,7 +92,11 @@ extension AppModel {
     /// a stop near the car is not read as the car driving off.
     func phoneLeftCar(at walkedAt: Date? = nil) async {
         guard reporter.isRunning, reporter.waiting != nil || activeSession != nil else { return }
-        await reporter.note(.leftCar, at: walkedAt)
+        if await !reporter.note(.leftCar, at: walkedAt) {
+            // Turned down while a return was still to be said: told again
+            // at the next wake, if the driver is still on that walk.
+            detector.forgetToldWalk()
+        }
     }
 
     /// Driving again (since `seenAt`, when CoreMotion dates the drive), or
@@ -368,7 +372,8 @@ extension AppModel {
         } else {
             return
         }
-        if let walk = WalkAway.since(stop: detector.lastParkStopAt, parkedAt: parkedAt, newest: detector.lastConfidentMotion) {
+        let walk = WalkAway.since(stop: detector.lastParkStopAt, parkedAt: parkedAt, newest: detector.lastConfidentMotion)
+        if let walk = WalkAway.stillOn(walk, nearCarAt: reporter.lastNearCarAt, tappedAt: AppClock.now) {
             await reporter.note(.leftCar, at: walk.at)
         }
     }
@@ -519,5 +524,19 @@ enum WalkAway {
         }
         let stoppedAt = seen ?? parkedAt.addingTimeInterval(-stopSlack)
         return walk.at >= stoppedAt ? walk : nil
+    }
+
+    /// A kept tap only seeds the walk the driver is still on: one begun
+    /// after the last fix that had the phone at the car, and lately. A walk
+    /// to the trunk and back into the seat leaves the trunk walk as the
+    /// newest confident reading (a phone in hand in a seat reads low or
+    /// unknown), and a `left_car` sent on the seat's fix would start the
+    /// session there: a fix at the car never pays (#226).
+    static let keptWalkReach: TimeInterval = 2 * 60
+
+    static func stillOn(_ walk: MotionSample?, nearCarAt: Date?, tappedAt: Date) -> MotionSample? {
+        guard let walk, walk.at >= tappedAt.addingTimeInterval(-keptWalkReach) else { return nil }
+        if let nearCarAt, nearCarAt >= walk.at { return nil }
+        return walk
     }
 }

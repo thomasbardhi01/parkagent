@@ -11,6 +11,7 @@ import { cityForZone, providerForCity } from "../providers/registry.js";
 import type { HoursInterval } from "./hours.js";
 import { easternWallClock } from "./hours.js";
 import { policyFor } from "./limits.js";
+import { MANDATE_TTL_MS } from "./mandates.js";
 import type { Policy } from "./policy.js";
 import { moneyGate } from "./moneyGate.js";
 import { principalFor } from "./principal.js";
@@ -113,6 +114,91 @@ export const STARTING_STALE_MS = 10 * 60_000;
 export const START_DEADLINE_MS = 3 * 60_000;
 /** Two car fixes this close are the same spot; farther, the car moved. */
 export const SAME_SPOT_M = 100;
+
+/** An agent's confirmed street plan the park the phone just reported may
+ * be held for (WS-4 E3): its consent, its stay, and the cap. The zone is
+ * the one the caller resolved and asked about. */
+export interface AgentBinding {
+  planId: string;
+  /** The mandate's id (its token's hash). */
+  mandateId: string;
+  agentKeyId: string;
+  /** The stay the agent confirmed: the bound park is quoted for it. */
+  durationMinutes: number;
+  /** What the plan said this spot costs: the shown cap is the lower of
+   * this and the bound park's quote. */
+  planPriceUsd: number;
+}
+
+/**
+ * Whether the park the phone just reported is at a spot an agent of this
+ * person confirmed (`POST /agent/plans/:id/confirm` answered
+ * `pending_arrival`), inside that mandate's window. The phone is the only
+ * source of arrival, and `/parked` the only judge of which zone the car is
+ * in: `zoneId` is the zone `/parked` would itself pay without asking (its
+ * candidates agree, the pay-by-app number known), or null — a car across
+ * the street or in the next zone never binds to the plan's. The plan's
+ * zone must be that zone; the plan not yet bound and confirmed within the
+ * mandate's window; its mandate an agent's, consumed, unexpired, and
+ * minted under the dry run in force now (what the agent was shown is what
+ * runs). The newest such plan wins. Pure read: the caller binds (once,
+ * by CAS).
+ */
+export async function agentBindingFor(
+  db: Pick<AppDb, "assistantPlan" | "mandate">,
+  userId: string,
+  here: { zoneId: string | null; dryRun: boolean },
+  at: Date,
+): Promise<AgentBinding | null> {
+  if (here.zoneId === null) return null;
+  const since = new Date(at.getTime() - MANDATE_TTL_MS);
+  const plans = (
+    await db.assistantPlan.findMany({
+      where: { userId, confirmedAt: { not: null, gte: since }, boundParkedEventId: null },
+    })
+  )
+    .filter((p) => p.kind === "single_spot" && p.conversationId.startsWith("agent:"))
+    .sort((a, b) => (b.confirmedAt?.getTime() ?? 0) - (a.confirmedAt?.getTime() ?? 0));
+  for (const plan of plans) {
+    const options = (plan.plan as { options?: unknown }).options;
+    const option = Array.isArray(options)
+      ? (
+          options as {
+            id: string;
+            type: string;
+            zoneId?: string;
+            priceUsd: number;
+            durationMinutes: number;
+          }[]
+        ).find((o) => o.id === plan.confirmedOptionId)
+      : undefined;
+    if (!option || option.type !== "street" || option.zoneId !== here.zoneId) continue;
+    const mandate = await db.mandate.findFirst({
+      where: { planId: plan.id },
+      orderBy: { createdAt: "desc" },
+    });
+    const shownDryRun = (mandate?.capsSnapshot as { dryRun?: unknown } | null)?.dryRun;
+    if (
+      !mandate ||
+      mandate.userId !== userId ||
+      mandate.agentKeyId === null ||
+      mandate.consumedAt === null ||
+      mandate.expiresAt.getTime() <= at.getTime() ||
+      // A mandate that recorded no dry run binds nothing.
+      shownDryRun !== here.dryRun
+    ) {
+      continue;
+    }
+    return {
+      planId: plan.id,
+      mandateId: mandate.token,
+      agentKeyId: mandate.agentKeyId,
+      durationMinutes: option.durationMinutes,
+      planPriceUsd: option.priceUsd,
+    };
+  }
+  return null;
+}
 
 /** What the app itself saw: on foot after the park, or the car's audio
  * reconnecting / driving again. */

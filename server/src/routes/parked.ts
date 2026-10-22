@@ -29,11 +29,12 @@ import {
   settlePark,
   startParkSession,
   supersedeParks,
+  agentBindingFor,
 } from "../services/pendingSession.js";
 import { moneyGate } from "../services/moneyGate.js";
 import { principalFor } from "../services/principal.js";
 import type { Quote } from "../services/quote.js";
-import { quoteZone } from "../services/quote.js";
+import { priceStay, quoteZone } from "../services/quote.js";
 import type { Candidate } from "../services/zoneLookup.js";
 import { lookupRadiusM, resolveCandidates } from "../services/zoneLookup.js";
 import { applyObservedToCandidates } from "../services/zoneTermsObserved.js";
@@ -359,7 +360,123 @@ export function registerParked(app: FastifyInstance, deps: AppDeps, sessions: Se
       located &&
       (answer.action === "pay" || answer.action === "confirm") &&
       candidates.some((c) => c.quote.totalUsd > 0);
-    if (awaitsWalkAway) {
+    // A spot an agent of this person confirmed, inside its mandate's
+    // window, under the dry run it was shown (WS-4 E3): the park is held
+    // `confirmed` from the start — the agent's confirm was the tap — and
+    // pays on the app's left_car with no prompt. Only where the candidates
+    // agree on terms (zoneLookup's "agree": same rates, hours and max
+    // stay; the nearest zone's number is the one paid), that number known,
+    // the nearest zone the plan's, and the person still letting agents act
+    // (their latest word wins over the agent's earlier confirm). The car
+    // is the phone's own fix; the quote is the plan's stay here, now,
+    // within the plan's price and passing this route's own auto-pay gate
+    // for that quote (a dearer or gated spot is asked about, at its real
+    // price). A plan binds once (CAS on the plan, keyed by this park).
+    const payableZone = resolution.kind === "agree" && !needsZoneNumber ? resolution.nearest : null;
+    const agentsMayAct =
+      awaitsWalkAway && payableZone
+        ? (
+            await deps.db.user.findUnique({
+              where: { id: user.id },
+              select: { agentsMayAct: true },
+            })
+          )?.agentsMayAct === true
+        : false;
+    const binding =
+      agentsMayAct && payableZone
+        ? await agentBindingFor(deps.db, user.id, { zoneId: payableZone.zoneId, dryRun }, serverNow)
+        : null;
+    const boundQuote: Quote | null =
+      binding && payableZone && binding.durationMinutes <= (payableZone.maxStayMinutes ?? Infinity)
+        ? {
+            zoneId: payableZone.zoneId,
+            providerZoneNumber: payableZone.providerZoneNumber,
+            ...priceStay(payableZone, policy, at, binding.durationMinutes),
+          }
+        : null;
+    const boundGate =
+      boundQuote && payableZone
+        ? await moneyGate(
+            deps,
+            principalFor(user.id),
+            {
+              kind: "quote",
+              totalUsd: boundQuote.totalUsd,
+              ladderMaxRateUsd: Math.max(
+                payableZone.rateFirstHourUsd,
+                payableZone.rateAdditionalHourUsd,
+              ),
+            },
+            at,
+          )
+        : null;
+    const bindable =
+      binding !== null &&
+      boundQuote !== null &&
+      boundGate?.ok === true &&
+      boundQuote.totalUsd > 0 &&
+      boundQuote.totalUsd <= binding.planPriceUsd + 0.005;
+    const bound =
+      bindable && binding
+        ? (
+            await deps.db.assistantPlan.updateMany({
+              where: { id: binding.planId, boundParkedEventId: null },
+              data: { boundParkedEventId: parkedEvent.id, boundAt: serverNow },
+            })
+          ).count === 1
+        : false;
+    if (awaitsWalkAway && bound && binding && boundQuote) {
+      const shown = boundQuote;
+      try {
+        await deps.db.pendingPark.create({
+          data: {
+            userId: user.id,
+            parkedEventId: parkedEvent.id,
+            status: "confirmed",
+            candidates,
+            quote: shown,
+            zoneId: shown.zoneId,
+            confirmedAt: serverNow,
+            shownDryRun: dryRun,
+            carLat: body.lat,
+            carLng: body.lng,
+            parkedAt: at,
+          },
+        });
+      } catch (err) {
+        // No park, no binding: the plan is left for the next /parked.
+        await deps.db.assistantPlan.updateMany({
+          where: { id: binding.planId, boundParkedEventId: parkedEvent.id },
+          data: { boundParkedEventId: null, boundAt: null },
+        });
+        throw err;
+      }
+      // Like the at_car branch, a throw here leaves the park held with no
+      // row for it; the plan's bound_parked_event_id still names it.
+      await deps.db.decision.create({
+        data: {
+          kind: "street_confirmed",
+          // Arrival is the phone's act (actor stays the user's), but the
+          // consent was the agent key's: a per-key ledger query finds it.
+          agentKeyId: binding.agentKeyId,
+          inputs: {
+            mode: "agent_plan",
+            planId: binding.planId,
+            mandateId: binding.mandateId,
+            agentKeyId: binding.agentKeyId,
+            car: { lat: body.lat, lng: body.lng, accuracyM: body.accuracy },
+            shown,
+            planPriceUsd: binding.planPriceUsd,
+            durationMinutes: binding.durationMinutes,
+            dryRun,
+          },
+          rule: "agent_plan_bound",
+          outcome: { status: "confirmed", startsAt: "walk_away", zoneId: shown.zoneId },
+          userId: user.id,
+          parkedEventId: parkedEvent.id,
+        },
+      });
+    } else if (awaitsWalkAway) {
       await deps.db.pendingPark.create({
         data: {
           userId: user.id,

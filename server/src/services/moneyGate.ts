@@ -229,6 +229,7 @@ export async function moneyGate(
     ...(intent.kind === "quote" ? [policy.auto_pay_max_rate_per_hour] : []),
   ];
   if (!caps.every(validAmount)) return refuse("amount_invalid");
+  if (intent.kind === "stop" || intent.kind === "confirm") return allow();
   if (intent.kind === "funding") {
     return intent.amountUsd > policy.daily_cap_usd ? refuse("amount_over_daily_cap") : allow();
   }

@@ -1,0 +1,263 @@
+{
+  "about": "Issue N golden set: ten Boston curb sign texts written from the City of Boston's posted-sign patterns (time limits, meters, tow zones, street cleaning, resident permit parking), each with the zone data at the car, the moment it is read, a model output (SignRules) WRITTEN BY HAND as the answer the model should give, and the expected grounded verdict. CI (test/signReader.test.ts) therefore tests the parser, grounding and comparison against these expectations, not the model; the model check is scripts/sign-eval.ts (the manual sign-reader-eval workflow), which runs the live model over the same texts.",
+  "zoneHours": [
+    {
+      "days": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
+      "start": "08:00",
+      "end": "20:00"
+    }
+  ],
+  "samples": [
+    {
+      "name": "two-hour limit that matches the zone",
+      "text": "2 HOUR PARKING 8AM - 8PM MON - SAT",
+      "zoneMaxStayMinutes": 120,
+      "at": "2026-01-05T14:00:00-05:00",
+      "modelOutput": {
+        "rules": [
+          {
+            "kind": "time_limit",
+            "days": ["mon", "tue", "wed", "thu", "fri", "sat"],
+            "start": "08:00",
+            "end": "20:00",
+            "limitMinutes": 120,
+            "permitZone": null,
+            "exceptions": []
+          }
+        ],
+        "confidence": 0.95,
+        "unreadable": false
+      },
+      "expected": {
+        "verdict": "agrees",
+        "offerMaxStayMinutes": null,
+        "kinds": ["time_limit"]
+      }
+    },
+    {
+      "name": "one-hour limit, stricter than the zone",
+      "text": "1 HOUR PARKING 8AM-6PM EXCEPT SUNDAYS",
+      "zoneMaxStayMinutes": 120,
+      "at": "2026-01-05T14:00:00-05:00",
+      "modelOutput": {
+        "rules": [
+          {
+            "kind": "time_limit",
+            "days": ["mon", "tue", "wed", "thu", "fri", "sat"],
+            "start": "08:00",
+            "end": "18:00",
+            "limitMinutes": 60,
+            "permitZone": null,
+            "exceptions": ["EXCEPT SUNDAYS"]
+          }
+        ],
+        "confidence": 0.92,
+        "unreadable": false
+      },
+      "expected": {
+        "verdict": "stricter",
+        "offerMaxStayMinutes": 60,
+        "kinds": ["time_limit"]
+      }
+    },
+    {
+      "name": "rush-hour tow zone during the stay",
+      "text": "NO PARKING TOW ZONE 4PM - 6:30PM MON - FRI",
+      "zoneMaxStayMinutes": 120,
+      "at": "2026-01-05T16:30:00-05:00",
+      "modelOutput": {
+        "rules": [
+          {
+            "kind": "tow_zone",
+            "days": ["mon", "tue", "wed", "thu", "fri"],
+            "start": "16:00",
+            "end": "18:30",
+            "limitMinutes": null,
+            "permitZone": null,
+            "exceptions": []
+          }
+        ],
+        "confidence": 0.9,
+        "unreadable": false
+      },
+      "expected": {
+        "verdict": "conflicts",
+        "offerMaxStayMinutes": null,
+        "kinds": ["tow_zone"]
+      }
+    },
+    {
+      "name": "street cleaning window now",
+      "text": "STREET CLEANING 2ND & 4TH TUESDAY 12PM - 4PM APR 1 - NOV 30 TOW ZONE",
+      "zoneMaxStayMinutes": 120,
+      "at": "2026-01-06T13:00:00-05:00",
+      "modelOutput": {
+        "rules": [
+          {
+            "kind": "street_cleaning",
+            "days": ["tue"],
+            "start": "12:00",
+            "end": "16:00",
+            "limitMinutes": null,
+            "permitZone": null,
+            "exceptions": ["2ND & 4TH TUESDAY", "APR 1 - NOV 30"]
+          }
+        ],
+        "confidence": 0.8,
+        "unreadable": false
+      },
+      "expected": {
+        "verdict": "conflicts",
+        "offerMaxStayMinutes": null,
+        "kinds": ["street_cleaning"]
+      }
+    },
+    {
+      "name": "resident permit parking",
+      "text": "RESIDENT PERMIT PARKING ONLY BACK BAY 8AM - 6PM EXCEPT SUNDAY",
+      "zoneMaxStayMinutes": 120,
+      "at": "2026-01-05T14:00:00-05:00",
+      "modelOutput": {
+        "rules": [
+          {
+            "kind": "permit_only",
+            "days": ["mon", "tue", "wed", "thu", "fri", "sat"],
+            "start": "08:00",
+            "end": "18:00",
+            "limitMinutes": null,
+            "permitZone": "BACK BAY",
+            "exceptions": ["EXCEPT SUNDAY"]
+          }
+        ],
+        "confidence": 0.9,
+        "unreadable": false
+      },
+      "expected": {
+        "verdict": "conflicts",
+        "offerMaxStayMinutes": null,
+        "kinds": ["permit_only"]
+      }
+    },
+    {
+      "name": "meter with the zone's own limit",
+      "text": "PAY AT METER 8AM - 8PM MON - SAT 2 HR LIMIT",
+      "zoneMaxStayMinutes": 120,
+      "at": "2026-01-05T14:00:00-05:00",
+      "modelOutput": {
+        "rules": [
+          {
+            "kind": "meter",
+            "days": ["mon", "tue", "wed", "thu", "fri", "sat"],
+            "start": "08:00",
+            "end": "20:00",
+            "limitMinutes": 120,
+            "permitZone": null,
+            "exceptions": []
+          }
+        ],
+        "confidence": 0.93,
+        "unreadable": false
+      },
+      "expected": {
+        "verdict": "agrees",
+        "offerMaxStayMinutes": null,
+        "kinds": ["meter"]
+      }
+    },
+    {
+      "name": "a longer posted limit never loosens the zone's",
+      "text": "4 HOUR PARKING 8AM - 6PM",
+      "zoneMaxStayMinutes": 120,
+      "at": "2026-01-05T14:00:00-05:00",
+      "modelOutput": {
+        "rules": [
+          {
+            "kind": "time_limit",
+            "days": [],
+            "start": "08:00",
+            "end": "18:00",
+            "limitMinutes": 240,
+            "permitZone": null,
+            "exceptions": []
+          }
+        ],
+        "confidence": 0.9,
+        "unreadable": false
+      },
+      "expected": {
+        "verdict": "conflicts",
+        "offerMaxStayMinutes": null,
+        "kinds": ["time_limit"]
+      }
+    },
+    {
+      "name": "a morning no-parking window outside the stay",
+      "text": "NO PARKING 7AM - 9AM MON - FRI",
+      "zoneMaxStayMinutes": 120,
+      "at": "2026-01-05T14:00:00-05:00",
+      "modelOutput": {
+        "rules": [
+          {
+            "kind": "no_parking",
+            "days": ["mon", "tue", "wed", "thu", "fri"],
+            "start": "07:00",
+            "end": "09:00",
+            "limitMinutes": null,
+            "permitZone": null,
+            "exceptions": []
+          }
+        ],
+        "confidence": 0.94,
+        "unreadable": false
+      },
+      "expected": {
+        "verdict": "agrees",
+        "offerMaxStayMinutes": null,
+        "kinds": ["no_parking"]
+      }
+    },
+    {
+      "name": "signs too blurred to read",
+      "text": "P RK NG  H  R",
+      "zoneMaxStayMinutes": 120,
+      "at": "2026-01-05T14:00:00-05:00",
+      "modelOutput": {
+        "rules": [],
+        "confidence": 0.1,
+        "unreadable": true
+      },
+      "expected": {
+        "verdict": "unreadable",
+        "offerMaxStayMinutes": null,
+        "kinds": []
+      }
+    },
+    {
+      "name": "a limit the model made up is dropped",
+      "text": "2 HOUR PARKING 8AM - 8PM",
+      "zoneMaxStayMinutes": 120,
+      "at": "2026-01-05T14:00:00-05:00",
+      "modelOutput": {
+        "rules": [
+          {
+            "kind": "time_limit",
+            "days": [],
+            "start": "08:00",
+            "end": "20:00",
+            "limitMinutes": 30,
+            "permitZone": null,
+            "exceptions": []
+          }
+        ],
+        "confidence": 0.7,
+        "unreadable": false
+      },
+      "expected": {
+        "verdict": "unreadable",
+        "offerMaxStayMinutes": null,
+        "kinds": [],
+        "dropped": ["limit_not_on_sign"]
+      }
+    }
+  ]
+}

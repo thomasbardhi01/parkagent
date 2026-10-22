@@ -21,11 +21,13 @@ flowchart LR
     R2["/session/start · extend · stop"]
     R3["/assistant/message · confirm"]
     R4["/mcp · stateless 2026-07-28<br/>tools = the /agent calls"]
+    R5["/parked/:id/signs · accept"]
     PS["pendingSession<br/>advanceWalk · settlePark · startParkSession"]
     GATE["moneyGate<br/>caps · max stay · dry run · link · as shown<br/>consent · phone away (under lock)"]
     EXT["applyExtension<br/>advisory lock · asks the gate again"]
     AT["AssistantTools (adapter) + loop<br/>execute · ToolContext"]
     CAP["capabilities/*<br/>geocode · quoteStreet · searchGarages<br/>buildItinerary · proposePlan · confirmPlan"]
+    RS["capabilities/readSigns<br/>strict SignRules · grounded in the phone's OCR text<br/>SIGN_READER, off by default"]
     POL["policyFor · spentToday"]
     EX["executorFor<br/>DryRunExecutor when dry run"]
     JOBS["Jobs<br/>extendTick · settle · janitors"]
@@ -49,12 +51,16 @@ flowchart LR
   LR --> AUTH
   PL --> AUTH
   AV --> AUTH
-  AUTH --> R1 & R2 & R3 & R4
+  AUTH --> R1 & R2 & R3 & R4 & R5
   R1 --> PS
   PS --> GATE
   R2 --> GATE
   R3 --> AT
   R4 -- "agentActions, as /agent" --> CAP
+  R5 --> RS
+  RS --> AN
+  RS -. "advisory: warn, or a shorter stay on accept" .-> PL
+  R5 -- "accept: max stay, tighten only" --> GATE
   AT --> AN
   AT --> CAP
   CAP --> AM & SH
@@ -68,7 +74,7 @@ flowchart LR
   GATE & EXT --> EX
   EX --> PB
   GATE --> ST
-  PS & GATE & AT & JOBS --> DEC
+  PS & GATE & AT & JOBS & RS & R5 --> DEC
   PS & POL & JOBS --> DB
   R1 -- "each fix, read or refused (why)" --> PF
   TR --> PF & DEC

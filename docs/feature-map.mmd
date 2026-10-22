@@ -17,6 +17,7 @@ flowchart LR
 
   subgraph routes["Routes (server/src/routes)"]
     parked["POST /parked"]
+    signsR["POST /parked/:id/signs<br/>(SIGN_READER, off by default)"]
     location["POST /location"]
     confirm["POST /parked/:id/confirm"]
     decline["POST /parked/:id/decline"]
@@ -79,6 +80,9 @@ flowchart LR
   linkUI --> providersR
 
   parked --> zoneLookup
+  signsR --> readSigns["readSigns<br/>Sonnet 5.5 · strict SignRules · grounded"]
+  readSigns -. "advisory: warn, or a shorter stay on accept" .-> parked
+  readSigns --> ledger
   parked --> pending
   location --> pending
   confirm --> pending

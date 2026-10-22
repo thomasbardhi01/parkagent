@@ -31,6 +31,8 @@ import { principalFor } from "../services/principal.js";
 import { applyExtension, priceExtension } from "../services/sessions.js";
 import { fireShadowAuthorization } from "../services/shadow.js";
 import type { PlaceHoldResult, SettleReason, SettleResult } from "../services/wallet/holds.js";
+import { acceptedSignStay } from "../services/signs/acceptedStay.js";
+import { tightenedMaxStay } from "../services/signs/signRules.js";
 import { placeHold, settleHold } from "../services/wallet/holds.js";
 import { parkAgentCardReadiness } from "../services/wallet/parkagentCard.js";
 import {
@@ -186,7 +188,12 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
       rateAdditionalHourUsd: effective.rateAdditionalHourUsd,
       hours: zone.hoursJson as HoursInterval[],
     };
-    const maxStayMinutes = effective.maxStayMinutes;
+    // A shorter stay the driver accepted from the signs at this park
+    // (routes/signs.ts) tightens it; nothing lengthens it.
+    const maxStayMinutes = tightenedMaxStay(
+      effective.maxStayMinutes,
+      await acceptedSignStay(deps.db, parkedEvent.id),
+    );
     const minutes =
       body.minutes ??
       Math.min(policy.default_stay_minutes, maxStayMinutes ?? policy.default_stay_minutes);

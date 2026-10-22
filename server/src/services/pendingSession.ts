@@ -6,6 +6,8 @@
  * window in which the executor's ParkNYC charge should arrive.
  */
 
+import { acceptedSignStay } from "./signs/acceptedStay.js";
+import { tightenedMaxStay } from "./signs/signRules.js";
 import type { AppDb, PendingParkRow, PendingParkWrite, SessionRow } from "../db.js";
 import { cityForZone, providerForCity } from "../providers/registry.js";
 import type { HoursInterval } from "./hours.js";
@@ -553,9 +555,18 @@ export type BuiltPrompt =
 async function termsNow(
   db: AppDb,
   candidate: ParkCandidate,
+  parkedEventId: string,
 ): Promise<{ terms: ZoneTerms; street: string | null }> {
+  // A shorter stay the driver accepted from the signs here (Issue N)
+  // tightens the max stay, as the start path does; nothing lengthens it.
+  const signStay = await acceptedSignStay(db, parkedEventId);
   const zone = await db.zone.findUnique({ where: { zoneId: candidate.zoneId } });
-  if (!zone) return { terms: candidate, street: null };
+  if (!zone) {
+    return {
+      terms: { ...candidate, maxStayMinutes: tightenedMaxStay(candidate.maxStayMinutes, signStay) },
+      street: null,
+    };
+  }
   const city = zone.city ?? "nyc";
   const live = effectiveTerms(zone, await observedTermsFor(db, city, zone.providerZoneNumber));
   return {
@@ -565,7 +576,7 @@ async function termsNow(
       providerZoneNumber: zone.providerZoneNumber,
       rateFirstHourUsd: live.rateFirstHourUsd,
       rateAdditionalHourUsd: live.rateAdditionalHourUsd,
-      maxStayMinutes: live.maxStayMinutes,
+      maxStayMinutes: tightenedMaxStay(live.maxStayMinutes, signStay),
       hours: zone.hoursJson as HoursInterval[],
     },
     street: zone.street ?? null,
@@ -598,7 +609,12 @@ export async function buildParkPrompt(
   if (!chosen) {
     const totals: string[] = [];
     for (const candidate of candidates) {
-      totals.push(usd(quoteZone((await termsNow(deps.db, candidate)).terms, policy, at).totalUsd));
+      totals.push(
+        usd(
+          quoteZone((await termsNow(deps.db, candidate, park.parkedEventId)).terms, policy, at)
+            .totalUsd,
+        ),
+      );
     }
     return {
       kind: "prompt",
@@ -613,7 +629,7 @@ export async function buildParkPrompt(
   }
 
   // The number may have been reported since the car stopped.
-  const { terms, street } = await termsNow(deps.db, chosen);
+  const { terms, street } = await termsNow(deps.db, chosen, park.parkedEventId);
   const zoneNumber = terms.providerZoneNumber;
   const quote = quoteZone(terms, policy, at);
   if (quote.totalUsd === 0) return { kind: "free" };

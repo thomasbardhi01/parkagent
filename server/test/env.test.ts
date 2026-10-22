@@ -57,6 +57,7 @@ function everythingOn() {
     PARKWHIZ_ENABLED: "true",
     AUDIT_SUMMARY: "true",
     MCP_APPS: "true",
+    SIGN_READER: "true",
     LINK_CLIENT_ID: "link_client",
     LINK_CLIENT_SECRET: "link_secret",
     LINK_PUBLISHABLE_KEY: "pk_test_abc123",
@@ -140,6 +141,13 @@ describe("optional features never refuse boot", () => {
     expect(report.degraded).toEqual([]);
   });
 
+  test("the sign reader is off unless SIGN_READER is true", () => {
+    const report = checkEnv({ ...everythingOn(), SIGN_READER: undefined });
+    expect(report.features.find((f) => f.id === "sign_reader")?.state).toBe("off");
+    expect(report.env.SIGN_READER).toBe("false");
+    expect(report.degraded).toEqual([]);
+  });
+
   test("every feature well-formed: all on, nothing degraded", () => {
     const report = checkEnv(everythingOn());
     expect(report.fatal).toEqual([]);
@@ -192,6 +200,8 @@ describe("optional features never refuse boot", () => {
     ["assistant", { ANTHROPIC_API_KEY: "sk-proj-abc" }, /^ANTHROPIC_API_KEY doesn't look like/],
     ["mcp_apps", { MCP_APPS: "on" }, /^MCP_APPS is "on"/],
     ["explanations", { EXPLAIN_MODEL: "gpt-4" }, /^EXPLAIN_MODEL doesn't look like/],
+    ["sign_reader", { SIGN_READER: "yes" }, /^SIGN_READER is "yes"/],
+    ["sign_reader", { ANTHROPIC_API_KEY: undefined }, /needs the assistant's ANTHROPIC_API_KEY/],
   ])("%s: %j → degraded, named, and off", (id, patch, detail) => {
     const report = checkEnv({ ...everythingOn(), ...patch });
     expect(report.fatal).toEqual([]);

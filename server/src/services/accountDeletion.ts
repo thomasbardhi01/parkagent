@@ -123,6 +123,8 @@ export async function deleteAccount(
   await db.vehicle.deleteMany({ where: { userId } });
   await db.userLimits.deleteMany({ where: { userId } });
   await db.conversation.deleteMany({ where: { userId } });
+  // Their sign checks: OCR text and any photo they kept go with them.
+  await db.signCheck.deleteMany({ where: { userId } });
 
   // Sign in with Apple: revoke the token so the app leaves the person's
   //    Apple ID (App Store 5.1.1(v)). After the steps that can abort, so a

@@ -48,6 +48,9 @@ const normalizePlate = (plate: string): string => plate.trim().toUpperCase();
 
 export function registerMe(app: FastifyInstance, deps: AppDeps): void {
   const issuingLive = deps.issuingLive === true;
+  // The parking-sign reader (Issue N) is on: SIGN_READER and the model key.
+  // The app shows "Check the signs" only then.
+  const signReader = deps.signReaderModel !== undefined;
   const now = () => deps.now?.() ?? new Date();
   // "Why?" can be a paid model call (EXPLAIN_MODEL): 30 a minute, as the
   // other per-person reads that cost something.
@@ -83,6 +86,7 @@ export function registerMe(app: FastifyInstance, deps: AppDeps): void {
       // Whether external agents may act for this person (PATCH /me/settings).
       agentsMayAct: row.agentsMayAct === true,
       issuingLive,
+      signReader,
     };
   });
 

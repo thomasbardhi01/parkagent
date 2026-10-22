@@ -1,0 +1,28 @@
+# The parking-sign reader's live eval (Issue N): the golden set's sign
+# texts through the real model, grounded and compared as the route does.
+# Manual only: it spends a few cents of model time per run. CI's server
+# job runs the same set on hand-written model outputs (test/signReader.test.ts).
+name: sign-reader-eval
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  eval:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@v7
+        with: { node-version: lts/*, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -C executor run build
+      - run: pnpm -C server exec prisma generate
+      - name: Live model over the golden set
+        run: pnpm -C server sign:eval
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

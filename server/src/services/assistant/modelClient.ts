@@ -28,11 +28,26 @@ export type ModelContentBlock =
   | { type: "thinking"; thinking: string; signature: string }
   | { type: "redacted_thinking"; data: string };
 
+/** A picture the user sent (the sign reader's one photo), base64. */
+export interface ModelImageBlock {
+  type: "image";
+  source: { type: "base64"; media_type: "image/jpeg" | "image/png"; data: string };
+}
+
 export interface ModelTurn {
   role: "user" | "assistant";
   content:
-    string | (ModelContentBlock | { type: "tool_result"; tool_use_id: string; content: string })[];
+    | string
+    | (
+        | ModelContentBlock
+        | ModelImageBlock
+        | { type: "tool_result"; tool_use_id: string; content: string }
+      )[];
 }
+
+/** Parking-sign reading (Issue N) runs on this model, whatever the
+ * assistant's is set to. */
+export const SIGN_READER_MODEL = "claude-sonnet-5-5";
 
 export interface ModelResponse {
   content: ModelContentBlock[];

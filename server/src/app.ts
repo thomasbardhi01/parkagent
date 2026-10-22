@@ -28,6 +28,7 @@ import { registerCity } from "./routes/city.js";
 import { registerDevice } from "./routes/device.js";
 import { registerGarages } from "./routes/garages.js";
 import { registerLocation } from "./routes/location.js";
+import { registerSigns } from "./routes/signs.js";
 import { registerLimits } from "./routes/limits.js";
 import { registerIdempotency } from "./services/idempotency.js";
 import { makeAssistantHealth } from "./services/assistant/health.js";
@@ -128,6 +129,9 @@ export interface AppDeps {
   /** The assistant's Anthropic transport; absent (no ANTHROPIC_API_KEY)
    * → /assistant/* answers 503. Tests inject a scripted fake. */
   assistantModel?: ModelClient;
+  /** The parking-sign reader's transport (SIGN_READER, Claude Sonnet 5.5);
+   * absent → POST /parked/:id/signs answers 503. Tests inject a fake. */
+  signReaderModel?: ModelClient;
   /** Tool implementations (policy enforcement lives in them). */
   assistantTools?: AssistantTools;
   /** ASSISTANT_DAILY_SPEND_CAP_USD: per-user daily ceiling on estimated
@@ -402,6 +406,7 @@ export function buildApp(deps?: AppDeps, app: FastifyInstance = createFastify())
     registerGarages(app, deps);
     registerPolicy(app, deps);
     registerLocation(app, deps, sessionOps);
+    registerSigns(app, deps);
     registerMe(app, deps);
     registerAgentKeys(app, deps);
     // One budget per key across both agent surfaces.

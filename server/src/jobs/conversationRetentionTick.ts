@@ -56,6 +56,7 @@ export function makeConversationRetention(deps: ConversationRetentionDeps): Conv
       );
     }
     await purgeParkFixes();
+    await purgeSignChecks();
     return count;
   }
 
@@ -78,6 +79,35 @@ export function makeConversationRetention(deps: ConversationRetentionDeps): Conv
     });
     deps.log.info(
       `park trace retention deleted ${count} fix(es) received before ${cutoff.toISOString()}`,
+    );
+  }
+
+  /** Parking-sign checks (Issue N): their OCR text, and a photo a driver
+   * chose to keep for the review queue, go after 30 days (a sign photo can
+   * show a plate or a face). The parsed reading stays: it holds neither. */
+  async function purgeSignChecks(): Promise<void> {
+    const at = now();
+    const texts = await deps.db.signCheck.updateMany({
+      where: { textExpiresAt: { lt: at }, ocrText: { not: null } },
+      data: { ocrText: null },
+    });
+    const photos = await deps.db.signCheck.updateMany({
+      where: { photoExpiresAt: { lt: at } },
+      data: { photo: null, photoMediaType: null, photoExpiresAt: null },
+    });
+    if (texts.count + photos.count === 0) return;
+    await deps.db.decision.create({
+      data: {
+        actor: "job",
+        kind: "sign_check",
+        inputs: { at: at.toISOString() },
+        rule: "retention_purge",
+        outcome: { texts: texts.count, photos: photos.count },
+        userId: null,
+      },
+    });
+    deps.log.info(
+      `sign check retention cleared ${texts.count} text(s) and ${photos.count} photo(s)`,
     );
   }
 

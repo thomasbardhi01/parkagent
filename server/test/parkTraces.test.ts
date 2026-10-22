@@ -15,6 +15,8 @@ import {
   API_KEY,
   HOURS_MON_SAT,
   MONDAY_2PM,
+  MOTT_A,
+  MOTT_B,
   NONADMIN_API_KEY,
   STEINWAY_A,
   makeTestApp,
@@ -208,6 +210,48 @@ test("an exported trace names nobody, and replays to what the park did", async (
     session: "active",
     starts: 1,
   });
+});
+
+test("a park bound to an agent's plan exports its zone from the row's outcome, and replays to it", async () => {
+  const zoneOf = (c: typeof MOTT_A): ZoneTermsRow => ({
+    zoneId: c.zoneId,
+    providerZoneNumber: c.providerZoneNumber,
+    rateFirstHour: c.rateFirstHourUsd,
+    rateAdditionalHour: c.rateAdditionalHourUsd,
+    maxStayMinutes: c.maxStayMinutes,
+    hoursJson: c.hours,
+  });
+  const t = makeTestApp({
+    candidates: [MOTT_A, MOTT_B],
+    zones: [zoneOf(MOTT_A), zoneOf(MOTT_B)],
+    now: () => PARKED_AT,
+  });
+  const res = await t.app.inject({
+    method: "POST",
+    url: "/parked",
+    headers: HEADERS,
+    payload: parkedBody({ outcomes: OUTCOMES }),
+  });
+  const { parkedEventId } = res.json() as { parkedEventId: string };
+  // What E3's binding writes: the zone is in the outcome, not the inputs.
+  t.state.decisions.push({
+    kind: "street_confirmed",
+    rule: "agent_plan_bound",
+    inputs: { mode: "agent_plan", shown: { totalUsd: 5 } },
+    outcome: { status: "confirmed", startsAt: "walk_away", zoneId: MOTT_B.zoneId },
+    parkedEventId,
+    createdAt: PARKED_AT,
+  });
+  const fixture = traceToFixture(
+    (await buildParkTrace(t.deps.db, t.state.pendingParks[0]!.id))!,
+    "agent-bound",
+  );
+  expect(fixture.taps).toEqual([
+    { atS: 0, kind: "confirm", zoneId: MOTT_B.zoneId, shownTotalUsd: 5 },
+  ]);
+  // With two sides, a confirm without its zone would be asked which side.
+  const { outcome } = await replayFixture(fixture);
+  expect(outcome).toMatchObject({ statuses: ["at_car", "confirmed"], park: "confirmed" });
 });
 
 test("park fixes are kept 30 days: the retention sweep deletes older ones, on the ledger", async () => {

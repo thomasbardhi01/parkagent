@@ -198,10 +198,13 @@ export function traceToFixture(trace: ParkTrace, name: string): TraceFixture {
     .filter((d) => d.kind === "street_confirmed" || d.kind === "street_declined")
     .map((d) => {
       const inputs = (d.inputs ?? {}) as { zoneId?: string; shown?: { totalUsd?: number } };
+      // A tap's zone is in its inputs; a park bound to an agent's plan
+      // (mode agent_plan) says it in its outcome.
+      const zoneId = inputs.zoneId ?? (d.outcome as { zoneId?: string } | null)?.zoneId;
       return {
         atS: secondsAfter(d.createdAt),
         kind: d.kind === "street_confirmed" ? ("confirm" as const) : ("decline" as const),
-        ...(inputs.zoneId ? { zoneId: inputs.zoneId } : {}),
+        ...(zoneId ? { zoneId } : {}),
         ...(typeof inputs.shown?.totalUsd === "number"
           ? { shownTotalUsd: inputs.shown.totalUsd }
           : {}),

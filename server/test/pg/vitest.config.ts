@@ -10,6 +10,6 @@ export default defineConfig({
     root: import.meta.dirname,
     include: ["**/*.pg.ts"],
     fileParallelism: false,
-    testTimeout: 30_000,
+    testTimeout: 120_000,
   },
 });

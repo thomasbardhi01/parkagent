@@ -376,7 +376,7 @@ buildApp(
     // choose the ParkAgent card against it before ISSUING_LIVE.
     issuingSandbox: isTestModeKey(env.STRIPE_SECRET_KEY),
     mcpApps: env.MCP_APPS === "true",
-    health: { dryRun: env.DRY_RUN === "true", degraded },
+    health: { degraded },
   },
   app,
 );

@@ -2395,7 +2395,10 @@ the 12 MB `@opentelemetry/semantic-conventions` package.
 
 No auth. `/health` is liveness plus build identity: `{ok, dryRun, commit,
 builtAt, degraded}` (deploys wait on its `commit`). `dryRun` is the
-`DRY_RUN` switch as the server read it (anything but `false` runs dry).
+**effective** dry run the money paths use, read on every request: true
+unless both the `DRY_RUN` env (anything but `false` runs dry) and
+`policy.json`'s `dry_run` are false, so a `PUT /policy` shows on the next
+`/health`. `DRY_RUN=false` with the policy still dry reports `true`.
 `degraded` lists the optional features a setting mistake switched off:
 `live_payments`, `provider_accounts`, `push`, `stripe`, `issuing`,
 `link_wallet`, `apple_signin_revoke`, `apple_maps`, `email_signin`,

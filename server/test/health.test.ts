@@ -27,7 +27,7 @@ test("GET /health reports ok and reflects DRY_RUN", async () => {
   });
 });
 
-test("GET /health reports dryRun false when DRY_RUN is not 'true'", async () => {
+test("GET /health reports dryRun false only when DRY_RUN is exactly 'false'", async () => {
   process.env["DRY_RUN"] = "false";
   const res = await app.inject({ method: "GET", url: "/health" });
 
@@ -38,14 +38,18 @@ test("GET /health reports dryRun false when DRY_RUN is not 'true'", async () => 
     builtAt: "dev",
     degraded: [],
   });
+  // Unset, or anything unreadable, runs dry, so /health says dry.
+  for (const value of [undefined, "False", "0", ""]) {
+    if (value === undefined) delete process.env["DRY_RUN"];
+    else process.env["DRY_RUN"] = value;
+    const res = await app.inject({ method: "GET", url: "/health" });
+    expect(res.json()["dryRun"], `DRY_RUN=${value}`).toBe(true);
+  }
 });
 
-test("GET /health lists what a settings problem switched off, and the resolved dry run", async () => {
-  // DRY_RUN=False isn't "true", but env.ts reads anything unreadable as dry
-  // run, and /health must say what the server does, not what the env says.
-  process.env["DRY_RUN"] = "False";
+test("GET /health lists what a settings problem switched off", async () => {
   const t = makeTestApp({});
-  t.deps.health = { dryRun: true, degraded: ["apple_maps", "policy_edit"] };
+  t.deps.health = { degraded: ["apple_maps", "policy_edit"] };
   const res = await t.app.inject({ method: "GET", url: "/health" });
 
   expect(res.statusCode).toBe(200);
@@ -53,6 +57,33 @@ test("GET /health lists what a settings problem switched off, and the resolved d
     ok: true,
     dryRun: true,
     degraded: ["apple_maps", "policy_edit"],
+  });
+});
+
+describe("GET /health's dryRun is the effective dry run, not the env alone", () => {
+  const dryRunOf = async (t: ReturnType<typeof makeTestApp>) =>
+    (await t.app.inject({ method: "GET", url: "/health" })).json()["dryRun"];
+
+  test("env DRY_RUN false, policy.json dry_run true: dry", async () => {
+    // process.env says live, and the server is wired with it as false too.
+    process.env["DRY_RUN"] = "false";
+    const t = makeTestApp({ envDryRun: false, policy: { dry_run: true } });
+    expect(t.deps.policy.effectiveDryRun()).toBe(true);
+    expect(await dryRunOf(t)).toBe(true);
+  });
+
+  test("env true, policy false: dry; both false: live", async () => {
+    expect(await dryRunOf(makeTestApp({ envDryRun: true, policy: { dry_run: false } }))).toBe(true);
+    expect(await dryRunOf(makeTestApp({ envDryRun: false, policy: { dry_run: false } }))).toBe(
+      false,
+    );
+  });
+
+  test("read at request time: a policy change shows on the next /health", async () => {
+    const t = makeTestApp({ envDryRun: false, policy: { dry_run: false } });
+    expect(await dryRunOf(t)).toBe(false);
+    t.deps.policy.update({ ...t.deps.policy.get(), dry_run: true });
+    expect(await dryRunOf(t)).toBe(true);
   });
 });
 

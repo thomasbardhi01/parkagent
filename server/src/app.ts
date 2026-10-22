@@ -11,6 +11,7 @@ import type { AppDb } from "./db.js";
 import { registerAdmin } from "./routes/admin.js";
 import { registerAuth } from "./routes/auth.js";
 import { agentKeyPrefixOf, hashApiKey } from "./services/apiKeys.js";
+import { routePath } from "./services/routePath.js";
 import { verifyAccessToken } from "./services/authTokens.js";
 import type { Principal } from "./services/principal.js";
 import {
@@ -171,7 +172,10 @@ export function makeAuthenticate(
 ): preHandlerHookHandler {
   return async (req: FastifyRequest, reply: FastifyReply) => {
     const bearer = req.headers.authorization;
-    const path = req.url.split("?")[0] ?? req.url;
+    // The routed path (the matched pattern, else decoded), never raw: a
+    // percent-encoded `/%61gent/…` routes to `/agent/…` and must be
+    // judged as it.
+    const path = routePath(req);
     // An external agent's key (`Bearer pak_…`): one of the person's keys,
     // unrevoked. It reaches the agent surfaces and nothing else, and they
     // take nothing else — each surface is one principal kind.
@@ -325,8 +329,7 @@ export function buildApp(deps?: AppDeps, app: FastifyInstance = createFastify())
       reply: FastifyReply,
     ) => Promise<unknown>;
     app.addHook("onRequest", async (req, reply) => {
-      const path = req.url.split("?")[0] ?? req.url;
-      if (PUBLIC_PATHS.has(path)) return;
+      if (PUBLIC_PATHS.has(routePath(req))) return;
       await authenticate(req, reply);
     });
     // The rest of the request runs as its principal, so the one decision

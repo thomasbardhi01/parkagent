@@ -12,10 +12,19 @@ import { describe, expect, test } from "vitest";
 import { proposePlan } from "../src/services/capabilities/proposePlan.js";
 import { bookGarage } from "../src/services/capabilities/confirmPlan.js";
 import { hashApiKey } from "../src/services/apiKeys.js";
+import { signAccessToken } from "../src/services/authTokens.js";
 import { claimMandate, mintMandate, planHashOf, readMandate } from "../src/services/mandates.js";
 import type { Principal } from "../src/services/principal.js";
-import { agentPrincipal, isAgentSurface, userPrincipal } from "../src/services/principal.js";
-import { API_KEY, MONDAY_2PM, NONADMIN_API_KEY, TEST_PEPPER, makeTestApp } from "./helpers.js";
+import { agentPrincipal, isAgentSurface, runAs, userPrincipal } from "../src/services/principal.js";
+import {
+  API_KEY,
+  MONDAY_2PM,
+  NONADMIN_API_KEY,
+  TEST_JWT_SECRET,
+  TEST_PEPPER,
+  makeTestApp,
+  seedMandate,
+} from "./helpers.js";
 
 const AT = new Date(MONDAY_2PM);
 const U2 = { "x-api-key": NONADMIN_API_KEY };
@@ -134,12 +143,28 @@ describe("one surface per principal kind", () => {
     expect(t.state.users.find((u) => u.id === "u2")!.agentsMayAct).toBe(false);
   });
 
-  test("a session or the admin key on the agent surface is 403", async () => {
+  test("a user's API key, the admin key, or a session JWT on the agent surface is 403", async () => {
     const t = makeTestApp({});
-    for (const headers of [U2, { "x-api-key": API_KEY }]) {
+    const jwt = signAccessToken(TEST_JWT_SECRET, { id: "u2", name: "Ana", isAdmin: false }, AT);
+    for (const headers of [U2, { "x-api-key": API_KEY }, bearer(jwt.token)]) {
       const res = await t.app.inject({ method: "GET", url: "/agent/me", headers });
       expect(res.statusCode).toBe(403);
       expect(res.json()).toEqual({ error: "agent_surface_needs_agent_key" });
+    }
+  });
+
+  test("a percent-encoded path is judged as the route it reaches (#255 review)", async () => {
+    const t = makeTestApp({});
+    const { key } = await mint(t);
+    // The admin key on an encoded /agent/me: still the agent surface.
+    for (const url of ["/%61gent/me", "/%61%67ent/me"]) {
+      const res = await t.app.inject({ method: "GET", url, headers: { "x-api-key": API_KEY } });
+      expect(res.statusCode, url).toBe(403);
+    }
+    // An agent key on an encoded /me: still not the agent surface.
+    for (const url of ["/%6De", "/%6De/limits"]) {
+      const res = await t.app.inject({ method: "GET", url, headers: bearer(key) });
+      expect(res.statusCode, url).toBe(403);
     }
   });
 
@@ -184,11 +209,36 @@ describe("consent and the rate limit", () => {
     expect(other.statusCode).toBe(200);
   });
 
-  test("an agent's decisions say so, with its key", async () => {
+  test("an agent key's use is stamped", async () => {
     const t = makeTestApp({});
     const { key, id } = await mint(t);
     await t.app.inject({ method: "GET", url: "/agent/me", headers: bearer(key) });
     expect(t.state.agentKeys.find((k) => k.id === id)!.lastUsedAt).not.toBeNull();
+  });
+
+  test("a decision written as an agent says so, with its key", async () => {
+    const t = makeTestApp({});
+    const agent = agentPrincipal({ userId: "u2", id: "ak9", scopes: ["read"] });
+    await runAs(agent, () =>
+      t.deps.db.decision.create({
+        data: { kind: "t", inputs: {}, rule: "r", outcome: {}, userId: "u2" },
+      }),
+    );
+    expect(t.state.decisions.at(-1)).toMatchObject({ actor: "external_agent", agentKeyId: "ak9" });
+  });
+
+  test("a minted key never sits in the idempotency table (#255 review)", async () => {
+    const t = makeTestApp({});
+    const res = await t.app.inject({
+      method: "POST",
+      url: "/me/agent-keys",
+      headers: { ...U2, "idempotency-key": "11111111-2222-3333-4444-555555555555" },
+      payload: { label: "Grok", scopes: ["read"] },
+    });
+    expect(res.statusCode).toBe(201);
+    const key = res.json().key as string;
+    expect(t.state.idempotencyKeys).toHaveLength(0);
+    expect(JSON.stringify(t.state.idempotencyKeys)).not.toContain(key);
   });
 });
 
@@ -253,6 +303,84 @@ describe("the mandate", () => {
       planHashOf({ b: [1, { d: 3, c: 2 }], a: 1 }),
     );
     expect(planHashOf({ a: 1 })).not.toBe(planHashOf({ a: 2 }));
+    // A key holding undefined is no key, as after a JSON column round trip.
+    expect(planHashOf({ a: 1, b: undefined })).toBe(planHashOf({ a: 1 }));
+    const plan = { kind: "single_spot", options: [{ id: "o1", note: undefined }] };
+    expect(planHashOf(plan)).toBe(planHashOf(JSON.parse(JSON.stringify(plan))));
+  });
+
+  describe("refused through the real consume path (bookGarage)", () => {
+    const ctx = { conversationId: "c1" };
+    const seedPlan = (t: ReturnType<typeof makeTestApp>) => {
+      const plan = {
+        kind: "single_spot",
+        options: [{ id: "o1", type: "garage", garageOptionId: "g1", priceUsd: 9 }],
+      };
+      t.state.assistantPlans.push({
+        id: "plan1",
+        userId: "u2",
+        conversationId: "agent:ak1",
+        kind: "single_spot",
+        plan,
+        createdAt: AT,
+        confirmedAt: null,
+        confirmedOptionId: null,
+      });
+      t.state.users.find((u) => u.id === "u2")!.agentsMayAct = true;
+      return plan;
+    };
+    const book = (t: ReturnType<typeof makeTestApp>, p: Principal, token: string) =>
+      bookGarage(t.deps.assistantTools!["deps"], p, ctx, {
+        option_id: "g1",
+        confirmation_token: token,
+      });
+    const message = (out: { result: unknown }) =>
+      (out.result as { message?: string }).message ?? "";
+
+    test("a plan changed since the mandate was minted", async () => {
+      const t = makeTestApp({});
+      const plan = seedPlan(t);
+      const token = seedMandate(t.state, "tok-changed", {
+        userId: "u2",
+        planId: "plan1",
+        optionId: "o1",
+        agentKeyId: "ak1",
+        planHash: planHashOf({ ...plan, extra: true }),
+        expiresAt: new Date(AT.getTime() + 60_000),
+      });
+      const out = await book(t, agent(), token);
+      expect(message(out)).toContain("the plan changed");
+      expect(t.state.mandates[0]!.consumedAt).toBeNull();
+    });
+
+    test("a read-only key", async () => {
+      const t = makeTestApp({});
+      seedPlan(t);
+      const token = seedMandate(t.state, "tok-read", {
+        userId: "u2",
+        planId: "plan1",
+        optionId: "o1",
+        agentKeyId: "ak1",
+        expiresAt: new Date(AT.getTime() + 60_000),
+      });
+      const out = await book(t, agent(["read"]), token);
+      expect(message(out)).toContain("may not confirm");
+    });
+
+    test("a mandate already used", async () => {
+      const t = makeTestApp({});
+      seedPlan(t);
+      const token = seedMandate(t.state, "tok-used", {
+        userId: "u2",
+        planId: "plan1",
+        optionId: "o1",
+        agentKeyId: "ak1",
+        expiresAt: new Date(AT.getTime() + 60_000),
+        consumedAt: AT,
+      });
+      const out = await book(t, agent(), token);
+      expect(message(out)).toContain("already used");
+    });
   });
 });
 

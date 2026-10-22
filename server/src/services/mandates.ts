@@ -33,7 +33,10 @@ function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
   if (value && typeof value === "object") {
     const record = value as Record<string, unknown>;
+    // As JSON does, a key holding undefined is no key at all: the plan as
+    // proposed (in memory) and as stored (a JSON column) hash the same.
     return `{${Object.keys(record)
+      .filter((k) => record[k] !== undefined)
       .sort()
       .map((k) => `${JSON.stringify(k)}:${canonical(record[k])}`)
       .join(",")}}`;

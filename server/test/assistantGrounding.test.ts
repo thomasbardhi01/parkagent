@@ -34,6 +34,7 @@ import {
   MONDAY_2PM,
   NONADMIN_API_KEY,
   makeTestApp,
+  seedMandate,
 } from "./helpers.js";
 
 const HEADERS = { "x-api-key": API_KEY, "content-type": "application/json" };
@@ -510,14 +511,11 @@ describe("the confirmation token authorizes the tapped option, once", () => {
         ],
       },
     });
-    const token = "tok-" + optionId;
-    t.state.assistantConfirmations.push({
-      token,
+    const token = seedMandate(t.state, "tok-" + optionId, {
       userId: "u1",
       planId: "plan1",
       optionId,
       expiresAt: new Date(NOW.getTime() + 60_000),
-      usedAt: null,
     });
     return { t, token, tools: t.deps.assistantTools!, ctx: { userId: "u1", conversationId: "c1" } };
   }
@@ -542,16 +540,14 @@ describe("the confirmation token authorizes the tapped option, once", () => {
       confirmation_token: token,
     });
     expect(ok.result).toMatchObject({ confirmed: true });
-    expect(t.state.assistantConfirmations[0]!.usedAt).not.toBeNull();
+    expect(t.state.mandates[0]!.consumedAt).not.toBeNull();
   });
 
   test("two concurrent claims of one token: exactly one wins", async () => {
     const { tools, token, ctx, t } = await tapped("s1");
     // Hold both calls at the read until both have made it, so each sees
     // the token unused — the race the atomic claim exists for.
-    const table = t.state as unknown as { assistantConfirmations: unknown[] };
-    void table;
-    const confirmations = t.deps.db.assistantConfirmation;
+    const confirmations = t.deps.db.mandate;
     const realFind = confirmations.findUnique.bind(confirmations);
     let arrived = 0;
     let release!: () => void;

@@ -10,10 +10,16 @@ import type {
 import type { AppDb } from "./db.js";
 import { registerAdmin } from "./routes/admin.js";
 import { registerAuth } from "./routes/auth.js";
-import { hashApiKey } from "./services/apiKeys.js";
+import { agentKeyPrefixOf, hashApiKey } from "./services/apiKeys.js";
 import { verifyAccessToken } from "./services/authTokens.js";
 import type { Principal } from "./services/principal.js";
-import { runAs, traceIdFrom, userPrincipal } from "./services/principal.js";
+import {
+  agentPrincipal,
+  isAgentSurface,
+  runAs,
+  traceIdFrom,
+  userPrincipal,
+} from "./services/principal.js";
 import type { EmailSender } from "./services/emailer.js";
 import type { IdTokenResult } from "./services/idToken.js";
 import { registerCard } from "./routes/card.js";
@@ -25,6 +31,8 @@ import { registerLimits } from "./routes/limits.js";
 import { registerIdempotency } from "./services/idempotency.js";
 import { makeAssistantHealth } from "./services/assistant/health.js";
 import { registerMe } from "./routes/me.js";
+import { registerAgentKeys } from "./routes/agentKeys.js";
+import { registerAgent } from "./routes/agent.js";
 import { registerParked } from "./routes/parked.js";
 import { registerPolicy } from "./routes/policy.js";
 import { registerProviders } from "./routes/providers.js";
@@ -73,6 +81,8 @@ export interface AuthConfig {
 export interface AppDeps {
   db: AppDb;
   policy: PolicyService;
+  /** What mandates and agent keys are hashed with (API_KEY_PEPPER). */
+  apiKeyPepper: string;
   /** One round trip to the database (`SELECT 1`), for /health/ready. */
   dbPing?: () => Promise<unknown>;
   /** Identity + sessions; absent → /auth/* answers 503 and bearer tokens
@@ -161,6 +171,36 @@ export function makeAuthenticate(
 ): preHandlerHookHandler {
   return async (req: FastifyRequest, reply: FastifyReply) => {
     const bearer = req.headers.authorization;
+    const path = req.url.split("?")[0] ?? req.url;
+    // An external agent's key (`Bearer pak_…`): one of the person's keys,
+    // unrevoked. It reaches the agent surfaces and nothing else, and they
+    // take nothing else — each surface is one principal kind.
+    const presented =
+      typeof bearer === "string" && bearer.startsWith("Bearer ") ? bearer.slice(7) : null;
+    if (presented !== null && agentKeyPrefixOf(presented) !== null) {
+      const key = await db.agentKey.findUnique({ where: { hash: hashApiKey(pepper, presented) } });
+      if (!key || key.revokedAt !== null) {
+        return reply.code(401).send({ error: "unauthorized" });
+      }
+      if (!isAgentSurface(path))
+        return reply.code(403).send({ error: "agent_key_not_allowed_here" });
+      const user = await db.user.findUnique({
+        where: { id: key.userId },
+        select: { id: true, name: true, isAdmin: true, deletedAt: true },
+      });
+      if (!user || user.deletedAt) return reply.code(401).send({ error: "unauthorized" });
+      // Never the person's admin rights: an agent is only its key's scopes.
+      req.authedUser = { id: user.id, name: user.name, isAdmin: false };
+      req.principal = agentPrincipal(key);
+      void db.agentKey
+        .update({ where: { id: key.id }, data: { lastUsedAt: now() } })
+        .catch(() => {});
+      req.log.info({ agentKey: key.prefix, route: path }, "agent call");
+      return;
+    }
+    if (isAgentSurface(path)) {
+      return reply.code(403).send({ error: "agent_surface_needs_agent_key" });
+    }
     if (jwtSecret && typeof bearer === "string" && bearer.startsWith("Bearer ")) {
       const claims = verifyAccessToken(jwtSecret, bearer.slice(7), now());
       if (claims) {
@@ -350,6 +390,8 @@ export function buildApp(deps?: AppDeps, app: FastifyInstance = createFastify())
     registerPolicy(app, deps);
     registerLocation(app, deps, sessionOps);
     registerMe(app, deps);
+    registerAgentKeys(app, deps);
+    registerAgent(app, deps);
     registerLimits(app, deps);
     registerDevice(app, deps);
     registerCard(app, deps);

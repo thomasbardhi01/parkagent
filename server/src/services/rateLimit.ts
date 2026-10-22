@@ -54,7 +54,11 @@ export function makeRateLimiter(options: RateLimitOptions): preHandlerHookHandle
         if (times.every((t) => at - t >= windowMs)) hits.delete(key);
       }
     }
-    const key = req.authedUser?.id ?? `ip:${clientIp(req, trustFly)}`;
+    // Per agent key, per user, else per address.
+    const key =
+      (req.principal?.agentKeyId !== undefined ? `key:${req.principal.agentKeyId}` : undefined) ??
+      req.authedUser?.id ??
+      `ip:${clientIp(req, trustFly)}`;
     const times = (hits.get(key) ?? []).filter((t) => at - t < windowMs);
     if (times.length >= max) {
       const retryAfterS = Math.ceil((windowMs - (at - times[0]!)) / 1000);

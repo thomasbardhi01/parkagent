@@ -481,12 +481,14 @@ describe("confirmation-token enforcement", () => {
       // No Link: the user pays at the garage's own checkout.
       paymentSource: "garage_checkout",
     });
-    // The token the tap minted is single-use — it was consumed by the
-    // confirm itself; replaying it is refused.
-    const token = t.state.assistantConfirmations[0]!.token;
+    // The mandate the tap minted is single-use — it was consumed by the
+    // confirm itself. Only its hash is stored, so nothing in the table can
+    // be replayed as a token either.
+    expect(t.state.mandates).toHaveLength(1);
+    expect(t.state.mandates[0]!.consumedAt).not.toBeNull();
     const replay = await tools.execute(ctx, "book_garage", {
       option_id: "g1",
-      confirmation_token: token,
+      confirmation_token: t.state.mandates[0]!.token,
     });
     expect((replay.result as { error: string }).error).toBe("needs_confirmation");
   });

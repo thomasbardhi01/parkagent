@@ -54,6 +54,7 @@ export function registerMe(app: FastifyInstance, deps: AppDeps): void {
     appleSub: true,
     googleSub: true,
     paymentSource: true,
+    agentsMayAct: true,
     createdAt: true,
   } as const;
 
@@ -66,6 +67,8 @@ export function registerMe(app: FastifyInstance, deps: AppDeps): void {
     return {
       user: publicUser(row),
       paymentSource: normalizeSource(row.paymentSource),
+      // Whether external agents may act for this person (PATCH /me/settings).
+      agentsMayAct: row.agentsMayAct === true,
       issuingLive,
     };
   });

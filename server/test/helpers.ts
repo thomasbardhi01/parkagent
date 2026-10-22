@@ -32,6 +32,8 @@ import type {
   SessionRow,
   SessionWhere,
   UserIdentityRow,
+  MandateRow,
+  AgentKeyRow,
   IdempotencyKeyRow,
   UserLimitsRow,
   VehicleRow,
@@ -310,14 +312,9 @@ export interface FakeDbState {
   processedTopups: { paymentIntentId: string; amountUsd: number; userId: string | null }[];
   conversations: ConversationRow[];
   assistantPlans: AssistantPlanRow[];
-  assistantConfirmations: {
-    token: string;
-    userId: string;
-    planId: string;
-    optionId: string | null;
-    expiresAt: Date;
-    usedAt: Date | null;
-  }[];
+  /** `token` is the hash; `mintFakeMandate` seeds one and returns the token. */
+  mandates: MandateRow[];
+  agentKeys: AgentKeyRow[];
   itineraries: ItineraryRow[];
   linkAccounts: {
     userId: string;
@@ -490,7 +487,8 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
     linkJobs: [],
     conversations: [],
     assistantPlans: [],
-    assistantConfirmations: [],
+    mandates: [],
+    agentKeys: [],
     itineraries: [],
     linkAccounts: [],
     linkSpendRequests: [],
@@ -1063,25 +1061,54 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
         return {};
       },
     },
-    assistantConfirmation: {
+    mandate: {
       create: async ({ data }) => {
-        state.assistantConfirmations.push({ usedAt: null, ...data });
+        state.mandates.push({ consumedAt: null, createdAt: fakeRowClock(), ...data });
         return {};
       },
-      findUnique: async ({ where }) =>
-        state.assistantConfirmations.find((r) => r.token === where.token) ?? null,
+      findUnique: async ({ where }) => {
+        const row = state.mandates.find((r) => r.token === where.token);
+        return row ? { ...row } : null;
+      },
       updateMany: async ({ where, data }) => {
         // Synchronous check-and-set: the fake's stand-in for the single
-        // UPDATE … WHERE used_at IS NULL the real database runs.
-        const row = state.assistantConfirmations.find(
+        // UPDATE … WHERE consumed_at IS NULL the real database runs.
+        const row = state.mandates.find(
           (r) =>
             r.token === where.token &&
-            r.usedAt === null &&
+            r.consumedAt === null &&
             r.expiresAt.getTime() > where.expiresAt.gt.getTime(),
         );
         if (!row) return { count: 0 };
         Object.assign(row, data);
         return { count: 1 };
+      },
+    },
+    agentKey: {
+      create: async ({ data }) => {
+        const row: AgentKeyRow = {
+          id: `ak${state.agentKeys.length + 1}`,
+          createdAt: fakeRowClock(),
+          lastUsedAt: null,
+          revokedAt: null,
+          ...data,
+        };
+        state.agentKeys.push(row);
+        return { ...row };
+      },
+      findUnique: async ({ where }) => {
+        const row = state.agentKeys.find((k) =>
+          "hash" in where ? k.hash === where.hash : k.id === where.id,
+        );
+        return row ? { ...row } : null;
+      },
+      findMany: async ({ where }) =>
+        state.agentKeys.filter((k) => k.userId === where.userId).map((k) => ({ ...k })),
+      update: async ({ where, data }) => {
+        const row = state.agentKeys.find((k) => k.id === where.id);
+        if (!row) throw new Error(`fake agentKey.update: no key ${where.id}`);
+        Object.assign(row, data);
+        return { ...row };
       },
     },
     itinerary: {
@@ -2116,6 +2143,26 @@ export function seedVehicle(
   return row;
 }
 
+/** Seed a mandate as a Confirm tap would mint it, and hand back the token
+ * (the row keeps only its hash, as in production). */
+export function seedMandate(
+  state: FakeDbState,
+  token: string,
+  row: Partial<MandateRow> & Pick<MandateRow, "userId" | "planId" | "optionId" | "expiresAt">,
+): string {
+  state.mandates.push({
+    token: hashApiKey(TEST_PEPPER, token),
+    agentKeyId: null,
+    planHash: null,
+    scopes: ["confirm"],
+    capsSnapshot: null,
+    consumedAt: null,
+    createdAt: new Date(MONDAY_2PM),
+    ...row,
+  });
+  return token;
+}
+
 /** Seed a linked provider account; state defaults to a sealed empty state. */
 export function seedProviderAccount(
   state: FakeDbState,
@@ -2255,6 +2302,7 @@ export function makeTestApp(options: {
   const assistantTools = new AssistantTools({
     db,
     policy: policyService,
+    apiKeyPepper: TEST_PEPPER,
     findCandidates,
     ...(options.nearbyZones ? { findNearbyZones } : {}),
     garage,
@@ -2273,6 +2321,7 @@ export function makeTestApp(options: {
   const deps: AppDeps = {
     db,
     policy: policyService,
+    apiKeyPepper: TEST_PEPPER,
     findCandidates,
     findNearbyZones,
     ...(garageFootprints ? { garageFootprints } : {}),

@@ -148,7 +148,7 @@ describe("the prod request", () => {
     expect(t.state.assistantPlans).toHaveLength(0);
     expect(t.state.decisions.some((d) => d.kind === "assistant_plan")).toBe(false);
     // No confirmation token exists or was minted anywhere.
-    expect(t.state.assistantConfirmations).toHaveLength(0);
+    expect(t.state.mandates).toHaveLength(0);
 
     // The reply: opener once, no verbal-confirm invitation, and no price
     // the user has no card to act on.
@@ -215,7 +215,7 @@ describe("the prod request", () => {
     });
     expect(res.statusCode).toBe(409);
     expect(res.json()).toEqual({ error: "street_pay_on_arrival" });
-    expect(t.state.assistantConfirmations).toHaveLength(0);
+    expect(t.state.mandates).toHaveLength(0);
     expect(t.state.decisions.at(-1)).toMatchObject({ rule: "street_pay_on_arrival" });
   });
 });
@@ -348,7 +348,7 @@ describe("verbal confirm is a dead end", () => {
       t.state.decisions.some((d) => d.kind === "assistant_tool" && d.rule === "needs_confirmation"),
     ).toBe(true);
     expect(t.state.sessions).toHaveLength(0);
-    expect(t.state.assistantConfirmations).toHaveLength(0);
+    expect(t.state.mandates).toHaveLength(0);
   });
 
   test("the system prompt forbids verbal confirmation and explains the future-street card", () => {

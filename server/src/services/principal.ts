@@ -36,6 +36,28 @@ export function jobPrincipal(userId: string): Principal {
   return { userId, actor: "job", scopes: ALL_SCOPES };
 }
 
+/** An external agent holding one of the person's keys (WS-4): only the
+ * key's scopes, and only for a person who said agents may act. */
+export function agentPrincipal(key: {
+  userId: string;
+  id: string;
+  scopes: readonly string[];
+}): Principal {
+  const scopes = new Set<Scope>();
+  for (const s of key.scopes) if (s === "read" || s === "confirm") scopes.add(s);
+  return { userId: key.userId, actor: "external_agent", agentKeyId: key.id, scopes };
+}
+
+/** Where an agent key may go, and the only place one may go: each
+ * surface is one principal kind. A user's session or the admin key is
+ * refused here, and an agent key is refused everywhere else. F adds
+ * `/mcp`. */
+export const AGENT_SURFACES: readonly string[] = ["/agent/"];
+
+export function isAgentSurface(path: string): boolean {
+  return AGENT_SURFACES.some((prefix) => path === prefix.slice(0, -1) || path.startsWith(prefix));
+}
+
 /** What a request or job pass runs as: who, and the W3C trace it carried
  * (`traceparent`'s trace-id, 32 hex digits), so a decisions row can be
  * joined to the caller's own trace. */

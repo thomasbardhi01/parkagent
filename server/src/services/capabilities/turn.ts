@@ -184,6 +184,8 @@ export interface CapabilityDeps {
    * the phone location directly. */
   geocoder?: GeocoderProvider | undefined;
   linkWallet?: LinkWallet | undefined;
+  /** What mandates and agent keys are hashed with (API_KEY_PEPPER). */
+  apiKeyPepper: string;
   now?: (() => Date) | undefined;
 }
 

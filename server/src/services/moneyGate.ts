@@ -79,6 +79,10 @@ export type GateIntent =
     }
   /** Stopping buys nothing; only consent applies. */
   | { kind: "stop" }
+  /** Consuming a mandate (confirmPlan): the plan was judged when it was
+   * proposed, so only consent applies here; the spend is judged again by
+   * the start or the hold it leads to. */
+  | { kind: "confirm" }
   /** The assistant's confirm: each stop is its own purchase against the
    * per-stop cap (when `perStop`), the day as a whole against what is
    * left of today's cap, requests still awaiting Link approval included. */
@@ -172,7 +176,7 @@ export async function moneyGate(
   });
   const allow = (): GateResult => ({ ...facts, ok: true, rule: null });
 
-  if (intent.kind === "stop") return allow();
+  if (intent.kind === "stop" || intent.kind === "confirm") return allow();
   if (intent.kind === "funding") {
     return intent.amountUsd > policy.daily_cap_usd ? refuse("amount_over_daily_cap") : allow();
   }

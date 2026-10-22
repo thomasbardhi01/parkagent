@@ -38,6 +38,7 @@ import type { ExecutorRuntime } from "./services/parknycExecutor.js";
 import { makePendingSessionCheck } from "./services/pendingSession.js";
 import { PolicyService, snapshotPolicy } from "./services/policy.js";
 import { makeAnthropicModelClient } from "./services/assistant/anthropicClient.js";
+import { AUDIT_MODEL } from "./services/audit/summary.js";
 import { resolveAssistantModels } from "./services/assistant/loop.js";
 import { AssistantTools } from "./services/assistant/tools.js";
 import { makeMultiGarageProvider } from "./services/garage/multiProvider.js";
@@ -214,6 +215,11 @@ const assistantModel = env.ANTHROPIC_API_KEY
 const explainModel = env.ANTHROPIC_API_KEY
   ? makeAnthropicModelClient(env.ANTHROPIC_API_KEY, models.explain)
   : undefined;
+// The nightly audit's summary (GET /admin/audit), only with AUDIT_SUMMARY on.
+const auditModel =
+  env.AUDIT_SUMMARY === "true" && env.ANTHROPIC_API_KEY
+    ? makeAnthropicModelClient(env.ANTHROPIC_API_KEY, AUDIT_MODEL)
+    : undefined;
 const findCandidates = makeCandidateFetcher(prisma);
 // The map's curb layer (GET /zones/near) — same prefilter, plus geometry.
 const findNearbyZones = makeNearbyZoneFetcher(prisma);
@@ -326,6 +332,7 @@ buildApp(
     apiKeyPepper: env.API_KEY_PEPPER,
     authenticate: makeAuthenticate(db, env.API_KEY_PEPPER, env.AUTH_JWT_SECRET),
     ...(assistantModel ? { assistantModel } : {}),
+    ...(auditModel ? { auditModel } : {}),
     assistantTools,
     assistantDailySpendCapUsd: env.ASSISTANT_DAILY_SPEND_CAP_USD,
     conversationRetentionDays: env.ASSISTANT_CONVERSATION_RETENTION_DAYS,

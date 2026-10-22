@@ -13,6 +13,8 @@ import { requireAdmin } from "../app.js";
 import { cityForZone } from "../providers/registry.js";
 import { nycStartOfDay } from "../services/hours.js";
 import { buildParkTrace } from "../services/parkTrace.js";
+import { runAudit } from "../services/audit/invariants.js";
+import { summarize } from "../services/audit/summary.js";
 import { PUSH_TEST_TYPES, samplePush } from "../services/apns.js";
 import { providerReliability } from "../services/providerMetrics.js";
 import type { PushTestType } from "../services/apns.js";
@@ -258,4 +260,36 @@ export function registerAdmin(app: FastifyInstance, deps: AppDeps): void {
     if (!trace) return reply.code(404).send({ error: "park_not_found" });
     return trace;
   });
+
+  // The nightly audit (services/audit): every invariant over one New York
+  // day (?date=YYYY-MM-DD), or the last 24 hours, and five lines saying
+  // what fired. Report-only: it reads, writes its one decisions row, and
+  // changes nothing. The nightly workflow files the answer as an issue.
+  app.get("/admin/audit", async (req, reply) => {
+    if (!requireAdmin(req, reply)) return;
+    const parsed = auditQuery.safeParse(req.query ?? {});
+    if (!parsed.success) return reply.code(400).send({ error: "date must be YYYY-MM-DD" });
+    const now = deps.now?.() ?? new Date();
+    const date = parsed.data.date;
+    // Noon UTC-4/-5 is inside the New York day whatever the DST.
+    const from = date
+      ? nycStartOfDay(new Date(`${date}T16:00:00Z`))
+      : new Date(now.getTime() - DAY_MS);
+    const to = date ? nycStartOfDay(new Date(from.getTime() + 1.5 * DAY_MS)) : now;
+    const findings = await runAudit(deps.db, { from, to, now });
+    const report = { window: { from: from.toISOString(), to: to.toISOString() }, findings };
+    const summary = await summarize(
+      { db: deps.db, model: deps.auditModel, capUsd: deps.assistantDailySpendCapUsd ?? 5, now },
+      report,
+    );
+    return { ...report, summary };
+  });
 }
+
+const DAY_MS = 24 * 60 * 60_000;
+const auditQuery = z.object({
+  date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .optional(),
+});

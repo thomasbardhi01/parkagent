@@ -63,6 +63,9 @@ export function makeAnthropicModelClient(
         max_tokens: args.maxTokens,
         system: args.system,
         ...(args.tools ? { tools: args.tools as Anthropic.Tool[] } : {}),
+        ...(args.outputSchema
+          ? { output_config: { format: { type: "json_schema", schema: args.outputSchema } } }
+          : {}),
         messages: args.messages as Anthropic.MessageParam[],
       });
       if (onText) {

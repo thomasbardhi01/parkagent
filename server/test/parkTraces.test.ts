@@ -275,6 +275,7 @@ test("park fixes are kept 30 days: the retention sweep deletes older ones, on th
   expect(t.state.parkFixes).toHaveLength(1);
   expect(t.state.parkFixes[0]!.receivedAt).toEqual(t.clock.now);
   expect(t.state.decisions.at(-1)).toMatchObject({
+    actor: "job",
     kind: "park_trace",
     rule: "retention_purge",
     outcome: { deleted: 1 },

@@ -14,13 +14,19 @@ export interface ToolDefinition {
 }
 
 /** Overridden by ASSISTANT_MODEL (legacy fallback: ANTHROPIC_MODEL). */
-export const DEFAULT_ASSISTANT_MODEL = "claude-sonnet-5";
+export const DEFAULT_ASSISTANT_MODEL = "claude-sonnet-5-5";
 /** The cheap model that phrases explain_decision output (EXPLAIN_MODEL). */
-export const DEFAULT_EXPLAIN_MODEL = "claude-haiku-4-5-20251001";
+export const DEFAULT_EXPLAIN_MODEL = "claude-haiku-5-5";
 
 /** One content block of an assistant message, Messages-API shaped. */
 export type ModelContentBlock =
-  { type: "text"; text: string } | { type: "tool_use"; id: string; name: string; input: unknown };
+  | { type: "text"; text: string }
+  | { type: "tool_use"; id: string; name: string; input: unknown }
+  /** The model's reasoning, carried back to it unchanged on the next call
+   * (its text is empty unless display asks for it; the signature is what
+   * the API checks). Never read, never edited, never dropped. */
+  | { type: "thinking"; thinking: string; signature: string }
+  | { type: "redacted_thinking"; data: string };
 
 export interface ModelTurn {
   role: "user" | "assistant";
@@ -30,7 +36,10 @@ export interface ModelTurn {
 
 export interface ModelResponse {
   content: ModelContentBlock[];
+  /** `refusal` is read before `content`: the model's safeguards declined
+   * the turn, and `stopDetails.category` says why. */
   stopReason: string;
+  stopDetails?: { category: string | null; explanation?: string | null };
   /** Which model actually answered and what it billed — logged per turn
    * on the assistant_turn decision row. Fakes may omit it. */
   model?: string;

@@ -29,6 +29,8 @@
 
 import { createPrivateKey, createPublicKey } from "node:crypto";
 
+import { DEFAULT_EXPLAIN_MODEL } from "./services/assistant/modelClient.js";
+
 type Flag = "true" | "false";
 
 export interface Env {
@@ -891,7 +893,6 @@ export function checkEnv(source: EnvSource, options: CheckOptions = {}): EnvRepo
 
 export const DEFAULT_APPLE_AUDIENCE = "com.thomasbardhi.parkagent";
 const DEFAULT_RESEND_FROM = "ParkAgent <sign-in@parkagent.app>";
-const DEFAULT_EXPLAIN_MODEL = "claude-haiku-4-5-20251001";
 
 /** The boot log for a report: one line per degraded feature and warning,
  * then which features are on. */

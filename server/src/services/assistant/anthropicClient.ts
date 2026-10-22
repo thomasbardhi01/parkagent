@@ -8,7 +8,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 
 import { DEFAULT_ASSISTANT_MODEL } from "./modelClient.js";
-import type { ModelClient, ModelContentBlock } from "./modelClient.js";
+import type { ModelClient, ModelContentBlock, ModelResponse } from "./modelClient.js";
 
 /** What went wrong at the provider, in the few kinds a caller acts on. */
 export type ModelErrorKind =
@@ -68,23 +68,43 @@ export function makeAnthropicModelClient(
       if (onText) {
         stream.on("text", (delta) => onText(delta));
       }
-      const message = await stream.finalMessage();
-      const content: ModelContentBlock[] = [];
-      for (const block of message.content) {
-        if (block.type === "text") content.push({ type: "text", text: block.text });
-        else if (block.type === "tool_use") {
-          content.push({ type: "tool_use", id: block.id, name: block.name, input: block.input });
+      return toModelResponse(await stream.finalMessage());
+    },
+  };
+}
+
+/** The SDK's message as the loop's response: text and tool calls as
+ * before, and the model's thinking blocks carried through untouched so
+ * the next call gets them back (the API checks their signatures; a block
+ * dropped or edited is a 400 on Claude Sonnet 5.5 and Claude Haiku 5.5). */
+export function toModelResponse(message: Anthropic.Message): ModelResponse {
+  const content: ModelContentBlock[] = [];
+  for (const block of message.content) {
+    if (block.type === "text") content.push({ type: "text", text: block.text });
+    else if (block.type === "tool_use") {
+      content.push({ type: "tool_use", id: block.id, name: block.name, input: block.input });
+    } else if (block.type === "thinking") {
+      content.push({ type: "thinking", thinking: block.thinking, signature: block.signature });
+    } else if (block.type === "redacted_thinking") {
+      content.push({ type: "redacted_thinking", data: block.data });
+    }
+  }
+  const details = message.stop_reason === "refusal" ? message.stop_details : null;
+  return {
+    content,
+    stopReason: message.stop_reason ?? "end_turn",
+    ...(details
+      ? {
+          stopDetails: {
+            category: details.category ?? null,
+            ...(details.explanation ? { explanation: details.explanation } : {}),
+          },
         }
-      }
-      return {
-        content,
-        stopReason: message.stop_reason ?? "end_turn",
-        model: message.model,
-        usage: {
-          inputTokens: message.usage.input_tokens,
-          outputTokens: message.usage.output_tokens,
-        },
-      };
+      : {}),
+    model: message.model,
+    usage: {
+      inputTokens: message.usage.input_tokens,
+      outputTokens: message.usage.output_tokens,
     },
   };
 }

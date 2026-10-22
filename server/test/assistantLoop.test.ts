@@ -1034,6 +1034,20 @@ describe("request state (FR-42)", () => {
   });
 });
 
+/** Every tool the model sees as strict, in definition order. */
+const ALL_STRICT = [
+  "update_request",
+  "geocode_place",
+  "search_garages",
+  "quote_street",
+  "build_itinerary",
+  "ask_user",
+  "book_garage",
+  "start_session",
+  "get_history",
+  "explain_decision",
+];
+
 describe("update_request, the tool (FR-42)", () => {
   const ctx = (): ToolContext => ({ userId: "u1", conversationId: "c1" });
 
@@ -1110,12 +1124,14 @@ describe("update_request, the tool (FR-42)", () => {
       return sum + Object.keys(s.properties).length - (s.required?.length ?? 0);
     }, 0);
     expect(optional).toBeLessThanOrEqual(24);
-    // Strict: the request's editor and the two searches that read it.
-    expect(strictTools.map((t) => t.name)).toEqual([
-      "update_request",
-      "search_garages",
-      "quote_street",
-    ]);
+    // Strict: every tool but propose_plan (D-1c), whose plan is a union
+    // (anyOf) the API's strict subset refuses — the structured-outputs
+    // experiment is what replaces that schema. The bounds the subset can't
+    // say (2–4 suggestions, 1–720 minutes, 1–90 days, ≤12 stops) are
+    // checked in code, as before.
+    for (const name of ALL_STRICT)
+      walk(TOOL_DEFINITIONS.find((t) => t.name === name)!.input_schema, name);
+    expect(strictTools.map((t) => t.name)).toEqual(ALL_STRICT);
   });
 
   test("an unreadable time bounces with the time format and the current time", async () => {

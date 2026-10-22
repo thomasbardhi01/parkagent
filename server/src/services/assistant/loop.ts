@@ -73,7 +73,11 @@ import { lastSearchIn, relaxationTapped } from "./search.js";
 
 const MAX_LOOP_ITERATIONS = 8;
 const MAX_STORED_TURNS = 20;
-const MAX_TOKENS = 1024;
+/** Room for the model's thinking (on by default on Claude Sonnet 5.5)
+ * and the tool calls after it; a cap hit mid-call is a wasted turn. */
+const MAX_TOKENS = 4096;
+/** What the user reads when the model's safeguards declined the turn. */
+const REFUSED_REPLY = "I can't help with that one. I can find you parking, though.";
 
 export const SYSTEM_PROMPT = `You are ParkAgent's parking assistant. You do exactly two jobs: find the user one parking spot, or plan the parking for a multi-stop day. Nothing else — for any other topic, reply with one short, friendly sentence that you only help with parking.
 
@@ -121,6 +125,7 @@ const PROPOSE_PLAN_REMINDER =
  * Sonnet 4.x $3/$15). Unknown models estimate at the priciest tier so the
  * cap errs toward refusing. */
 const MODEL_PRICES_PER_MTOK: { match: RegExp; inputUsd: number; outputUsd: number }[] = [
+  { match: /haiku-5-5/, inputUsd: 0.1, outputUsd: 0.5 },
   { match: /haiku/, inputUsd: 1, outputUsd: 5 },
   { match: /sonnet-5/, inputUsd: 2, outputUsd: 10 },
   { match: /sonnet/, inputUsd: 3, outputUsd: 15 },
@@ -434,6 +439,8 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
   let outputTokens = 0;
   let modelId = "unknown";
   let modelCalls = 0;
+  /** The safeguard category when the model declined the turn. */
+  let refused: string | null = null;
 
   // The accounting row is written in the `finally` below: a turn that
   // dies mid-flight (provider error, timeout) has still SPENT the tokens
@@ -458,6 +465,12 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
       if (response.model) modelId = response.model;
       inputTokens += response.usage?.inputTokens ?? 0;
       outputTokens += response.usage?.outputTokens ?? 0;
+      // Read before the content: a declined turn carries no answer, and
+      // nothing from it reaches the user or the next call.
+      if (response.stopReason === "refusal") {
+        refused = response.stopDetails?.category ?? "unknown";
+        break;
+      }
       for (const block of response.content) {
         if (block.type === "text") segments.push(block.text);
       }
@@ -541,6 +554,7 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
           ...(sideCalls.length > 0 ? { otherModelCalls: sideCalls } : {}),
           latencyMs: Date.now() - startedMs,
           estimatedCostUsd,
+          ...(refused !== null ? { refused } : {}),
           proposedPlan: plan !== null,
           ...(plan ? { planKind: plan.plan.kind } : {}),
           stateEdits: ctx.requestEdits ?? 0,
@@ -613,6 +627,7 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
   // live run): an empty reply left the card under a bare "…" bubble — the
   // one-liner states what the plan assumed.
   const assumed = body && "assumptions" in body ? body.assumptions : undefined;
+  if (refused !== null && said.length === 0) said = REFUSED_REPLY;
   const reply =
     said.length > 0 || !body
       ? said

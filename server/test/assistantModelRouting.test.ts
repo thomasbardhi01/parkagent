@@ -84,12 +84,14 @@ describe("model resolution and pricing", () => {
       "claude-haiku-4-5-20251001",
     );
     expect(resolveAssistantModels({}).assistant).toBe(DEFAULT_ASSISTANT_MODEL);
-    expect(DEFAULT_ASSISTANT_MODEL).toBe("claude-sonnet-5");
+    // The current Sonnet, no date suffix (founder amendment, D-1c).
+    expect(DEFAULT_ASSISTANT_MODEL).toBe("claude-sonnet-5-5");
   });
 
   test("explanations always route to EXPLAIN_MODEL (haiku default)", () => {
     expect(resolveAssistantModels({}).explain).toBe(DEFAULT_EXPLAIN_MODEL);
-    expect(DEFAULT_EXPLAIN_MODEL).toBe("claude-haiku-4-5-20251001");
+    // The current Haiku, no date suffix (founder amendment, D-1c).
+    expect(DEFAULT_EXPLAIN_MODEL).toBe("claude-haiku-5-5");
     expect(resolveAssistantModels({ EXPLAIN_MODEL: "claude-sonnet-5" }).explain).toBe(
       "claude-sonnet-5",
     );

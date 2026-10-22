@@ -617,7 +617,8 @@ test("a receipt above the amount the tap was shown is never recorded above it (t
     () => PARKED_AT,
   );
   // The provider reads back $3.80, $0.15 over the $3.65 prompt: within the
-  // $0.25 bound, so not set aside, but trimmed to what the driver agreed to.
+  // $0.25 bound, trimmed to what the driver agreed to, flagged for review,
+  // and the $0.15 counted by the caps.
   const receipt = { meterUsd: 3.65, feeUsd: 0.15, totalUsd: 3.8 };
   const t = makeApp({
     executor: {
@@ -634,9 +635,15 @@ test("a receipt above the amount the tap was shown is never recorded above it (t
   const session = t.state.sessions.at(-1)!;
   expect(Number(session.amountUsd) + Number(session.feeUsd)).toBe(3.65);
   expect(Number(session.feeUsd)).toBe(0.15);
+  expect(session.needsReview).toBe(true);
+  expect(Number(session.receiptExcessUsd)).toBe(0.15);
   const start = t.state.decisions.find((d) => d.kind === "session_start")!;
-  expect(start.rule).toBe("start_ok");
-  expect(start.outcome).toMatchObject({ providerReceipt: receipt, recordedTotalUsd: 3.65 });
+  expect(start.rule).toBe("receipt_mismatch");
+  expect(start.inputs).toMatchObject({
+    providerReceipt: receipt,
+    receiptBound: { shownTotalUsd: 3.65, boundUsd: 0.25 },
+  });
+  expect(start.outcome).toMatchObject({ recordedTotalUsd: 3.65, receiptExcessUsd: 0.15 });
 });
 
 test("a start that reached the provider and failed closes the park: no second attempt from it", async () => {

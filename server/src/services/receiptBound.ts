@@ -1,23 +1,32 @@
 /**
  * The receipt bound (D0 Q3, "Before DRY_RUN=false"): what a started session
- * records when the provider hands back its own receipt.
+ * records when the provider hands back its own receipt, and what the caps
+ * count on top of it.
  *
- * A receipt within RECEIPT_BOUND_USD of the price is recorded, so the
- * stored spend and the daily cap match the card (ParkBoston sells in
- * per-zone increments, so a receipt lands a few cents off the estimate).
- * It is never recorded above the amount the driver was shown: past that it
- * is trimmed to the shown amount.
+ * A receipt within RECEIPT_BOUND_USD of the price, at or below the amount
+ * the driver was shown, is recorded, so the stored spend and the daily cap
+ * match the card (ParkBoston sells in per-zone increments, so a receipt
+ * lands a few cents off the estimate).
  *
- * Anything else records the price and flags the session for review: a
- * receipt further off than the bound, or one that doesn't add up (not a
- * finite, non-negative amount, or meter + fee not its total). The price is
- * what the gate checked against the caps and what the tap agreed to, so a
- * provider that reads back something else never moves the ledger past
- * either. The receipt itself is kept on the decision for the audit.
+ * The session never records more than was shown. A receipt above it within
+ * the bound is trimmed to the shown amount; one further off than the bound,
+ * either way, records the price. Both flag the session for review, and the
+ * part of the receipt above what was recorded is kept as `excessUsd`, which
+ * the caps count on top of the session's amounts (moneyGate.ts spentToday
+ * and sessionSpentUsd). So a provider that charged more than the ledger
+ * shows makes the caps refuse sooner, never later.
+ *
+ * A receipt that doesn't add up (not a finite amount >= 0, or meter + fee
+ * not its total) records the price and is flagged; there is no amount to
+ * count on top of it. The receipt itself rides on the decision's inputs.
  */
 
 /** How far a receipt may sit from the price, either way. */
 export const RECEIPT_BOUND_USD = 0.25;
+
+/** The most `sessions.receipt_excess_usd` (DECIMAL(10,2)) holds: a larger
+ * receipt is counted as this much, which every cap refuses past. */
+export const RECEIPT_EXCESS_MAX_USD = 99_999_999.99;
 
 export interface Amounts {
   meterUsd: number;
@@ -26,8 +35,12 @@ export interface Amounts {
 }
 
 export interface Recorded extends Amounts {
-  /** The receipt disagreed: the price was recorded instead. */
-  mismatch: boolean;
+  /** The receipt was set aside or trimmed: a person should look, the
+   * decision says receipt_mismatch, and auto-extends stop. */
+  needsReview: boolean;
+  /** What the receipt says was charged beyond what is recorded, for the
+   * caps to count; null when nothing is. */
+  excessUsd: number | null;
 }
 
 const cents = (usd: number) => Math.round(usd * 100);
@@ -48,25 +61,35 @@ export function boundReceipt(
   receipt: Amounts | undefined,
   shownTotalUsd: number | undefined,
 ): Recorded {
-  const asPriced = (mismatch: boolean): Recorded => ({
-    meterUsd: price.meterUsd,
-    feeUsd: price.feeUsd,
-    totalUsd: price.totalUsd,
-    mismatch,
+  const recorded = (
+    amounts: Amounts,
+    needsReview: boolean,
+    excessCents: number | null = null,
+  ): Recorded => ({
+    meterUsd: amounts.meterUsd,
+    feeUsd: amounts.feeUsd,
+    totalUsd: amounts.totalUsd,
+    needsReview,
+    excessUsd:
+      excessCents !== null && excessCents > 0
+        ? Math.min(excessCents / 100, RECEIPT_EXCESS_MAX_USD)
+        : null,
   });
-  if (!receipt) return asPriced(false);
-  if (!wellFormed(receipt)) return asPriced(true);
-  if (Math.abs(cents(receipt.totalUsd) - cents(price.totalUsd)) > cents(RECEIPT_BOUND_USD)) {
-    return asPriced(true);
+  if (!receipt) return recorded(price, false);
+  if (!wellFormed(receipt)) return recorded(price, true);
+  const charged = cents(receipt.totalUsd);
+  if (Math.abs(charged - cents(price.totalUsd)) > cents(RECEIPT_BOUND_USD)) {
+    return recorded(price, true, charged - cents(price.totalUsd));
   }
   const shown = cents(shownTotalUsd ?? price.totalUsd);
-  if (cents(receipt.totalUsd) <= shown) {
-    const { meterUsd, feeUsd, totalUsd } = receipt;
-    return { meterUsd, feeUsd, totalUsd, mismatch: false };
-  }
+  if (charged <= shown) return recorded(receipt, false);
   // Within the bound but above what was shown: the fee stands as charged,
-  // and the meter takes the trim.
+  // the meter takes the trim, and the rest is counted on top.
   const meter = shown - cents(receipt.feeUsd);
-  if (meter < 0) return asPriced(true);
-  return { meterUsd: meter / 100, feeUsd: receipt.feeUsd, totalUsd: shown / 100, mismatch: false };
+  if (meter < 0) return recorded(price, true, charged - cents(price.totalUsd));
+  return recorded(
+    { meterUsd: meter / 100, feeUsd: receipt.feeUsd, totalUsd: shown / 100 },
+    true,
+    charged - shown,
+  );
 }

@@ -1003,17 +1003,40 @@ the card to the cent even when it differs from the pre-charge estimate
 (ParkBoston sells in per-zone duration increments — see the acceptance
 report, Job 2).
 
-**The receipt bound** (`services/receiptBound.ts`). A receipt is recorded
-only within **$0.25** of the price, either way, and never above the amount
-the driver was shown (the tap's amount, or the price for a start from the
-app): a receipt within the bound but above it is trimmed to it, the meter
-taking the trim. A receipt further off, or one that doesn't add up (not a
-finite amount ≥ 0, or meter + fee isn't its total), records the **price**
-instead: the decision's rule is `receipt_mismatch` (paid; not a decline),
-its outcome carries `providerReceipt`, `recordedTotalUsd` and
-`needsReview: true`, and the session's `needs_review` is set. The reply and
-the push carry what was recorded. `/admin/summary` counts those sessions
-per city (`sessionsNeedReview`) for a person to look at what was charged.
+**The receipt bound** (`services/receiptBound.ts`). A session never
+records more than the amount the driver was shown (the tap's amount, or
+the price for a start from the app). A receipt within **$0.25** of the
+price, either way, at or below that amount, is recorded as it is. Anything
+else is flagged:
+
+- within the bound but above the amount shown: recorded **at** the shown
+  amount (the fee as charged, the meter taking the trim);
+- further off than the bound, either way, or a fee above the shown amount:
+  the **price** is recorded;
+- a receipt that doesn't add up (not a finite amount ≥ 0, or meter + fee
+  isn't its total): the price, with nothing more counted.
+
+A flagged start's decision rule is `receipt_mismatch` (paid; not a
+decline). Its inputs carry `providerReceipt` and `receiptBound:
+{shownTotalUsd, boundUsd}`, and its outcome `recordedTotalUsd`,
+`needsReview: true` and `receiptExcessUsd`. The session's `needs_review` is
+set, and **`sessions.receipt_excess_usd`** holds what the receipt said
+beyond what was recorded (at most $99,999,999.99). **The caps count it**: a
+session's spend for the per-stop and daily caps is `amount_usd + fee_usd +
+receipt_excess_usd` (`sessionSpentUsd`, `spentToday` in
+`services/moneyGate.ts`), so a charge the ledger trimmed or set aside
+still counts, and a misread huge receipt makes the caps refuse, never
+allow. An excess counts on top of the session rather than as a
+`max(recorded, receipt)`, because an extension adds its own price to the
+session's amounts and a max would let it absorb the excess.
+
+The worker buys no time for a flagged session: the gate refuses an
+automatic extend `receipt_needs_review`, and the extend tick records
+`hold_needs_review`. The driver's own extend still runs, against the
+caps. The reply carries `needsReview` (true for a flagged start), so the
+app can ask the driver to check the receipt, and the reply and the push
+carry what was recorded. `/admin/summary` counts flagged sessions per city
+(`sessionsNeedReview`) for a person to look at what was charged.
 
 **Which card pays.** The session snapshots the user's Wallet source
 (`sessions.payment_source`): `provider_card` — the card saved on the

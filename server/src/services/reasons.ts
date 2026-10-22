@@ -196,8 +196,9 @@ const REASONS: Record<string, Spec> = {
   // ---- starting, extending and stopping a session
   start_ok: ["the session was started and paid", ["price", "stay", "zone", "dryRun"]],
   receipt_mismatch: [
-    "the session was started and paid, but the provider's receipt didn't match the price, so the price was recorded and the session was flagged for review",
+    "the session was started and paid, but the provider's receipt didn't match what you were shown, so the session was flagged for review and your limits count the receipt",
     ["price", "stay", "zone", "dryRun"],
+    "Check the receipt in your parking app.",
   ],
   started: ["it started", NONE],
   "session_start_walkaway:started": [
@@ -311,6 +312,15 @@ const REASONS: Record<string, Spec> = {
     RAISE_STOP,
   ],
   hold_daily_cap: ["more time would pass the daily cap", ["extendCost", "spentToday"], RAISE_DAY],
+  hold_needs_review: [
+    "the provider's receipt for this session didn't match what you were shown, so it won't add time on its own",
+    NONE,
+    "Extend it yourself if you need more time.",
+  ],
+  receipt_needs_review: [
+    "the provider's receipt for this session didn't match what you were shown, so time isn't added automatically",
+    NONE,
+  ],
   hold_gate_refused: [
     "the spending check refused more time (an amount it couldn't read), so it didn't extend",
     ["extendCost", "spentToday"],

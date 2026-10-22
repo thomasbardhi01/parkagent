@@ -31,7 +31,11 @@ import { principalFor } from "../services/principal.js";
 import { applyExtension, priceExtension } from "../services/sessions.js";
 import { fireShadowAuthorization } from "../services/shadow.js";
 import type { PlaceHoldResult, SettleReason, SettleResult } from "../services/wallet/holds.js";
-import { acceptedSignStay, holdAcceptedAfter } from "../services/signs/acceptedStay.js";
+import {
+  acceptedSignStay,
+  holdAcceptedAfter,
+  withAcceptedStay,
+} from "../services/signs/acceptedStay.js";
 import { tightenedMaxStay } from "../services/signs/signRules.js";
 import { placeHold, settleHold } from "../services/wallet/holds.js";
 import { parkAgentCardReadiness } from "../services/wallet/parkagentCard.js";
@@ -813,10 +817,12 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
 
     const policy = await policyFor(deps, user.id);
     const price = priceExtension(session, policy, body.minutes);
+    // Judged against a stay accepted from the signs (signs/acceptedStay.ts).
+    const judged = await withAcceptedStay(deps.db, session);
     const gate = await moneyGate(
       deps,
       req.principal!,
-      { kind: "extend", session, minutes: body.minutes, price, source: "manual" },
+      { kind: "extend", session: judged, minutes: body.minutes, price, source: "manual" },
       at,
     );
     if (refusedConsent(gate)) {
@@ -860,7 +866,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
     }
 
     const outcome = await applyExtension(
-      deps,
+      { ...deps, log: req.log },
       req.principal!,
       session,
       body.minutes,

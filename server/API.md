@@ -709,14 +709,25 @@ and extends no further. A start still at the provider (its session
 less than what it bought; and every extension, once it has bought, holds
 the session to it again, so an accept made while one was buying never
 leaves the stay under what was paid (`services/signs/acceptedStay.ts`).
-→ `{accepted: true, maxStayMinutes, sessionId, sessionMaxStayMinutes,
-paidMinutes}`: `maxStayMinutes` is the accepted offer; the other two say
-what the running session is held to and has bought (null with none
-running, or while its start is pending). A `sign_check` decision
-(`accepted_shorter_stay`) the first time, and again whenever an accept
-holds a session tighter; its outcome carries the same two numbers, or
+Those stored holds are bookkeeping: every extension (the manual route
+before and under its lock, and the worker) is judged against the
+shortest accepted stay itself, never below what's bought, so a hold that
+failed to write can't let a purchase past the sign.
+→ `{accepted: true, maxStayMinutes, acceptedMinutes, sessionId,
+sessionMaxStayMinutes, paidMinutes, holdPending}`: `maxStayMinutes` is
+this check's offer and `acceptedMinutes` the stay that binds the park
+(the shortest accepted, this check's or an earlier one's);
+`sessionMaxStayMinutes` and `paidMinutes` say what the running session is
+held to and has bought in all (null with none running, or while its start
+is pending); `holdPending` is true while the session that will take it
+hasn't yet (its start is at the provider, or its row lost every write). A
+`sign_check` decision (`accepted_shorter_stay`) the first time, and again
+whenever an accept holds a session tighter; its outcome carries
+`acceptedMinutes`, `previousMaxStayMinutes` and the same two numbers, or
 `pendingSession` while the start is pending. The start and the extension
-write their own (`appliedAt: "start"` / `"extend"`) when they hold it.
+write their own (`appliedAt: "start"` / `"extend"`, with
+`previousMaxStayMinutes`) when they change the stay, a raise to what was
+paid included.
 
 ### GET /admin/sign-checks
 

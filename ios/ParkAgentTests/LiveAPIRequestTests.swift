@@ -226,10 +226,12 @@ final class LiveAPIRequestTests: XCTestCase {
     }
 
     func testAnAcceptAnswerCarriesWhatTheSessionIsHeldTo() async throws {
-        StubURLProtocol.respond(json: #"{"accepted": true, "maxStayMinutes": 60, "sessionId": "s1", "sessionMaxStayMinutes": 90, "paidMinutes": 90}"#)
+        StubURLProtocol.respond(json: #"{"accepted": true, "maxStayMinutes": 60, "acceptedMinutes": 45, "sessionId": "s1", "sessionMaxStayMinutes": 90, "paidMinutes": 90, "holdPending": false}"#)
         let accepted = try await api.acceptSignStay(parkedEventId: "pe1", checkId: "c1")
         XCTAssertEqual(accepted.sessionMaxStayMinutes, 90)
         XCTAssertEqual(accepted.paidMinutes, 90)
+        XCTAssertEqual(accepted.acceptedMinutes, 45)
+        XCTAssertEqual(accepted.holdPending, false)
     }
 
     // MARK: - Timeouts, retries, idempotency keys

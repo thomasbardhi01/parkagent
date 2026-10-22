@@ -168,3 +168,32 @@ test("minutes_invalid under the lock: a manual extend is a 409 on the record, no
   expect(session.purchasedMinutes).toBe(90);
   expect(t.executorCalls.filter((c) => c.op === "extend")).toHaveLength(0);
 });
+
+test("the worker judges against a stay accepted from the signs, whatever the row's stored max stay (#302)", async () => {
+  const { t, extender, session } = extendable();
+  // A 60-minute stay accepted for this park, and a hold that never wrote:
+  // the row still says 120, with 90 bought.
+  session.parkedEventId = "pe-signs";
+  t.state.signChecks.push({
+    id: "sc1",
+    userId: "u1",
+    parkedEventId: "pe-signs",
+    createdAt: T("13:05"),
+    verdict: "stricter",
+    result: {},
+    ocrText: null,
+    textExpiresAt: T("13:05"),
+    photo: null,
+    photoMediaType: null,
+    photoExpiresAt: null,
+    offerMaxStayMinutes: 60,
+    acceptedAt: T("13:05"),
+  });
+  await extender.tick();
+  const tick = t.state.decisions.filter((d) => d.kind === "extend_tick").at(-1)!;
+  // Judged held at the 90 bought: no stay left, the driver is warned.
+  expect(tick.rule).toBe("warn_max_stay");
+  expect(tick.inputs).toMatchObject({ maxStayMinutes: 90, purchasedMinutes: 90 });
+  expect(session).toMatchObject({ purchasedMinutes: 90, extendCount: 0 });
+  expect(t.executorCalls.filter((c) => c.op === "extend")).toHaveLength(0);
+});

@@ -24,7 +24,7 @@ import { z } from "zod";
 import type { AppDeps } from "../app.js";
 import { requireAdmin } from "../app.js";
 import { readSigns } from "../services/capabilities/readSigns.js";
-import { holdToAcceptedStay } from "../services/signs/acceptedStay.js";
+import { acceptedSignStay, holdToAcceptedStay } from "../services/signs/acceptedStay.js";
 import { PARK_OPEN, PARK_TTL_MS } from "../services/pendingSession.js";
 import { principalFor } from "../services/principal.js";
 import { makeRateLimiter } from "../services/rateLimit.js";
@@ -208,8 +208,17 @@ export function registerSigns(app: FastifyInstance, deps: AppDeps): void {
     const session = await deps.db.session.findFirst({
       where: { userId, status: { in: ["pending", "active"] }, parkedEventId: id },
     });
-    const held =
+    const result =
       session?.status === "active" ? await holdToAcceptedStay(deps.db, session.id) : null;
+    // Every write lost to a purchase: the gate still judges against the
+    // accepted stay (withAcceptedStay), and the next purchase holds it.
+    if (result === "missed") {
+      req.log.warn(`signs: session ${session!.id}'s accepted stay lost every write (accept)`);
+    }
+    const held = result === "missed" ? null : result;
+    // The stay that binds the park: the shortest accepted, this one or an
+    // earlier one.
+    const binding = held?.acceptedMinutes ?? (await acceptedSignStay(deps.db, id)) ?? offer;
     // On the ledger the first time it's accepted, and whenever it held a
     // session tighter (a second tap after the session started).
     if (won.count > 0 || held?.tightened) {
@@ -220,28 +229,35 @@ export function registerSigns(app: FastifyInstance, deps: AppDeps): void {
           rule: "accepted_shorter_stay",
           outcome: {
             maxStayMinutes: offer,
+            acceptedMinutes: binding,
             tightenedSession: held?.tightened ? held.sessionId : null,
             ...(held
               ? {
+                  previousMaxStayMinutes: held.previousMaxStayMinutes,
                   sessionMaxStayMinutes: held.sessionMaxStayMinutes,
                   paidMinutes: held.paidMinutes,
                 }
               : {}),
             ...(session?.status === "pending" ? { pendingSession: session.id } : {}),
+            ...(result === "missed" ? { holdMissed: true } : {}),
           },
           userId,
           parkedEventId: id,
         },
       });
     }
-    // What the app says: the stay accepted, and what the running session
-    // is held to and has paid for (the floor), when there is one.
+    // What the app says: the stay this check offered, the one that binds
+    // the park, and what the running session is held to and has bought
+    // (the floor). holdPending: a session that will take it, but hasn't
+    // yet (its start is still at the provider, or its row was busy).
     return {
       accepted: true,
       maxStayMinutes: offer,
+      acceptedMinutes: binding,
       sessionId: session?.id ?? null,
       sessionMaxStayMinutes: held?.sessionMaxStayMinutes ?? null,
       paidMinutes: held?.paidMinutes ?? null,
+      holdPending: session?.status === "pending" || result === "missed",
     };
   });
 

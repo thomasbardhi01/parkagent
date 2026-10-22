@@ -80,6 +80,12 @@ struct SignAcceptResponse: Codable, Sendable, Equatable {
     /// bought, so it can be longer than the stay accepted. Nil with no
     /// running session, and from a server that doesn't say.
     var sessionMaxStayMinutes: Int? = nil
-    /// What that session has bought.
+    /// What that session has bought, in all, since it started.
     var paidMinutes: Int? = nil
+    /// The stay that binds the park: the shortest accepted, this check's
+    /// or an earlier one's. Nil from a server that doesn't say.
+    var acceptedMinutes: Int? = nil
+    /// A session that will take the stay but hasn't yet (its start is
+    /// still at the provider). Nil from a server that doesn't say.
+    var holdPending: Bool? = nil
 }

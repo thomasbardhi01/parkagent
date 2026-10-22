@@ -113,7 +113,9 @@ final class SignCheckTests: XCTestCase {
         let words = checks.map(SignCopy.detail) + checks.map { SignCopy.headline($0.verdict) }
             + [SignCopy.intro, SignCopy.advisory, SignCopy.accept(45), SignCopy.accepted(45),
                SignCopy.accepted(SignAcceptResponse(accepted: true, maxStayMinutes: 60, sessionId: "s1",
-                                                    sessionMaxStayMinutes: 90, paidMinutes: 90))]
+                                                    sessionMaxStayMinutes: 90, paidMinutes: 90)),
+               SignCopy.accepted(SignAcceptResponse(accepted: true, maxStayMinutes: 60, sessionId: "s1",
+                                                    acceptedMinutes: 60, holdPending: true))]
         for sentence in words {
             for claim in ["paid", "extended", "charged", "refund"] {
                 XCTAssertFalse(sentence.lowercased().contains(claim), "\"\(sentence)\" says \(claim)")
@@ -131,13 +133,28 @@ final class SignCheckTests: XCTestCase {
     }
 
     /// An accepted stay shorter than what the running session has already
-    /// bought: the words say the time on the meter and that no more is
-    /// added, never "won't keep this park past" a time already passed.
-    func testAnAcceptBelowWhatIsOnTheMeterSaysSo() {
+    /// bought: the words say what was bought and that no more is added,
+    /// never "won't keep this park past" a time already bought past.
+    func testAnAcceptBelowWhatIsBoughtSaysSo() {
         let floored = SignAcceptResponse(accepted: true, maxStayMinutes: 60, sessionId: "s1",
                                          sessionMaxStayMinutes: 90, paidMinutes: 90)
         XCTAssertEqual(SignCopy.accepted(floored),
-                       "Done. This park already has 1 hr 30 min on the meter, so ParkAgent won't add any more.")
+                       "Done. 1 hr 30 min is already bought for this park, so ParkAgent won't add any more.")
+        // Accepted while the start is still at the provider: no time added
+        // past the stay (whatever the start then buys).
+        let pending = SignAcceptResponse(accepted: true, maxStayMinutes: 60, sessionId: "s1",
+                                         acceptedMinutes: 60, holdPending: true)
+        XCTAssertEqual(SignCopy.accepted(pending), "Done. ParkAgent won't add time to this park past 1 hr.")
+        // An earlier, shorter accept binds the park: its stay is named.
+        let earlier = SignAcceptResponse(accepted: true, maxStayMinutes: 60, sessionId: nil,
+                                         acceptedMinutes: 45, holdPending: false)
+        XCTAssertEqual(SignCopy.accepted(earlier), SignCopy.accepted(45))
+        // Held at what it bought, above an earlier 45: bought, not 60.
+        let flooredEarlier = SignAcceptResponse(accepted: true, maxStayMinutes: 60, sessionId: "s1",
+                                                sessionMaxStayMinutes: 50, paidMinutes: 50,
+                                                acceptedMinutes: 45, holdPending: false)
+        XCTAssertEqual(SignCopy.accepted(flooredEarlier),
+                       "Done. 50 min is already bought for this park, so ParkAgent won't add any more.")
         // Held to the offer itself, or no session yet, or an older server
         // that doesn't say: the stay accepted.
         let held = SignAcceptResponse(accepted: true, maxStayMinutes: 60, sessionId: "s1",

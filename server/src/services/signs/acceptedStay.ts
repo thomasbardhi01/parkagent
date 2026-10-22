@@ -5,7 +5,7 @@
  * Only ever tightens: see tightenedMaxStay (signRules.ts).
  */
 
-import type { AppDb } from "../../db.js";
+import type { AppDb, SessionRow } from "../../db.js";
 import { tightenedMaxStay } from "./signRules.js";
 
 export async function acceptedSignStay(db: AppDb, parkedEventId: string): Promise<number | null> {
@@ -18,11 +18,31 @@ export async function acceptedSignStay(db: AppDb, parkedEventId: string): Promis
   return offers.length > 0 ? Math.min(...offers) : null;
 }
 
+/**
+ * The session as the money gate judges an extension of it: held to the
+ * shortest stay accepted for its park, never below what it has bought,
+ * whatever its stored max stay says. Every extension is judged on this
+ * (under the lock, in the worker's own arithmetic, and before the lock on
+ * the manual route), so a hold that failed to write can't let a purchase
+ * past the sign: the stored hold below is bookkeeping, for the row and the
+ * app.
+ */
+export async function withAcceptedStay(db: AppDb, session: SessionRow): Promise<SessionRow> {
+  if (!session.parkedEventId) return session;
+  const accepted = await acceptedSignStay(db, session.parkedEventId);
+  if (accepted === null) return session;
+  const current = session.maxStayMinutes ?? null;
+  const held = tightenedMaxStay(current, accepted, session.purchasedMinutes);
+  return held === current ? session : { ...session, maxStayMinutes: held };
+}
+
 /** What a running session is held to after holdToAcceptedStay. */
 export interface HeldStay {
   sessionId: string;
   /** The shortest stay accepted for its park. */
   acceptedMinutes: number;
+  /** What the session's max stay was before this call. */
+  previousMaxStayMinutes: number | null;
   /** What the session's max stay is now. */
   sessionMaxStayMinutes: number | null;
   /** What the session had bought: the floor. */
@@ -54,10 +74,14 @@ const HOLD_ATTEMPTS = 5;
  * Its own call here finds the stay below what it paid, and raises it to
  * exactly that: no more time can be bought (the gate holds purchased +
  * more to the stay), and the row says what was paid. Null when nothing
- * was accepted for the park, the session isn't active, or every attempt
- * missed.
+ * was accepted for the park or the session isn't active; "missed" when
+ * every attempt lost the compare-and-set (the gate still judges against
+ * the accepted stay: withAcceptedStay).
  */
-export async function holdToAcceptedStay(db: AppDb, sessionId: string): Promise<HeldStay | null> {
+export async function holdToAcceptedStay(
+  db: AppDb,
+  sessionId: string,
+): Promise<HeldStay | "missed" | null> {
   for (let attempt = 0; attempt < HOLD_ATTEMPTS; attempt += 1) {
     const session = await db.session.findUnique({ where: { id: sessionId } });
     if (!session || session.status !== "active" || !session.parkedEventId) return null;
@@ -71,6 +95,7 @@ export async function holdToAcceptedStay(db: AppDb, sessionId: string): Promise<
     const stay = {
       sessionId,
       acceptedMinutes: accepted,
+      previousMaxStayMinutes: current,
       sessionMaxStayMinutes: held,
       paidMinutes: session.purchasedMinutes,
     };
@@ -81,25 +106,38 @@ export async function holdToAcceptedStay(db: AppDb, sessionId: string): Promise<
     });
     if (won.count > 0) return { ...stay, tightened: true };
   }
-  return null;
+  return "missed";
+}
+
+/** What a hold's caller logs a failure through (Fastify's and the
+ * workers' loggers both take a message). */
+export interface HoldLog {
+  warn: (msg: string) => void;
 }
 
 /** holdToAcceptedStay after a purchase (a start's or an extension's),
- * on the ledger when it tightened. The provider has already charged, so it
- * never throws: a failure is logged, and the next purchase holds it again. */
+ * on the ledger when it changed the stay. The provider has already
+ * charged, so it never throws: a failure is logged, the next purchase holds
+ * it again, and the gate judges against the accepted stay meanwhile. */
 export async function holdAcceptedAfter(
   deps: { db: AppDb },
   sessionId: string,
   userId: string,
   parkedEventId: string,
   trigger: "start" | "extend",
-  log?: { warn: (obj: object, msg: string) => void },
+  log?: HoldLog,
 ): Promise<void> {
   try {
     const held = await holdToAcceptedStay(deps.db, sessionId);
-    if (held?.tightened) await recordHeldStay(deps.db, held, { userId, parkedEventId, trigger });
+    if (held === "missed") {
+      log?.warn(`signs: session ${sessionId}'s accepted stay lost every write (${trigger})`);
+    } else if (held?.tightened) {
+      await recordHeldStay(deps.db, held, { userId, parkedEventId, trigger });
+    }
   } catch (err) {
-    log?.warn({ err, sessionId, trigger }, "signs: couldn't hold the session to an accepted stay");
+    log?.warn(
+      `signs: couldn't hold session ${sessionId} to an accepted stay (${trigger}): ${String(err)}`,
+    );
   }
 }
 
@@ -118,6 +156,7 @@ async function recordHeldStay(
       outcome: {
         maxStayMinutes: held.acceptedMinutes,
         tightenedSession: held.sessionId,
+        previousMaxStayMinutes: held.previousMaxStayMinutes,
         sessionMaxStayMinutes: held.sessionMaxStayMinutes,
         paidMinutes: held.paidMinutes,
         appliedAt: where.trigger,

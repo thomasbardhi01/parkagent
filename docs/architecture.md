@@ -23,7 +23,8 @@ flowchart LR
     PS["pendingSession<br/>advanceWalk · settlePark · startParkSession"]
     GATE["moneyGate<br/>caps · max stay · dry run · link · as shown<br/>consent · phone away (under lock)"]
     EXT["applyExtension<br/>advisory lock · asks the gate again"]
-    AT["AssistantTools + loop<br/>2,586 lines · ToolContext"]
+    AT["AssistantTools (adapter) + loop<br/>execute · ToolContext"]
+    CAP["capabilities/*<br/>geocode · quoteStreet · searchGarages<br/>buildItinerary · proposePlan · confirmPlan"]
     POL["policyFor · spentToday"]
     EX["executorFor<br/>DryRunExecutor when dry run"]
     JOBS["Jobs<br/>extendTick · settle · janitors"]
@@ -48,8 +49,10 @@ flowchart LR
   PS --> GATE
   R2 --> GATE
   R3 --> AT
-  AT --> AN & AM & SH
-  AT --> GATE
+  AT --> AN
+  AT --> CAP
+  CAP --> AM & SH
+  CAP --> GATE
   AT -. "street: start_via_app" .-> PL
   JOBS -- "as job for the owner" --> GATE
   GATE --> EXT
@@ -137,7 +140,7 @@ flowchart LR
   classDef money stroke:#b42318,stroke-width:2.5px
   classDef planned stroke:#1d5fa8,stroke-width:2px,stroke-dasharray:5 4
   class GATE,EXE money
-  class C1,C2,C3,GROK,CL,SIRI planned
+  class GROK,CL,SIRI planned
 ```
 
 ## How it gets built

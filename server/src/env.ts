@@ -29,8 +29,6 @@
 
 import { createPrivateKey, createPublicKey } from "node:crypto";
 
-import { DEFAULT_EXPLAIN_MODEL } from "./services/assistant/modelClient.js";
-
 type Flag = "true" | "false";
 
 export interface Env {
@@ -128,10 +126,12 @@ export interface Env {
   ANTHROPIC_API_KEY: string | undefined;
   // Model routing (loop.ts resolveAssistantModels): ASSISTANT_MODEL runs
   // the tool loop (falls back to the legacy ANTHROPIC_MODEL, then
-  // claude-sonnet-5-5); EXPLAIN_MODEL phrases explain_decision output.
+  // claude-sonnet-5-5). EXPLAIN_MODEL turns on the model phrasing of
+  // "why" explanations (Issue M) with that model (claude-haiku-5-5); unset,
+  // every surface shows the deterministic template.
   ASSISTANT_MODEL: string | undefined;
   ANTHROPIC_MODEL: string | undefined;
-  EXPLAIN_MODEL: string;
+  EXPLAIN_MODEL: string | undefined;
   // Per-user daily cap on ESTIMATED model spend (USD). Defaults ON: a spend
   // control that a missing env var switches off is no control. A user over
   // the cap gets 429.
@@ -287,6 +287,7 @@ export const FEATURES = {
     what: "the nightly audit's model summary",
   },
   mcp_apps: { vars: ["MCP_APPS"], what: "the MCP Apps confirm card on /mcp" },
+  explanations: { vars: ["EXPLAIN_MODEL"], what: "model-phrased why explanations" },
 } as const satisfies Record<string, { vars: readonly (keyof Env)[]; what: string }>;
 
 export type FeatureId = keyof typeof FEATURES;
@@ -815,6 +816,18 @@ export function checkEnv(source: EnvSource, options: CheckOptions = {}): EnvRepo
     ? set("mcp_apps", "degraded", `MCP_APPS ${mcpApps.problem}`)
     : set("mcp_apps", mcpApps.value === "true" ? "on" : "off", "MCP_APPS is false");
 
+  // Off unless named: the template is every surface's answer, and the
+  // model only phrases it. A malformed id is a mistake (degraded); a good
+  // one without the assistant's key has nothing to call (off).
+  const explainBad = problemOf("EXPLAIN_MODEL", modelProblem);
+  const explainOn = !has("EXPLAIN_MODEL")
+    ? set("explanations", "off", "EXPLAIN_MODEL is not set: explanations are the template")
+    : explainBad
+      ? set("explanations", "degraded", `EXPLAIN_MODEL ${explainBad}`)
+      : !assistantOn
+        ? set("explanations", "off", "EXPLAIN_MODEL needs the assistant's ANTHROPIC_API_KEY")
+        : set("explanations", "on", "");
+
   // -------- the same key or secret under two names
   const p8s = P8_SLOTS.filter((s) => has(s.key) && !unchecked.has(s.key)).flatMap((slot) => {
     const inspected = inspectP8(raw(slot.key)!);
@@ -873,7 +886,7 @@ export function checkEnv(source: EnvSource, options: CheckOptions = {}): EnvRepo
   );
   const assistantModel = optionalText("ASSISTANT_MODEL", modelProblem);
   const anthropicModel = optionalText("ANTHROPIC_MODEL", modelProblem);
-  const explainModel = optionalText("EXPLAIN_MODEL", modelProblem) ?? DEFAULT_EXPLAIN_MODEL;
+  const explainModel = explainOn ? text("EXPLAIN_MODEL") : undefined;
 
   const env: Env = {
     DATABASE_URL: raw("DATABASE_URL") ?? "",

@@ -79,8 +79,9 @@ export interface ModelClient {
       /** Omitted for plain phrasing calls (explain_decision). */
       tools?: ToolDefinition[];
       maxTokens: number;
-      /** A JSON schema the reply's text must follow (structured output):
-       * the nightly audit's summary. Absent for every assistant call. */
+      /** A JSON schema the reply's text must follow (structured outputs,
+       * `output_config.format`): the nightly audit's summary and
+       * explain_decision's phrasing. Absent for every assistant turn. */
       outputSchema?: Record<string, unknown>;
     },
     onText?: (delta: string) => void,

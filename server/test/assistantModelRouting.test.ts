@@ -250,8 +250,15 @@ describe("explain_decision routes through EXPLAIN_MODEL", () => {
         explainCalls += 1;
         sawTools = args.tools !== undefined;
         expect(args.messages[0]!.content).toContain("Session start");
+        // The answer comes back in the strict schema (structured outputs).
+        expect(args.outputSchema).toMatchObject({ required: ["answer"] });
         return {
-          content: [{ type: "text", text: "You parked and it was paid automatically." }],
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ answer: "You parked and it was paid automatically." }),
+            },
+          ],
           stopReason: "end_turn",
           model: "claude-haiku-4-5-20251001",
         };

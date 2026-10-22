@@ -70,7 +70,7 @@ const MIN_CONFIDENCE = 0.4;
 /** The stay the comparison looks over when the zone has no max stay. */
 const DEFAULT_STAY_MINUTES = 120;
 
-const SYSTEM = `You read street parking signs in Boston and New York.
+const SYSTEM = `You read street parking signs in US cities.
 You are given the text a phone recognized on the signs at one parking spot, and sometimes a photo of them.
 Return what the signs say as rules, in the JSON schema you are given. One rule per restriction:
 - time_limit: a posted time limit ("2 HOUR PARKING"), limitMinutes in minutes.

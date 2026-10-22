@@ -206,7 +206,7 @@ export function makeExtender(deps: ExtenderDeps): Extender {
 
     // Where the driver is (FR-55), and the trend the cost model reads: both
     // the lifecycle's, from its park row and the session's newest fixes on
-    // the phone's measurement clock (fixCountsFor). No park row is
+    // their report clock (phonePosition, walkTrend). No park row is
     // `unknown`: nothing is bought for a session the walk rules never saw.
     let park = await deps.db.pendingPark.findUnique({ where: { sessionId: session.id } });
     // The belt (#246): however this park came to hold its session, the

@@ -615,12 +615,23 @@ export type StoredFix = Pick<LocationFixRow, "lat" | "lng" | "accuracyM" | "ts" 
  * `ts` now (LocationReporter). It is still reporting (#301 review). The
  * walk rules read `measuredAt` (fixCountsFor); this doesn't.
  */
-export function storedFixReported(since: Date, fix: StoredFix, at: Date): boolean {
+export function storedFixReported(
+  since: Date,
+  fix: StoredFix,
+  at: Date,
+  maxAgeMs: number = LIFECYCLE_FIX_MAX_AGE_MS,
+): boolean {
   return (
-    fix.ts.getTime() >= since.getTime() &&
-    Math.abs(at.getTime() - fix.ts.getTime()) <= LIFECYCLE_FIX_MAX_AGE_MS
+    fix.ts.getTime() >= since.getTime() && Math.abs(at.getTime() - fix.ts.getTime()) <= maxAgeMs
   );
 }
+
+/** The trend reads a longer window than "still reporting": a gap of a few
+ * minutes (a subway ride) between fixes that show a driver walking back
+ * must not throw away the walk back, or the cost model prices a return as
+ * unlikely and buys time for a driver almost at the car (#301 review). The
+ * same window the worker always read the trend over. */
+export const TREND_FIX_MAX_AGE_MS = 10 * 60_000;
 
 /**
  * Where the phone is relative to a running session's car: the one reader
@@ -684,7 +695,8 @@ export interface WalkTrend {
   distanceM: number | null;
   heading: Heading;
   walkEtaMin: number | null;
-  /** Of `fixes`, how many count (storedFixReported), and how many don't. */
+  /** Of `fixes`, how many the trend reads (sent since `since`, within
+   * TREND_FIX_MAX_AGE_MS), and how many it doesn't. */
   fixCount: number;
   staleFixCount: number;
 }
@@ -692,7 +704,8 @@ export interface WalkTrend {
 /**
  * The trend over a session's newest fixes (newest first, as stored), read
  * only from fixes that count: `since` is when the park was made (or the
- * session started, with no park), on the report clock (storedFixReported).
+ * session started, with no park), on the report clock, over
+ * TREND_FIX_MAX_AGE_MS.
  */
 export function walkTrend(
   car: { lat: number; lng: number } | null,
@@ -700,7 +713,7 @@ export function walkTrend(
   since: Date,
   at: Date,
 ): WalkTrend {
-  const counting = fixes.filter((f) => storedFixReported(since, f, at));
+  const counting = fixes.filter((f) => storedFixReported(since, f, at, TREND_FIX_MAX_AGE_MS));
   const distances =
     car === null
       ? []

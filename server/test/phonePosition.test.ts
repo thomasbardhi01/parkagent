@@ -15,7 +15,7 @@ import { expect, test } from "vitest";
 
 import type { PendingParkRow } from "../src/db.js";
 import { makeExtender } from "../src/jobs/extendTick.js";
-import { phonePosition } from "../src/services/pendingSession.js";
+import { phonePosition, walkTrend } from "../src/services/pendingSession.js";
 import type { FakeDbState } from "./helpers.js";
 import { API_KEY, HOURS_MON_SAT, makeTestApp, seedSession } from "./helpers.js";
 
@@ -145,6 +145,29 @@ test("walked away, then a fix 15 m from the car at 6 m/s (back in, pulling out):
   expect(session.extendCount).toBe(0);
 });
 
+test("one fix from a clock a day ahead isn't stored, so it can't silence the rest of the session: extended", async () => {
+  const { t, clock, extender, session, report, walkAway } = app("13:05");
+  await walkAway();
+  const sat = WALK.at(-1)!;
+  const ahead = new Date(clock.now.getTime() + 24 * 3_600_000).toISOString();
+  const res = await t.app.inject({
+    method: "POST",
+    url: "/location",
+    headers: HEADERS,
+    payload: { lat: sat.lat, lng: sat.lng, accuracy: 5, ts: ahead, measuredAt: ahead },
+  });
+  expect(res.statusCode).toBe(200);
+  expect(t.state.locationFixes.some((f) => f.ts.toISOString() === ahead)).toBe(false);
+  while (clock.now.getTime() < T("14:20").getTime()) {
+    clock.now = new Date(clock.now.getTime() + 60_000);
+    await report(sat);
+  }
+  clock.now = T("14:20");
+  await extender.tick();
+  expect(lastTick(t.state)).toMatchObject({ rule: "extend", inputs: { position: "away" } });
+  expect(session.extendCount).toBe(1);
+});
+
 // ---------------------------------------------------------------- the rule
 
 const AT = T("14:20");
@@ -208,6 +231,11 @@ test.each([
   ["car moved", park({ ...LEFT, carMovedAt: T("14:10") }), fix(400, 1), "moved"],
   ["left, newest too blurry to read", park(LEFT), fix(400, 1, 80), "unknown"],
   ["left, within 30 m but too blurry to read", park(LEFT), fix(20, 1, 80), "unknown"],
+  // Within 30 m with a usable fix, however blurry: a blurry pull-out holds.
+  ["left, 25 m ± 40 m (pulling out, blurry)", park(LEFT), fix(25, 1, 40), "at_car"],
+  ["left, 40 m (past the 30 m)", park(LEFT), fix(40, 1), "away"],
+  ["left, sent exactly five minutes ago", park(LEFT), fix(400, 5), "away"],
+  ["left, from a clock two minutes ahead", park(LEFT), fix(400, -2), "away"],
   // …and what differs from it, on purpose (each holds, and pushes
   // position_unknown once near expiry)
   ["no park row (a session the walk rules never saw)", null, fix(400, 1), "unknown"],
@@ -227,4 +255,16 @@ test.each([
   ],
 ] as const)("%s: %s", (_label, p, newest, expected) => {
   expect(phonePosition(p, newest, AT)).toBe(expected);
+});
+
+test("the trend reads fixes sent since the park, within ten minutes: one sent before the park doesn't count", () => {
+  const fixes = [fix(300, 1), fix(400, 3), fix(500, 4)];
+  // The park at 14:17: the two sent before it aren't read.
+  const trend = walkTrend(CAR, fixes, T("14:17"), AT);
+  expect(trend).toMatchObject({ fixCount: 2, staleFixCount: 1, heading: "toward" });
+  // …and since 13:00, all three, over the trend's ten minutes.
+  expect(walkTrend(CAR, [...fixes, fix(600, 11)], PARKED, AT)).toMatchObject({
+    fixCount: 3,
+    staleFixCount: 1,
+  });
 });

@@ -28,6 +28,7 @@ import type { AppDeps } from "../app.js";
 import type { PendingParkRow, SessionRow } from "../db.js";
 import type { FixRecord, ParkPrompt } from "../services/pendingSession.js";
 import {
+  LIFECYCLE_FIX_MAX_AGE_MS,
   MAX_WALK_MPS,
   PARK_OPEN,
   SAME_SPOT_M,
@@ -178,17 +179,23 @@ export function registerLocation(app: FastifyInstance, deps: AppDeps, sessions: 
   /** A running session: store the fix, and end the session if this fix
    * shows the phone back at its car. */
   async function forSession(session: SessionRow, body: Body, at: Date): Promise<Answer> {
-    await deps.db.locationFix.create({
-      data: {
-        sessionId: session.id,
-        userId: session.userId,
-        lat: body.lat,
-        lng: body.lng,
-        accuracyM: body.accuracy,
-        ts: new Date(body.ts),
-        measuredAt: body.measuredAt ? new Date(body.measuredAt) : new Date(body.ts),
-      },
-    });
+    // A fix sent by a clock more than LIFECYCLE_FIX_MAX_AGE_MS ahead isn't
+    // stored: kept, it would sort as the session's newest (by ts) for the
+    // rest of the session, and every later reading of where the phone is
+    // would be that one bad fix's (#301 review).
+    const skewedAhead = new Date(body.ts).getTime() - at.getTime() > LIFECYCLE_FIX_MAX_AGE_MS;
+    if (!skewedAhead)
+      await deps.db.locationFix.create({
+        data: {
+          sessionId: session.id,
+          userId: session.userId,
+          lat: body.lat,
+          lng: body.lng,
+          accuracyM: body.accuracy,
+          ts: new Date(body.ts),
+          measuredAt: body.measuredAt ? new Date(body.measuredAt) : new Date(body.ts),
+        },
+      });
     const answer = { sessionId: session.id };
     const park = await lifecycleOf(deps, session, at);
     // No car fix to measure from, or a park that already ended (a stop

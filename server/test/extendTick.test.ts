@@ -457,9 +457,9 @@ test("…and without a lifecycle record, even fresh fixes far from the car say n
 });
 
 test("a phone that left and whose newest fix is six minutes old: unknown, nothing bought, and the driver is told", async () => {
-  // Freshness is the lifecycle's clock (fixCountsFor): a fix measured more
-  // than five minutes ago says where the phone was. Once it was ten
-  // minutes on the reported ts.
+  // Still reporting is a fix sent within five minutes (it was ten). The
+  // trend still reads them, over its own ten minutes: they price the cost
+  // rule, never "away".
   const t = makeTickApp();
   const session = activeSession(t.state);
   await seedPark(t, session, { leftCarAt: T("13:02") });
@@ -473,10 +473,44 @@ test("a phone that left and whose newest fix is six minutes old: unknown, nothin
 
   expect(lastTick(t.state)).toMatchObject({
     rule: "hold_position_unknown",
-    inputs: { position: "unknown", fixCount: 0, staleFixCount: 3 },
+    inputs: { position: "unknown", fixCount: 3, staleFixCount: 0 },
   });
   expect(session.extendCount).toBe(0);
   expect(t.pushes.map((p) => p.push.extra)).toEqual([{ reason: "position_unknown" }]);
+});
+
+test("walking back after a gap with no fixes (a subway ride): the trend still reads the walk back, and nothing is bought", async () => {
+  // From 600 m until 14:14, nothing for five and a half minutes, then one
+  // fix at 300 m at 14:19:30. The older fixes show the walk back toward
+  // the car: a return is likely, and the time isn't bought ($1.80, 10 min
+  // left).
+  const t = makeTickApp();
+  const session = activeSession(t.state);
+  await seedPark(t, session, { leftCarAt: T("13:02") });
+  const at = (hhmmss: string) => new Date(`2026-01-05T${hhmmss}-05:00`);
+  for (const [m, ts] of [
+    [600, "14:13:00"],
+    [600, "14:14:00"],
+    [300, "14:19:30"],
+  ] as const) {
+    t.state.locationFixes.push({
+      id: `f${t.state.locationFixes.length + 1}`,
+      sessionId: session.id,
+      userId: "u1",
+      lat: CAR.lat + m / 111_320,
+      lng: CAR.lng,
+      accuracyM: 10,
+      ts: at(ts),
+    });
+  }
+
+  await t.extender.tick();
+
+  expect(lastTick(t.state)).toMatchObject({
+    rule: "hold_return_likely",
+    inputs: { position: "away", heading: "toward", fixCount: 3 },
+  });
+  expect(session.extendCount).toBe(0);
 });
 
 test("a heartbeat re-sending a measurement eight minutes old still says the phone is reporting: extended", async () => {

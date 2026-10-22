@@ -1754,7 +1754,11 @@ rules read `measuredAt`; this doesn't.
 
 The trend only prices the cost rule, so a driver walking back with time
 to spare is still held (`hold_return_likely`). It never says the phone is
-away. The fixes it reads count on the same clock.
+away. It reads the fixes sent since the park within the last 10 minutes,
+on the same report clock but a longer window, so a gap of a few minutes
+(a subway ride) doesn't throw away the walk back. A fix from a clock more
+than 5 minutes ahead isn't stored for the session at all: kept, it would
+sort as the newest for the rest of the session.
 `hold_at_car` and `hold_returned` buy nothing and push nothing.
 `hold_position_unknown`, `hold_back_at_car` and `hold_car_moved` buy
 nothing and push `session_expiring` once, with reason `position_unknown`,

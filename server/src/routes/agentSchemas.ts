@@ -63,6 +63,9 @@ export const explainSchema = z.strictObject({
     .string()
     .min(1)
     .max(64)
+    // A cuid: anything else never reaches the database (a NUL byte there
+    // is a Postgres error, not a not-found).
+    .regex(/^[A-Za-z0-9_-]+$/)
     .describe("The decisionId a confirm or a refusal answered with"),
 });
 

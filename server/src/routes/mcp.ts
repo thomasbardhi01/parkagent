@@ -32,7 +32,7 @@ import {
   ResourceNotFoundError,
   ResourceTemplate,
 } from "@modelcontextprotocol/server";
-import type { FastifyInstance } from "fastify";
+import type { FastifyBaseLogger, FastifyInstance } from "fastify";
 import { z } from "zod";
 
 import type { AppDeps } from "../app.js";
@@ -56,6 +56,9 @@ export const MCP_REQUESTS_PER_MINUTE = 600;
 /** A JSON-RPC server-range code for "over the key's budget", with
  * `{error: "rate_limited", retryAfterS}` as its data. */
 export const RATE_LIMITED_CODE = -32029;
+
+/** JSON-RPC's own "internal error": a resource read that threw. */
+const INTERNAL_ERROR_CODE = -32603;
 
 /** What a host may cache tools/list for: five minutes, this key only. */
 const TOOLS_LIST_CACHE = { ttlMs: 300_000, cacheScope: "private" } as const;
@@ -152,6 +155,7 @@ export function buildMcpServer(
   limit: AgentLimit,
   actions: AgentActions,
   principal: Principal,
+  log: FastifyBaseLogger,
 ): McpServer {
   const server = new McpServer(MCP_SERVER_INFO, {
     cacheHints: { "tools/list": TOOLS_LIST_CACHE },
@@ -169,6 +173,14 @@ export function buildMcpServer(
     return runAs(principal, work, traceOf(ctx));
   };
 
+  /** A call that threw (a Prisma error, say): logged here, answered as
+   * REST's 500. The SDK would hand the agent the error's own text, which
+   * names the query and the build's paths, and log nothing. */
+  const failed = (err: unknown, what: string): AgentAnswer => {
+    log.error({ err, mcp: what }, "mcp: call failed");
+    return { status: 500, body: { error: "internal" } };
+  };
+
   for (const tool of TOOLS) {
     const cardMeta = tool.name === "propose_plan" && deps.mcpApps;
     server.registerTool(
@@ -179,21 +191,25 @@ export function buildMcpServer(
         ...(cardMeta ? { _meta: { ui: { resourceUri: CONFIRM_CARD_URI } } } : {}),
       },
       async (args: unknown, ctx: ServerContext) => {
-        const answer = await call(ctx, () => tool.run(actions, principal, args as never));
-        const result = resultOf(answer);
-        if (!cardMeta || answer.status !== 200 || !answer.body["confirmToken"]) return result;
-        // The card shows the caps the confirm is checked against.
-        const policy = await policyFor(deps, principal.userId);
-        return {
-          ...result,
-          _meta: {
-            ui: { resourceUri: CONFIRM_CARD_URI },
-            "io.parkagent/caps": {
-              sessionCapUsd: policy.session_cap_usd,
-              dailyCapUsd: policy.daily_cap_usd,
+        try {
+          const answer = await call(ctx, () => tool.run(actions, principal, args as never));
+          const result = resultOf(answer);
+          if (!cardMeta || answer.status !== 200 || !answer.body["confirmToken"]) return result;
+          // The card shows the caps the confirm is checked against.
+          const policy = await policyFor(deps, principal.userId);
+          return {
+            ...result,
+            _meta: {
+              ui: { resourceUri: CONFIRM_CARD_URI },
+              "io.parkagent/caps": {
+                sessionCapUsd: policy.session_cap_usd,
+                dailyCapUsd: policy.daily_cap_usd,
+              },
             },
-          },
-        };
+          };
+        } catch (err) {
+          return resultOf(failed(err, tool.name));
+        }
       },
     );
   }
@@ -209,7 +225,13 @@ export function buildMcpServer(
       { mimeType: "application/json" },
       async (uri, variables, ctx) => {
         const id = String(variables["id"] ?? "");
-        const answer = await call(ctx, () => read(principal, id));
+        let answer: AgentAnswer;
+        try {
+          answer = await call(ctx, () => read(principal, id));
+        } catch (err) {
+          failed(err, name);
+          throw new ProtocolError(INTERNAL_ERROR_CODE, "internal");
+        }
         if (answer.status === 429) {
           // Over the key's budget: said as such, not as a missing resource.
           throw new ProtocolError(RATE_LIMITED_CODE, "rate_limited", answer.body);
@@ -247,7 +269,7 @@ export function registerMcp(
   actions: AgentActions,
 ): void {
   const handler = createMcpHandler(
-    ({ authInfo }) => buildMcpServer(deps, limit, actions, principalOf(authInfo?.extra)),
+    ({ authInfo }) => buildMcpServer(deps, limit, actions, principalOf(authInfo?.extra), app.log),
     {
       legacy: "stateless",
       // subscriptions/listen is refused before the SDK (below); this only

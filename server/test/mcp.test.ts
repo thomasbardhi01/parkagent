@@ -11,9 +11,9 @@ import { readFileSync } from "node:fs";
 
 import { describe, expect, test, vi } from "vitest";
 
-import { MCP_TOOLS } from "../src/routes/mcp.js";
 import { CONFIRM_CARD_MIME, CONFIRM_CARD_URI } from "../src/routes/mcpConfirmCard.js";
 import type { GeocoderProvider } from "../src/services/assistant/geocoder.js";
+import type { ModelClient } from "../src/services/assistant/modelClient.js";
 import { signAccessToken } from "../src/services/authTokens.js";
 import { planHashOf } from "../src/services/mandates.js";
 import { isAgentSurface } from "../src/services/principal.js";
@@ -49,6 +49,16 @@ const geocoder: GeocoderProvider = {
 const REQUEST = { place: "Newbury Street", durationMinutes: 60, kinds: ["street"] };
 const TRACEPARENT = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
 const MODERN = "2026-07-28";
+/** tools/list, in order: written out, not read from the list it checks. */
+const TOOL_NAMES = [
+  "geocode_place",
+  "quote_street",
+  "search_garages",
+  "build_itinerary",
+  "propose_plan",
+  "confirm_plan",
+  "explain_decision",
+];
 
 /** The per-request envelope a 2026-07-28 client puts on every request. */
 const envelope = (extra: Record<string, unknown> = {}) => ({
@@ -74,12 +84,14 @@ async function setup(
     mcpApps?: boolean;
     policy?: object;
     garage?: Parameters<typeof makeTestApp>[0]["garage"];
+    explainModel?: ModelClient;
   } = {},
 ) {
   const t = makeTestApp({
     candidates: [BOYLSTON_BOS],
     geocoder,
     now: () => NOW,
+    ...(opts.explainModel ? { explainModel: opts.explainModel } : {}),
     ...(opts.mcpApps !== undefined ? { mcpApps: opts.mcpApps } : {}),
     ...(opts.policy ? { policy: opts.policy } : {}),
     ...(opts.garage ? { garage: opts.garage } : {}),
@@ -149,6 +161,19 @@ async function setup(
 
 type Setup = Awaited<ReturnType<typeof setup>>;
 
+/** A session-cap refusal on the ledger, the user's; its id. */
+const seedDecision = (t: Setup["t"], userId: string) => {
+  t.state.decisions.push({
+    kind: "session_start",
+    rule: "session_cap_exceeded",
+    inputs: { quote: { totalUsd: 5.4 }, sessionCapUsd: 5 },
+    outcome: { allowed: false },
+    userId,
+    createdAt: NOW,
+  });
+  return `d${t.state.decisions.length}`;
+};
+
 const proposeOver = async (tool: Setup["tool"]) => {
   const result = await tool("propose_plan", { request: REQUEST });
   expect(result.isError, JSON.stringify(result)).toBeFalsy();
@@ -179,16 +204,7 @@ describe("discovery", () => {
     const { rpc } = await setup();
     const { result } = await rpc("tools/list");
     const tools = result!["tools"] as { name: string; description: string; _meta?: object }[];
-    expect(tools.map((t) => t.name)).toEqual(MCP_TOOLS.map((t) => t.name));
-    expect(tools.map((t) => t.name)).toEqual([
-      "geocode_place",
-      "quote_street",
-      "search_garages",
-      "build_itinerary",
-      "propose_plan",
-      "confirm_plan",
-      "explain_decision",
-    ]);
+    expect(tools.map((t) => t.name)).toEqual(TOOL_NAMES);
     expect(result).toMatchObject({ ttlMs: 300_000, cacheScope: "private", resultType: "complete" });
     for (const name of ["propose_plan", "confirm_plan"]) {
       const description = tools.find((t) => t.name === name)!.description;
@@ -296,36 +312,66 @@ describe("the tools, under dry run", () => {
 
   test("explain_decision: the person's own decision, as REST's why answers it; another's is not there", async () => {
     const { t, key, tool } = await setup();
-    const seed = (userId: string) => {
-      t.state.decisions.push({
-        kind: "session_start",
-        rule: "session_cap_exceeded",
-        inputs: { quote: { totalUsd: 5.4 }, sessionCapUsd: 5 },
-        outcome: { allowed: false },
-        userId,
-        createdAt: NOW,
-      });
-      return `d${t.state.decisions.length}`;
-    };
-    const mine = seed("u2");
-    const theirs = seed("u1");
+    const mine = seedDecision(t, "u2");
+    const theirs = seedDecision(t, "u1");
     const why = await tool("explain_decision", { decisionId: mine });
     expect(why.isError, JSON.stringify(why)).toBeFalsy();
-    expect(why.structuredContent).toMatchObject({
+    // The whole body, written out: REST's why is the same call, so
+    // comparing the two alone could never fail.
+    const body = {
       decisionId: mine,
+      kind: "session_start",
       rule: "session_cap_exceeded",
+      reason: {
+        subject: "Session start",
+        what: "the price would pass the per-stop cap",
+        because: [
+          { name: "price", label: "the price", value: "$5.40" },
+          { name: "sessionCap", label: "the per-stop cap", value: "$5.00" },
+        ],
+        youCan: "You can raise your per-stop cap in Limits.",
+      },
+      text: `Session start: The price would pass the per-stop cap (the price was $5.40; the per-stop cap was $5.00). You can raise your per-stop cap in Limits. (2026-01-05 19:00 UTC; decision ${mine} has the full record.)`,
       phrased: false,
-      reason: { because: [{ name: "price", value: "$5.40" }, { name: "sessionCap" }] },
-    });
+    };
+    expect(why.structuredContent).toEqual(body);
     const rest = await t.app.inject({
       method: "GET",
       url: `/agent/decisions/${mine}/why`,
       headers: { authorization: `Bearer ${key}` },
     });
-    expect(why.structuredContent).toEqual(rest.json());
+    expect(rest.json()).toEqual(body);
     const other = await tool("explain_decision", { decisionId: theirs });
     expect(other.isError).toBe(true);
     expect(other.structuredContent).toEqual({ error: "decision_not_found" });
+  });
+
+  test("a call that throws is logged and answers internal, never the error's own text", async () => {
+    const { t, tool } = await setup();
+    const mine = seedDecision(t, "u2");
+    vi.spyOn(t.deps.db.decision, "findUnique").mockRejectedValue(
+      new Error(
+        "Invalid `prisma.decision.findUnique()` invocation in /app/server/dist/services/capabilities/explainDecision.js",
+      ),
+    );
+    const logged = vi.spyOn(t.app.log, "error");
+    const out = await tool("explain_decision", { decisionId: mine });
+    expect(out.isError).toBe(true);
+    expect(out.structuredContent).toEqual({ error: "internal" });
+    expect(JSON.stringify(out)).not.toMatch(/prisma/i);
+    expect(logged).toHaveBeenCalledTimes(1);
+  });
+
+  test("a decisionId that isn't an id is refused before the database", async () => {
+    const { t, rpc } = await setup();
+    const read = vi.spyOn(t.deps.db.decision, "findUnique");
+    const out = await rpc(
+      "tools/call",
+      { name: "explain_decision", arguments: { decisionId: "\u0000" } },
+      "explain_decision",
+    );
+    expect(out.error ?? out.result?.isError, JSON.stringify(out)).toBeTruthy();
+    expect(read).not.toHaveBeenCalled();
   });
 });
 
@@ -427,9 +473,12 @@ describe("refusals are tool errors with REST's codes", () => {
     expect(errorOf(result)).toBe("scope_required");
   });
 
-  test("a confirm-only key can't ask why: scope_required", async () => {
-    const s = await setup({ scopes: ["confirm"] });
-    expect(errorOf(await s.tool("explain_decision", { decisionId: "d1" }))).toBe("scope_required");
+  test("a confirm-only key can't ask why: scope_required, before any model call", async () => {
+    const create = vi.fn<ModelClient["create"]>();
+    const s = await setup({ scopes: ["confirm"], explainModel: { create } });
+    const mine = seedDecision(s.t, "u2");
+    expect(errorOf(await s.tool("explain_decision", { decisionId: mine }))).toBe("scope_required");
+    expect(create).not.toHaveBeenCalled();
   });
 
   test("one budget per key across REST and MCP: rate_limited", async () => {
@@ -612,7 +661,7 @@ describe("a 2025-era client", () => {
       payload: { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} },
     });
     const tools = message(listed.body).result!["tools"] as { name: string }[];
-    expect(tools.map((x) => x.name)).toEqual(MCP_TOOLS.map((x) => x.name));
+    expect(tools.map((x) => x.name)).toEqual(TOOL_NAMES);
     const called = await t.app.inject({
       method: "POST",
       url: "/mcp",

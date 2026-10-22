@@ -43,6 +43,7 @@ struct UnconfiguredAPI: APIClient {
     func extendSession(sessionId: String, minutes: Int) async throws -> SessionExtendResponse { throw failure }
     func reportLocation(_ report: LocationReport) async throws { throw failure }
     func registerDevice(_ registration: DeviceRegistration) async throws { throw failure }
+    func unregisterDevice(token: String) async throws { throw failure }
     func limits() async throws -> UserLimitsResponse { throw failure }
     func updateLimits(_ limits: SpendingLimits) async throws -> UserLimitsResponse { throw failure }
 

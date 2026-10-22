@@ -46,6 +46,9 @@ final class PushManager: NSObject, UNUserNotificationCenterDelegate {
 
     private var api: (any APIClient)?
     private var pendingToken: String?
+    /// This launch's APNs token, once iOS has handed it over: what
+    /// sign-out releases (DELETE /device).
+    private(set) var currentToken: String?
     /// A tap that arrived before AppModel wired the handlers above (a cold
     /// launch from the notification); replayed once they are.
     private var pendingOpen: (type: String, provider: String?, deepLink: String?)?
@@ -84,6 +87,7 @@ final class PushManager: NSObject, UNUserNotificationCenterDelegate {
     /// Called by the AppDelegate with the raw APNs token.
     func deviceTokenReceived(_ tokenData: Data) {
         let token = tokenData.map { String(format: "%02x", $0) }.joined()
+        currentToken = token
         if api == nil {
             pendingToken = token
         } else {

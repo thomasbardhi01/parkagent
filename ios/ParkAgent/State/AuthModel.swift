@@ -136,9 +136,19 @@ final class AuthModel {
 
     // MARK: - Session lifecycle
 
-    /// Sign-out: tell the server to kill this refresh family, then drop
-    /// every local credential and the state that belonged to the account.
+    /// This phone's push token (tests set their own).
+    @ObservationIgnored var pushToken: () -> String? = { PushManager.shared.currentToken }
+
+    /// Sign-out: release this phone's push token (signed in still: the
+    /// call needs the account), tell the server to kill this refresh
+    /// family, then drop every local credential and the state that
+    /// belonged to the account. Without the release, the account's pushes
+    /// (payments, reconnects) kept reaching a phone nobody was signed in on.
     func signOut() async {
+        if let token = pushToken() {
+            // Best effort, as below.
+            try? await api.unregisterDevice(token: token)
+        }
         let refreshToken = store.refreshToken
         if let refreshToken {
             // Best effort — a dead network must not trap anyone signed in.

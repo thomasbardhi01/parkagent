@@ -59,7 +59,7 @@ started at 11:55 ET). "—" means the FR has no live test.
 | FR-12 | Auto-pay rate ceiling | nightly + unit | ✅ passed | `server/fr/10-parked-nyc.fr.test.ts`, `server/test/parked.test.ts` |
 | FR-13 | Start through the executor | nightly + unit + device-manual | ✅ passed | `server/fr/30-session-providers.fr.test.ts`, `server/test/session.test.ts`, `server/test/bostonSession.test.ts`, `executor/test/fixtures.test.ts`, `executor/test/parse.test.ts`, `executor/test/passportParse.test.ts`; paid: acceptance report Part B (txn 831908580) |
 | FR-14 | Extend continues the ladder | unit + device-manual | — | `server/test/session.test.ts`, `executor/test/passportParse.test.ts`; paid: acceptance report (txn 831997285) |
-| FR-15 | Stop (incl. no-early-stop zones) | unit + device-manual | — | `server/test/session.test.ts`, `executor/test/passportParse.test.ts`, `executor/test/sessionScreen.dom.test.ts`; walked live 2026-09-23 |
+| FR-15 | Stop (incl. no-early-stop zones) | unit + device-manual | — | `server/test/session.test.ts`, `executor/test/passportParse.test.ts` (`session-active--stop-disabled.html`); walked live 2026-09-23 |
 | FR-16 | Auto-extend decisions | unit | — | `server/test/extendTick.test.ts`, `server/test/adversarial.test.ts` |
 | FR-17 | Provider link (per-user, sealed, background job) | nightly + unit | ✅ passed | `server/fr/30-session-providers.fr.test.ts`, `server/test/providers.test.ts`, `server/test/linkJobs.test.ts`, `server/test/linkWorker.test.ts`, `server/test/registry.test.ts` |
 | FR-18 | Link expiry → relink push | unit | — | `server/test/executorProvider.test.ts`, `server/test/providers.test.ts` |
@@ -371,9 +371,10 @@ time is non-refundable, no Stop button rendered) returns
 `stopNotSupported` — no stop, no refund, no failure. **Accepted when**
 both the stop and the not-supported paths are pinned.
 
-Evidence: `session.test.ts`, `executor/test/sessionScreen.dom.test.ts`
-(`session-active--stop-disabled.html` fixture), `passportParse.test.ts`;
-walked live 2026-09-23 (acceptance report, extend/stop follow-up).
+Evidence: `session.test.ts`, `executor/test/passportParse.test.ts`
+(the `session-active--stop-disabled.html` fixture: no Stop button, so
+`stopNotSupported`); walked live 2026-09-23 (acceptance report,
+extend/stop follow-up).
 
 ### FR-16 — Auto-extend decisions
 

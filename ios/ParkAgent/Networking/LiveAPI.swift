@@ -320,6 +320,14 @@ struct LiveAPI: APIClient {
         let _: Ignored = try await send("device", method: "POST", body: registration)
     }
 
+    func unregisterDevice(token: String) async throws {
+        struct Ignored: Decodable {}
+        // Unkeyed, so tried once: sign-out is best effort, and a black-hole
+        // network must not hold it for the keyed retry budget. A second
+        // release of the same token is only a 404.
+        let _: Ignored = try await send("device", method: "DELETE", body: ["token": token], keyed: false)
+    }
+
     func limits() async throws -> UserLimitsResponse {
         try await send("me/limits")
     }
@@ -746,7 +754,8 @@ struct LiveAPI: APIClient {
     /// Not keyed, so never retried: sign-in calls (no user yet for the
     /// server to hold a key against; Apple's code and an email code are
     /// single-use) and `keyed: false` calls whose answer is a secret the
-    /// server won't store (a card reveal, a Stripe client secret).
+    /// server won't store (a card reveal, a Stripe client secret), or that
+    /// are best effort and tried once (the push-token release at sign-out).
     private func send<Response: Decodable>(
         _ path: String,
         query: [URLQueryItem] = [],

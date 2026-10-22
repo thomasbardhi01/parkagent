@@ -49,6 +49,7 @@ class HangingAPI: APIClient, @unchecked Sendable {
     func extendSession(sessionId: String, minutes: Int) async throws -> SessionExtendResponse { try await hang() }
     func reportLocation(_ report: LocationReport) async throws { try await hang() as Void }
     func registerDevice(_ registration: DeviceRegistration) async throws { try await hang() as Void }
+    func unregisterDevice(token: String) async throws { try await hang() as Void }
     func limits() async throws -> UserLimitsResponse { try await hang() }
     func updateLimits(_ limits: SpendingLimits) async throws -> UserLimitsResponse { try await hang() }
     func wallet() async throws -> WalletResponse { try await hang() }

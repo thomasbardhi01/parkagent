@@ -34,7 +34,7 @@ under `.claude/worktrees/`, which is gitignored. Remove them, and any
 `~/Documents/pa-*` worktree, once their branch has merged.
 
 ## Layout
-Read docs/feature-map.md before exploring; update the row when you change a feature.
+Read docs/architecture.md and docs/feature-map.md before exploring; update both when you change a flow, and the feature-map row when you change a feature.
 
 - data/      Python scripts that fetch NYC/Boston open data and build zone GeoJSON,
              and garage and lot footprints from OSM (the `garages` table, FR-49)

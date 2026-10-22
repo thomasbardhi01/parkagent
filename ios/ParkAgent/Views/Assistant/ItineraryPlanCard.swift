@@ -159,8 +159,18 @@ struct ItineraryPlanCard: View {
 
     /// Why Sign off is off, in plain words.
     private var overCapReason: String {
-        let cap = Format.money(lastPrice?.capUsd ?? plan.capUsd)
-        if let spent = lastPrice?.spentTodayUsd, spent > 0 {
+        Self.overCapReason(capUsd: plan.capUsd, price: lastPrice)
+    }
+
+    /// Why Sign off is off, from the server's latest price (nil before any
+    /// edit). A price whose check couldn't read today's spend says that,
+    /// never that the day goes over the limit.
+    static func overCapReason(capUsd: Double, price: ItineraryPriceResponse?) -> String {
+        let cap = Format.money(price?.capUsd ?? capUsd)
+        if let price, price.spentTodayUsd == nil {
+            return "ParkAgent couldn't check this day against your \(cap) daily limit. Change a stop to price it again."
+        }
+        if let spent = price?.spentTodayUsd, spent > 0 {
             return "With \(Format.money(spent)) already spent today, this day goes over your \(cap) daily limit. Shorten or drop a stop to sign off."
         }
         return "This day goes over your \(cap) daily limit. Shorten or drop a stop to sign off."

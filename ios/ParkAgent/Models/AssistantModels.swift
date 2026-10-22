@@ -419,8 +419,11 @@ struct ItineraryPriceResponse: Decodable, Sendable {
     let stops: [ItineraryStop]
     let totalUsd: Double
     let capUsd: Double
-    let spentTodayUsd: Double
-    let remainingUsd: Double
+    /// Today's spend as the server's check read it; nil when the check
+    /// refused before reading it (an amount it couldn't judge, #274).
+    let spentTodayUsd: Double?
+    /// What's left of the daily limit; nil when today's spend is.
+    let remainingUsd: Double?
     let fitsCap: Bool
 }
 

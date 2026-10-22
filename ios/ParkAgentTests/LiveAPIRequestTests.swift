@@ -1087,6 +1087,35 @@ final class LiveAPIRequestTests: XCTestCase {
         XCTAssertEqual(stops.first?["arrival"] as? String, "2026-01-05T09:00:00-05:00")
     }
 
+    /// #276: a price whose check couldn't read today's spend (#274) answers
+    /// it, and the room left, as null. It decodes, and the card says it
+    /// couldn't check the day, never that the day goes over the limit.
+    @MainActor
+    func testAnItineraryPriceWithoutTodaysSpendDecodesAndSaysSo() async throws {
+        StubURLProtocol.respond(json: #"""
+        {"planId":"plan1","stops":[{"id":"s1","label":"Coffee","address":"1 Main St","lat":40.77,"lng":-73.92,"arrival":"2026-01-05T10:00:00-05:00","durationMinutes":90,"choice":"street","costUsd":30.15,"zoneId":"nyc-417371"}],"totalUsd":30.15,"capUsd":60,"spentTodayUsd":null,"remainingUsd":null,"fitsCap":false}
+        """#)
+        let stop = ItineraryStop(
+            id: "s1", label: "Coffee", address: "1 Main St", lat: 40.77, lng: -73.92,
+            arrival: "2026-01-05T10:00:00-05:00", durationMinutes: 90, choice: "street",
+            costUsd: 5, zoneId: "nyc-417371", garageOptionId: nil, deepLink: nil,
+            sessionId: nil, paymentSource: nil, garageLinkPushedAt: nil
+        )
+        let priced = try await api.priceItinerary(planId: "plan1", stops: [stop])
+        XCTAssertNil(priced.spentTodayUsd)
+        XCTAssertNil(priced.remainingUsd)
+        XCTAssertFalse(priced.fitsCap)
+        let reason = ItineraryPlanCard.overCapReason(capUsd: 60, price: priced)
+        XCTAssertEqual(reason, "ParkAgent couldn't check this day against your $60.00 daily limit. Change a stop to price it again.")
+        XCTAssertFalse(reason.contains("goes over"), reason)
+        // Control: a read spend still says how much went before the day.
+        let over = try JSONDecoder().decode(ItineraryPriceResponse.self, from: Data(#"""
+        {"planId":"plan1","stops":[],"totalUsd":30,"capUsd":60,"spentTodayUsd":40,"remainingUsd":20,"fitsCap":false}
+        """#.utf8))
+        XCTAssertEqual(ItineraryPlanCard.overCapReason(capUsd: 60, price: over),
+                       "With $40.00 already spent today, this day goes over your $60.00 daily limit. Shorten or drop a stop to sign off.")
+    }
+
     /// #131: the card's live price is the server's. A body captured from
     /// the real route (server test app, a lengthened stop and a cleared
     /// time), decoded as the app sees it; the card's stops go up as sent.

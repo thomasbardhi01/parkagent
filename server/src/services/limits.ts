@@ -49,12 +49,20 @@ export interface LimitsView {
 
 const cents = (usd: number) => Math.round(usd * 100) / 100;
 
+/** What the user saved. A value that isn't a finite number >= 0 is no
+ * value at all, so the operator's ceiling stands: Postgres numeric holds
+ * 'NaN', `Number()` of it is NaN, and a NaN cap would pass every
+ * comparison against it (the money gate refuses one too). */
 function savedOf(row: UserLimitsRow | null): LimitsView["saved"] {
-  const num = (value: unknown) => (value === null || value === undefined ? null : Number(value));
+  const num = (value: unknown) => {
+    if (value === null || value === undefined) return null;
+    const n = Number(value);
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  };
   return {
     sessionCapUsd: num(row?.sessionCapUsd),
     dailyCapUsd: num(row?.dailyCapUsd),
-    defaultStayMinutes: row?.defaultStayMinutes ?? null,
+    defaultStayMinutes: num(row?.defaultStayMinutes),
   };
 }
 

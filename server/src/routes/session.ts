@@ -409,7 +409,11 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
         leg: "start",
         quoteUsd: price.totalUsd,
         // The hold may not exceed what the caps still allow.
-        capRoomUsd: Math.min(policy.session_cap_usd, policy.daily_cap_usd - spentTodayUsd),
+        // A start the gate allowed has read today's spend; unread, no room.
+        capRoomUsd: Math.min(
+          policy.session_cap_usd,
+          policy.daily_cap_usd - (spentTodayUsd ?? policy.daily_cap_usd),
+        ),
       });
       if (!hold.ok) {
         const code = hold.reason === "declined" ? "card_declined" : hold.reason;
@@ -854,7 +858,9 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
           kind: "session_extend",
           inputs: {
             ...decisionInputs,
-            spentTodayUsd: outcome.spentTodayUsd ?? spentTodayUsd,
+            // What the gate read under the lock; null when it refused first.
+            spentTodayUsd:
+              outcome.spentTodayUsd !== undefined ? outcome.spentTodayUsd : spentTodayUsd,
             underLock: true,
           },
           rule: outcome.code,

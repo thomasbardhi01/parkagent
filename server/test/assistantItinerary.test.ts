@@ -99,6 +99,22 @@ describe("sign-off", () => {
     expect(res.json()).toMatchObject({ error: "over_daily_cap", capUsd: 60 });
     expect(t.state.itineraries).toHaveLength(0);
   });
+
+  test("a day the gate can't judge (a garbled spend row) is refused as that, not as the cap", async () => {
+    const t = makeTestApp({});
+    seedSession(t.state, { status: "stopped", dryRun: false, amountUsd: Number.NaN });
+    seedPlan(t, [stop("s1", { costUsd: 10 })]);
+    const res = await t.app.inject({
+      method: "POST",
+      url: "/assistant/confirm",
+      headers: HEADERS,
+      payload: { planId: "plan1" },
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ error: "policy_violation", rule: "amount_invalid" });
+    expect(t.state.decisions.at(-1)).toMatchObject({ rule: "amount_invalid" });
+    expect(t.state.itineraries).toHaveLength(0);
+  });
 });
 
 describe("PATCH /assistant/itineraries/:id", () => {

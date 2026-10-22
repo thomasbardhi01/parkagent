@@ -582,6 +582,24 @@ describe("V5: the itinerary cap recompute stays, against the caller's own cap", 
     expect(fits.endTurn!.plan).toMatchObject({ kind: "itinerary", totalUsd: 16, capUsd: 20 });
   });
 
+  test("a day the gate can't judge is refused as that, and the model isn't told to shorten it", async () => {
+    const t = makeTestApp({ policy: { daily_cap_usd: 20 } });
+    seedSession(t.state, { status: "stopped", dryRun: false, amountUsd: Number.NaN });
+    const out = await t.deps.assistantTools!.execute(ctxAt(), "propose_plan", {
+      plan: {
+        kind: "itinerary",
+        date: "2026-01-05",
+        stops: [stop("s1", 8)],
+        totalUsd: 8,
+        capUsd: 999,
+      },
+    });
+    expect(out.endTurn).toBeUndefined();
+    expect(out.result).toMatchObject({ error: "policy_violation", rule: "amount_invalid" });
+    expect(JSON.stringify(out.result)).not.toContain("shorten");
+    expect(t.state.decisions.at(-1)).toMatchObject({ rule: "amount_invalid" });
+  });
+
   test("there is no per-plan cap: one option may cost anything up to what a search returns", async () => {
     // Decision 9: per-trip caps are dropped. A $58 garage under a $60 day
     // is a plan like any other.

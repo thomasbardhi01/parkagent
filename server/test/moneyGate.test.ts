@@ -305,7 +305,8 @@ describe("the gate's order and facts", () => {
     g.spend(19.5);
     expect(await g.gate(USER, { kind: "funding", amountUsd: 20 })).toMatchObject({
       ok: true,
-      spentTodayUsd: 0,
+      // Not read: null, where it used to say $0.
+      spentTodayUsd: null,
     });
   });
 });
@@ -487,5 +488,79 @@ describe("an amount the gate can't judge is refused, never allowed (fail closed)
     seedSession(g.state, { userId: "u2", status: "stopped", dryRun: false, amountUsd: Number.NaN });
     const quote: GateIntent = { kind: "quote", totalUsd: 4, ladderMaxRateUsd: 2 };
     expect(await g.gate(USER, quote)).toMatchObject({ ok: false, rule: "amount_invalid" });
+  });
+
+  test("an extension whose session's own amount is NaN, on a clean day, refuses", async () => {
+    const g = makeGate();
+    // Started before NYC midnight, so today's spend doesn't count it: only
+    // the session's own spend is NaN, and only it can refuse this.
+    const s = seedSession(g.state, {
+      userId: "u2",
+      status: "active",
+      dryRun: false,
+      amountUsd: Number.NaN,
+      createdAt: new Date(AT.getTime() - 24 * 60 * 60_000),
+    });
+    expect(await spentToday(g.deps.db, "u2", AT)).toBe(0);
+    const intent: GateIntent = {
+      kind: "extend",
+      session: s,
+      minutes: 30,
+      price: price(3),
+      source: "manual",
+    };
+    expect(await g.gate(USER, intent)).toMatchObject({ ok: false, rule: "amount_invalid" });
+  });
+
+  test("a refusal before the spend is read says it wasn't read (null), never $0", async () => {
+    const g = makeGate();
+    g.spend(15);
+    const refused = await g.gate(USER, start({ price: { ...price(4), totalUsd: Number.NaN } }));
+    expect(refused).toMatchObject({ ok: false, rule: "amount_invalid", spentTodayUsd: null });
+    // Read, it is the day's real sum.
+    expect(await g.gate(USER, start())).toMatchObject({ ok: true, spentTodayUsd: 15 });
+  });
+});
+
+describe("a cap the gate can't judge against is refused too (fail closed)", () => {
+  // The review's probe: Postgres numeric holds 'NaN', Number() of it is
+  // NaN, and every `amount > NaN` is false.
+  test("saved caps of NaN fall back to the ceilings: $50 spent, a $999 start is refused", async () => {
+    const g = makeGate();
+    g.state.userLimits.push({
+      userId: "u2",
+      sessionCapUsd: Number.NaN,
+      dailyCapUsd: Number.NaN,
+      defaultStayMinutes: null,
+      createdAt: AT,
+      updatedAt: AT,
+    });
+    g.spend(50);
+    const result = await g.gate(USER, start({ price: price(999), maxStayMinutes: null }));
+    expect(result.ok).toBe(false);
+    expect(result).toMatchObject({ rule: "session_cap_exceeded" });
+    // The ceilings stand: $10 a stop, $20 a day.
+    expect((result as { policy: { session_cap_usd: number } }).policy.session_cap_usd).toBe(10);
+  });
+
+  test.each([
+    ["the per-stop cap", { session_cap_usd: Number.NaN }],
+    ["the daily cap", { daily_cap_usd: Number.NaN }],
+    ["the daily cap, unset", { daily_cap_usd: undefined as unknown as number }],
+    ["the auto-pay rate ceiling", { auto_pay_max_rate_per_hour: Number.NaN }],
+  ])("a ceiling that isn't a number (%s) refuses as amount_invalid", async (_n, over) => {
+    // policy.json is schema-checked, so this can't load from the file; the
+    // gate's own check is the backstop for a policy that reaches it anyway.
+    const g = makeGate();
+    const real = g.deps.policy;
+    const policy = {
+      effectiveDryRun: () => real.effectiveDryRun(),
+      get: () => ({ ...real.get(), ...over }),
+    };
+    const quote: GateIntent = { kind: "quote", totalUsd: 4, ladderMaxRateUsd: 2 };
+    expect(await moneyGate({ db: g.deps.db, policy }, USER, quote, AT)).toMatchObject({
+      ok: false,
+      rule: "amount_invalid",
+    });
   });
 });

@@ -15,7 +15,7 @@ import { itineraryTotalUsd } from "../src/services/assistant/plans.js";
 import { AssistantTools } from "../src/services/assistant/tools.js";
 import type { ToolContext } from "../src/services/assistant/tools.js";
 import type { Candidate } from "../src/services/zoneLookup.js";
-import { API_KEY, NONADMIN_API_KEY, STEINWAY_A, makeTestApp } from "./helpers.js";
+import { API_KEY, NONADMIN_API_KEY, STEINWAY_A, makeTestApp, seedSession } from "./helpers.js";
 
 const HEADERS = { "x-api-key": API_KEY, "content-type": "application/json" };
 const MORNING = () => new Date("2026-01-05T08:00:00-05:00");
@@ -322,6 +322,17 @@ describe("PATCH re-prices against the stored day", () => {
     expect(res.json()).toMatchObject({ error: "over_daily_cap" });
     expect(itineraryTotalUsd(t.state.itineraries[0]!.stops as { costUsd: number }[])).toBe(18);
     expect(t.state.decisions.at(-1)).toMatchObject({ rule: "over_daily_cap" });
+  });
+
+  test("an edit the gate can't judge (a garbled spend row) is refused as that, not as the cap", async () => {
+    const t = app();
+    const id = await signedOff(t);
+    seedSession(t.state, { status: "stopped", dryRun: false, amountUsd: Number.NaN });
+    const res = await patch(t, id, edited({ s1: { durationMinutes: 90 } }, 0));
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ error: "policy_violation", rule: "amount_invalid" });
+    expect(t.state.decisions.at(-1)).toMatchObject({ rule: "amount_invalid" });
+    expect(itineraryTotalUsd(t.state.itineraries[0]!.stops as { costUsd: number }[])).toBe(18);
   });
 
   test("a re-priced garage stop gets its (new) link pushed again", async () => {

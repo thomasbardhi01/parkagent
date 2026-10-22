@@ -662,6 +662,13 @@ export function registerAssistant(
       { kind: "plan", stopsUsd: [], totalUsd, perStop: false },
       at,
     );
+    if (!dayGate.ok && dayGate.rule !== "daily_cap_exceeded") {
+      // Consent, or an amount the gate couldn't read: said as itself.
+      await decide(dayGate.rule, { allowed: false, totalUsd });
+      return refusedConsent(dayGate)
+        ? reply.code(403).send({ error: dayGate.rule })
+        : reply.code(409).send({ error: "policy_violation", rule: dayGate.rule });
+    }
     if (!dayGate.ok) {
       await decide("over_daily_cap", {
         allowed: false,
@@ -846,7 +853,11 @@ export function registerAssistant(
       totalUsd,
       capUsd,
       spentTodayUsd,
-      remainingUsd: Math.max(0, Math.round((capUsd - spentTodayUsd) * 100) / 100),
+      // Unknown when the gate refused before it read today's spend.
+      remainingUsd:
+        spentTodayUsd === null
+          ? null
+          : Math.max(0, Math.round((capUsd - spentTodayUsd) * 100) / 100),
       fitsCap,
     };
   });
@@ -913,6 +924,21 @@ export function registerAssistant(
       return reply.code(403).send({ error: gate.rule, decisionId: decision.id });
     }
     const { policy, spentTodayUsd } = gate;
+    if (!gate.ok && gate.rule !== "daily_cap_exceeded") {
+      // An amount the gate couldn't read: said as itself, not as the cap.
+      const decision = await deps.db.decision.create({
+        data: {
+          kind: "assistant_confirm",
+          inputs: { itineraryId: id, edit: true, spentTodayUsd },
+          rule: gate.rule,
+          outcome: { allowed: false, totalUsd, ...repriceAudit(priced) },
+          userId: user.id,
+        },
+      });
+      return reply
+        .code(409)
+        .send({ error: "policy_violation", rule: gate.rule, decisionId: decision.id });
+    }
     if (!gate.ok) {
       await deps.db.decision.create({
         data: {

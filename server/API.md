@@ -2047,7 +2047,10 @@ else).
 
 In effect: each cap is `min(saved ?? policy, policy)`, and the per-stop cap
 never exceeds the day's — so the operator lowering a cap binds everyone at
-once, and a user who never saved runs on the policy exactly as before.
+once, and a user who never saved runs on the policy exactly as before. A
+stored value that isn't a finite number ≥ 0 (Postgres numeric holds
+`'NaN'`) counts as never saved: `saved` shows `null` and the ceiling
+stands, since a NaN cap would pass every comparison against it.
 
 `PUT` takes any of the three fields: a number sets it, `null` goes back to
 the operator's default, a field left out keeps its value. Refusals are
@@ -3374,7 +3377,8 @@ search offers it as an option that meets the request). Otherwise:
   totalUsd, capUsd, stops, paymentSource, linkApprovals[], linkSkipped?}`
   — the day total is re-checked against `daily_cap_usd` at the moment of
   sign-off (`409 over_daily_cap`, nothing stored and no Link request
-  made). `stops` (optional) are the stops as the user left them on the
+  made; any other gate refusal, such as an amount it can't read, is `409
+  policy_violation {rule}` with its own rule on the row). `stops` (optional) are the stops as the user left them on the
   card: they are **re-priced on the server** exactly as the price route
   below prices them (their `costUsd` is never read), and the day signs
   off with those server prices, in arrival order; Link spend requests use
@@ -3420,7 +3424,9 @@ same path `quote_street` and `build_itinerary` use). The client's
 ```
 
 Stops come back in arrival order. `fitsCap` is `spentTodayUsd + totalUsd
-<= capUsd`, the same test sign-off applies. Writes an `assistant_confirm`
+<= capUsd`, the same test sign-off applies. `spentTodayUsd` and
+`remainingUsd` are `null` when the gate refused before it read today's
+spend (an amount it couldn't judge), never a made-up $0. Writes an `assistant_confirm`
 decision (rule `itinerary_repriced`) with the re-priced ids, estimates
 and why, and each stop's server price.
 
@@ -3454,7 +3460,8 @@ Signed-off days (last 10) and stop editing/reordering. A PATCH
 the price route (an unchanged stop keeps its stored price, a changed one
 is re-quoted, the client's costs are never read; a stop new to the day is
 priced fresh), re-checks the cap with those server totals (`409
-over_daily_cap`, audited, the day unchanged), and preserves per-stop
+over_daily_cap`, audited, the day unchanged; any other gate refusal is
+`409 policy_violation {rule}`), and preserves per-stop
 linkage (attached session ids, pushed garage links, payment source)
 across the edit — except a re-priced garage stop, whose link is pushed
 again before its new arrival. The response carries the stored stops. The itinerary worker

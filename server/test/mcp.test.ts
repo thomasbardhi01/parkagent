@@ -186,6 +186,16 @@ describe("discovery", () => {
     expect(tools.find((t) => t.name === "propose_plan")!._meta).toBeUndefined();
   });
 
+  test("an Idempotency-Key is not kept for /mcp: the same key twice is two answers, never stuck", async () => {
+    const { post } = await setup();
+    const headers = { "idempotency-key": "mcp-retry-0001" };
+    for (let i = 0; i < 2; i++) {
+      const res = await post("tools/list", {}, { headers });
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json().result.tools).toHaveLength(6);
+    }
+  });
+
   test("the request headers must agree with the body", async () => {
     const { post } = await setup();
     const res = await post(

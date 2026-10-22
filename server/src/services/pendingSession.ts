@@ -1201,8 +1201,10 @@ export async function noteCarMoved(
   });
 }
 
-/** What the newer-park check needs: the gate's narrower deps carry no
- * policy hash, so its row goes without one. */
+/** What the newer-park check needs. The hash is optional only in type:
+ * the gate's deps type names no hash, but its callers (applyExtension's
+ * SessionDeps) pass the policy service, so its rows carry one too; a
+ * caller with none writes null. */
 interface NewerParkDeps {
   db: AppDb;
   policy: { effectiveDryRun(): boolean; hash?: () => string };

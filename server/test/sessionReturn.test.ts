@@ -1218,3 +1218,68 @@ test("a park swept from starting to started (its process died after paying) stil
     extend: t.calls.extend,
   }).toEqual({ carMoved: true, rows: ["swept"], rule: "hold_car_moved", extend: 0 });
 });
+
+test("a newer-park check that throws after a paid start: the tap still answers 200, with its start row (#246)", async () => {
+  const { t, paying, release } = await midStart();
+  await post(
+    t.app,
+    "/parked",
+    parkedBody({ outcomes: OUTCOMES, lat: ELSEWHERE.lat, ts: t.clock.now.toISOString() }),
+  );
+  t.deps.db.parkedEvent.findFirst = async () => {
+    throw new Error("read blip");
+  };
+  release();
+  const res = await paying;
+  expect(res.statusCode).toBe(200);
+  expect(
+    t.state.decisions.filter((d) => d.kind === "session_start_walkaway" && d.rule === "started"),
+  ).toHaveLength(1);
+  expect(t.state.sessions[0]!.status).toBe("active");
+});
+
+test("the start's own row is written before the car-moved row (#246)", async () => {
+  const { t, paying, release } = await midStart();
+  await post(
+    t.app,
+    "/parked",
+    parkedBody({ outcomes: OUTCOMES, lat: ELSEWHERE.lat, ts: t.clock.now.toISOString() }),
+  );
+  release();
+  expect((await paying).statusCode).toBe(200);
+  const started = t.state.decisions.findIndex(
+    (d) => d.kind === "session_start_walkaway" && d.rule === "started",
+  );
+  const moved = t.state.decisions.findIndex((d) => d.kind === "session_car_moved");
+  expect(started).toBeGreaterThanOrEqual(0);
+  expect(moved).toBeGreaterThan(started);
+});
+
+test("a park made for a session started outside the lifecycle is checked as it is made (#246)", async () => {
+  const t = makeApp();
+  const parked = await post(t.app, "/parked", parkedBody({ outcomes: ["garage", "nopay"] }));
+  const started = await post(t.app, "/session/start", {
+    parkedEventId: parked.json()["parkedEventId"],
+    zoneId: "nyc-417371",
+  });
+  expect(started.statusCode).toBe(200);
+  expect(t.state.pendingParks).toHaveLength(0);
+  const session = t.state.sessions.at(-1)!;
+  // A newer park elsewhere that noteCarMoved missed (it landed mid-start).
+  t.state.parkedEvents.push({
+    id: "pe-newer",
+    userId: session.userId,
+    lat: ELSEWHERE.lat,
+    lng: ELSEWHERE.lng,
+    accuracyM: 10,
+    ts: new Date(t.clock.now.getTime() + 30_000),
+    signals: [],
+  });
+  t.tick(60);
+  await post(t.app, "/location", fix(t, 300));
+  expect(
+    t.state.decisions
+      .filter((d) => d.kind === "session_car_moved")
+      .map((d) => (d.inputs as { seenAt?: string }).seenAt),
+  ).toEqual(["created"]);
+});

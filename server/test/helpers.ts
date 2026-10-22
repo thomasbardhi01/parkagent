@@ -65,6 +65,8 @@ import type { StripeGateway } from "../src/services/stripeGateway.js";
 import type { GarageFootprint, GarageStore } from "../src/services/garageLookup.js";
 import { compareIds, describeFootprint } from "../src/services/garageLookup.js";
 import type { Candidate, NearbyZone } from "../src/services/zoneLookup.js";
+import { hasReason } from "../src/services/reasons.js";
+import { unexplainedRules } from "./setup/unexplainedRules.js";
 
 export const API_KEY = "test-key";
 /** A second, non-admin user's key — for authorization (403) tests. */
@@ -76,6 +78,7 @@ export const TEST_JWT_SECRET = "test-jwt-secret-32-chars-minimum-ok";
 
 // Monday 2026-01-05, 14:00 EST — mid-afternoon, meters running.
 export const MONDAY_2PM = "2026-01-05T14:00:00-05:00";
+
 // Monday 20:00 EST — after the posted 19:00 end of enforcement.
 export const MONDAY_8PM = "2026-01-05T20:00:00-05:00";
 
@@ -1429,6 +1432,10 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
     },
     decision: {
       create: async ({ data }) => {
+        // Every rule written has a reason (test/setup/reasonsGate.ts).
+        if (!hasReason(String(data.kind), String(data.rule))) {
+          unexplainedRules.add(`${String(data.kind)}:${String(data.rule)}`);
+        }
         state.decisions.push({
           // The row clock (MONDAY_2PM unless a test moves it).
           createdAt: fakeRowClock(),

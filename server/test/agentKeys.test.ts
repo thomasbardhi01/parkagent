@@ -221,7 +221,13 @@ describe("consent and the rate limit", () => {
     const agent = agentPrincipal({ userId: "u2", id: "ak9", scopes: ["read"] });
     await runAs(agent, () =>
       t.deps.db.decision.create({
-        data: { kind: "t", inputs: {}, rule: "r", outcome: {}, userId: "u2" },
+        data: {
+          kind: "agent_confirm",
+          inputs: {},
+          rule: "pending_arrival",
+          outcome: {},
+          userId: "u2",
+        },
       }),
     );
     expect(t.state.decisions.at(-1)).toMatchObject({ actor: "external_agent", agentKeyId: "ak9" });

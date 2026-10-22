@@ -7,5 +7,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     include: ["test/**/*.test.ts"],
+    // A decision written with a rule that has no reason fails its file.
+    setupFiles: ["test/setup/reasonsGate.ts"],
   },
 });

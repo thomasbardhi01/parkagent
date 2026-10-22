@@ -214,6 +214,29 @@ describe("the rules", () => {
     expect(tightenedMaxStay(null, 45)).toBe(45);
     expect(tightenedMaxStay(90, null)).toBe(90);
   });
+
+  test("never longer than the stay it tightens, never below what's paid", () => {
+    // A running session that bought 90 of a 120 max, offered 60: held at 90.
+    expect(tightenedMaxStay(120, 60, 90)).toBe(90);
+    expect(tightenedMaxStay(120, 60, 45)).toBe(60);
+    expect(tightenedMaxStay(null, 45, 90)).toBe(90);
+    // Paid past the stay already (it can't be, but): still never longer.
+    expect(tightenedMaxStay(60, 30, 90)).toBe(60);
+    const stays = [null, 0, 30, 60, 120, 600];
+    for (const current of stays) {
+      for (const accepted of stays) {
+        for (const paid of [0, 15, 60, 90, 150]) {
+          const held = tightenedMaxStay(current, accepted, paid);
+          const at = `${current} / ${accepted} / ${paid}`;
+          if (accepted === null) expect(held, at).toBe(current);
+          if (current !== null) expect(held!, at).toBeLessThanOrEqual(current);
+          if (accepted !== null) {
+            expect(held!, at).toBeGreaterThanOrEqual(Math.min(current ?? Infinity, paid));
+          }
+        }
+      }
+    }
+  });
 });
 
 // ------------------------------------------------------------ the route
@@ -516,11 +539,12 @@ describe("accepting a shorter stay: only ever tighter", () => {
 
   test("a running session for this park drops to it; the extend gates read the session's max stay", async () => {
     const s = await stricterCheck();
+    // 45 bought: under the 60 offered, so the stay drops all the way.
     const start = await s.t.app.inject({
       method: "POST",
       url: "/session/start",
       headers: U1,
-      payload: { parkedEventId: "pe1", zoneId: ZONE.zoneId, minutes: 90 },
+      payload: { parkedEventId: "pe1", zoneId: ZONE.zoneId, minutes: 45 },
     });
     expect(start.statusCode, start.body).toBe(200);
     expect(s.t.state.sessions.at(-1)!.maxStayMinutes).toBe(120);
@@ -532,6 +556,54 @@ describe("accepting a shorter stay: only ever tighter", () => {
     const rows = s.t.state.decisions.length;
     expect((await accept(s, s.checkId)).statusCode).toBe(200);
     expect(s.t.state.decisions.length).toBe(rows);
+  });
+
+  test("a session that bought more than the offer is held at what it bought, and extends no further", async () => {
+    const s = await stricterCheck();
+    const start = await s.t.app.inject({
+      method: "POST",
+      url: "/session/start",
+      headers: U1,
+      payload: { parkedEventId: "pe1", zoneId: ZONE.zoneId, minutes: 90 },
+    });
+    expect(start.statusCode, start.body).toBe(200);
+    const session = s.t.state.sessions.at(-1)!;
+    expect(session.purchasedMinutes).toBe(90);
+    const res = await accept(s, s.checkId);
+    expect(res.statusCode).toBe(200);
+    // Down from the zone's 120, but never under the 90 paid for.
+    expect(s.t.state.sessions.at(-1)!.maxStayMinutes).toBe(90);
+    expect(s.t.state.decisions.at(-1)).toMatchObject({
+      rule: "accepted_shorter_stay",
+      outcome: { maxStayMinutes: 60, sessionMaxStayMinutes: 90, paidMinutes: 90 },
+    });
+    // And no more time on top of it.
+    const extend = await s.t.app.inject({
+      method: "POST",
+      url: "/session/extend",
+      headers: U1,
+      payload: { sessionId: session.id, minutes: 15 },
+    });
+    expect(extend.statusCode, extend.body).not.toBe(200);
+    expect(s.t.state.sessions.at(-1)!.purchasedMinutes).toBe(90);
+  });
+
+  test("accepting never lengthens a stay already held shorter", async () => {
+    const s = await stricterCheck();
+    const start = await s.t.app.inject({
+      method: "POST",
+      url: "/session/start",
+      headers: U1,
+      payload: { parkedEventId: "pe1", zoneId: ZONE.zoneId, minutes: 20 },
+    });
+    expect(start.statusCode, start.body).toBe(200);
+    // Held to 30 already (an earlier, stricter reading); offered 60.
+    s.t.state.sessions.at(-1)!.maxStayMinutes = 30;
+    expect((await accept(s, s.checkId)).statusCode).toBe(200);
+    expect(s.t.state.sessions.at(-1)!.maxStayMinutes).toBe(30);
+    expect(s.t.state.decisions.at(-1)).toMatchObject({
+      outcome: { tightenedSession: null, sessionMaxStayMinutes: 30 },
+    });
   });
 
   test("a session started later for this park starts under it", async () => {

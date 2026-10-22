@@ -702,9 +702,13 @@ above). It only ever tightens: a running session for this park drops its
 `maxStayMinutes` to it now, so the money gate holds every extension
 (manual or automatic) to it, and a session started for this park later
 starts under it (the start path and the walk-away prompt read the
-shortest accepted stay). Accepting again is a no-op. → `{accepted: true,
-maxStayMinutes, sessionId}`; a `sign_check` decision
-(`accepted_shorter_stay`).
+shortest accepted stay). A running session is never held below the
+minutes it has already bought: offered 60 with 90 paid, it is held at 90
+and extends no further. Accepting again is a no-op. → `{accepted: true,
+maxStayMinutes, sessionId}` (`maxStayMinutes` is the accepted offer); a
+`sign_check` decision (`accepted_shorter_stay`) whose outcome, when a
+session is running, also carries `sessionMaxStayMinutes` (what it is
+held to) and `paidMinutes`.
 
 ### GET /admin/sign-checks
 

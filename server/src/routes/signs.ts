@@ -201,20 +201,29 @@ export function registerSigns(app: FastifyInstance, deps: AppDeps): void {
       data: { acceptedAt: at },
     });
     // A running session for this park: its max stay tightens now, and the
-    // money gate holds every extension to it. Never loosened.
+    // money gate holds every extension to it. Never loosened, and never
+    // below what the session has already bought.
     const session = await deps.db.session.findFirst({
       where: { userId, status: "active", parkedEventId: id },
     });
     let tightenedSession: string | null = null;
-    if (session) {
-      const tightened = tightenedMaxStay(session.maxStayMinutes ?? null, offer);
-      if (tightened !== (session.maxStayMinutes ?? null)) {
-        await deps.db.session.update({
-          where: { id: session.id },
-          data: { maxStayMinutes: tightened },
-        });
-        tightenedSession = session.id;
-      }
+    // What the session is held to, and what it had bought (the floor).
+    const held = session
+      ? {
+          sessionMaxStayMinutes: tightenedMaxStay(
+            session.maxStayMinutes ?? null,
+            offer,
+            session.purchasedMinutes,
+          ),
+          paidMinutes: session.purchasedMinutes,
+        }
+      : null;
+    if (session && held && held.sessionMaxStayMinutes !== (session.maxStayMinutes ?? null)) {
+      await deps.db.session.update({
+        where: { id: session.id },
+        data: { maxStayMinutes: held.sessionMaxStayMinutes },
+      });
+      tightenedSession = session.id;
     }
     if (won.count > 0) {
       await deps.db.decision.create({
@@ -222,7 +231,7 @@ export function registerSigns(app: FastifyInstance, deps: AppDeps): void {
           kind: "sign_check",
           inputs: { checkId, parkedEventId: id },
           rule: "accepted_shorter_stay",
-          outcome: { maxStayMinutes: offer, tightenedSession },
+          outcome: { maxStayMinutes: offer, tightenedSession, ...held },
           userId,
           parkedEventId: id,
         },

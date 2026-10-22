@@ -9,7 +9,7 @@
 
 import { readFileSync } from "node:fs";
 
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import { agentFunctionTools, agentOpenApi } from "../src/routes/agentOpenApi.js";
 import type { GeocoderProvider } from "../src/services/assistant/geocoder.js";
@@ -157,6 +157,23 @@ describe("reading", () => {
   test("why needs the read scope", async () => {
     const { call } = await setup({ scopes: ["confirm"] });
     expect((await call("GET", "/agent/decisions/d1/why")).statusCode).toBe(403);
+  });
+
+  test("why with an id that isn't one: 400 before the database, as MCP refuses it", async () => {
+    const { t, call } = await setup();
+    const read = vi.spyOn(t.deps.db.decision, "findUnique");
+    for (const id of ["%00", "d1%3B", "a%20b"]) {
+      const res = await call("GET", `/agent/decisions/${id}/why`);
+      expect(res.statusCode, id).toBe(400);
+      expect(res.json().error, id).toBeDefined();
+    }
+    expect(read).not.toHaveBeenCalled();
+    // A key without the scope is refused whatever it sent, as before.
+    const confirmOnly = await setup({ scopes: ["confirm"] });
+    expect((await confirmOnly.call("GET", "/agent/decisions/%00/why")).json()).toEqual({
+      error: "scope_required",
+      scope: "read",
+    });
   });
 
   test("geocode: the place named, or the closest one said as such", async () => {

@@ -76,7 +76,7 @@ const mcpConfirmSchema = z.strictObject({
 /** The six agent tools, then explain_decision: over REST that one is
  * GET /agent/decisions/{decisionId}/why, a read with no body, so it is not
  * one of AGENT_TOOLS (the POST routes OpenAPI and grok-tool.json list). */
-export const MCP_TOOLS = [
+const MCP_TOOLS = [
   ...AGENT_TOOLS,
   {
     name: "explain_decision",

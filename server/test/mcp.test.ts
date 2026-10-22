@@ -212,6 +212,10 @@ describe("discovery", () => {
       expect(description).toContain("pending_arrival");
       expect(description).toContain("consent");
     }
+    // explain_decision reads; the plan-and-confirm rules aren't its.
+    const explain = tools.find((t) => t.name === "explain_decision")!.description;
+    expect(explain).toContain("Read-only");
+    expect(explain).not.toContain("only source of arrival");
     // Without MCP_APPS, no card.
     expect(tools.find((t) => t.name === "propose_plan")!._meta).toBeUndefined();
   });
@@ -363,14 +367,18 @@ describe("the tools, under dry run", () => {
   });
 
   test("a decisionId that isn't an id is refused before the database", async () => {
-    const { t, rpc } = await setup();
+    const { t, tool } = await setup();
     const read = vi.spyOn(t.deps.db.decision, "findUnique");
-    const out = await rpc(
-      "tools/call",
-      { name: "explain_decision", arguments: { decisionId: "\u0000" } },
-      "explain_decision",
-    );
-    expect(out.error ?? out.result?.isError, JSON.stringify(out)).toBeTruthy();
+    // The SDK's own answer to arguments its schema refuses: a tool error
+    // (not a -32602), naming the field.
+    const out = await tool("explain_decision", { decisionId: "\u0000" });
+    expect(out.isError).toBe(true);
+    expect(out["content"]).toEqual([
+      {
+        type: "text",
+        text: "Input validation error: Invalid arguments for tool explain_decision: decisionId: Invalid string: must match pattern /^[A-Za-z0-9_-]+$/",
+      },
+    ]);
     expect(read).not.toHaveBeenCalled();
   });
 });

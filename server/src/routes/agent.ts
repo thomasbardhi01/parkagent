@@ -24,6 +24,7 @@ import type { RateBuckets } from "../services/rateLimit.js";
 import { makeRateBuckets, makeRateLimiter } from "../services/rateLimit.js";
 import {
   confirmSchema,
+  explainSchema,
   geocodeSchema,
   itinerarySchema,
   planSchema,
@@ -137,6 +138,13 @@ export function registerAgent(
   /** Why one of the person's decisions came out as it did (Issue M). */
   app.get("/agent/decisions/:decisionId/why", { preHandler: limit }, async (req, reply) => {
     const { decisionId } = req.params as { decisionId: string };
+    // The scope first (actions.why refuses a key without it, whatever it
+    // sent), then the id as MCP's explain_decision takes it: anything else
+    // (a NUL is a Postgres error) is a 400, never a 500.
+    const parsed = explainSchema.shape.decisionId.safeParse(decisionId);
+    if (req.principal!.scopes.has("read") && !parsed.success) {
+      return reply.code(400).send({ error: z.treeifyError(parsed.error) });
+    }
     return send(reply, await actions.why(req.principal!, decisionId));
   });
 }

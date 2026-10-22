@@ -4028,6 +4028,8 @@ OpenAI-style functions are `examples/grok-tool.json` (regenerate with
   {subject, what, because: [{name, label, value}], youCan}, text, phrased}`
   ("Why a decision came out as it did" above). Another person's, or none,
   is `404 decision_not_found`; an agent never reads with admin rights.
+  An id that isn't one (anything but letters, digits, `_` and `-`) is
+  `400`, as `explain_decision` refuses it over MCP.
 
 ### MCP
 

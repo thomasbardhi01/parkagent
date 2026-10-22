@@ -10,7 +10,7 @@
 import { z } from "zod";
 
 import { coveredCitiesSentence } from "../../providers/registry.js";
-import { explainDecision } from "../explanations.js";
+import { explainDecision } from "../capabilities/explainDecision.js";
 import { STAY_QUESTION, STAY_SUGGESTIONS, asksAboutStay } from "./clarify.js";
 import { intentOf, toolAllowed, toolOffInstruction } from "./intentRouter.js";
 import {
@@ -107,6 +107,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: "geocode_place",
     description: `Look up a NAMED place — a restaurant, bar, venue, business, hotel, landmark, street, or neighborhood — and make it the request's place, biased to the phone's city among the cities ParkAgent covers (${coveredCitiesSentence()}). Call this FIRST whenever the user names a place instead of relying on their current location, passing their words including any area they named (e.g. 'Lola 42 Seaport'); quote_street and search_garages then search there. Answers: found with match "exact" → the request's place is set; match "closest" → the NAME wasn't found, only the nearest thing (tell the user); ambiguous with choices → call ask_user with those choices; found:false → couldn't find it. Every answer carries the server's \`resolution\` (found, closest_only, ambiguous, or none) and its 0–1 \`confidence\`: act on the resolution as given — it isn't yours to upgrade.`,
+    strict: true,
     input_schema: {
       type: "object" as const,
       additionalProperties: false,
@@ -142,7 +143,8 @@ export const TOOL_DEFINITIONS = [
   {
     name: "build_itinerary",
     description:
-      "Price a multi-stop day: for each stop, quote street parking AND the best garage, and check the day total against the user's daily cap. Use the result to decide street vs garage per stop before proposing the plan. Available for a request that starts later: put the day's first arrival on the request first (update_request startsAt).",
+      "Price a multi-stop day: for each stop, quote street parking AND the best garage, and check the day total against the user's daily cap. Use the result to decide street vs garage per stop before proposing the plan. Available for a request that starts later: put the day's first arrival on the request first (update_request startsAt). One to twelve stops.",
+    strict: true,
     input_schema: {
       type: "object" as const,
       additionalProperties: false,
@@ -151,7 +153,6 @@ export const TOOL_DEFINITIONS = [
         stops: {
           type: "array",
           minItems: 1,
-          maxItems: 12,
           items: {
             type: "object",
             additionalProperties: false,
@@ -162,7 +163,7 @@ export const TOOL_DEFINITIONS = [
               lat: { type: "number" },
               lng: { type: "number" },
               arrival: { type: "string", description: "ISO arrival time" },
-              duration_minutes: { type: "integer", minimum: 1, maximum: 720 },
+              duration_minutes: { type: "integer", description: "1 to 720" },
             },
           },
         },
@@ -190,6 +191,7 @@ export const TOOL_DEFINITIONS = [
     name: "ask_user",
     description:
       "Ask the user ONE short clarifying question with 2–4 tappable suggestions, and END your turn. Use it whenever you must ask something instead of asking in prose: which of several matching places (use geocode_place's choices: their label and reply exactly), what time, how long, or which city (only when there's no phone location). In the question, state what you already assumed.",
+    strict: true,
     input_schema: {
       type: "object" as const,
       additionalProperties: false,
@@ -198,8 +200,8 @@ export const TOOL_DEFINITIONS = [
         question: { type: "string", description: "One short question" },
         suggestions: {
           type: "array",
-          minItems: 2,
-          maxItems: 4,
+          description: "Two to four",
+          minItems: 1,
           items: {
             type: "object",
             additionalProperties: false,
@@ -220,6 +222,7 @@ export const TOOL_DEFINITIONS = [
     name: "book_garage",
     description:
       "Book (or hand off) a garage option. REQUIRES a confirmation_token minted by the user's explicit Confirm tap on a proposed plan — calls without one are refused. Propose a plan instead if you have no token.",
+    strict: true,
     input_schema: {
       type: "object" as const,
       additionalProperties: false,
@@ -234,13 +237,14 @@ export const TOOL_DEFINITIONS = [
     name: "start_session",
     description:
       "Start a paid street-meter session. REQUIRES a confirmation_token minted by the user's explicit Confirm tap — calls without one are refused. Propose a plan instead if you have no token.",
+    strict: true,
     input_schema: {
       type: "object" as const,
       additionalProperties: false,
       required: ["zone", "duration_minutes"],
       properties: {
         zone: { type: "string", description: "Zone id, as returned by quote_street" },
-        duration_minutes: { type: "integer", minimum: 1, maximum: 720 },
+        duration_minutes: { type: "integer", description: "1 to 720" },
         confirmation_token: { type: "string" },
       },
     },
@@ -248,15 +252,15 @@ export const TOOL_DEFINITIONS = [
   {
     name: "get_history",
     description: "The user's recent parking sessions (zone, city, cost, when), newest first.",
+    strict: true,
     input_schema: {
       type: "object" as const,
       additionalProperties: false,
+      required: [] as string[],
       properties: {
         days: {
           type: "integer",
-          minimum: 1,
-          maximum: 90,
-          description: "Look-back window, default 14",
+          description: "Look-back window in days, 1 to 90, default 14",
         },
       },
     },
@@ -264,6 +268,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: "explain_decision",
     description: "Plain-language explanation of one recorded decision by its id.",
+    strict: true,
     input_schema: {
       type: "object" as const,
       additionalProperties: false,
@@ -537,7 +542,8 @@ export class AssistantTools {
   }
 
   private async getHistory(ctx: ToolContext, input: Record<string, unknown>): Promise<ToolOutcome> {
-    const days = input["days"] !== undefined ? num(input["days"]) : 14;
+    // The schema can't bound a strict tool's integer: clamp here.
+    const days = Math.min(90, Math.max(1, input["days"] !== undefined ? num(input["days"]) : 14));
     const since = new Date(this.now().getTime() - days * 24 * 60 * 60_000);
     const sessions = await this.deps.db.session.findMany({
       where: { userId: ctx.userId, createdAt: { gte: since } },
@@ -560,12 +566,12 @@ export class AssistantTools {
 
   private async explain(ctx: ToolContext, input: Record<string, unknown>): Promise<ToolOutcome> {
     const id = String(input["decision_id"]);
-    const row = await this.deps.db.decision.findUnique({ where: { id } });
-    if (!row || (row.userId !== null && row.userId !== ctx.userId)) {
+    const found = await explainDecision(this.deps, principalFor(ctx.userId), { decisionId: id });
+    if (!found.ok) {
       await this.audit(ctx, "explain_decision", input, "not_found", {});
       return { result: { error: "no such decision (or it belongs to another user)" } };
     }
-    const template = explainDecision(row);
+    const { template } = found;
     // Phrasing runs on the cheap EXPLAIN_MODEL; the template is the
     // factual floor — a phrasing failure falls back to it, and the model
     // is told to add nothing the template doesn't say.
@@ -576,7 +582,9 @@ export class AssistantTools {
           system:
             "Rewrite the given parking-decision record as one or two friendly plain-English sentences. State only facts present in the input — never add, guess, or soften facts. No preamble.",
           messages: [{ role: "user", content: template }],
-          maxTokens: 300,
+          // Room for the model's thinking (on by default on Claude Haiku
+          // 5.5) before its one or two sentences.
+          maxTokens: 1024,
         });
         // A paid call like any other: it counts toward this turn's spend.
         ctx.onModelUsage?.({
@@ -589,7 +597,9 @@ export class AssistantTools {
           .map((b) => b.text)
           .join(" ")
           .trim();
-        if (joined.length > 0) text = joined;
+        // Only a finished answer replaces the template: a refusal or a
+        // cut-off (max_tokens) keeps the factual floor.
+        if (phrased.stopReason === "end_turn" && joined.length > 0) text = joined;
       } catch {
         // Fall back to the template — an explanation must never fail the turn.
       }

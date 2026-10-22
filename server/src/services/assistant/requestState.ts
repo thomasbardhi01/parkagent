@@ -716,10 +716,10 @@ export function stateForModel(state: RequestState): Record<string, unknown> {
 }
 
 /**
- * The "Current request" block the system prompt ends with, rendered each
- * model call. The values are JSON, so the user's words inside them stay
- * inside their strings: they can't open a line of their own in the
- * system prompt.
+ * The "Current request" block: on each user message, and after a tool
+ * result that changed the request (loop.ts; never edited once sent). The
+ * values are JSON, so the user's words inside them stay inside their
+ * strings: they can't open a line of their own.
  */
 export function currentRequestBlock(state: RequestState): string {
   return (

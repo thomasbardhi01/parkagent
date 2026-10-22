@@ -19,7 +19,7 @@ import type { RequestState } from "../src/services/assistant/requestState.js";
 import { TOOL_DEFINITIONS } from "../src/services/assistant/tools.js";
 import type { ToolContext } from "../src/services/assistant/tools.js";
 import type { GarageOption, GarageProvider } from "../src/services/garage/garageProvider.js";
-import { API_KEY, STEINWAY_A, makeTestApp } from "./helpers.js";
+import { API_KEY, STEINWAY_A, makeTestApp, modelView } from "./helpers.js";
 
 const HEADERS = { "x-api-key": API_KEY, "content-type": "application/json" };
 
@@ -35,7 +35,9 @@ function scriptedModel(
     systems,
     async create(args, onText) {
       seen.push(args.messages);
-      systems.push(args.system);
+      // What the model was told: the system prompt and the latest request
+      // block in the messages (helpers.ts modelView).
+      systems.push(modelView(args.system, args.messages));
       const response = responses[Math.min(call, responses.length - 1)]!;
       call += 1;
       for (const block of response.content) {
@@ -1034,6 +1036,20 @@ describe("request state (FR-42)", () => {
   });
 });
 
+/** Every tool the model sees as strict, in definition order. */
+const ALL_STRICT = [
+  "update_request",
+  "geocode_place",
+  "search_garages",
+  "quote_street",
+  "build_itinerary",
+  "ask_user",
+  "book_garage",
+  "start_session",
+  "get_history",
+  "explain_decision",
+];
+
 describe("update_request, the tool (FR-42)", () => {
   const ctx = (): ToolContext => ({ userId: "u1", conversationId: "c1" });
 
@@ -1110,12 +1126,16 @@ describe("update_request, the tool (FR-42)", () => {
       return sum + Object.keys(s.properties).length - (s.required?.length ?? 0);
     }, 0);
     expect(optional).toBeLessThanOrEqual(24);
-    // Strict: the request's editor and the two searches that read it.
-    expect(strictTools.map((t) => t.name)).toEqual([
-      "update_request",
-      "search_garages",
-      "quote_street",
-    ]);
+    // Strict: every tool but propose_plan (D-1c). Its plan schema comes
+    // from zod with bounds — .max(3) options, .max(720) minutes, .max(120)
+    // walk — that compile to maxItems / maximum, which the strict subset
+    // refuses (the union itself is fine); the structured-outputs
+    // experiment starts from there. The bounds the other tools can't say
+    // (2–4 suggestions, 1–720 minutes, 1–90 days, 1–12 stops) are checked
+    // in code (assistantModel55.test.ts).
+    for (const name of ALL_STRICT)
+      walk(TOOL_DEFINITIONS.find((t) => t.name === name)!.input_schema, name);
+    expect(strictTools.map((t) => t.name)).toEqual(ALL_STRICT);
   });
 
   test("an unreadable time bounces with the time format and the current time", async () => {

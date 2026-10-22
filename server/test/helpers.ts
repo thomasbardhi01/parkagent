@@ -13,6 +13,7 @@ import type { FastifyInstance } from "fastify";
 import type { AppDeps, AuthConfig } from "../src/app.js";
 import { buildApp, makeAuthenticate } from "../src/app.js";
 import { withDecisionLogging } from "../src/services/decisionLog.js";
+import type { ModelTurn } from "../src/services/assistant/modelClient.js";
 import { hashApiKey } from "../src/services/apiKeys.js";
 import type {
   AppDb,
@@ -2317,6 +2318,23 @@ export function makeTestApp(options: {
   });
   deps.linkWorker = linkWorker;
   return { app: buildApp(deps), state, deps, pushes, executorCalls, linkWorker };
+}
+
+/** What the model was told at a call: the system prompt, then the latest
+ * "Current request" block in the messages (the request rides there, never
+ * in `system`, so the prompt stays append-only for the model's thinking). */
+export function modelView(system: string, messages: readonly ModelTurn[]): string {
+  const texts = messages.flatMap((m) =>
+    typeof m.content === "string"
+      ? [m.content]
+      : m.content.flatMap((b) => (b.type === "text" ? [b.text] : [])),
+  );
+  const marker = "Current request (";
+  for (let i = texts.length - 1; i >= 0; i -= 1) {
+    const at = texts[i]!.lastIndexOf(marker);
+    if (at >= 0) return `${system}\n\n${texts[i]!.slice(at)}`;
+  }
+  return system;
 }
 
 export function parkedBody(overrides: Record<string, unknown> = {}) {

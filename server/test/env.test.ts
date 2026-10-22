@@ -224,7 +224,7 @@ describe("optional features never refuse boot", () => {
     expect(report.env.PORT).toBe(3000);
     expect(report.env.EXECUTOR_CONCURRENCY).toBe(2);
     expect(report.env.ASSISTANT_DAILY_SPEND_CAP_USD).toBe(5);
-    expect(report.env.EXPLAIN_MODEL).toBe("claude-haiku-4-5-20251001");
+    expect(report.env.EXPLAIN_MODEL).toBe("claude-haiku-5-5");
     expect(report.env.APPLE_AUDIENCE).toBe("com.thomasbardhi.parkagent");
     expect(report.warnings).toHaveLength(5);
     expect(report.warnings[0]).toMatch(/^APPLE_AUDIENCE isn't a bundle id/);

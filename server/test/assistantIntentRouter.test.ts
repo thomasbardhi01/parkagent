@@ -23,12 +23,7 @@ import { describe, expect, test } from "vitest";
 
 import { STAY_SUGGESTIONS } from "../src/services/assistant/clarify.js";
 import type { GeocoderProvider } from "../src/services/assistant/geocoder.js";
-import {
-  intentOf,
-  stayFor,
-  toolAllowed,
-  toolsForIntent,
-} from "../src/services/assistant/intentRouter.js";
+import { intentOf, stayFor, toolAllowed } from "../src/services/assistant/intentRouter.js";
 import type { ModelClient, ModelResponse, ModelTurn } from "../src/services/assistant/loop.js";
 import { emptyState, parsePatch } from "../src/services/assistant/requestState.js";
 import { relaxationTapped } from "../src/services/assistant/search.js";
@@ -37,7 +32,14 @@ import { TOOL_DEFINITIONS } from "../src/services/assistant/tools.js";
 import type { ToolContext } from "../src/services/assistant/tools.js";
 import type { GarageOption, GarageProvider } from "../src/services/garage/garageProvider.js";
 import type { NearbyZone } from "../src/services/zoneLookup.js";
-import { API_KEY, DEFAULT_POLICY, MONDAY_2PM, makePolicyService, makeTestApp } from "./helpers.js";
+import {
+  API_KEY,
+  DEFAULT_POLICY,
+  MONDAY_2PM,
+  makePolicyService,
+  makeTestApp,
+  modelView,
+} from "./helpers.js";
 
 const HEADERS = { "x-api-key": API_KEY, "content-type": "application/json" };
 
@@ -110,22 +112,27 @@ function garages(options: GarageOption[]): GarageProvider & { searches: number }
 }
 
 /** A scripted model that records what each call was given: the tools on
- * offer, the system prompt, and the messages as they stood (a copy — the
- * loop keeps appending to its own array). */
+ * offer, what it was told (`systems`: the system prompt and the latest
+ * request block — helpers.ts modelView), the raw system prompt, and the
+ * messages as they stood (a copy — the loop keeps appending to its own
+ * array). */
 function recordingModel(responses: ModelResponse[]): ModelClient & {
   calls: number;
   offered: string[][];
   systems: string[];
+  rawSystems: string[];
   seen: ModelTurn[][];
 } {
   const model = {
     calls: 0,
     offered: [] as string[][],
     systems: [] as string[],
+    rawSystems: [] as string[],
     seen: [] as ModelTurn[][],
     async create(args: Parameters<ModelClient["create"]>[0]) {
       model.offered.push((args.tools ?? []).map((t) => t.name));
-      model.systems.push(args.system);
+      model.systems.push(modelView(args.system, args.messages));
+      model.rawSystems.push(args.system);
       model.seen.push(structuredClone(args.messages));
       const response = responses[Math.min(model.calls, responses.length - 1)]!;
       model.calls += 1;
@@ -279,7 +286,11 @@ describe("the intent decides which tools are on", () => {
     }
   });
 
-  test("the model is offered the intent's tools, recomputed for every model call", async () => {
+  test("every call is offered every tool, and told the intent the server derived", async () => {
+    // The tool list and system prompt stay byte-identical across calls,
+    // so the model's thinking stays valid (loop.ts, append-only); the
+    // intent travels in the request block, and execute() refuses a tool
+    // the intent has off.
     const model = recordingModel([
       use("u1", "update_request", { kinds: ["garage"], durationMinutes: 120 }),
       use("u2", "update_request", {
@@ -292,12 +303,12 @@ describe("the intent decides which tools are on", () => {
     const res = await message(t, "a garage for two hours. or street is fine, tonight at 7");
     expect(res.statusCode).toBe(200);
     expect(model.calls).toBe(3);
-    // A new conversation is for now: no day planner.
-    expect(model.offered[0]).toEqual(without("build_itinerary"));
-    // Garage only: no street quote either.
-    expect(model.offered[1]).toEqual(without("quote_street", "build_itinerary"));
-    // Tonight, street or garage: everything.
-    expect(model.offered[2]).toEqual(ALL_TOOLS);
+    for (const offered of model.offered) expect(offered).toEqual(ALL_TOOLS);
+    expect(new Set(model.rawSystems).size).toBe(1);
+    // A new conversation is for now; then garage only; then tonight.
+    expect(model.systems[0]).toContain('"intent":"park_now"');
+    expect(model.systems[1]).toContain('"intent":"garage_or_lot"');
+    expect(model.systems[2]).toContain('"intent":"park_later"');
   });
 
   test("a tool that is off, called anyway, goes back to the model as a refusal and the turn carries on", async () => {
@@ -985,7 +996,7 @@ describe("a relax chip is the user's tap, applied by the server", () => {
 describe("review: what a hostile reader would try", () => {
   test("the rules themselves: which tools an intent leaves on, and the stay it assumes", () => {
     const names = (intent: "park_now" | "park_later" | "garage_or_lot") =>
-      toolsForIntent(TOOL_DEFINITIONS, intent).map((t) => t.name);
+      TOOL_DEFINITIONS.map((t) => t.name).filter((name) => toolAllowed(intent, name));
     expect(names("park_now")).toEqual(without("build_itinerary"));
     expect(names("park_later")).toEqual(ALL_TOOLS);
     expect(names("garage_or_lot")).toEqual(without("quote_street", "build_itinerary"));
@@ -1132,8 +1143,13 @@ describe("review: what a hostile reader would try", () => {
     const card = body.plan.plan as Card;
     expect(card.kind).toBe("none_meets");
     expect(card.nearMisses.map((o) => o.type).sort()).toEqual(["garage", "street"]);
-    // The model was never offered the street quote, and never needed it.
-    expect(model.offered.slice(1).every((tools) => !tools.includes("quote_street"))).toBe(true);
+    // The model never called the street quote, and never needed it.
+    const called = model.seen
+      .flat()
+      .flatMap((m) => (typeof m.content === "string" ? [] : m.content))
+      .filter((b) => b.type === "tool_use")
+      .map((b) => (b as { name: string }).name);
+    expect(called).not.toContain("quote_street");
     expect(body.reply).toBe((body.plan.plan as { headline: string }).headline);
     expect(body.reply).toContain("No garage under $10.00");
   });

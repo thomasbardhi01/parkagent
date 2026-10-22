@@ -35,7 +35,7 @@ flowchart LR
     PB["ParkBoston"]
     SH["SpotHero · ParkWhiz<br/>deep links"]
     ST["Stripe<br/>holds · Issuing · Link"]
-    AN["Anthropic API<br/>Sonnet 5.5 · Haiku"]
+    AN["Anthropic API<br/>claude-sonnet-5-5 (assistant) · claude-haiku-5-5 (explain)<br/>thinking blocks passed back unchanged"]
     AM["Apple Maps geocoder"]
   end
 
@@ -53,6 +53,8 @@ flowchart LR
   AT --> CAP
   CAP --> AM & SH
   CAP --> GATE
+  AN -- "stop_reason refusal → the server's sentence, refused on the turn row" --> AT
+  CAP -- "explainDecision: template (deterministic)" --> DEC
   AT -. "street: start_via_app" .-> PL
   JOBS -- "as job for the owner" --> GATE
   GATE --> EXT
@@ -117,6 +119,7 @@ flowchart LR
     C1["geocode · quoteStreet<br/>searchGarages · buildItinerary"]
     C2["proposePlan → plan + mandate token"]
     C3["confirmPlan (token bound to plan hash)"]
+    C4["explainDecision<br/>template; phrasing is M's"]
   end
 
   GATE["moneyGate<br/>caps · dry run · consent · max stay · link"]
@@ -130,6 +133,7 @@ flowchart LR
   CL -- "Bearer pak_" --> P
   SIRI -.-> P
   P --> C1 & C2 & C3
+  P --> C4
   C3 --> GATE
   GATE -- "street, start now" --> LIFE
   LIFE --> GATE
@@ -141,6 +145,7 @@ flowchart LR
   classDef planned stroke:#1d5fa8,stroke-width:2px,stroke-dasharray:5 4
   class GATE,EXE money
   class GROK,CL,SIRI planned
+  class C4 planned
 ```
 
 ## How it gets built

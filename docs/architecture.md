@@ -43,6 +43,7 @@ flowchart LR
 
   DB[("Postgres<br/>sessions · pending_parks<br/>location_fixes · users")]
   PF[("park_fixes<br/>every fix a park read or refused · 30 days")]
+  PLAN[("assistant_plans<br/>confirmed by an agent · bound once")]
 
   LR --> AUTH
   PL --> AUTH
@@ -73,6 +74,8 @@ flowchart LR
   AUD -. "reads" .-> DEC
   AUD -. "reads sessions · pending_parks · park_fixes" .-> DB & PF
   AUD -. "AUDIT_SUMMARY: findings only, grounded" .-> AN
+  AT -. "agent confirm: pending_arrival" .-> PLAN
+  R1 -- "/parked in the plan's zone (as /parked resolves it), in the window, same dry run: held confirmed, pays on left_car" --> PLAN
 
   classDef money stroke:#b42318,stroke-width:2.5px
   classDef ext stroke:#b7791f,stroke-width:2px
@@ -88,6 +91,7 @@ Each park the phone reports becomes a `pending_parks` row. Every transition is a
 stateDiagram-v2
   direction LR
   [*] --> at_car: /parked (app lists walk_away)
+  [*] --> confirmed: /parked at an agent's confirmed spot (its zone, its window, its dry run)
   at_car --> prompted: walk-away by pace
   at_car --> confirmed: Pay tapped at the car
   prompted --> confirmed: Pay tapped, back at car

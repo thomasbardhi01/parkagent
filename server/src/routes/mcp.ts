@@ -102,14 +102,16 @@ type ToolName = (typeof MCP_TOOLS)[number]["name"];
 /** What each tool does, for a host deciding what to ask the user before a
  * call (MCP tool annotations, #280): the five searches and the why only
  * read; propose_plan writes a plan row and, for a confirm key, mints a
- * mandate; confirm_plan spends that mandate, once. destructiveHint and
- * openWorldHint are left to the spec's defaults (not agreed, #280). */
+ * mandate; confirm_plan spends that mandate, once. A proposal moves no
+ * money and needs a confirm with its mandate, so it isn't destructive;
+ * confirm_plan keeps the spec's default (destructive: it spends).
+ * openWorldHint is left to the spec's default. */
 const ANNOTATIONS: Record<ToolName, ToolAnnotations> = {
   geocode_place: { readOnlyHint: true },
   quote_street: { readOnlyHint: true },
   search_garages: { readOnlyHint: true },
   build_itinerary: { readOnlyHint: true },
-  propose_plan: { readOnlyHint: false, idempotentHint: false },
+  propose_plan: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
   confirm_plan: { readOnlyHint: false, idempotentHint: false },
   explain_decision: { readOnlyHint: true },
 };

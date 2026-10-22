@@ -230,9 +230,10 @@ describe("discovery", () => {
       quote_street: { readOnlyHint: true },
       search_garages: { readOnlyHint: true },
       build_itinerary: { readOnlyHint: true },
-      // Writes a plan and (a confirm key) mints a mandate.
-      propose_plan: { readOnlyHint: false, idempotentHint: false },
-      // Spends the mandate, once.
+      // Writes a plan and (a confirm key) mints a mandate; moves no money.
+      propose_plan: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+      // Spends the mandate, once: no destructiveHint, so the spec's
+      // default (true) stands.
       confirm_plan: { readOnlyHint: false, idempotentHint: false },
       explain_decision: { readOnlyHint: true },
     });

@@ -4098,7 +4098,9 @@ the MCP TypeScript SDK v2 (`createMcpHandler`, mounted with
   searches and `explain_decision`; `readOnlyHint: false, idempotentHint:
   false` on `propose_plan` (it writes a plan and, for a confirm key, mints
   a mandate) and `confirm_plan` (it spends that mandate, once).
-  `destructiveHint` and `openWorldHint` are left to the spec's defaults.
+  `propose_plan` is also `destructiveHint: false`: it moves no money and
+  needs a confirm with its mandate. `confirm_plan` keeps the spec's default
+  (destructive), and `openWorldHint` is left to the spec's default.
   Each answers the REST body as `structuredContent` (and as JSON text). A
   refusal is a tool error (`isError: true`) whose body carries the REST
   code in `error`: `agents_not_allowed`, `scope_required`,

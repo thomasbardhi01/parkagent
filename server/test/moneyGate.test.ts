@@ -232,7 +232,8 @@ describe("an external agent", () => {
     async (_n, a) => {
       const g = makeGate();
       const refused = await g.gate(AGENT, a.intent);
-      expect(refused).toMatchObject({ ok: false, rule: "agents_not_allowed", spentTodayUsd: 0 });
+      // Nothing but the refusal: no policy, no dry run, no spend read.
+      expect(refused).toEqual({ ok: false, rule: "agents_not_allowed" });
       g.state.users.find((u) => u.id === "u2")!.agentsMayAct = true;
       const allowed = await g.gate(AGENT, a.intent);
       expect(allowed).toMatchObject({ ok: true, rule: null });

@@ -26,7 +26,7 @@ import {
 } from "../services/apns.js";
 import type { HoursInterval } from "../services/hours.js";
 import { priceStay } from "../services/quote.js";
-import { moneyGate } from "../services/moneyGate.js";
+import { moneyGate, refusedConsent } from "../services/moneyGate.js";
 import { principalFor } from "../services/principal.js";
 import { applyExtension, priceExtension } from "../services/sessions.js";
 import { fireShadowAuthorization } from "../services/shadow.js";
@@ -213,6 +213,19 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
       },
       at,
     );
+    if (refusedConsent(gate)) {
+      const decision = await deps.db.decision.create({
+        data: {
+          kind: "session_start",
+          inputs: { body, policyHash: deps.policy.hash() },
+          rule: gate.rule,
+          outcome: { allowed: false },
+          userId: user.id,
+          parkedEventId: parkedEvent.id,
+        },
+      });
+      return reply.code(403).send({ error: gate.rule, decisionId: decision.id });
+    }
     const { dryRun, spentTodayUsd } = gate;
     if (!gate.ok && gate.rule === "provider_not_linked" && provider) {
       // Refused naming the provider, so the app can send them to the link flow.
@@ -777,6 +790,19 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
       { kind: "extend", session, minutes: body.minutes, price, source: "manual" },
       at,
     );
+    if (refusedConsent(gate)) {
+      const decision = await deps.db.decision.create({
+        data: {
+          kind: "session_extend",
+          inputs: { body, policyHash: deps.policy.hash() },
+          rule: gate.rule,
+          outcome: { allowed: false },
+          userId: user.id,
+          sessionId: session.id,
+        },
+      });
+      return reply.code(403).send({ error: gate.rule, decisionId: decision.id });
+    }
     const { spentTodayUsd } = gate;
     const violation = gate.ok ? null : gate.rule;
     const decisionInputs = {
@@ -812,24 +838,44 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
       price,
       "manual",
     );
-    const refusedUnderLock =
+    if (
       !outcome.ok &&
       (outcome.code === "max_stay_exceeded" ||
         outcome.code === "session_cap_exceeded" ||
-        outcome.code === "daily_cap_exceeded");
+        outcome.code === "daily_cap_exceeded")
+    ) {
+      // The gate refused the fresh row under the lock: another extension
+      // landed between pricing and now, and this one no longer fits. Its
+      // own row, with what the gate read there, not the pre-lock inputs.
+      const decision = await deps.db.decision.create({
+        data: {
+          kind: "session_extend",
+          inputs: {
+            ...decisionInputs,
+            spentTodayUsd: outcome.spentTodayUsd ?? spentTodayUsd,
+            underLock: true,
+          },
+          rule: outcome.code,
+          outcome: { allowed: false },
+          userId: user.id,
+          sessionId: session.id,
+        },
+      });
+      return reply
+        .code(409)
+        .send({ error: "policy_violation", rule: outcome.code, decisionId: decision.id });
+    }
     const failRule = outcome.ok
       ? "extend_ok"
-      : refusedUnderLock
-        ? outcome.code
-        : outcome.code === "free_period"
-          ? "free_period"
-          : outcome.code === "extension_in_progress"
-            ? "extension_in_progress"
-            : outcome.code === "card_declined"
-              ? "hold_declined"
-              : outcome.code === "wallet_not_ready" || outcome.code === "hold_failed"
-                ? "hold_failed"
-                : "executor_failed";
+      : outcome.code === "free_period"
+        ? "free_period"
+        : outcome.code === "extension_in_progress"
+          ? "extension_in_progress"
+          : outcome.code === "card_declined"
+            ? "hold_declined"
+            : outcome.code === "wallet_not_ready" || outcome.code === "hold_failed"
+              ? "hold_failed"
+              : "executor_failed";
     await deps.db.decision.create({
       data: {
         kind: "session_extend",
@@ -861,11 +907,6 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
       },
     });
     if (!outcome.ok) {
-      if (refusedUnderLock) {
-        // The gate refused the fresh row under the lock: another extension
-        // landed between pricing and now, and this one no longer fits.
-        return reply.code(409).send({ error: "policy_violation", rule: outcome.code });
-      }
       if (outcome.code === "free_period") {
         // Not an executor failure: the provider says this zone is free
         // right now, so there is nothing to extend (and nothing charged).
@@ -901,7 +942,19 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
 
     // Stopping buys nothing; the gate asks only who is acting.
     const gate = await moneyGate(deps, principalFor(userId), { kind: "stop" }, at);
-    if (!gate.ok) return reply.code(403).send({ error: gate.rule });
+    if (!gate.ok) {
+      const decision = await deps.db.decision.create({
+        data: {
+          kind: "session_stop",
+          inputs: { body: { sessionId: session.id }, policyHash: deps.policy.hash() },
+          rule: gate.rule,
+          outcome: { allowed: false },
+          userId,
+          sessionId: session.id,
+        },
+      });
+      return reply.code(403).send({ error: gate.rule, decisionId: decision.id });
+    }
     const { dryRun } = gate;
     const startedAtMs = Date.now();
     const result = await deps

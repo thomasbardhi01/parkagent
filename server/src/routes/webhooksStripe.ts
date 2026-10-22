@@ -208,6 +208,7 @@ async function handleAuthorizationRequest(
   if (settled.replayed) {
     await deps.db.decision.create({
       data: {
+        actor: "job",
         kind: "issuing_authorization",
         inputs: { stripeAuthorizationId: auth.id, stripeCardId, amountUsd, replayed: true },
         rule: settled.reason,
@@ -225,6 +226,7 @@ async function handleAuthorizationRequest(
 
   await deps.db.decision.create({
     data: {
+      actor: "job",
       kind: "issuing_authorization",
       inputs: {
         stripeAuthorizationId: auth.id,
@@ -284,6 +286,7 @@ async function upsertAuthorization(deps: AppDeps, auth: Stripe.Issuing.Authoriza
       const hold = await deps.db.sessionHold.findUnique({ where: { id: existing.holdId } });
       await deps.db.decision.create({
         data: {
+          actor: "job",
           kind: "wallet_hold",
           inputs: { stripeAuthorizationId: auth.id, holdId: existing.holdId },
           rule: "authorization_reversed",
@@ -351,6 +354,7 @@ async function handleTopupSucceeded(deps: AppDeps, intent: Stripe.PaymentIntent)
   if (processed) {
     await deps.db.decision.create({
       data: {
+        actor: "job",
         kind: "card_topup_funded",
         inputs: { paymentIntentId: intent.id, amountUsd, replayed: true },
         rule: "replayed",
@@ -384,6 +388,7 @@ async function handleTopupSucceeded(deps: AppDeps, intent: Stripe.PaymentIntent)
   }
   await deps.db.decision.create({
     data: {
+      actor: "job",
       kind: "card_topup_funded",
       inputs: { paymentIntentId: intent.id, amountUsd },
       rule: moved ? "funded" : "funding_move_failed",
@@ -416,6 +421,7 @@ async function reconcileHold(
   });
   await deps.db.decision.create({
     data: {
+      actor: "job",
       kind: "wallet_hold",
       inputs: { holdId: hold.id, paymentIntentId: intent.id, stripeStatus: intent.status },
       rule: changed.count === 1 ? `reconciled_${status}` : "replayed",

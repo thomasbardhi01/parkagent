@@ -59,11 +59,14 @@ describe("the current principal", () => {
     expect(jobPrincipal("u2")).toMatchObject({ userId: "u2", actor: "job" });
   });
 
-  test("principalFor keeps the current one only when it is that user's", async () => {
+  test("principalFor is the current one for that user, and never a downgrade", async () => {
     expect(principalFor("u2")).toMatchObject({ userId: "u2", actor: "user" });
     await runAs(AGENT, async () => {
       expect(principalFor("u2")).toBe(AGENT);
-      expect(principalFor("u1")).toMatchObject({ userId: "u1", actor: "user" });
+      // An agent (or an admin) reaching another user's money path is a
+      // bug, not that user: it throws rather than be judged with consent
+      // never checked.
+      expect(() => principalFor("u1")).toThrow(/principal mismatch/);
     });
   });
 });

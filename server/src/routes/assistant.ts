@@ -52,7 +52,7 @@ import { cityForZone, providerForCity } from "../providers/registry.js";
 import { nycStartOfDay, parseEasternTime } from "../services/hours.js";
 import { LINK_PENDING_STATUSES, linkSpentSince } from "../services/link/linkSpend.js";
 import { makeRateLimiter } from "../services/rateLimit.js";
-import { moneyGate, spentToday } from "../services/moneyGate.js";
+import { moneyGate, refusedConsent, spentToday } from "../services/moneyGate.js";
 import { normalizeSource } from "../services/wallet/summary.js";
 import { policyFor } from "../services/limits.js";
 
@@ -465,8 +465,10 @@ export function registerAssistant(
     // money path: never under dry run unless Link itself is in test mode
     // (test requests carry test:true and can't charge).
     const linkBlockedByDryRun = linkActive && dryRun && deps.linkWallet?.testMode !== true;
-    // Today's spend, whatever paid (approved Link garages included).
-    const spentTodayUsd = await spentToday(deps.db, user.id, at);
+    // Today's spend, whatever paid (approved Link garages included), as the
+    // gate counts it: under a dry run, dry runs recorded today count too,
+    // so the row, the response and the refusal agree.
+    const spentTodayUsd = await spentToday(deps.db, user.id, at, { dryRun });
     // Requests still awaiting approval become spend the moment the user
     // approves them, so they hold their room too: two confirms can't each
     // fit the cap and together pass it.
@@ -807,6 +809,7 @@ export function registerAssistant(
       { kind: "plan", stopsUsd: [], totalUsd, perStop: false },
       now(),
     );
+    if (refusedConsent(gate)) return reply.code(403).send({ error: gate.rule });
     const { spentTodayUsd } = gate;
     const capUsd = gate.policy.daily_cap_usd;
     const fitsCap = gate.ok;
@@ -879,6 +882,7 @@ export function registerAssistant(
       { kind: "plan", stopsUsd: [], totalUsd, perStop: false },
       now(),
     );
+    if (refusedConsent(gate)) return reply.code(403).send({ error: gate.rule });
     const { policy, spentTodayUsd } = gate;
     if (!gate.ok) {
       await deps.db.decision.create({

@@ -95,7 +95,20 @@ export interface GateFacts {
   accountStatus: string | null;
 }
 
-export type GateResult = GateFacts & ({ ok: true; rule: null } | { ok: false; rule: GateRule });
+/** A refused agent learns nothing: no policy, no dry run, no spend. */
+export interface ConsentRefusal {
+  ok: false;
+  rule: "agents_not_allowed";
+}
+
+export type GateResult =
+  | ConsentRefusal
+  | (GateFacts &
+      ({ ok: true; rule: null } | { ok: false; rule: Exclude<GateRule, "agents_not_allowed"> }));
+
+export function refusedConsent(result: GateResult): result is ConsentRefusal {
+  return !("policy" in result);
+}
 
 /**
  * Dollars this user has committed today (NYC calendar day), whatever
@@ -138,22 +151,26 @@ export async function moneyGate(
   intent: GateIntent,
   at: Date,
 ): Promise<GateResult> {
-  const policy = await policyFor(deps, principal.userId);
-  const dryRun = deps.policy.effectiveDryRun();
-  const facts: GateFacts = { policy, dryRun, spentTodayUsd: 0, accountStatus: null };
-  const refuse = (rule: GateRule): GateResult => ({ ...facts, ok: false, rule });
-  const allow = (): GateResult => ({ ...facts, ok: true, rule: null });
-
   // An external agent acts only for a person who said it may. Checked
-  // first, before any fact about the money, so a refused agent learns
-  // nothing about caps or spend.
+  // first, before any fact about the money is read, so a refused agent
+  // learns nothing about caps, dry run or spend.
   if (principal.actor === "external_agent") {
     const user = await deps.db.user.findUnique({
       where: { id: principal.userId },
       select: { agentsMayAct: true },
     });
-    if (user?.agentsMayAct !== true) return refuse("agents_not_allowed");
+    if (user?.agentsMayAct !== true) return { ok: false, rule: "agents_not_allowed" };
   }
+
+  const policy = await policyFor(deps, principal.userId);
+  const dryRun = deps.policy.effectiveDryRun();
+  const facts: GateFacts = { policy, dryRun, spentTodayUsd: 0, accountStatus: null };
+  const refuse = (rule: Exclude<GateRule, "agents_not_allowed">): GateResult => ({
+    ...facts,
+    ok: false,
+    rule,
+  });
+  const allow = (): GateResult => ({ ...facts, ok: true, rule: null });
 
   if (intent.kind === "stop") return allow();
   if (intent.kind === "funding") {

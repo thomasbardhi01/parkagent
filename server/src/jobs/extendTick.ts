@@ -23,7 +23,7 @@ import { AT_CAR_RADIUS_M, FIX_USABLE_ACCURACY_M, clockLabel } from "../services/
 import { cityPolicy } from "../services/policy.js";
 import type { SessionDeps } from "../services/sessions.js";
 import { applyExtension, priceExtension } from "../services/sessions.js";
-import { moneyGate, sessionSpentUsd } from "../services/moneyGate.js";
+import { moneyGate, refusedConsent, sessionSpentUsd } from "../services/moneyGate.js";
 import { jobPrincipal, runAs } from "../services/principal.js";
 import { policyFor } from "../services/limits.js";
 
@@ -333,6 +333,8 @@ export function makeExtender(deps: ExtenderDeps): Extender {
       },
       at,
     );
+    // A job pass acts for the session's owner; it is never an external agent.
+    if (refusedConsent(gate)) throw new Error("a job pass needs no consent");
     const { spentTodayUsd } = gate;
 
     // The decision ladder. Max-stay gate: the stay allowance left to buy is
@@ -463,6 +465,29 @@ export function makeExtender(deps: ExtenderDeps): Extender {
           ...(result.executor ? { executor: result.executor } : {}),
           ...(result.shadow ? { shadow: result.shadow } : {}),
           ...(result.hold ? { hold: result.hold } : {}),
+        };
+      } else if (
+        result.code === "session_cap_exceeded" ||
+        result.code === "daily_cap_exceeded" ||
+        result.code === "max_stay_exceeded"
+      ) {
+        // The gate refused the fresh row under the lock (another extension
+        // landed since this one was priced): the matching cap rule, as a
+        // hold, never an executor failure. The next tick reads it anew.
+        rule =
+          result.code === "session_cap_exceeded"
+            ? "hold_session_cap"
+            : result.code === "daily_cap_exceeded"
+              ? "hold_daily_cap"
+              : "warn_max_stay";
+        outcome = {
+          action: "hold",
+          minutes,
+          ok: false,
+          code: result.code,
+          message: result.message,
+          underLock: true,
+          ...(result.spentTodayUsd !== undefined ? { spentTodayUsd: result.spentTodayUsd } : {}),
         };
       } else if (result.code === "extension_in_progress" || result.code === "phone_not_away") {
         // The user's own Extend (or a racing tick) got there first, or the

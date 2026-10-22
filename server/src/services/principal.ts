@@ -75,11 +75,18 @@ export function traceIdFrom(traceparent: unknown): string | null {
 }
 
 /** The principal acting for `userId` here: the request's or job pass's
- * own when it is theirs, else a plain user (a service called outside one,
- * as tests do). Services that take a user id and not a request read this. */
+ * own, or a plain user outside one (a service called directly, as tests
+ * do). Services that take a user id and not a request read this. A
+ * current principal for ANOTHER user is a bug, never a downgrade: an
+ * agent or an admin reaching a user's money path is judged as itself or
+ * not at all, so this throws rather than answer as that user. */
 export function principalFor(userId: string): Principal {
   const current = currentPrincipal();
-  return current && current.userId === userId
-    ? current
-    : userPrincipal({ id: userId, isAdmin: false });
+  if (!current) return userPrincipal({ id: userId, isAdmin: false });
+  if (current.userId !== userId) {
+    throw new Error(
+      `principal mismatch: ${current.actor} for ${current.userId} acting for ${userId}`,
+    );
+  }
+  return current;
 }

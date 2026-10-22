@@ -20,7 +20,7 @@ import type { ExecutorDiagnostics, ExecutorErrorCode, ExecutorProvider } from ".
 import { executorOutcome } from "./executor.js";
 import type { HoursInterval } from "./hours.js";
 import { policyFor } from "./limits.js";
-import { moneyGate, sessionSpentUsd, spentToday } from "./moneyGate.js";
+import { moneyGate, refusedConsent, sessionSpentUsd, spentToday } from "./moneyGate.js";
 import type { Policy } from "./policy.js";
 import type { Principal } from "./principal.js";
 import type { RatedTerms, StayPrice } from "./quote.js";
@@ -116,6 +116,9 @@ export type ExtensionOutcome =
       message: string;
       price: StayPrice;
       durationMs: number;
+      /** Today's spend as the gate read it under the lock, on a refusal
+       * it made there (the caller's ledger row says what it judged on). */
+      spentTodayUsd?: number;
       diagnostics?: ExecutorDiagnostics;
       executor?: Record<string, unknown>;
       hold?: HoldOutcome;
@@ -215,6 +218,8 @@ export async function applyExtension(
             : `refused under the lock: ${gate.rule}`,
         price,
         durationMs: 0,
+        // The facts the refusal was judged on, for the caller's ledger row.
+        ...(refusedConsent(gate) ? {} : { spentTodayUsd: gate.spentTodayUsd }),
       };
       return outcome;
     }

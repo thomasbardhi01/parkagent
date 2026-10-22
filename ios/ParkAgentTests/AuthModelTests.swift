@@ -20,6 +20,30 @@ final class AuthModelTests: XCTestCase {
         XCTAssertEqual(auth.methods, .appleOnly)
     }
 
+    private final class SignOutAPI: HangingAPI, @unchecked Sendable {
+        var released: [String] = []
+        override func unregisterDevice(token: String) async throws { released.append(token) }
+    }
+
+    /// Sign-out releases this phone's push token, so the account's pushes
+    /// (payments, reconnects) stop reaching a phone nobody is signed in on.
+    func testSignOutReleasesThePushToken() async {
+        let api = SignOutAPI()
+        let auth = model(api)
+        auth.pushToken = { "abc123" }
+        await auth.signOut()
+        XCTAssertEqual(api.released, ["abc123"])
+    }
+
+    /// No token yet (notifications never allowed): nothing to release.
+    func testSignOutWithNoPushTokenReleasesNothing() async {
+        let api = SignOutAPI()
+        let auth = model(api)
+        auth.pushToken = { nil }
+        await auth.signOut()
+        XCTAssertTrue(api.released.isEmpty)
+    }
+
     /// Whatever the server reports is what the screen offers.
     func testTakesTheServersAnswer() async {
         UserDefaults.standard.set("apple,email", forKey: MockAPI.authMethodsKey)

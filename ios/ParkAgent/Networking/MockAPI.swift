@@ -543,6 +543,10 @@ struct MockAPI: APIClient {
         try await pause()
     }
 
+    func unregisterDevice(token: String) async throws {
+        try await pause()
+    }
+
     func nearbyZones(lat: Double, lng: Double, radiusM: Double) async throws -> NearbyZonesResponse {
         try await pause()
         return MockFixtures.nearbyZones(around: (lat: lat, lng: lng), radiusM: radiusM)

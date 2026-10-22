@@ -320,6 +320,11 @@ struct LiveAPI: APIClient {
         let _: Ignored = try await send("device", method: "POST", body: registration)
     }
 
+    func unregisterDevice(token: String) async throws {
+        struct Ignored: Decodable {}
+        let _: Ignored = try await send("device", method: "DELETE", body: ["token": token])
+    }
+
     func limits() async throws -> UserLimitsResponse {
         try await send("me/limits")
     }

@@ -424,6 +424,16 @@ final class LiveAPIRequestTests: XCTestCase {
         XCTAssertEqual(request.url?.path(), "/parked/pe1/decline")
     }
 
+    /// Sign-out releases the push token: DELETE /device with it.
+    func testUnregisteringTheDeviceSendsItsToken() async throws {
+        StubURLProtocol.respond(json: #"{"ok": true}"#)
+        try await api.unregisterDevice(token: "abc123")
+        let request = try sentRequest()
+        XCTAssertEqual(request.httpMethod, "DELETE")
+        XCTAssertEqual(request.url?.path(), "/device")
+        XCTAssertEqual(try body(request)["token"] as? String, "abc123")
+    }
+
     /// FR-54: the app says which place outcomes it can show, and reads the
     /// place back. A server from before FR-54 sends no `place`, and its
     /// answer still decodes.

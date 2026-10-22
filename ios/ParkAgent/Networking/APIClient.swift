@@ -58,6 +58,9 @@ protocol APIClient: Sendable {
     /// "Not now": nothing is paid and the park stops waiting.
     func declinePark(parkedEventId: String) async throws
     func registerDevice(_ registration: DeviceRegistration) async throws
+    /// DELETE /device: release this account's push token (sign-out), so a
+    /// signed-out phone gets no more of its pushes.
+    func unregisterDevice(token: String) async throws
     /// GET /me/limits — this user's own caps and default stay, with the
     /// operator's ceilings.
     func limits() async throws -> UserLimitsResponse

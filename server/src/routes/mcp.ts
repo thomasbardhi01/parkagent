@@ -24,7 +24,7 @@
 
 import type { NodeIncomingMessageLike } from "@modelcontextprotocol/node";
 import { toNodeHandler } from "@modelcontextprotocol/node";
-import type { CallToolResult, ServerContext } from "@modelcontextprotocol/server";
+import type { CallToolResult, ServerContext, ToolAnnotations } from "@modelcontextprotocol/server";
 import {
   createMcpHandler,
   McpServer,
@@ -98,6 +98,21 @@ const MCP_TOOLS = [
 ] as const;
 
 type ToolName = (typeof MCP_TOOLS)[number]["name"];
+
+/** What each tool does, for a host deciding what to ask the user before a
+ * call (MCP tool annotations, #280): the five searches and the why only
+ * read; propose_plan writes a plan row and, for a confirm key, mints a
+ * mandate; confirm_plan spends that mandate, once. destructiveHint and
+ * openWorldHint are left to the spec's defaults (not agreed, #280). */
+const ANNOTATIONS: Record<ToolName, ToolAnnotations> = {
+  geocode_place: { readOnlyHint: true },
+  quote_street: { readOnlyHint: true },
+  search_garages: { readOnlyHint: true },
+  build_itinerary: { readOnlyHint: true },
+  propose_plan: { readOnlyHint: false, idempotentHint: false },
+  confirm_plan: { readOnlyHint: false, idempotentHint: false },
+  explain_decision: { readOnlyHint: true },
+};
 
 /** The tools, in the declared order (MCP_TOOLS): tools/list answers them
  * in exactly this order. */
@@ -203,6 +218,7 @@ export function buildMcpServer(
       {
         description: describe(tool.name),
         inputSchema: tool.schema as z.ZodObject,
+        annotations: ANNOTATIONS[tool.name],
         ...(cardMeta ? { _meta: { ui: { resourceUri: CONFIRM_CARD_URI } } } : {}),
       },
       async (args: unknown, ctx: ServerContext) => {

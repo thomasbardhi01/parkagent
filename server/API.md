@@ -4093,6 +4093,12 @@ the MCP TypeScript SDK v2 (`createMcpHandler`, mounted with
   taking `{decisionId}`), always in that order, and `tools/list` is cacheable
   `{ttlMs: 300000, cacheScope: "private"}`. Each takes the REST route's
   body as its arguments; `confirm_plan` takes `{planId, confirmToken}`.
+  Each carries its tool annotations, so a host can tell a read from a
+  write without reading the prose: `readOnlyHint: true` on the four
+  searches and `explain_decision`; `readOnlyHint: false, idempotentHint:
+  false` on `propose_plan` (it writes a plan and, for a confirm key, mints
+  a mandate) and `confirm_plan` (it spends that mandate, once).
+  `destructiveHint` and `openWorldHint` are left to the spec's defaults.
   Each answers the REST body as `structuredContent` (and as JSON text). A
   refusal is a tool error (`isError: true`) whose body carries the REST
   code in `error`: `agents_not_allowed`, `scope_required`,

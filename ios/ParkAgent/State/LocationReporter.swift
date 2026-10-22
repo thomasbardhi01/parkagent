@@ -4,9 +4,11 @@ import Observation
 
 /// While a session is active, streams location and POSTs /location — the
 /// extension worker's only view of whether the driver walked away from the
-/// car or is heading back (server `jobs/extendTick.ts`, which ignores fixes
-/// older than ten minutes). Also keeps the walking-distance-from-car figure
-/// fresh.
+/// car or is heading back (server `phonePosition` in
+/// `services/pendingSession.ts`: a fix counts while it was sent within the
+/// last five minutes, so the heartbeat's re-send of the last measurement
+/// keeps a phone sitting still counted). Also keeps the
+/// walking-distance-from-car figure fresh.
 ///
 /// It also runs for a park the server is holding until the phone leaves
 /// the car (FR-55): these fixes are how the server sees the walk-away

@@ -1733,21 +1733,28 @@ It buys time only while the phone is known to be away from the car
 (FR-55), and that is the lifecycle's to say (`phonePosition` in
 `services/pendingSession.ts`), the one reader the gate asks again under
 the extension lock. `inputs.position` is:
-- `away`: the park says the phone left (`left_car_at`) and nothing since
-  says it came back, and the newest fix is usable and counts, measured
-  within 5 minutes (`fixCountsFor`, on the fix's `measured_at`, else its
-  `ts`);
-- `at_car`: the park never saw the phone leave;
+- `at_car`: the newest fix is usable, counts, and is within 30 m of the
+  car, whatever the park holds (a fix at driving speed pulling out never
+  sets `back_at`);
+- `away`: the park says the phone left (`left_car_at`), nothing since says
+  it came back, and the newest fix is usable and counts;
 - `back`: it left, then was back within reach of the car (`back_at`);
 - `returned`: the lifecycle ended it;
 - `moved`: a later park put the car somewhere else;
 - `unknown`: no park row (a session the walk rules never saw), a park not
-  `started`, or a phone that left and has sent no counting fix in 5
-  minutes.
+  `started`, a park that never saw the phone leave and isn't shown at the
+  car, or a phone that has gone quiet.
+
+A fix counts while the phone is still reporting: sent (its `ts`) since the
+park and within 5 minutes of now, either way (a clock that far off says
+nothing). That is the report time, not the measurement: a phone sitting
+still gets no new measurement, and its heartbeat re-sends the last one
+every minute with `ts` now, so a driver in a café is still away. The walk
+rules read `measuredAt`; this doesn't.
 
 The trend only prices the cost rule, so a driver walking back with time
 to spare is still held (`hold_return_likely`). It never says the phone is
-away. The fixes it reads count on the same 5-minute clock.
+away. The fixes it reads count on the same clock.
 `hold_at_car` and `hold_returned` buy nothing and push nothing.
 `hold_position_unknown`, `hold_back_at_car` and `hold_car_moved` buy
 nothing and push `session_expiring` once, with reason `position_unknown`,

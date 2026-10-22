@@ -606,13 +606,20 @@ export type PhonePosition = "away" | "at_car" | "back" | "returned" | "moved" | 
  * take it. */
 export type StoredFix = Pick<LocationFixRow, "lat" | "lng" | "accuracyM" | "ts" | "measuredAt">;
 
-/** When the phone measured a stored fix: older rows carry only `ts`. */
-const measuredAtOf = (fix: StoredFix) => fix.measuredAt ?? fix.ts;
-
-/** Whether a stored fix says where the phone is now: the lifecycle's own
- * test (fixCountsFor), on the phone's measurement clock. */
-export function storedFixCounts(since: Date, fix: StoredFix, at: Date): boolean {
-  return fixCountsFor(since, measuredAtOf(fix), fix.ts, at);
+/**
+ * Whether a stored fix says the phone is still reporting: sent (its `ts`)
+ * since the park, and within LIFECYCLE_FIX_MAX_AGE_MS of now either way (a
+ * clock that far off says nothing). The report time, not the measurement:
+ * a phone sitting still gets no new measurement (CoreLocation's distance
+ * filter), and its heartbeat re-sends the last one every minute with
+ * `ts` now (LocationReporter). It is still reporting (#301 review). The
+ * walk rules read `measuredAt` (fixCountsFor); this doesn't.
+ */
+export function storedFixReported(since: Date, fix: StoredFix, at: Date): boolean {
+  return (
+    fix.ts.getTime() >= since.getTime() &&
+    Math.abs(at.getTime() - fix.ts.getTime()) <= LIFECYCLE_FIX_MAX_AGE_MS
+  );
 }
 
 /**
@@ -622,12 +629,13 @@ export function storedFixCounts(since: Date, fix: StoredFix, at: Date): boolean 
  * the newest fix the session stored for "still reporting".
  *
  * No park row (a session the lifecycle never saw): `unknown`, and nothing
- * is bought. A park that never saw the phone leave (`leftCarAt` null) is
- * `at_car`: nothing extends at the car. Left, and back since: `back`.
- * Left, and nothing since says it came back: `away` only while the newest
- * fix is usable and counts (fixCountsFor: measured within
- * LIFECYCLE_FIX_MAX_AGE_MS). A phone that has gone quiet may be back in
- * the car or driving off, so it is `unknown`.
+ * is bought. The newest fix usable and still reporting (storedFixReported)
+ * and within AT_CAR_RADIUS_M of the car: `at_car`, whatever the walk rules
+ * hold (a fix at driving speed pulling out never sets `backAt`). A park
+ * that never saw the phone leave and isn't shown at the car: `unknown`.
+ * Left, and back since: `back`. Left, and nothing since says it came back:
+ * `away` while the phone is still reporting a usable fix; one that has
+ * gone quiet may be back in the car or driving off, so it is `unknown`.
  */
 export function phonePosition(
   park: PendingParkRow | null,
@@ -638,12 +646,18 @@ export function phonePosition(
   if (park.status === "ended") return "returned";
   if (park.carMovedAt !== null) return "moved";
   if (park.status !== "started") return "unknown";
-  if (park.leftCarAt === null) return "at_car";
-  if (park.backAt !== null) return "back";
   const reporting =
     newest !== null &&
     newest.accuracyM <= FIX_USABLE_ACCURACY_M &&
-    storedFixCounts(park.parkedAt, newest, at);
+    storedFixReported(park.parkedAt, newest, at);
+  if (
+    reporting &&
+    metersBetween(newest.lat, newest.lng, park.carLat, park.carLng) <= AT_CAR_RADIUS_M
+  ) {
+    return "at_car";
+  }
+  if (park.leftCarAt === null) return "unknown";
+  if (park.backAt !== null) return "back";
   return reporting ? "away" : "unknown";
 }
 
@@ -670,7 +684,7 @@ export interface WalkTrend {
   distanceM: number | null;
   heading: Heading;
   walkEtaMin: number | null;
-  /** Of `fixes`, how many count (storedFixCounts), and how many don't. */
+  /** Of `fixes`, how many count (storedFixReported), and how many don't. */
   fixCount: number;
   staleFixCount: number;
 }
@@ -678,7 +692,7 @@ export interface WalkTrend {
 /**
  * The trend over a session's newest fixes (newest first, as stored), read
  * only from fixes that count: `since` is when the park was made (or the
- * session started, with no park), on the same clock as the walk rules.
+ * session started, with no park), on the report clock (storedFixReported).
  */
 export function walkTrend(
   car: { lat: number; lng: number } | null,
@@ -686,7 +700,7 @@ export function walkTrend(
   since: Date,
   at: Date,
 ): WalkTrend {
-  const counting = fixes.filter((f) => storedFixCounts(since, f, at));
+  const counting = fixes.filter((f) => storedFixReported(since, f, at));
   const distances =
     car === null
       ? []

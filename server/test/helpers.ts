@@ -2181,8 +2181,6 @@ export function makeFakeProviderOps(
   };
 }
 
-/** Seed a live ParkAgent-card hold (what the Issuing webhook approves
- * against). Defaults: u1, $10 held on session "seed-session", created now. */
 /** The park row a session's walk-away leaves (FR-55): started with the
  * session, the phone seen leaving at the session's start, nothing since
  * saying it came back. The extension worker reads "away" only from such a
@@ -2228,6 +2226,8 @@ export function seedAwayPark(
   return park;
 }
 
+/** Seed a live ParkAgent-card hold (what the Issuing webhook approves
+ * against). Defaults: u1, $10 held on session "seed-session", created now. */
 export function seedHold(
   state: FakeDbState,
   overrides: Partial<SessionHoldRow> = {},

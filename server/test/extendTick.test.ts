@@ -355,10 +355,10 @@ test("never buys time with the phone at the car, however cheap the extension", a
   expect(t.pushes).toEqual([]);
 });
 
-test("back at the car after leaving: nothing is bought, however cheap the extension", async () => {
-  // The 9 m fix is one the walk rules read as back within reach of the
-  // car (`backAt`); "at the car" after a walk-away is the lifecycle's
-  // `back`, never the worker's own distance.
+test("back within reach of the car after leaving: at the car, nothing bought, however cheap the extension", async () => {
+  // A usable fix that counts, 9 m from the car, is at the car whatever the
+  // walk rules hold (`back_at` here): the same answer the worker gave by
+  // its own distance before.
   const t = makeTickApp();
   const session = activeSession(t.state, { rateFirstHour: 0.5, rateAdditionalHour: 0.5 });
   await seedPark(t, session, { leftCarAt: T("13:02"), backAt: T("14:19") });
@@ -367,16 +367,30 @@ test("back at the car after leaving: nothing is bought, however cheap the extens
   await t.extender.tick();
 
   expect(lastTick(t.state)).toMatchObject({
-    rule: "hold_back_at_car",
-    inputs: { position: "back", distanceM: 9 },
+    rule: "hold_at_car",
+    inputs: { position: "at_car", distanceM: 9 },
   });
   expect(session.extendCount).toBe(0);
 });
 
-test("far from a car its lifecycle never saw the phone leave: nothing is bought", async () => {
-  // The lifecycle has this session and never saw the phone leave: the
-  // phone is at the car as far as FR-55 goes (a far fix now could be a
-  // phone riding off in it), and nothing extends at the car.
+test("the worker reads the newest fix, not the oldest of the three", async () => {
+  // Newest at 12 m (at the car) after two far ones: held. Read from the
+  // oldest (600 m) it would extend.
+  const t = makeTickApp();
+  const session = activeSession(t.state, { rateFirstHour: 0.5, rateAdditionalHour: 0.5 });
+  await seedPark(t, session, { leftCarAt: T("13:02") });
+  addFixes(t.state, session.id, [600, 300, 12]);
+
+  await t.extender.tick();
+
+  expect(lastTick(t.state)).toMatchObject({ rule: "hold_at_car", inputs: { position: "at_car" } });
+  expect(session.extendCount).toBe(0);
+});
+
+test("far from a car its lifecycle never saw the phone leave: nothing is bought, and the driver is told", async () => {
+  // A session paid away from the car (POST /session/start) gets a park
+  // from its first fix with no walk-away on it. Never seen leaving, and not
+  // shown at the car: unknown, so the meter isn't left to lapse unsaid.
   const t = makeTickApp();
   const session = activeSession(t.state);
   await seedPark(t, session);
@@ -384,10 +398,10 @@ test("far from a car its lifecycle never saw the phone leave: nothing is bought"
 
   await t.extender.tick();
 
-  expect(lastTick(t.state).inputs).toMatchObject({ position: "at_car", fixCount: 3 });
-  expect(lastTick(t.state).rule).toBe("hold_at_car");
+  expect(lastTick(t.state).inputs).toMatchObject({ position: "unknown", fixCount: 3 });
+  expect(lastTick(t.state).rule).toBe("hold_position_unknown");
   expect(session.extendCount).toBe(0);
-  expect(t.pushes).toEqual([]);
+  expect(t.pushes.map((p) => p.push.extra)).toEqual([{ reason: "position_unknown" }]);
 });
 
 test("no sign of where the phone is: nothing is bought, and the driver is told once", async () => {
@@ -465,9 +479,9 @@ test("a phone that left and whose newest fix is six minutes old: unknown, nothin
   expect(t.pushes.map((p) => p.push.extra)).toEqual([{ reason: "position_unknown" }]);
 });
 
-test("a fix measured long before it was sent is read by when it was measured", async () => {
-  // The outbox delivers a fix late: its ts is now, its measurement eight
-  // minutes old. It doesn't say the phone is still away.
+test("a heartbeat re-sending a measurement eight minutes old still says the phone is reporting: extended", async () => {
+  // Sitting still, the phone gets no new measurement and re-sends its last
+  // one each minute with ts now: "still reporting" is the report time.
   const t = makeTickApp();
   const session = activeSession(t.state);
   await seedPark(t, session, { leftCarAt: T("13:02") });
@@ -477,10 +491,10 @@ test("a fix measured long before it was sent is read by when it was measured", a
   await t.extender.tick();
 
   expect(lastTick(t.state)).toMatchObject({
-    rule: "hold_position_unknown",
-    inputs: { position: "unknown", fixCount: 0 },
+    rule: "extend",
+    inputs: { position: "away", fixCount: 3 },
   });
-  expect(session.extendCount).toBe(0);
+  expect(session.extendCount).toBe(1);
 });
 
 test("a phone that left the car and is still reporting away: extended, never past the max stay", async () => {

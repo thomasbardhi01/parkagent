@@ -597,7 +597,9 @@ export class AssistantTools {
           .map((b) => b.text)
           .join(" ")
           .trim();
-        if (joined.length > 0) text = joined;
+        // Only a finished answer replaces the template: a refusal or a
+        // cut-off (max_tokens) keeps the factual floor.
+        if (phrased.stopReason === "end_turn" && joined.length > 0) text = joined;
       } catch {
         // Fall back to the template — an explanation must never fail the turn.
       }

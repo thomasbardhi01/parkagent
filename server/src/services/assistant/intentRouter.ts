@@ -9,9 +9,9 @@
  *    garage-only request has no street quote either. The tools that aren't
  *    about what to search (the request itself, a place lookup, a question,
  *    history, an explanation, the two token-gated tools) are on under
- *    every intent. The loop offers the model the intent's tools on every
- *    model call, and a call to one that is off is refused
- *    (`tool_not_available_for_intent`);
+ *    every intent. The model is offered every tool on every call (the
+ *    prompt stays append-only for its thinking, loop.ts), and a call to
+ *    one the intent has off is refused (`tool_not_available_for_intent`);
  *  - the stay a search uses when the request names none: an hour for
  *    parking now, said as an assumption; nothing for a later or
  *    garage-only request, which is asked for instead;
@@ -41,14 +41,6 @@ export function intentOf(state: Pick<RequestState, "intent">): Intent {
 
 export function toolAllowed(intent: Intent, tool: string): boolean {
   return !TOOLS_OFF[intent].includes(tool);
-}
-
-/** The tool definitions an intent leaves on, in their declared order. */
-export function toolsForIntent<T extends { name: string }>(
-  definitions: readonly T[],
-  intent: Intent,
-): T[] {
-  return definitions.filter((tool) => toolAllowed(intent, tool.name));
 }
 
 /** What a model is told when it calls a tool its intent has off. */

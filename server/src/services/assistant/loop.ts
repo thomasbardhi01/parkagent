@@ -60,7 +60,7 @@ export { DEFAULT_ASSISTANT_MODEL, DEFAULT_EXPLAIN_MODEL, resolveAssistantModels 
 export type { ModelClient, ModelContentBlock, ModelResponse, ModelTurn, ModelUsage };
 export { currentTimeLine, joinReplySegments, scrubUngroundedAmounts, scrubVerbalConfirm };
 import { requestedTimeChoices, requestedTimeIn, requestedTimeLine } from "./requestedTime.js";
-import { intentOf, toolsForIntent } from "./intentRouter.js";
+import { intentOf } from "./intentRouter.js";
 import {
   applyPatch,
   currentRequestBlock,
@@ -68,7 +68,6 @@ import {
   parseStoredState,
   resolveTappedCandidate,
 } from "./requestState.js";
-import type { RequestState } from "./requestState.js";
 import { lastSearchIn, relaxationTapped } from "./search.js";
 
 const MAX_LOOP_ITERATIONS = 8;
@@ -89,8 +88,8 @@ Rules you cannot break (the tools enforce them too):
 - You never book, pay, or spend. Whenever you have searched — street or garage — you MUST end the turn by calling propose_plan; never leave a price in prose. The user acts by TAPPING a card, never by saying or typing "confirm" — never invite a verbal confirmation, and if someone types "confirm", point them at the card.
 - How the tap works, so you phrase cards correctly: a garage option and a street option for RIGHT NOW get a Confirm button. A street option for a FUTURE time gets no button at all — the card says "We'll pay automatically when you park here" (the detector pays at the curb) — that line is the card's own, so keep it out of the option's detail, which describes the spot. Don't promise to start future meters now; meters run from the moment they're paid.
 - book_garage and start_session work only with a confirmation_token from a card tap. You normally never have one; if a call is refused, propose a plan instead.
-- The request is the server's — the "Current request" below. quote_street and search_garages take NO arguments: they search the request as it stands (its place, time, stay, limits, and ranking). To search another place, time, stay, or budget, change the request first, then search. Never invent a price, address, or availability.
-- The request's intent is the server's too — park_now, park_later, or garage_or_lot, derived from its start and its kinds — and it decides which tools you have. A garage-only request has no quote_street: answer it with garages (if a meter is cheaper, the search adds it as one near-miss and the card shows it). build_itinerary is there only for a request that starts later: to plan a day of several stops, first put the day's first arrival on the request (update_request startsAt). A tool that is off answers tool_not_available_for_intent — don't retry it, and change the request only if the user asked for something else.
+- The request is the server's — the latest "Current request" block in the conversation (each user message carries it, and a tool result that changed it carries the new one). quote_street and search_garages take NO arguments: they search the request as it stands (its place, time, stay, limits, and ranking). To search another place, time, stay, or budget, change the request first, then search. Never invent a price, address, or availability.
+- The request's intent is the server's too — park_now, park_later, or garage_or_lot, derived from its start and its kinds — and it decides which tools you may use; the server refuses the others. A garage-only request has no quote_street: answer it with garages (if a meter is cheaper, the search adds it as one near-miss and the card shows it). build_itinerary is there only for a request that starts later: to plan a day of several stops, first put the day's first arrival on the request (update_request startsAt). A tool that is off answers tool_not_available_for_intent — don't retry it, and change the request only if the user asked for something else.
 - Each search answers with \`satisfying\` (the options that meet every limit, already ranked — never reorder them), \`nearMisses\` (options that break a limit; \`violates\` says which and by how much), and a \`verdict\`. propose_plan takes options BY ID, exactly as the latest search returned them; the server attaches each option's price, walk, time, and link. After any change to the request, search again before proposing: ids from an earlier search are refused.
 - When nothing meets the request (verdict none_meets), say so: call propose_plan with {kind: "none_meets"}. Never present a near-miss as if it met the request, and never loosen a limit yourself — the card gives the user one-tap ways to relax it.
 - quote_street searches every metered block within a walk of the place and says what each is doing during the stay ("Free after 6 PM on Seaport Blvd — 4 min walk", "Metered until 8 PM, then free", "$3.75/hr, 2 hr max"). Say there's no street parking ONLY when the search says our data has none within its radius, and then say the radius.
@@ -107,12 +106,16 @@ Rules you cannot break (the tools enforce them too):
 - A clock time the user names is theirs: put it on the request (update_request startsAt) and never move it to now or to any other time. When they name one with no day, their message carries a [requested time] line saying whether it is later today or has already passed; a time that has passed means its next occurrence — plan for that (the card says "Assuming tomorrow") or ask with ask_user ("Tomorrow at 7 PM" / "Now"). "Tonight" asked after midnight means this coming evening. The tools refuse a search or plan that moves a requested time.
 - Every user message ends with the CURRENT date and time in brackets. Compute every date from it — "tonight", "tomorrow", "at 2pm" are relative to that timestamp. NEVER guess or recall a date; a window in the past is always a mistake, and the tools will bounce it back to you with the current time so you can retry.`;
 
-/** What each model call is told: the fixed prompt, then the request as it
- * stands at that call (requestState.ts) — re-rendered after an
- * update_request, so the block is never behind the state. */
-export function systemPromptFor(state: RequestState): string {
-  return `${SYSTEM_PROMPT}\n\n${currentRequestBlock(state)}`;
-}
+/*
+ * Append-only, for the model's thinking (Claude Sonnet 5.5 binds each
+ * thinking block to everything before it: an edited system prompt, tool
+ * list, or earlier message is a 400 on newer accounts). So `system` is
+ * SYSTEM_PROMPT and `tools` is every definition, byte-identical on every
+ * call of every conversation; the request rides in the messages instead —
+ * on each user message, and after any tool result that changed it — and
+ * an earlier copy is never edited. The intent still decides which tools
+ * the model may use: execute() refuses the others.
+ */
 
 /** The one-shot correction when a turn searched but never proposed. */
 const PROPOSE_PLAN_REMINDER =
@@ -391,6 +394,8 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
     tapped
       ? `[request updated by this tap: ${tapped.changed.join(", ")} — already applied. Don't call update_request; search the request as it stands.]`
       : null,
+    // The request as this turn starts (append-only: never edited later).
+    currentRequestBlock(requestState),
   ].filter((line): line is string => line !== null);
   const userText = `${args.text}\n\n${envelope.join("\n")}`;
   const messages: ModelTurn[] = [...history, { role: "user", content: userText }];
@@ -441,6 +446,10 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
   let modelCalls = 0;
   /** The safeguard category when the model declined the turn. */
   let refused: string | null = null;
+  /** The request version the model was last shown (in the messages). */
+  let shownVersion = requestState.version;
+  /** Whether a call stopped at max_tokens. */
+  let cutOff = false;
 
   // The accounting row is written in the `finally` below: a turn that
   // dies mid-flight (provider error, timeout) has still SPENT the tokens
@@ -448,16 +457,9 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
   // escaping it.
   try {
     for (let iteration = 0; iteration < MAX_LOOP_ITERATIONS; iteration += 1) {
-      // Recomputed for every call: an edit earlier in this turn may have
-      // moved the intent, and with it what the model may do next.
-      const current = ctx.requestState ?? requestState;
+      // The same system prompt and tools on every call (append-only, above).
       const response = await args.model.create(
-        {
-          system: systemPromptFor(current),
-          messages,
-          tools: toolsForIntent(TOOL_DEFINITIONS, intentOf(current)),
-          maxTokens: MAX_TOKENS,
-        },
+        { system: SYSTEM_PROMPT, messages, tools: TOOL_DEFINITIONS, maxTokens: MAX_TOKENS },
         stream?.push,
       );
       stream?.flush();
@@ -471,6 +473,7 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
         refused = response.stopDetails?.category ?? "unknown";
         break;
       }
+      if (response.stopReason === "max_tokens") cutOff = true;
       for (const block of response.content) {
         if (block.type === "text") segments.push(block.text);
       }
@@ -502,7 +505,19 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
         if (outcome.endTurn) plan = outcome.endTurn;
         if (outcome.ask) asked = outcome.ask;
       }
-      messages.push({ role: "user", content: results });
+      // A tool that changed the request (update_request, a place lookup)
+      // is followed by the new request, after the results: appended, so
+      // the copies before it — and the thinking signed over them — stand.
+      const now = ctx.requestState ?? requestState;
+      if (now.version !== shownVersion) {
+        shownVersion = now.version;
+        messages.push({
+          role: "user",
+          content: [...results, { type: "text", text: currentRequestBlock(now) }],
+        });
+      } else {
+        messages.push({ role: "user", content: results });
+      }
       // propose_plan ends the turn: the card carries the plan; anything
       // more the model wanted to say waits for the user's next message.
       // ask_user ends it the same way — the question waits for a tap. So
@@ -555,6 +570,9 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
           latencyMs: Date.now() - startedMs,
           estimatedCostUsd,
           ...(refused !== null ? { refused } : {}),
+          // A call cut off at max_tokens (thinking included) is a turn
+          // that ended early, told apart from one that finished.
+          ...(cutOff ? { cutOffAtMaxTokens: true } : {}),
           proposedPlan: plan !== null,
           ...(plan ? { planKind: plan.plan.kind } : {}),
           stateEdits: ctx.requestEdits ?? 0,

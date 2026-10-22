@@ -128,7 +128,7 @@ export interface Env {
   ANTHROPIC_API_KEY: string | undefined;
   // Model routing (loop.ts resolveAssistantModels): ASSISTANT_MODEL runs
   // the tool loop (falls back to the legacy ANTHROPIC_MODEL, then
-  // claude-sonnet-5); EXPLAIN_MODEL phrases explain_decision output.
+  // claude-sonnet-5-5); EXPLAIN_MODEL phrases explain_decision output.
   ASSISTANT_MODEL: string | undefined;
   ANTHROPIC_MODEL: string | undefined;
   EXPLAIN_MODEL: string;

@@ -243,13 +243,37 @@ export async function quoteStreetAt(
   };
 }
 
+/** A day's stops at most (the plan schema's own limit). */
+export const MAX_ITINERARY_STOPS = 12;
+
 export async function buildItinerary(
   deps: CapabilityDeps,
   principal: Principal,
   turn: TurnState,
   input: Record<string, unknown>,
 ): Promise<ToolOutcome> {
-  const stops = input["stops"] as Record<string, unknown>[];
+  // The bounds the strict schema can't say: a day is one to twelve stops
+  // (each stop fans out a street and a garage search), and a stop's stay
+  // is 1 to 720 minutes.
+  const raw = Array.isArray(input["stops"]) ? (input["stops"] as Record<string, unknown>[]) : [];
+  if (raw.length === 0 || raw.length > MAX_ITINERARY_STOPS) {
+    await audit(
+      deps,
+      principal,
+      turn,
+      "build_itinerary",
+      { stopCount: raw.length },
+      "too_many_stops",
+      {},
+    );
+    return {
+      result: {
+        error: "stops_out_of_range",
+        instruction: `A day is 1 to ${MAX_ITINERARY_STOPS} stops; split it or drop some.`,
+      },
+    };
+  }
+  const stops = raw;
   const policy = await policyFor(deps, principal.userId);
   const at = now(deps);
   const out = [];
@@ -276,7 +300,7 @@ export async function buildItinerary(
       };
     }
     const arrival = easternIso(arrivalAt);
-    const minutes = num(stop["duration_minutes"]);
+    const minutes = Math.min(720, Math.max(1, Math.round(num(stop["duration_minutes"]) || 1)));
     // A day's stops each have their own time: the message's one
     // requested time (if any) isn't theirs to honor.
     const street = await quoteStreetAt(

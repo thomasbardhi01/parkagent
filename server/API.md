@@ -4013,6 +4013,8 @@ OpenAI-style functions are `examples/grok-tool.json` (regenerate with
 - `POST /agent/plans/:planId/confirm {confirmToken}` (`confirm` scope)
   runs the one confirm sequence the app's tap runs too
   (`consumeConfirmation` in `services/capabilities/confirmPlan.ts`):
+  a plan id that couldn't be one is `400` before anything is read or
+  written (MCP's `confirm_plan` refuses it by its input schema);
   consent first (`403 agents_not_allowed`, before the mandate is read);
   the mandate (`404 mandate_not_found`, also for another plan's token;
   `409 mandate_used`; `410 mandate_expired`; `409 plan_hash_mismatch`);

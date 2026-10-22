@@ -773,6 +773,19 @@ describe("resources", () => {
     }
   });
 
+  test("confirm_plan with a planId that isn't one: refused before anything is read or written", async () => {
+    const { t, tool } = await setup();
+    const decisions = vi.spyOn(t.deps.db.decision, "create");
+    const plans = vi.spyOn(t.deps.db.assistantPlan, "findUnique");
+    for (const planId of ["a\u0000b", "a b", "a".repeat(65)]) {
+      const out = await tool("confirm_plan", { planId, confirmToken: "t".repeat(20) });
+      expect(out.isError, planId).toBe(true);
+      expect(JSON.stringify(out["content"]), planId).toContain("planId");
+    }
+    expect(decisions).not.toHaveBeenCalled();
+    expect(plans).not.toHaveBeenCalled();
+  });
+
   test("a resource URI whose id isn't one: invalid params, nothing read", async () => {
     const { t, rpc, post } = await setup();
     const plans = vi.spyOn(t.deps.db.assistantPlan, "findUnique");
@@ -803,7 +816,13 @@ describe("resources", () => {
     const { t, rpc } = await setup({ scopes: ["confirm"] });
     const plans = vi.spyOn(t.deps.db.assistantPlan, "findUnique");
     const parks = vi.spyOn(t.deps.db.pendingPark, "findUnique");
-    for (const uri of [`parkagent://plans/${proposed.planId}`, "parkagent://parks/pp1"]) {
+    // The scope before the id: a malformed one is refused as the scope.
+    for (const uri of [
+      `parkagent://plans/${proposed.planId}`,
+      "parkagent://parks/pp1",
+      "parkagent://plans/a%00b",
+      "parkagent://parks/a%00b",
+    ]) {
       const out = await rpc("resources/read", { uri }, uri);
       expect(out.error, uri).toMatchObject({
         code: -32003,

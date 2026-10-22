@@ -331,6 +331,11 @@ export function agentActions(deps: AppDeps) {
     ): Promise<AgentAnswer> {
       const g = guard(principal, "confirm");
       if ("refused" in g) return g.refused;
+      // The id before anything, the ledger included: a refusal's row
+      // carries the plan id, and a NUL there (Postgres won't store one in
+      // JSON) lost the row and answered 500.
+      const bad = notAnId(planId);
+      if (bad) return bad;
       const at = now();
       const decide = (rule: string, outcome: Record<string, unknown>) =>
         deps.db.decision.create({

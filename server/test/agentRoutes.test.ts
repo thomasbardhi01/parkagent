@@ -709,7 +709,13 @@ describe("reading a plan or a park needs the read scope (F4)", () => {
     const { t, call } = await setup({ scopes: ["confirm"] });
     const plans = vi.spyOn(t.deps.db.assistantPlan, "findUnique");
     const parks = vi.spyOn(t.deps.db.pendingPark, "findUnique");
-    for (const url of [`/agent/plans/${proposed.planId}`, "/agent/parks/pp1"]) {
+    // The scope before the id: a malformed one is refused as the scope.
+    for (const url of [
+      `/agent/plans/${proposed.planId}`,
+      "/agent/parks/pp1",
+      "/agent/plans/a%00b",
+      "/agent/parks/a%00b",
+    ]) {
       const res = await call("GET", url);
       expect(res.statusCode, url).toBe(403);
       expect(res.json(), url).toEqual({ error: "scope_required", scope: "read" });
@@ -741,6 +747,27 @@ describe("reading a plan or a park needs the read scope (F4)", () => {
       error: "scope_required",
       scope: "read",
     });
+  });
+
+  test("a confirm whose plan id isn't one: 400, nothing read, nothing written", async () => {
+    const { t, call } = await setup();
+    const decisions = vi.spyOn(t.deps.db.decision, "create");
+    const plans = vi.spyOn(t.deps.db.assistantPlan, "findUnique");
+    for (const id of ["a%00b", "a%20b", "a".repeat(65)]) {
+      const res = await call("POST", `/agent/plans/${id}/confirm`, {
+        confirmToken: "t".repeat(20),
+      });
+      expect(res.statusCode, id).toBe(400);
+      expect(res.json().error, id).toBeDefined();
+    }
+    expect(decisions).not.toHaveBeenCalled();
+    expect(plans).not.toHaveBeenCalled();
+    // A key without confirm is still refused as such first.
+    const readOnly = await setup({ scopes: ["read"] });
+    const refused = await readOnly.call("POST", "/agent/plans/a%00b/confirm", {
+      confirmToken: "t".repeat(20),
+    });
+    expect(refused.json()).toEqual({ error: "scope_required", scope: "confirm" });
   });
 
   test("a key with read still reads its person's plan", async () => {

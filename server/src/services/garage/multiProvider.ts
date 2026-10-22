@@ -13,6 +13,7 @@ import type {
   GarageProvider,
   GarageSearchQuery,
 } from "./garageProvider.js";
+import { GarageBookError } from "./garageProvider.js";
 
 /**
  * Canonical form of a US street address for cross-provider matching:
@@ -119,7 +120,8 @@ export function makeMultiGarageProvider(providers: GarageProvider[]): GarageProv
       for (const p of providers) {
         if (p.optionById(optionId)) return p.book(optionId);
       }
-      throw new Error(
+      throw new GarageBookError(
+        "option_expired",
         `unknown garage option ${optionId} (search first — options expire with the cache)`,
       );
     },

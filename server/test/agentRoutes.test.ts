@@ -14,6 +14,10 @@ import { describe, expect, test, vi } from "vitest";
 
 import { agentFunctionTools, agentOpenApi } from "../src/routes/agentOpenApi.js";
 import type { GeocoderProvider } from "../src/services/assistant/geocoder.js";
+import { GarageBookError } from "../src/services/garage/garageProvider.js";
+import { makeMultiGarageProvider } from "../src/services/garage/multiProvider.js";
+import { makeParkWhizProvider } from "../src/services/garage/parkwhiz.js";
+import { makeSpotHeroProvider } from "../src/services/garage/spotheroDeepLink.js";
 import { planHashOf } from "../src/services/mandates.js";
 import { BOYLSTON_BOS, MONDAY_2PM, NONADMIN_API_KEY, makeTestApp } from "./helpers.js";
 
@@ -576,6 +580,202 @@ describe("confirming", () => {
       kind: "agent_confirm",
       rule: "garage_option_expired",
     });
+  });
+});
+
+describe("a provider's words never reach an agent (F3)", () => {
+  /** What a provider's failure might carry: a URL with a token, a status,
+   * its own ids. None of it is ours to hand an agent. */
+  const PROVIDER_TEXT =
+    "POST https://api.spothero.com/v2/reservations?token=sk_live_0123abcd failed: 502 Bad Gateway (req_8f3a)";
+  const GARAGE = {
+    id: "g1",
+    provider: "spothero",
+    name: "Deck",
+    address: "1 Test St",
+    priceUsd: 18,
+    distanceM: 240,
+    walkMinutes: 3,
+    entryType: "self" as const,
+    deepLink: "https://spothero.com/search?latitude=42.35",
+    lat: NEWBURY.lat,
+    lng: NEWBURY.lng,
+  };
+
+  async function confirmFailing(failure: Error) {
+    const t = makeTestApp({
+      candidates: [BOYLSTON_BOS],
+      geocoder,
+      now: () => NOW,
+      garage: {
+        id: "spothero",
+        canReserve: false,
+        search: async () => ({ ok: true, options: [GARAGE], fromCache: false }),
+        // Still bookable when the confirm checks; the booking itself fails.
+        optionById: (id) => (id === "g1" ? GARAGE : null),
+        book: async () => {
+          throw failure;
+        },
+      },
+    });
+    const key = (
+      await t.app.inject({
+        method: "POST",
+        url: "/me/agent-keys",
+        headers: U2,
+        payload: { label: "Grok", scopes: ["read", "confirm"] },
+      })
+    ).json().key as string;
+    await t.app.inject({
+      method: "PATCH",
+      url: "/me/settings",
+      headers: U2,
+      payload: { agentsMayAct: true },
+    });
+    const auth = { authorization: `Bearer ${key}` };
+    const proposed = (
+      await t.app.inject({
+        method: "POST",
+        url: "/agent/plans",
+        headers: auth,
+        payload: { request: { ...REQUEST, kinds: ["garage"] } },
+      })
+    ).json();
+    const res = await t.app.inject({
+      method: "POST",
+      url: `/agent/plans/${proposed.planId}/confirm`,
+      headers: auth,
+      payload: { confirmToken: proposed.confirmToken },
+    });
+    return { t, res };
+  }
+
+  test("a booking that fails after the confirm: our code, a reason, the decision; none of its text", async () => {
+    const { t, res } = await confirmFailing(new Error(PROVIDER_TEXT));
+    expect(res.statusCode, res.body).toBe(409);
+    const decision = t.state.decisions.at(-1)!;
+    expect(res.json()).toEqual({
+      error: "garage_book_failed",
+      reason: "provider_error",
+      decisionId: expect.any(String),
+    });
+    for (const leak of ["spothero.com", "sk_live", "502", "Bad Gateway", "req_8f3a"]) {
+      expect(res.body, leak).not.toContain(leak);
+    }
+    // The ledger keeps it, for whoever reads the server's side.
+    expect(decision).toMatchObject({
+      kind: "agent_confirm",
+      rule: "garage_book_failed",
+      outcome: { allowed: true, reason: "provider_error", detail: PROVIDER_TEXT },
+    });
+    // The person's own "why" names the rule, never the text.
+    const why = await t.app.inject({
+      method: "GET",
+      url: `/me/decisions/${res.json().decisionId as string}/why`,
+      headers: U2,
+    });
+    expect(why.statusCode).toBe(200);
+    expect(why.body).not.toContain("sk_live");
+  });
+
+  test("an option the provider's cache dropped between the check and the booking: option_expired", async () => {
+    const { res } = await confirmFailing(
+      new GarageBookError("option_expired", "unknown garage option g1 (search first)"),
+    );
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ error: "garage_book_failed", reason: "option_expired" });
+    expect(res.body).not.toContain("search first");
+  });
+
+  test("every provider's book() says an expired option in our code", async () => {
+    // Nothing searched, so nothing cached: no fetch is made.
+    const parkwhiz = makeParkWhizProvider();
+    const spothero = makeSpotHeroProvider();
+    for (const provider of [parkwhiz, spothero, makeMultiGarageProvider([parkwhiz, spothero])]) {
+      const err = await provider.book("nope").then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(err, provider.id).toBeInstanceOf(GarageBookError);
+      expect((err as GarageBookError).code).toBe("option_expired");
+    }
+  });
+});
+
+describe("reading a plan or a park needs the read scope (F4)", () => {
+  test("a confirm-only key is refused before anything is read", async () => {
+    const reader = await setup();
+    const proposed = await propose(reader.call);
+    const { t, call } = await setup({ scopes: ["confirm"] });
+    const plans = vi.spyOn(t.deps.db.assistantPlan, "findUnique");
+    const parks = vi.spyOn(t.deps.db.pendingPark, "findUnique");
+    // The scope before the id: a malformed one is refused as the scope.
+    for (const url of [
+      `/agent/plans/${proposed.planId}`,
+      "/agent/parks/pp1",
+      "/agent/plans/a%00b",
+      "/agent/parks/a%00b",
+    ]) {
+      const res = await call("GET", url);
+      expect(res.statusCode, url).toBe(403);
+      expect(res.json(), url).toEqual({ error: "scope_required", scope: "read" });
+    }
+    expect(plans).not.toHaveBeenCalled();
+    expect(parks).not.toHaveBeenCalled();
+  });
+
+  test("an id that couldn't be one is a 400, after the scope, with nothing read", async () => {
+    const { t, call } = await setup({ scopes: ["read"] });
+    const plans = vi.spyOn(t.deps.db.assistantPlan, "findUnique");
+    const parks = vi.spyOn(t.deps.db.pendingPark, "findUnique");
+    for (const url of [
+      "/agent/plans/a%00b",
+      "/agent/plans/a%20b",
+      `/agent/plans/${"a".repeat(65)}`,
+      "/agent/parks/a%00b",
+      "/agent/parks/d1%3B",
+    ]) {
+      const res = await call("GET", url);
+      expect(res.statusCode, url).toBe(400);
+      expect(res.json().error, url).toBeDefined();
+    }
+    expect(plans).not.toHaveBeenCalled();
+    expect(parks).not.toHaveBeenCalled();
+    // A key without the scope is refused as such, whatever it sent.
+    const confirmOnly = await setup({ scopes: ["confirm"] });
+    expect((await confirmOnly.call("GET", "/agent/plans/a%00b")).json()).toEqual({
+      error: "scope_required",
+      scope: "read",
+    });
+  });
+
+  test("a confirm whose plan id isn't one: 400, nothing read, nothing written", async () => {
+    const { t, call } = await setup();
+    const decisions = vi.spyOn(t.deps.db.decision, "create");
+    const plans = vi.spyOn(t.deps.db.assistantPlan, "findUnique");
+    for (const id of ["a%00b", "a%20b", "a".repeat(65)]) {
+      const res = await call("POST", `/agent/plans/${id}/confirm`, {
+        confirmToken: "t".repeat(20),
+      });
+      expect(res.statusCode, id).toBe(400);
+      expect(res.json().error, id).toBeDefined();
+    }
+    expect(decisions).not.toHaveBeenCalled();
+    expect(plans).not.toHaveBeenCalled();
+    // A key without confirm is still refused as such first.
+    const readOnly = await setup({ scopes: ["read"] });
+    const refused = await readOnly.call("POST", "/agent/plans/a%00b/confirm", {
+      confirmToken: "t".repeat(20),
+    });
+    expect(refused.json()).toEqual({ error: "scope_required", scope: "confirm" });
+  });
+
+  test("a key with read still reads its person's plan", async () => {
+    const { call } = await setup({ scopes: ["read"] });
+    const proposed = await propose(call);
+    const res = await call("GET", `/agent/plans/${proposed.planId}`);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ planId: proposed.planId, status: "proposed" });
   });
 });
 

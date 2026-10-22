@@ -14,11 +14,23 @@ const idSchema = jsonSchemaOf(recordId);
 
 const errorBody = {
   type: "object",
-  properties: { error: { type: "string" }, decisionId: { type: "string" } },
+  properties: {
+    // A code; for a 400, the parse's tree of what didn't fit.
+    error: { anyOf: [{ type: "string" }, { type: "object" }] },
+    decisionId: { type: "string" },
+  },
   required: ["error"],
 };
 
 const json = (schema: Record<string, unknown>) => ({ "application/json": { schema } });
+
+/** The 400 of a route with an id in its path: that id refused too. */
+const idRefused = (also: string) => ({
+  "400": {
+    description: `${also}the id in the path isn't one (letters, digits, _ and -, up to 64)`,
+    content: json(errorBody),
+  },
+});
 
 const refusals = {
   "400": { description: "The body didn't parse", content: json(errorBody) },
@@ -57,12 +69,13 @@ export function agentOpenApi(): Record<string, unknown> {
         responses: {
           "200": { description: "The capability's answer", content: json({ type: "object" }) },
           ...refusals,
+          ...(param.length > 0 ? idRefused("The body didn't parse, or ") : {}),
           ...(tool.name === "confirm_plan"
             ? {
                 "404": { description: "No such plan or mandate", content: json(errorBody) },
                 "409": {
                   description:
-                    "mandate_used, plan_hash_mismatch, nothing_to_confirm, dry_run_changed, a cap (policy_violation), garage_option_expired, or garage_book_failed",
+                    "mandate_used, plan_hash_mismatch, nothing_to_confirm, dry_run_changed, a cap (policy_violation), garage_option_expired, or garage_book_failed (the mandate spent; reason option_expired or provider_error, never the provider's own text)",
                   content: json(errorBody),
                 },
                 "410": {
@@ -87,6 +100,7 @@ export function agentOpenApi(): Record<string, unknown> {
         responses: {
           "200": { description: "The record", content: json({ type: "object" }) },
           ...refusals,
+          ...(read.param ? idRefused("") : {}),
           ...(read.param
             ? { "404": { description: "Not this person's", content: json(errorBody) } }
             : {}),

@@ -31,7 +31,7 @@ import {
   searchSchema,
 } from "./agentSchemas.js";
 import { agentOpenApi } from "./agentOpenApi.js";
-import { pathIds, recordId } from "./ids.js";
+import { pathIds } from "./ids.js";
 
 export const AGENT_RATE_PER_MINUTE = 60;
 
@@ -118,28 +118,27 @@ export function registerAgent(
     return body ? send(reply, await actions.plan(req.principal!, body)) : reply;
   });
 
-  // Each id as MCP's tools take it (routes/ids.ts): anything else (a NUL
-  // is a Postgres error) is a 400 before the database, never a 500.
+  // The plan and park ids are parsed in the actions (agentActions.ts),
+  // after the key's scope, so MCP's resources and confirm_plan get the same
+  // answer: anything that isn't an id (a NUL is a Postgres error) is a 400
+  // before the database, never a 500.
 
   app.post("/agent/plans/:planId/confirm", { preHandler: limit }, async (req, reply) => {
     const body = take(confirmSchema, req, reply, "confirm");
     if (!body) return reply;
-    const ids = pathIds(req, reply, { planId: recordId });
-    if (!ids) return reply;
-    return send(reply, await actions.confirm(req.principal!, ids.planId, body.confirmToken));
+    const { planId } = req.params as { planId: string };
+    return send(reply, await actions.confirm(req.principal!, planId, body.confirmToken));
   });
 
   app.get("/agent/plans/:planId", { preHandler: limit }, async (req, reply) => {
-    const ids = pathIds(req, reply, { planId: recordId });
-    if (!ids) return reply;
-    return send(reply, await actions.getPlan(req.principal!, ids.planId));
+    const { planId } = req.params as { planId: string };
+    return send(reply, await actions.getPlan(req.principal!, planId));
   });
 
   /** A park the phone reported, by id: its status only. */
   app.get("/agent/parks/:parkId", { preHandler: limit }, async (req, reply) => {
-    const ids = pathIds(req, reply, { parkId: recordId });
-    if (!ids) return reply;
-    return send(reply, await actions.getPark(req.principal!, ids.parkId));
+    const { parkId } = req.params as { parkId: string };
+    return send(reply, await actions.getPark(req.principal!, parkId));
   });
 
   /** Why one of the person's decisions came out as it did (Issue M). */

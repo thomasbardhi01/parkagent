@@ -15,7 +15,7 @@
  */
 
 import { easternWallClock, parseEasternTime } from "../hours.js";
-import { garageOptionId, newestCachedOption } from "./garageProvider.js";
+import { GarageBookError, garageOptionId, newestCachedOption } from "./garageProvider.js";
 import type {
   GarageBooking,
   GarageOption,
@@ -328,7 +328,8 @@ export function makeSpotHeroProvider(options: SpotHeroOptions = {}): GarageProvi
       if (option) {
         return { kind: "deeplink_handoff", option, deepLink: option.deepLink };
       }
-      throw new Error(
+      throw new GarageBookError(
+        "option_expired",
         `unknown garage option ${optionId} (search first — options expire with the cache)`,
       );
     },

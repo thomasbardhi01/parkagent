@@ -79,8 +79,21 @@ export interface GarageProvider {
   /** A recently searched option by id (cache lookup, no side effects);
    * null once the cache has expired. */
   optionById(optionId: string): GarageOption | null;
-  /** Hand off (deep link) or reserve (Partner API) a searched option. */
+  /** Hand off (deep link) or reserve (Partner API) a searched option.
+   * An option no longer in the cache throws GarageBookError. */
   book(optionId: string): Promise<GarageBooking>;
+}
+
+/** A booking the provider couldn't make, by our own code: what callers
+ * say to an agent, where the message is only for the server's log. */
+export class GarageBookError extends Error {
+  constructor(
+    readonly code: "option_expired",
+    message: string,
+  ) {
+    super(message);
+    this.name = "GarageBookError";
+  }
 }
 
 /**

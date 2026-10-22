@@ -13,7 +13,7 @@
  * spot, never a park. Arrival comes only from the phone (D0 §4).
  */
 
-import type { z } from "zod";
+import { z } from "zod";
 
 import type { AppDeps } from "../app.js";
 import type {
@@ -23,6 +23,7 @@ import type {
   planSchema,
   searchSchema,
 } from "../routes/agentSchemas.js";
+import { recordId } from "../routes/ids.js";
 import type { SingleSpotPlan } from "./assistant/plans.js";
 import { applyPatch, emptyState } from "./assistant/requestState.js";
 import type { RequestState } from "./assistant/requestState.js";
@@ -36,6 +37,7 @@ import { proposePlan } from "./capabilities/proposePlan.js";
 import { quoteStreet, searchGarages } from "./capabilities/search.js";
 import type { CapabilityDeps, TurnState } from "./capabilities/turn.js";
 import { policyFor } from "./limits.js";
+import { GarageBookError } from "./garage/garageProvider.js";
 import type { MandateRefusal } from "./mandates.js";
 import { mintMandate, planHashOf } from "./mandates.js";
 import type { Principal, Scope } from "./principal.js";
@@ -102,6 +104,16 @@ function refusalAnswer(refusal: ConfirmRefusal): {
 }
 
 export type AgentActions = ReturnType<typeof agentActions>;
+
+/** An id the agent sent (a path's or an MCP resource URI's), parsed as
+ * every path id is (routes/ids.ts recordId), after the key's scope:
+ * anything else (a NUL is a Postgres error) is a 400 before the database,
+ * never a 500, its tree naming the param as a route's does. Null when it
+ * is one. */
+function notAnId(name: string, id: string): AgentAnswer | null {
+  const parsed = z.object({ [name]: recordId }).safeParse({ [name]: id });
+  return parsed.success ? null : no(400, { error: z.treeifyError(parsed.error) });
+}
 
 export function agentActions(deps: AppDeps) {
   const now = () => deps.now?.() ?? new Date();
@@ -321,6 +333,11 @@ export function agentActions(deps: AppDeps) {
     ): Promise<AgentAnswer> {
       const g = guard(principal, "confirm");
       if ("refused" in g) return g.refused;
+      // The id before anything, the ledger included: a refusal's row
+      // carries the plan id, and a NUL there (Postgres won't store one in
+      // JSON) lost the row and answered 500.
+      const bad = notAnId("planId", planId);
+      if (bad) return bad;
       const at = now();
       const decide = (rule: string, outcome: Record<string, unknown>) =>
         deps.db.decision.create({
@@ -351,14 +368,20 @@ export function agentActions(deps: AppDeps) {
       const { option, dryRun } = confirmed;
       if (option.type === "garage") {
         // Bookable a moment ago (the sequence checked); a provider that
-        // still fails here leaves the mandate spent, and says so.
+        // still fails here leaves the mandate spent, and says so, in our
+        // own code: the provider's words (a URL, a status, an id) stay on
+        // the decision row and never reach the agent.
         let booking: Awaited<ReturnType<typeof g.deps.garage.book>>;
         try {
           booking = await g.deps.garage.book(option.garageOptionId ?? option.id);
         } catch (err) {
+          const reason =
+            err instanceof GarageBookError && err.code === "option_expired"
+              ? "option_expired"
+              : "provider_error";
           const detail = err instanceof Error ? (err.message.split("\n")[0] ?? "") : String(err);
-          const decision = await decide("garage_book_failed", { allowed: true, detail });
-          return no(409, { error: "garage_book_failed", detail, decisionId: decision.id });
+          const decision = await decide("garage_book_failed", { allowed: true, reason, detail });
+          return no(409, { error: "garage_book_failed", reason, decisionId: decision.id });
         }
         await markConfirmed(option.id);
         const decision = await decide("garage_handoff", {
@@ -399,8 +422,12 @@ export function agentActions(deps: AppDeps) {
       });
     },
 
-    /** A plan the key's person was proposed, by id. */
+    /** A plan the key's person was proposed, by id. A read: a key without
+     * the read scope is refused before anything is read. */
     async getPlan(principal: Principal, planId: string): Promise<AgentAnswer> {
+      if (!principal.scopes.has("read")) return no(403, { error: "scope_required", scope: "read" });
+      const bad = notAnId("planId", planId);
+      if (bad) return bad;
       const row = await deps.db.assistantPlan.findUnique({ where: { id: planId } });
       if (!row || row.userId !== principal.userId) return no(404, { error: "plan_not_found" });
       return ok({
@@ -428,8 +455,12 @@ export function agentActions(deps: AppDeps) {
       return ok(whyBody(out));
     },
 
-    /** A park the phone reported, by id: its status only. */
+    /** A park the phone reported, by id: its status only. A read, as
+     * getPlan is. */
     async getPark(principal: Principal, parkId: string): Promise<AgentAnswer> {
+      if (!principal.scopes.has("read")) return no(403, { error: "scope_required", scope: "read" });
+      const bad = notAnId("parkId", parkId);
+      if (bad) return bad;
       const row = await deps.db.pendingPark.findUnique({ where: { id: parkId } });
       if (!row || row.userId !== principal.userId) return no(404, { error: "park_not_found" });
       return ok({

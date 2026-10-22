@@ -6,9 +6,14 @@
  * the decisions ledger keep their own rows (a deleted conversation just
  * stops being linked from Activity). Each sweep that deletes anything
  * writes one decisions row with the cutoff and the count.
+ *
+ * The same sweep deletes park_fixes (a park's trace, services/parkTrace.ts)
+ * received more than PARK_FIX_RETENTION_DAYS (30) ago, on a decisions row
+ * of its own.
  */
 
 import type { AppDb } from "../db.js";
+import { PARK_FIX_RETENTION_DAYS } from "../services/parkTrace.js";
 
 const SWEEP_INTERVAL_MS = 60 * 60_000;
 
@@ -50,7 +55,30 @@ export function makeConversationRetention(deps: ConversationRetentionDeps): Conv
         `conversation retention deleted ${count} conversation(s) idle since ${cutoff.toISOString()}`,
       );
     }
+    await purgeParkFixes();
     return count;
+  }
+
+  /** Park traces' fixes past their retention: the driver's raw positions
+   * are not kept for longer than debugging a park needs. */
+  async function purgeParkFixes(): Promise<void> {
+    const cutoff = new Date(now().getTime() - PARK_FIX_RETENTION_DAYS * 24 * 60 * 60_000);
+    const { count } = await deps.db.parkFix.deleteMany({ where: { receivedAt: { lt: cutoff } } });
+    if (count === 0) return;
+    await deps.db.decision.create({
+      data: {
+        // No user to act for, as with the conversations above.
+        actor: "job",
+        kind: "park_trace",
+        inputs: { retentionDays: PARK_FIX_RETENTION_DAYS, cutoff: cutoff.toISOString() },
+        rule: "retention_purge",
+        outcome: { deleted: count },
+        userId: null,
+      },
+    });
+    deps.log.info(
+      `park trace retention deleted ${count} fix(es) received before ${cutoff.toISOString()}`,
+    );
   }
 
   let timer: NodeJS.Timeout | null = null;

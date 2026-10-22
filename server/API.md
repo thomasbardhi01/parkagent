@@ -1204,7 +1204,7 @@ or `linked_to_session`).
 
 ### POST /location
 
-`{lat, lng, accuracy, ts, measuredAt?, speedMps?, event?}`, sent by the
+`{lat, lng, accuracy, ts, measuredAt?, speedMps?, event?, motionActivity?, motionConfidence?, btHint?}`, sent by the
 app while a park is held and while a session is active (at least every
 60 s, sooner when moving). `ts` is when the fix was reported and
 `measuredAt` when it was measured (they differ on the heartbeat's
@@ -1215,6 +1215,26 @@ it existed. `event` is what the app itself saw: `left_car` or
 `returned_to_car`. A session and a held
 park can both be the caller's at once; the fix is read against each from
 its own car, and the answer carries both parts.
+
+`motionActivity` (`stationary` | `walking` | `running` | `automotive` |
+`cycling` | `unknown`, CoreMotion's), `motionConfidence` (`low` |
+`medium` | `high`) and `btHint` (a short `snake_case` word for the car's
+audio, e.g. `car_audio_disconnected`) are what the phone sensed at the
+fix. They are kept on the park's trace and decide nothing yet; a value
+outside those answers `400`.
+
+**Park traces.** Every fix a park reads, whether a held park or a
+session's own park, is kept in `park_fixes` with when it was measured,
+reported and received. So is every fix a park refuses, with why
+(`rejected`): `before_park` (measured before the car stopped),
+`stale_measurement` (measured over 5 minutes ago), `clock_skew` (its
+`ts` more than 5 minutes from the server's clock), or `park_starting`
+(a start is in flight; nothing is read until it settles). `park_fixes`
+rows are deleted 30 days after they were received (the hourly retention
+sweep, `jobs/conversationRetentionTick.ts`, writes a `park_trace` /
+`retention_purge` decision when it deletes any). A failed write is
+logged and never stops the fix from being read. See
+`GET /admin/parks/:id/trace` and `docs/park-traces.md`.
 
 With an active session the fix is stored in `location_fixes` (the
 extension worker reads the latest few) and the answer is
@@ -2333,6 +2353,29 @@ credential set is incomplete.
 and a 410/BadDeviceToken deletes the dead token (`deleted: true`) exactly
 as the live sender does. Only the token's 8-char prefix is returned — a
 device token is a credential.
+
+## GET /admin/parks/:id/trace
+
+**Admin only** (`403 forbidden` otherwise; `404 park_not_found`). One
+park's whole story as one document (`services/parkTrace.ts`), by its
+`pending_parks` id or its `parkedEventId`:
+
+- `park`: the `pending_parks` row;
+- `parkedEvent`: the `/parked` that made it;
+- `fixes`: its `park_fixes`, oldest first, refused ones with `rejected`;
+- `timeline`: when it reached each state it has a timestamp for. The row
+  keeps the latest of each, so a park asked twice shows one `prompted`;
+  the decisions say the rest;
+- `decisions`: every row for the park's `parkedEventId` or its session,
+  oldest first;
+- `session` and `sessionEvents`: the session it paid, and what the
+  executor was asked and answered.
+
+It carries the driver's raw positions, which is why it is admin only.
+`pnpm -C server trace:export <id>` turns it into an anonymized fixture
+(metres from the car, seconds from the park, a weekday and a New York
+time, no user id) that `pnpm -C server trace:replay <fixture>` runs
+through the lifecycle.
 
 ## GET /admin/summary
 

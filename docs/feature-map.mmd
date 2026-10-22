@@ -28,6 +28,7 @@ flowchart LR
     walletR["/wallet · /card · /link"]
     providersR["POST /providers/:provider/link"]
     webhook["POST /webhooks/stripe"]
+    traceR["GET /admin/parks/:id/trace (admin)"]
   end
 
   subgraph services["Services and jobs (server/src)"]
@@ -42,6 +43,9 @@ flowchart LR
     linkWorker["jobs/linkWorker"]
     healthTick["jobs/providerHealthTick"]
     ledger[("decisions ledger")]
+    parkFixes[("park_fixes<br/>every fix a park read or refused · 30 days")]
+    parkTrace["parkTrace<br/>trace → anonymized fixture"]
+    retention["jobs/conversationRetentionTick<br/>(hourly retention sweep)"]
     execGate["ExecutorGate + CircuitBreaker<br/>DRY_RUN → DryRunExecutor"]
   end
 
@@ -94,6 +98,13 @@ flowchart LR
   gate --> ledger
   applyExt --> ledger
   pending --> ledger
+
+  location -- "each fix, read or refused (why)" --> parkFixes
+  traceR --> parkTrace
+  parkTrace --> parkFixes
+  parkTrace --> ledger
+  parkTrace -. "trace:export → test/traces/*.json → trace:replay" .-> pending
+  retention -. "deletes after 30 days" .-> parkFixes
 
   subgraph pp["pending_parks state machine (server/src/services/pendingSession.ts)"]
     direction TB

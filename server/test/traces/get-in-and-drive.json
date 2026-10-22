@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "name": "get-in-and-drive",
+  "note": "back in the car and driving without ever leaving: cancelled, nothing paid",
+  "parkedAt": {
+    "weekday": "Mon",
+    "time": "14:00"
+  },
+  "outcomes": ["garage", "nopay", "walk_away"],
+  "candidates": [
+    {
+      "zoneId": "nyc-417371",
+      "city": "nyc",
+      "providerZoneNumber": "417371",
+      "rateFirstHourUsd": 2.0,
+      "rateAdditionalHourUsd": 3.0,
+      "maxStayMinutes": 120,
+      "hours": [
+        {
+          "days": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
+          "start": "08:30",
+          "end": "19:00"
+        }
+      ],
+      "quote": {
+        "zoneId": "nyc-417371",
+        "providerZoneNumber": "417371",
+        "stayMinutes": 90,
+        "chargedMinutes": 90,
+        "meterUsd": 3.5,
+        "feeUsd": 0.15,
+        "totalUsd": 3.65
+      }
+    }
+  ],
+  "fixes": [
+    {
+      "receivedS": 90,
+      "measuredS": 90,
+      "reportedS": 90,
+      "northM": 6,
+      "eastM": 0,
+      "accuracyM": 8,
+      "event": "returned_to_car",
+      "rejected": null
+    }
+  ],
+  "taps": [],
+  "expected": {
+    "statuses": ["at_car", "cancelled"],
+    "park": "cancelled",
+    "session": null,
+    "starts": 0
+  }
+}

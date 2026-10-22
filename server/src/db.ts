@@ -314,6 +314,28 @@ export interface GarageBookingRow {
 /** A session_events row as the Activity timeline reads it. */
 /** A detected street park and where its lifecycle stands (FR-55; the
  * states are in schema.prisma and services/pendingSession.ts). */
+/** One fix as a park read it: a row of its trace. */
+export interface ParkFixWrite {
+  pendingParkId: string;
+  measuredAt: Date;
+  reportedAt: Date;
+  receivedAt: Date;
+  lat: number;
+  lng: number;
+  accuracyM: number;
+  speedMps: number | null;
+  event: string | null;
+  motionActivity: string | null;
+  motionConfidence: string | null;
+  btHint: string | null;
+  /** Null: read. Otherwise why it wasn't (FixRejection). */
+  rejected: string | null;
+}
+
+export interface ParkFixRow extends ParkFixWrite {
+  id: string;
+}
+
 export interface PendingParkRow {
   id: string;
   userId: string;
@@ -1468,6 +1490,16 @@ export interface AppDb {
       orderBy: { ts: "desc" };
       take: number;
     }): Promise<{ lat: number; lng: number; accuracyM: number; ts: Date }[]>;
+  };
+  /** Every fix a park read or refused (its trace; kept 30 days). */
+  parkFix: {
+    create(args: { data: ParkFixWrite }): Promise<{ id: string }>;
+    findMany(args: {
+      where: { pendingParkId: string };
+      orderBy: { receivedAt: "asc" };
+    }): Promise<ParkFixRow[]>;
+    /** The retention sweep. */
+    deleteMany(args: { where: { receivedAt: { lt: Date } } }): Promise<{ count: number }>;
   };
   deviceToken: {
     findUnique(args: { where: { token: string } }): Promise<{ id: string; userId: string } | null>;

@@ -29,6 +29,7 @@ flowchart LR
     EX["executorFor<br/>DryRunExecutor when dry run"]
     JOBS["Jobs<br/>extendTick · settle · janitors"]
     DEC[("decisions<br/>actor · agent_key_id · trace_id")]
+    TR["/admin/parks/:id/trace (admin)<br/>trace:export · trace:replay"]
   end
 
   subgraph Out["Outside services"]
@@ -40,6 +41,7 @@ flowchart LR
   end
 
   DB[("Postgres<br/>sessions · pending_parks<br/>location_fixes · users")]
+  PF[("park_fixes<br/>every fix a park read or refused · 30 days")]
 
   LR --> AUTH
   PL --> AUTH
@@ -64,6 +66,9 @@ flowchart LR
   GATE --> ST
   PS & GATE & AT & JOBS --> DEC
   PS & POL & JOBS --> DB
+  R1 -- "each fix, read or refused (why)" --> PF
+  TR --> PF & DEC
+  JOBS -. "retention: delete after 30 days" .-> PF
 
   classDef money stroke:#b42318,stroke-width:2.5px
   classDef ext stroke:#b7791f,stroke-width:2px

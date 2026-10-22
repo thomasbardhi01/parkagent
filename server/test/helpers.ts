@@ -25,6 +25,7 @@ import type {
   GarageBookingRow,
   ItineraryRow,
   LinkSpendRequestRow,
+  ParkFixRow,
   PendingParkRow,
   SessionHoldRow,
   ProviderAccountRow,
@@ -333,6 +334,8 @@ export interface FakeDbState {
   linkJobs: LinkJobRow[];
   /** The street session lifecycle's rows (FR-55). */
   pendingParks: PendingParkRow[];
+  /** Every fix a park read or refused (park_fixes). */
+  parkFixes: ParkFixRow[];
 }
 
 /** The link-job WHERE shapes in use (LinkJobWhere), over the fake rows. */
@@ -496,6 +499,7 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
     sessionHolds: [],
     garageBookings: [],
     pendingParks: [],
+    parkFixes: [],
   };
   const cardholderFor = (userId: string) => {
     const explicit = state.issuingCardholders.find((c) => c.userId === userId);
@@ -1406,7 +1410,8 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
     decision: {
       create: async ({ data }) => {
         state.decisions.push({
-          createdAt: new Date(MONDAY_2PM),
+          // The row clock (MONDAY_2PM unless a test moves it).
+          createdAt: fakeRowClock(),
           ...(data as FakeDbState["decisions"][number]),
         });
         return { id: `d${state.decisions.length}` };
@@ -1627,6 +1632,23 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
           .filter((f) => f.sessionId === where.sessionId)
           .sort((a, b) => b.ts.getTime() - a.ts.getTime())
           .slice(0, take),
+    },
+    parkFix: {
+      create: async ({ data }) => {
+        const row = { id: `pf${state.parkFixes.length + 1}`, ...data };
+        state.parkFixes.push(row);
+        return { id: row.id };
+      },
+      findMany: async ({ where }) =>
+        state.parkFixes
+          .filter((f) => f.pendingParkId === where.pendingParkId)
+          .sort((a, b) => a.receivedAt.getTime() - b.receivedAt.getTime())
+          .map((f) => ({ ...f })),
+      deleteMany: async ({ where }) => {
+        const before = state.parkFixes.length;
+        state.parkFixes = state.parkFixes.filter((f) => f.receivedAt >= where.receivedAt.lt);
+        return { count: before - state.parkFixes.length };
+      },
     },
     deviceToken: {
       findUnique: async ({ where }) => {

@@ -15,6 +15,7 @@ import { AGENT_TOOLS } from "../src/routes/agentSchemas.js";
 import { CONFIRM_CARD_MIME, CONFIRM_CARD_URI } from "../src/routes/mcpConfirmCard.js";
 import type { GeocoderProvider } from "../src/services/assistant/geocoder.js";
 import { signAccessToken } from "../src/services/authTokens.js";
+import { planHashOf } from "../src/services/mandates.js";
 import { isAgentSurface } from "../src/services/principal.js";
 import {
   API_KEY,
@@ -333,6 +334,23 @@ describe("refusals are tool errors with REST's codes", () => {
     expect(errorOf(result)).toBe("policy_violation");
     expect(result.structuredContent!["rule"]).toBe("session_cap_exceeded");
     expect(s.t.state.mandates[0]!.consumedAt).toBeNull();
+  });
+
+  test("an option with no price: a policy_violation refusal (amount_invalid), mandate unspent", async () => {
+    const s = await setup();
+    const proposed = await proposeOver(s.tool);
+    // The stored option loses its price; the mandate names the plan as it
+    // now is, so plan_hash_mismatch doesn't answer first.
+    const row = s.t.state.assistantPlans.find((p) => p.id === proposed.planId)!;
+    for (const o of (row.plan as { options: Record<string, unknown>[] }).options)
+      delete o["priceUsd"];
+    s.t.state.mandates[0]!.planHash = planHashOf(row.plan);
+    const result = await confirmOnce(s, proposed);
+    expect(result.isError).toBe(true);
+    expect(errorOf(result)).toBe("policy_violation");
+    expect(result.structuredContent!["rule"]).toBe("amount_invalid");
+    expect(s.t.state.mandates[0]!.consumedAt).toBeNull();
+    expect(s.t.state.sessions).toHaveLength(0);
   });
 
   test("a read-only key: scope_required", async () => {

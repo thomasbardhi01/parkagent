@@ -39,7 +39,7 @@ export interface Reason {
   youCan: string | null;
 }
 
-type Format = "usd" | "minutes" | "meters" | "count" | "onoff" | "text" | "time";
+type Format = "usd" | "minutes" | "meters" | "count" | "onoff" | "text" | "code" | "time";
 
 /** The facts a reason may cite, and where on a row each is found: the
  * first of `keys` found at the shallowest depth, the outcome before the
@@ -68,7 +68,9 @@ const EVIDENCE = {
   accuracy: { label: "the location's accuracy", keys: ["accuracyM"], as: "meters" },
   dryRun: { label: "dry run", keys: ["dryRun"], as: "onoff" },
   shownDryRun: { label: "dry run when it was shown", keys: ["shownDryRun"], as: "onoff" },
-  error: { label: "the error", keys: ["code", "error"], as: "text" },
+  // Only a known code (a key of REASONS), never an error's free text: a
+  // message can quote a URL, a credential or a card (security.test.ts).
+  error: { label: "the error", keys: ["code", "error"], as: "code" },
   provider: { label: "the provider", keys: ["provider"], as: "text" },
   ticketCost: { label: "the expected cost of a ticket", keys: ["costTicketUsd"], as: "usd" },
   extendCost: { label: "the cost of more time", keys: ["costExtendUsd"], as: "usd" },
@@ -114,7 +116,7 @@ const REASONS: Record<string, Spec> = {
     "Pick the side the car is on.",
   ],
   unknown_zone: [
-    "no metered zone was close enough to where the car stopped",
+    "no metered zone was close enough",
     ["radius"],
     "If there is a meter here, report its zone number.",
   ],
@@ -150,7 +152,11 @@ const REASONS: Record<string, Spec> = {
   ignore: ["nothing needed paying here", NONE],
   confirm: ["it needed your say before paying", ["price", "zone"]],
   not_now: ["you said not now, so nothing was paid", ["price"]],
-  confirmed: ["you tapped Pay; it pays when you walk away from the car", ["shownPrice", "zone"]],
+  confirmed: ["it was confirmed", NONE],
+  "street_confirmed:confirmed": [
+    "you tapped Pay; it pays when you walk away from the car",
+    ["shownPrice", "zone"],
+  ],
   confirmed_at_car: [
     "you tapped Pay at the car; it pays once you walk away",
     ["shownPrice", "zone"],
@@ -189,11 +195,18 @@ const REASONS: Record<string, Spec> = {
 
   // ---- starting, extending and stopping a session
   start_ok: ["the session was started and paid", ["price", "stay", "zone", "dryRun"]],
-  started: ["the session was started when you walked away", ["price", "stay", "zone"]],
+  started: ["it started", NONE],
+  "session_start_walkaway:started": [
+    "the session was started when you walked away",
+    ["price", "stay", "zone"],
+  ],
   late_success: ["the start finished after it had timed out, and the session was kept", ["price"]],
   start_timeout: ["the provider didn't answer in time, so the start was given up", NONE, TAP_AGAIN],
   "session_start_walkaway:error": ["the start hit an error at the provider", ["error"], TAP_AGAIN],
-  failed: ["the start failed at the provider", ["error"], TAP_AGAIN],
+  failed: ["it failed", ["error"]],
+  "session_start_walkaway:failed": ["the start failed at the provider", ["error"], TAP_AGAIN],
+  error: ["it hit an error", ["error"]],
+  refused: ["it was refused", ["error"]],
   "session_start_walkaway:refused": [
     "the start was refused before reaching the provider",
     ["error"],
@@ -276,7 +289,8 @@ const REASONS: Record<string, Spec> = {
     ["ticketCost", "extendCost", "expiresAt"],
   ],
   extend_failed: ["it tried to extend, but the provider step failed", ["error"]],
-  expired: ["the meter ran out before anything extended it", ["expiresAt"]],
+  expired: ["it expired", ["expiresAt"]],
+  "extend_tick:expired": ["the meter ran out before anything extended it", ["expiresAt"]],
   warn_max_stay: [
     "the zone's max stay was nearly used up, so it warned you instead of extending",
     ["maxStay", "expiresAt"],
@@ -399,6 +413,8 @@ const REASONS: Record<string, Spec> = {
   no_match: ["no place matched that name", NONE, "Say the place another way."],
   not_found: ["it couldn't find that", NONE],
   ok: ["the step went through", ["results"]],
+  tool_error: ["an assistant step hit an error", NONE],
+  unknown: ["it couldn't run", NONE],
   option_expired: ["the garage offer expired with the provider's search", NONE, "Search again."],
   options_available: ["options that met the request existed, so a 'none' card was refused", NONE],
   outside_coverage: ["the place is outside the cities covered", NONE],
@@ -428,6 +444,8 @@ const REASONS: Record<string, Spec> = {
   // ---- external agents (WS-4)
   agents_may_act: ["you said agents may act for you", NONE],
   agents_may_not_act: ["you said agents may not act for you", NONE],
+  created: ["it was created", NONE],
+  revoked: ["it was revoked", NONE],
   "agent_key:created": ["an agent key was created", NONE],
   "agent_key:revoked": ["an agent key was revoked", NONE],
   garage_handoff: [
@@ -452,6 +470,7 @@ const REASONS: Record<string, Spec> = {
     "Have the agent propose again.",
   ],
   plan_hash_mismatch: ["the plan changed after the agent proposed it", NONE, PROPOSE_AGAIN],
+  scope_required: ["the agent's key may not do that", NONE],
 
   // ---- the ParkAgent card, holds and Issuing
   approved: ["the card charge matched a waiting session and fit the budget", ["price"]],
@@ -503,9 +522,15 @@ const REASONS: Record<string, Spec> = {
   insufficient_funds: ["there wasn't enough balance", ["price", "balance"]],
   dry_run: ["dry run was on, so no money moved", ["price"]],
   stripe_failed: ["the payment service failed", ["error"]],
+  stripe_not_configured: ["the payment service isn't set up, so no hold was placed", NONE],
   approval_expired: ["the Link approval expired before it was used", ["price"], PROPOSE_AGAIN],
   card_already_revealed: ["the one-time card had already been shown", NONE],
   card_unreadable: ["the one-time card couldn't be read", NONE],
+  unknown_spend_request: ["there was no such Link spend request", NONE],
+  not_approved: ["the Link spend request wasn't approved yet", NONE, "Approve it in Link."],
+  card_used: ["the one-time card was already used", NONE],
+  card_expired: ["the one-time card had expired", NONE, PROPOSE_AGAIN],
+  reveal_failed: ["showing the one-time card failed", NONE],
 
   // ---- the wallet and payment source
   set: ["how you pay was changed", NONE],
@@ -523,6 +548,7 @@ const REASONS: Record<string, Spec> = {
     "Add it as a new card.",
   ],
   funding_method_removed: ["a card was removed", NONE],
+  funding_method_default: ["the card holds are placed on was changed", NONE],
   hold_in_progress: ["a hold is in progress, so the card wasn't changed", NONE],
   setup_intent_created: ["adding a card was started", NONE],
   connect_started: ["connecting Link was started", NONE],
@@ -667,6 +693,19 @@ export function reasonKeys(): string[] {
   return Object.keys(REASONS);
 }
 
+/** Whether `rule` has an entry that holds on any kind (no `kind:`
+ * prefix): what a rule literal at a site whose kind the scan can't see
+ * needs. */
+export function hasGenericReason(rule: string): boolean {
+  return rule in REASONS;
+}
+
+/** The kinds reasons name, so the scan can tell a kind literal from a
+ * rule. */
+export function reasonKinds(): string[] {
+  return Object.keys(KIND_TEXT);
+}
+
 export function reasonOf(row: DecisionRowForReason): Reason {
   const spec = REASONS[`${row.kind}:${row.rule}`] ?? REASONS[row.rule];
   const subject = KIND_TEXT[row.kind] ?? "A decision";
@@ -755,7 +794,11 @@ function format(value: unknown, as: Format): string | null {
         ? `${at.toISOString().slice(0, 16).replace("T", " ")} UTC`
         : null;
     }
+    case "code":
+      return typeof value === "string" && value in REASONS ? value : null;
     case "text":
-      return typeof value === "string" ? value.slice(0, 80) : String(value);
+      // An id (a provider, a zone number), never a sentence: no spaces,
+      // no URL, no punctuation that could carry one.
+      return typeof value === "string" && /^[A-Za-z0-9_-]{1,40}$/.test(value) ? value : null;
   }
 }

@@ -179,6 +179,25 @@ describe("GET/PUT /me/limits", () => {
     expect(applyChange(policy, view.saved, { defaultStayMinutes: 60 })).toMatchObject({ ok: true });
   });
 
+  test("a saved value that isn't a number (Postgres numeric 'NaN') is no value: the ceiling stands", () => {
+    const policy = { session_cap_usd: 30, daily_cap_usd: 60, default_stay_minutes: 90 } as Policy;
+    const view = limitsView(policy, {
+      userId: "u2",
+      sessionCapUsd: Number.NaN,
+      dailyCapUsd: Number.POSITIVE_INFINITY,
+      defaultStayMinutes: Number.NaN,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    // A NaN cap would pass every `amount > cap`; the operator's caps bind.
+    expect(view.limits).toEqual({ sessionCapUsd: 30, dailyCapUsd: 60, defaultStayMinutes: 90 });
+    expect(view.saved).toEqual({
+      sessionCapUsd: null,
+      dailyCapUsd: null,
+      defaultStayMinutes: null,
+    });
+  });
+
   test("the policy's own PUT stays the operator's alone", async () => {
     const { app } = makeTestApp({});
     const res = await app.inject({ method: "PUT", url: "/policy", headers: U2, payload: {} });

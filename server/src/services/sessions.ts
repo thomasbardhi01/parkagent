@@ -119,8 +119,9 @@ export type ExtensionOutcome =
       price: StayPrice;
       durationMs: number;
       /** Today's spend as the gate read it under the lock, on a refusal
-       * it made there (the caller's ledger row says what it judged on). */
-      spentTodayUsd?: number;
+       * it made there (the caller's ledger row says what it judged on);
+       * null when it refused before reading it. */
+      spentTodayUsd?: number | null;
       diagnostics?: ExecutorDiagnostics;
       executor?: Record<string, unknown>;
       hold?: HoldOutcome;

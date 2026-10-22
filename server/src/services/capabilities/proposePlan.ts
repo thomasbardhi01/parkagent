@@ -458,6 +458,26 @@ export async function proposeItinerary(
     return { result: { error: gate.rule } };
   }
   const { policy, spentTodayUsd } = gate;
+  if (!gate.ok && gate.rule !== "daily_cap_exceeded") {
+    // Not the day's budget (an amount the gate couldn't read): said as
+    // itself, never as "shorten the day".
+    await audit(
+      deps,
+      principal,
+      turn,
+      "propose_plan",
+      { kind: proposed.kind, totalUsd },
+      gate.rule,
+      { totalUsd, spentTodayUsd },
+    );
+    return {
+      result: {
+        error: "policy_violation",
+        rule: gate.rule,
+        hint: "a stop's price couldn't be read; build the itinerary again before proposing it",
+      },
+    };
+  }
   if (!gate.ok) {
     await audit(
       deps,

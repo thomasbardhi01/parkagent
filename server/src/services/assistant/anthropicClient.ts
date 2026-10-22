@@ -7,8 +7,8 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 
-import { DEFAULT_ASSISTANT_MODEL } from "./loop.js";
-import type { ModelClient, ModelContentBlock } from "./loop.js";
+import { DEFAULT_ASSISTANT_MODEL } from "./modelClient.js";
+import type { ModelClient, ModelContentBlock } from "./modelClient.js";
 
 /** What went wrong at the provider, in the few kinds a caller acts on. */
 export type ModelErrorKind =

@@ -18,7 +18,7 @@
 import type { AssistantPlanRow } from "../../db.js";
 import type { ModelTurn } from "./loop.js";
 import type { ItineraryPlan, SingleSpotPlan } from "./plans.js";
-import type { Suggestion } from "./tools.js";
+import type { Suggestion } from "../capabilities/turn.js";
 
 export const DEFAULT_RETENTION_DAYS = 90;
 const MAX_DISPLAY = 400;

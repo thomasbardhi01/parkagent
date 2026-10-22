@@ -66,8 +66,8 @@ const ALLOWED: { file: string; line: RegExp; why: string }[] = [
     why: "shadow mode is server-wide",
   },
   {
-    file: "services/assistant/tools.ts",
-    line: /policy: this\.deps\.policy\.get\(\),/,
+    file: "services/capabilities/search.ts",
+    line: /policy: deps\.policy\.get\(\),/,
     why: "street search reads fees and enforcement hours only",
   },
   {

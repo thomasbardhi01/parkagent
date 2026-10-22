@@ -375,6 +375,9 @@ describe("the start of a bound park names the agent key on its decisions", () =>
     const rows = startRows(t);
     expect(rows.length).toBeGreaterThan(0);
     for (const row of rows) expect(row.agentKeyId ?? null, `${row.kind}:${row.rule}`).toBeNull();
+  });
+});
+
 describe("an agent-bound park and a walk said at the car's door (#264)", () => {
   test("a left_car at the door, then one fix off it: asked, never paid without a tap", async () => {
     const t = makeApp();

@@ -57,6 +57,7 @@ flowchart LR
     explain["capabilities/explainDecision<br/>reasons.ts: what · evidence · what you can do<br/>EXPLAIN_MODEL phrasing (off by default) · template fallback"]
     execGate["ExecutorGate + CircuitBreaker<br/>DRY_RUN → DryRunExecutor"]
     agentActions["agentActions + mandates<br/>one call, two surfaces · one budget per key"]
+    otel["telemetry (OpenTelemetry)<br/>off unless OTEL_EXPORTER_OTLP_ENDPOINT · no words in spans"]
   end
 
   subgraph providers["Providers"]
@@ -109,6 +110,11 @@ flowchart LR
   healthTick --> execGate
 
   gate --> ledger
+  routes -. "request spans" .-> otel
+  asst -. "invoke_agent · chat · execute_tool" .-> otel
+  gate -. "money_gate span" .-> otel
+  explain & audit & readSigns -. "chat span per model call" .-> otel
+  otel -. "trace_id" .-> ledger
   applyExt --> ledger
   pending --> ledger
   asst -. "explain_decision" .-> explain

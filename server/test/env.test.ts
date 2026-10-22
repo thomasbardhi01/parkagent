@@ -58,6 +58,8 @@ function everythingOn() {
     AUDIT_SUMMARY: "true",
     MCP_APPS: "true",
     SIGN_READER: "true",
+    OTEL_EXPORTER_OTLP_ENDPOINT: "https://otel.example.com",
+    OTEL_EXPORTER_OTLP_HEADERS: "authorization=Bearer otel-token,x-team=parkagent",
     LINK_CLIENT_ID: "link_client",
     LINK_CLIENT_SECRET: "link_secret",
     LINK_PUBLISHABLE_KEY: "pk_test_abc123",
@@ -148,6 +150,30 @@ describe("optional features never refuse boot", () => {
     expect(report.degraded).toEqual([]);
   });
 
+  test("a collector on the Fly private network may be plain http; elsewhere it may not", () => {
+    const internal = checkEnv({
+      ...everythingOn(),
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel.internal:4318",
+    });
+    expect(internal.degraded).toEqual([]);
+    expect(internal.env.OTEL_EXPORTER_OTLP_ENDPOINT).toBe("http://otel.internal:4318");
+    const local = checkEnv({
+      ...everythingOn(),
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://localhost:4318",
+    });
+    expect(local.degraded).toEqual([]);
+  });
+
+  test.each([
+    { OTEL_EXPORTER_OTLP_ENDPOINT: "ftp://otel.example.com" },
+    { OTEL_EXPORTER_OTLP_HEADERS: "no-equals-sign" },
+  ])("tracing degraded by %j: the console exporter is off too", (patch) => {
+    const report = checkEnv({ ...everythingOn(), OTEL_CONSOLE: "true", ...patch });
+    expect(report.degraded).toEqual(["tracing"]);
+    expect(report.env.OTEL_CONSOLE).toBe("false");
+    expect(report.env.OTEL_EXPORTER_OTLP_ENDPOINT).toBeUndefined();
+  });
+
   test("every feature well-formed: all on, nothing degraded", () => {
     const report = checkEnv(everythingOn());
     expect(report.fatal).toEqual([]);
@@ -197,6 +223,10 @@ describe("optional features never refuse boot", () => {
       { ANTHROPIC_API_KEY: "sk-proj-nope" },
       /^AUDIT_SUMMARY is true but ANTHROPIC_API_KEY is not usable/,
     ],
+    ["tracing", { OTEL_EXPORTER_OTLP_ENDPOINT: "ftp://otel.example.com" }, /must be an https URL/],
+    ["tracing", { OTEL_CONSOLE: "yes" }, /^OTEL_CONSOLE is "yes"/],
+    ["tracing", { OTEL_EXPORTER_OTLP_HEADERS: "no-equals-sign" }, /must be name=value pairs/],
+    ["tracing", { OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel.example.com" }, /must be an https URL/],
     ["assistant", { ANTHROPIC_API_KEY: "sk-proj-abc" }, /^ANTHROPIC_API_KEY doesn't look like/],
     ["mcp_apps", { MCP_APPS: "on" }, /^MCP_APPS is "on"/],
     ["explanations", { EXPLAIN_MODEL: "gpt-4" }, /^EXPLAIN_MODEL doesn't look like/],

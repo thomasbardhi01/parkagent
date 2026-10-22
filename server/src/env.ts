@@ -147,6 +147,15 @@ export interface Env {
   // The parking-sign reader (POST /parked/:id/signs): off unless "true",
   // and only with the assistant's ANTHROPIC_API_KEY.
   SIGN_READER: Flag;
+  // Tracing (services/telemetry.ts): spans go to this OTLP/HTTP collector
+  // when it's set; OTEL_CONSOLE=true prints them (development). Both unset,
+  // no tracing SDK starts.
+  OTEL_EXPORTER_OTLP_ENDPOINT: string | undefined;
+  // Headers for the collector (`name=value,…`, e.g. a hosted collector's
+  // API key). The OTLP exporter reads it from the environment itself;
+  // checked here so a malformed one switches tracing off, not the export.
+  OTEL_EXPORTER_OTLP_HEADERS: string | undefined;
+  OTEL_CONSOLE: Flag;
 
   // Link wallet for agents (Stripe agentic commerce), as a set of four:
   // all present → /link/* live; otherwise 503.
@@ -205,6 +214,9 @@ export const ENV_NAMES = [
   "PARKWHIZ_ENABLED",
   "AUDIT_SUMMARY",
   "SIGN_READER",
+  "OTEL_EXPORTER_OTLP_ENDPOINT",
+  "OTEL_EXPORTER_OTLP_HEADERS",
+  "OTEL_CONSOLE",
   "LINK_CLIENT_ID",
   "LINK_CLIENT_SECRET",
   "LINK_PUBLISHABLE_KEY",
@@ -225,6 +237,7 @@ export const KNOWN_NAMES: readonly string[] = [
 /** A variable with one of these prefixes that nothing reads is a typo
  * until proven otherwise. */
 export const WATCHED_PREFIXES = [
+  "OTEL_",
   "APPLE_",
   "APNS_",
   "STRIPE_",
@@ -286,6 +299,10 @@ export const FEATURES = {
   },
   google_signin: { vars: ["GOOGLE_SIGNIN_ENABLED", "GOOGLE_CLIENT_ID"], what: "Google sign-in" },
   parkwhiz: { vars: ["PARKWHIZ_ENABLED"], what: "ParkWhiz garage search" },
+  tracing: {
+    vars: ["OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_HEADERS", "OTEL_CONSOLE"],
+    what: "OpenTelemetry tracing",
+  },
   assistant: { vars: ["ANTHROPIC_API_KEY"], what: "the assistant" },
   audit_summary: {
     vars: ["AUDIT_SUMMARY", "ANTHROPIC_API_KEY"],
@@ -373,6 +390,28 @@ function httpsUrlProblem(value: string): string | null {
   } catch {
     return "isn't a URL";
   }
+}
+
+/** A collector's URL: https, or http to this machine or a Fly-private
+ * host (`*.internal`, which never leaves the private network). */
+function collectorUrlProblem(value: string): string | null {
+  try {
+    const url = new URL(value);
+    if (url.protocol === "http:" && url.hostname.endsWith(".internal")) return null;
+  } catch {
+    return "isn't a URL";
+  }
+  return httpsUrlProblem(value) === null
+    ? null
+    : "must be an https URL (or http to localhost or *.internal)";
+}
+
+/** OTLP headers as the exporter reads them: `name=value` pairs, comma-separated. */
+function otlpHeadersProblem(value: string): string | null {
+  const pairs = value.split(",").map((pair) => pair.trim());
+  return pairs.every((pair) => /^[A-Za-z0-9!#$%&'*+.^_`|~-]+=\S.*$/.test(pair))
+    ? null
+    : "must be name=value pairs, comma-separated";
 }
 
 function emailFromProblem(value: string): string | null {
@@ -789,6 +828,27 @@ export function checkEnv(source: EnvSource, options: CheckOptions = {}): EnvRepo
     googleOn = set("google_signin", "on", "");
   }
 
+  // -------- tracing
+  const otelConsole = flag("OTEL_CONSOLE", "false");
+  const otelEndpointBad = problemOf("OTEL_EXPORTER_OTLP_ENDPOINT", collectorUrlProblem);
+  const otelHeadersBad = problemOf("OTEL_EXPORTER_OTLP_HEADERS", otlpHeadersProblem);
+  const otelEndpointOn = has("OTEL_EXPORTER_OTLP_ENDPOINT") && !otelEndpointBad && !otelHeadersBad;
+  // Degraded is off for both exporters: a bad endpoint or headers never
+  // leaves the console one running behind /health's back.
+  const otelConsoleOn =
+    !otelConsole.problem && otelConsole.value === "true" && !otelEndpointBad && !otelHeadersBad;
+  if (otelEndpointBad) {
+    set("tracing", "degraded", `OTEL_EXPORTER_OTLP_ENDPOINT ${otelEndpointBad}`);
+  } else if (otelHeadersBad) {
+    set("tracing", "degraded", `OTEL_EXPORTER_OTLP_HEADERS ${otelHeadersBad}`);
+  } else if (otelConsole.problem) {
+    set("tracing", "degraded", `OTEL_CONSOLE ${otelConsole.problem}`);
+  } else if (otelEndpointOn || otelConsoleOn) {
+    set("tracing", "on", "");
+  } else {
+    set("tracing", "off", "OTEL_EXPORTER_OTLP_ENDPOINT is not set: no spans are recorded");
+  }
+
   // -------- ParkWhiz and the assistant
   const parkwhiz = flag("PARKWHIZ_ENABLED", "true");
   const parkwhizOn = parkwhiz.problem
@@ -944,6 +1004,9 @@ export function checkEnv(source: EnvSource, options: CheckOptions = {}): EnvRepo
     PARKWHIZ_ENABLED: parkwhizOn ? "true" : "false",
     AUDIT_SUMMARY: auditOn ? "true" : "false",
     SIGN_READER: signReaderOn ? "true" : "false",
+    OTEL_EXPORTER_OTLP_ENDPOINT: otelEndpointOn ? text("OTEL_EXPORTER_OTLP_ENDPOINT") : undefined,
+    OTEL_EXPORTER_OTLP_HEADERS: otelEndpointOn ? raw("OTEL_EXPORTER_OTLP_HEADERS") : undefined,
+    OTEL_CONSOLE: otelConsoleOn ? "true" : "false",
     LINK_CLIENT_ID: linkOn ? text("LINK_CLIENT_ID") : undefined,
     LINK_CLIENT_SECRET: linkOn ? text("LINK_CLIENT_SECRET") : undefined,
     LINK_PUBLISHABLE_KEY: linkOn ? text("LINK_PUBLISHABLE_KEY") : undefined,

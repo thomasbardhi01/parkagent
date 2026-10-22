@@ -9,7 +9,9 @@ import { expect, test } from "vitest";
 
 import { makeShutdown } from "../src/services/shutdown.js";
 
-function harness(options: { requestMs?: number; jobMs?: number; deadlineMs?: number } = {}) {
+function harness(
+  options: { requestMs?: number; jobMs?: number; deadlineMs?: number; spans?: boolean } = {},
+) {
   const events: string[] = [];
   const later = (ms: number, label: string) =>
     new Promise<void>((resolve) =>
@@ -26,6 +28,13 @@ function harness(options: { requestMs?: number; jobMs?: number; deadlineMs?: num
     closeBrowser: async () => {
       events.push("browser closed");
     },
+    ...(options.spans
+      ? {
+          flushSpans: async () => {
+            events.push("spans flushed");
+          },
+        }
+      : {}),
     disconnectDb: async () => {
       events.push("db disconnected");
     },
@@ -49,6 +58,19 @@ test("in-flight work finishes before the browser it runs on closes", async () =>
     "db disconnected",
   ]);
   expect(h.exitCode()).toBe(0);
+});
+
+test("spans flush after the browser closes, never ahead of the work they wait on", async () => {
+  const h = harness({ spans: true });
+  await h.shutdown("SIGTERM");
+  expect(h.events).toEqual([
+    "jobs stopped",
+    "requests drained",
+    "extension finished",
+    "browser closed",
+    "spans flushed",
+    "db disconnected",
+  ]);
 });
 
 test("past the deadline it says what was still running and exits 1", async () => {

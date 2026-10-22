@@ -42,6 +42,7 @@ flowchart LR
     ST["Stripe<br/>holds · Issuing · Link"]
     AN["Anthropic API<br/>claude-sonnet-5-5 (assistant) · claude-haiku-5-5 (explain)<br/>thinking blocks passed back unchanged"]
     AM["Apple Maps geocoder"]
+    OT["OTel collector<br/>OTLP/HTTP (OTEL_EXPORTER_OTLP_ENDPOINT)"]
   end
 
   DB[("Postgres<br/>sessions · pending_parks<br/>location_fixes · users")]
@@ -84,11 +85,16 @@ flowchart LR
   AUD -. "AUDIT_SUMMARY: findings only, grounded" .-> AN
   AT -. "agent confirm: pending_arrival" .-> PLAN
   R1 -- "/parked in the plan's zone (as /parked resolves it), in the window, same dry run: held confirmed, pays on left_car" --> PLAN
+  R1 & R2 & R3 -. "request spans" .-> OT
+  AT -. "invoke_agent · chat · execute_tool (no words)" .-> OT
+  GATE -. "money_gate span" .-> OT
+  CAP & RS & AUD -. "chat span: each model call (explain, sign reader, audit summary)" .-> OT
+  AUTH -. "trace_id (the request span, or traceparent)" .-> DEC
 
   classDef money stroke:#b42318,stroke-width:2.5px
   classDef ext stroke:#b7791f,stroke-width:2px
   class GATE,EXT,EX money
-  class PB,SH,ST,AN,AM ext
+  class PB,SH,ST,AN,AM,OT ext
 ```
 
 ## Park lifecycle: when a session gets paid
@@ -146,6 +152,7 @@ flowchart LR
   GATE["moneyGate<br/>caps · dry run · consent · max stay · link"]
   LIFE["Park lifecycle<br/>pending_parks · arrival from phone only"]
   EXE["Executor · providers"]
+  OT["OTel collector<br/>OTLP/HTTP, opt-in"]
   DEC[("decisions<br/>actor · agent_key_id · trace_id")]
   KEYS[("agent_keys<br/>pak_ hash · scopes · revoked_at")]
   MAND[("mandates<br/>token hash · plan_hash · scopes · caps · consumed_at")]
@@ -175,6 +182,8 @@ flowchart LR
   LIFE --> GATE
   GATE --> EXE
   GATE --> DEC
+  GATE -. "money_gate span" .-> OT
+  C4 -. "chat span (EXPLAIN_MODEL on)" .-> OT
   APP -. "walks away: left_car" .-> LIFE
 
   classDef money stroke:#b42318,stroke-width:2.5px

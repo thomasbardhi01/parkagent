@@ -80,7 +80,8 @@ Each rule below names the code that keeps it and the test that pins it.
    - On SIGTERM:
      1. the server stops taking requests;
      2. it finishes those in flight and the job passes in flight;
-     3. only then does it close the browser and the database.
+     3. only then does it close the browser, flush the trace spans (at
+        most 2 s, when tracing is on), and close the database.
 
      This happens within 25 s; `fly.toml` allows 30 s
      (`services/shutdown.ts`; `scripts/boot-check.sh` requires exit 0).

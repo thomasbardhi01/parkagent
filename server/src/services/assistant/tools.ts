@@ -42,6 +42,7 @@ import type {
   ToolOutcome,
   TurnState,
 } from "../capabilities/turn.js";
+import { GEN_AI, inSpan } from "../telemetry.js";
 
 export type { Ask, Suggestion, ToolOutcome, PreviousStop, PricedStop, RepriceResult };
 export {
@@ -278,6 +279,9 @@ export const TOOL_DEFINITIONS = [
   },
 ];
 
+/** The tools there are: a span names only these. */
+const TOOL_NAMES: ReadonlySet<string> = new Set(TOOL_DEFINITIONS.map((tool) => tool.name));
+
 export class AssistantTools {
   constructor(private readonly deps: AssistantDeps) {}
 
@@ -326,7 +330,19 @@ export class AssistantTools {
 
   /** Dispatch one model tool call. Unknown tools come back as errors the
    * model can read, never as throws that kill the turn. */
-  async execute(ctx: ToolContext, name: string, input: unknown): Promise<ToolOutcome> {
+  execute(ctx: ToolContext, name: string, input: unknown): Promise<ToolOutcome> {
+    // Its own span: the tool's name, never its input or what it returned.
+    // A name the model made up is whatever text it wrote, so it isn't put
+    // on the span either.
+    const known = TOOL_NAMES.has(name) ? name : "unknown";
+    return inSpan(
+      `execute_tool ${known}`,
+      { [GEN_AI.operation]: "execute_tool", [GEN_AI.toolName]: known },
+      () => this.executeTool(ctx, name, input),
+    );
+  }
+
+  private async executeTool(ctx: ToolContext, name: string, input: unknown): Promise<ToolOutcome> {
     try {
       // The request's intent decides which tools are on (intentRouter.ts).
       // The loop only offers the model those; one called anyway is refused

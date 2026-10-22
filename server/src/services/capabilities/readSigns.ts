@@ -27,6 +27,7 @@ import {
   SIGN_RULES_JSON_SCHEMA,
   signRulesSchema,
 } from "../signs/signRules.js";
+import { inChatSpan } from "../telemetry.js";
 import type { CandidateFetcher } from "../zoneLookup.js";
 import { lookupRadiusM } from "../zoneLookup.js";
 import { applyObservedToCandidates } from "../zoneTermsObserved.js";
@@ -212,24 +213,26 @@ export async function interpretSigns(
   let usage = { inputTokens: 0, outputTokens: 0 };
   let model: string = SIGN_READER_MODEL;
   try {
-    const response = await modelClient.create({
-      system: SYSTEM,
-      messages: [
-        {
-          role: "user",
-          content: [
-            ...image,
-            { type: "text", text: `Text recognized on the signs:\n${text.trim() || "(none)"}` },
-          ],
-        },
-      ],
-      maxTokens: 1500,
-      outputSchema: SIGN_RULES_JSON_SCHEMA,
-      // Transcribing a sign into rules is extraction, not reasoning:
-      // Sonnet 5.5's default (high) thinks into the 1,500-token budget and
-      // comes back cut off, which reads as unreadable.
-      effort: "low",
-    });
+    const response = await inChatSpan(modelClient.model, () =>
+      modelClient.create({
+        system: SYSTEM,
+        messages: [
+          {
+            role: "user",
+            content: [
+              ...image,
+              { type: "text", text: `Text recognized on the signs:\n${text.trim() || "(none)"}` },
+            ],
+          },
+        ],
+        maxTokens: 1500,
+        outputSchema: SIGN_RULES_JSON_SCHEMA,
+        // Transcribing a sign into rules is extraction, not reasoning:
+        // Sonnet 5.5's default (high) thinks into the 1,500-token budget and
+        // comes back cut off, which reads as unreadable.
+        effort: "low",
+      }),
+    );
     usage = response.usage ?? usage;
     model = response.model ?? model;
     if (response.stopReason !== "end_turn") {

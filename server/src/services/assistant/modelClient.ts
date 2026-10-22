@@ -58,7 +58,13 @@ export interface ModelResponse {
   /** Which model actually answered and what it billed — logged per turn
    * on the assistant_turn decision row. Fakes may omit it. */
   model?: string;
-  usage?: { inputTokens: number; outputTokens: number };
+  /** Cache counts are there when the provider reported them (tracing). */
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens?: number;
+    cacheCreationTokens?: number;
+  };
 }
 
 /**
@@ -87,6 +93,8 @@ export interface ModelUsage {
 /** The transport seam: the real one wraps @anthropic-ai/sdk streaming;
  * tests inject a scripted fake. onText receives streamed text deltas. */
 export interface ModelClient {
+  /** The model this client asks, when it knows (the `chat` span's name). */
+  readonly model?: string;
   create(
     args: {
       system: string;

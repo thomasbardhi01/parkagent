@@ -8,7 +8,10 @@
  *  3. wait for job passes in flight (an extension mid-payment, a link);
  *  4. only then close the shared Chromium — before this change it went
  *     first, killing whatever payment was running;
- *  5. disconnect the database; exit 0.
+ *  5. flush the spans (tracing, when on): after the work that ends them,
+ *     and after the browser, so a collector that's down can't hold up a
+ *     payment's close; telemetry.ts bounds it to 2 s;
+ *  6. disconnect the database; exit 0.
  *
  * All within a deadline (fly.toml's kill_timeout is longer): past it, log
  * what was still running and exit 1 rather than be SIGKILLed mid-write.
@@ -21,6 +24,8 @@ export interface ShutdownDeps {
   /** Job passes still running. */
   drains: (() => Promise<void>)[];
   closeBrowser: () => Promise<void>;
+  /** Tracing's queued spans, when tracing is on. */
+  flushSpans?: () => Promise<void>;
   disconnectDb: () => Promise<void>;
   log: { info: (msg: string) => void; warn: (msg: string) => void };
   exit: (code: number) => void;
@@ -46,6 +51,10 @@ export function makeShutdown(deps: ShutdownDeps): (signal: string) => Promise<vo
       await Promise.all(deps.drains.map((drain) => drain().catch(() => {})));
       step = "closing the browser";
       await deps.closeBrowser().catch(() => {});
+      if (deps.flushSpans) {
+        step = "flushing spans";
+        await deps.flushSpans().catch(() => {});
+      }
       step = "disconnecting the database";
       await deps.disconnectDb().catch(() => {});
       return "done" as const;

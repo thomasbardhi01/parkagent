@@ -57,6 +57,7 @@ export function makeAnthropicModelClient(
 ): ModelClient {
   const client = new Anthropic({ apiKey });
   return {
+    model,
     async create(args, onText) {
       const stream = client.messages.stream({
         model,
@@ -115,6 +116,12 @@ export function toModelResponse(message: Anthropic.Message): ModelResponse {
     usage: {
       inputTokens: message.usage.input_tokens,
       outputTokens: message.usage.output_tokens,
+      ...(typeof message.usage.cache_read_input_tokens === "number"
+        ? { cacheReadTokens: message.usage.cache_read_input_tokens }
+        : {}),
+      ...(typeof message.usage.cache_creation_input_tokens === "number"
+        ? { cacheCreationTokens: message.usage.cache_creation_input_tokens }
+        : {}),
     },
   };
 }

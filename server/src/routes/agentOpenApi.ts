@@ -18,10 +18,10 @@ const json = (schema: Record<string, unknown>) => ({ "application/json": { schem
 
 const refusals = {
   "400": { description: "The body didn't parse", content: json(errorBody) },
-  "401": { description: "No agent key, or a revoked one", content: json(errorBody) },
+  "401": { description: "An unknown or revoked agent key", content: json(errorBody) },
   "403": {
     description:
-      "The key lacks the scope, or the person hasn't let agents act (agents_not_allowed)",
+      "No agent key (agent_surface_needs_agent_key), the key lacks the scope, or the person hasn't let agents act (agents_not_allowed)",
     content: json(errorBody),
   },
   "429": { description: "60 calls a minute per key", content: json(errorBody) },
@@ -56,7 +56,8 @@ export function agentOpenApi(): Record<string, unknown> {
             ? {
                 "404": { description: "No such plan or mandate", content: json(errorBody) },
                 "409": {
-                  description: "mandate_used, plan_hash_mismatch, or a cap (policy_violation)",
+                  description:
+                    "mandate_used, plan_hash_mismatch, nothing_to_confirm, dry_run_changed, a cap (policy_violation), garage_option_expired, or garage_book_failed",
                   content: json(errorBody),
                 },
                 "410": {

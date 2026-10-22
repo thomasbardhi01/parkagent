@@ -300,6 +300,8 @@ test("one mandate token used twice at once: one use is honored", () =>
       type: "street",
       zoneId: "nyc-417371",
       durationMinutes: 60,
+      // A street option is held to the caps at confirm, as the price shown.
+      priceUsd: 4.1,
       hours: ALWAYS,
     };
     const plan = { options: [option] };

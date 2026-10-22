@@ -51,6 +51,13 @@ const NEVER_STORED = [
   // An agent key is shown once: never kept to replay (a retried create
   // mints a second key, which the person can revoke).
   /^\/me\/agent-keys$/,
+  // A proposed plan's answer carries its mandate token: never kept (a
+  // lost answer means the agent proposes again).
+  /^\/agent\/plans$/,
+  // MCP is JSON-RPC: a request is named by its id, its answer may carry a
+  // one-time confirm token, and the reply is written by the SDK, not sent
+  // through Fastify, so a stored key would never complete.
+  /^\/mcp$/,
 ];
 
 declare module "fastify" {

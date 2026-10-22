@@ -659,6 +659,9 @@ export interface AssistantPlanRow {
   createdAt: Date;
   confirmedAt: Date | null;
   confirmedOptionId: string | null;
+  /** An agent's street plan, bound to the park the phone reported (E3). */
+  boundParkedEventId?: string | null;
+  boundAt?: Date | null;
 }
 
 export interface AppDb {
@@ -937,12 +940,15 @@ export interface AppDb {
       data: { id: string; userId: string; conversationId: string; kind: string; plan: unknown };
     }): Promise<{ id: string }>;
     findUnique(args: { where: { id: string } }): Promise<AssistantPlanRow | null>;
-    /** A conversation's plans (history), or a user's confirmed ones (Activity). */
+    /** A conversation's plans (history), a user's confirmed ones
+     * (Activity), or those confirmed since a moment and not yet bound to
+     * a park (an agent's spot meeting the phone, E3). */
     findMany(args: {
       where: {
         userId: string;
         conversationId?: { in: string[] };
-        confirmedAt?: { not: null };
+        confirmedAt?: { not: null; gte?: Date };
+        boundParkedEventId?: null;
       };
     }): Promise<AssistantPlanRow[]>;
     /** The user's tap: when, and which option (null for an itinerary). */
@@ -950,6 +956,12 @@ export interface AppDb {
       where: { id: string };
       data: { confirmedAt: Date; confirmedOptionId: string | null };
     }): Promise<unknown>;
+    /** The bind, once: matches only a plan no park is bound to yet; or
+     * its undo, matching only the park it was bound to. */
+    updateMany(args: {
+      where: { id: string; boundParkedEventId: string | null };
+      data: { boundParkedEventId: string | null; boundAt: Date | null };
+    }): Promise<{ count: number }>;
   };
   mandate: {
     create(args: {
@@ -967,6 +979,11 @@ export interface AppDb {
       };
     }): Promise<unknown>;
     findUnique(args: { where: { token: string } }): Promise<MandateRow | null>;
+    /** A plan's mandate (one per plan from the agent surface). */
+    findFirst(args: {
+      where: { planId: string };
+      orderBy: { createdAt: "desc" };
+    }): Promise<MandateRow | null>;
     /** The single-use claim: matches only an unconsumed, unexpired
      * mandate, so of two concurrent claims exactly one sees count 1. */
     updateMany(args: {

@@ -33,7 +33,9 @@ import { registerIdempotency } from "./services/idempotency.js";
 import { makeAssistantHealth } from "./services/assistant/health.js";
 import { registerMe } from "./routes/me.js";
 import { registerAgentKeys } from "./routes/agentKeys.js";
-import { registerAgent } from "./routes/agent.js";
+import { makeAgentLimit, registerAgent } from "./routes/agent.js";
+import { registerMcp } from "./routes/mcp.js";
+import { agentActions } from "./services/agentActions.js";
 import { registerParked } from "./routes/parked.js";
 import { registerPolicy } from "./routes/policy.js";
 import { registerProviders } from "./routes/providers.js";
@@ -146,6 +148,9 @@ export interface AppDeps {
    * build may still choose the ParkAgent card (sandbox: true) — test-mode
    * keys can't move real money. */
   issuingSandbox?: boolean;
+  /** MCP_APPS env: whether /mcp offers its MCP Apps `ui://` confirm card.
+   * Off by default; without it the mandate confirm is the only way. */
+  mcpApps?: boolean;
   /** What GET /health reports beyond ok and the build: the DRY_RUN switch
    * as env.ts resolved it (an unreadable value runs dry), and the features
    * a settings problem switched off. Absent → read from process.env. */
@@ -257,6 +262,8 @@ const PUBLIC_PATHS = new Set([
   "/auth/email/verify",
   "/auth/refresh",
   "/auth/logout",
+  // The agent API's own description: no data in it (routes/agentOpenApi.ts).
+  "/agent/openapi.json",
 ]);
 
 /** 403 unless the authenticated user is an admin. Guards mutations of the
@@ -397,7 +404,11 @@ export function buildApp(deps?: AppDeps, app: FastifyInstance = createFastify())
     registerLocation(app, deps, sessionOps);
     registerMe(app, deps);
     registerAgentKeys(app, deps);
-    registerAgent(app, deps);
+    // One budget per key across both agent surfaces.
+    const agentLimit = makeAgentLimit(deps);
+    const actions = agentActions(deps);
+    registerAgent(app, deps, agentLimit, actions);
+    registerMcp(app, deps, agentLimit, actions);
     registerLimits(app, deps);
     registerDevice(app, deps);
     registerCard(app, deps);

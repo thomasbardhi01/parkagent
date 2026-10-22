@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "parkagent": {
+      "type": "http",
+      "url": "https://parkagent-api.fly.dev/mcp",
+      "headers": {
+        "Authorization": "Bearer ${PARKAGENT_AGENT_KEY}"
+      }
+    }
+  }
+}

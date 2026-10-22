@@ -75,6 +75,7 @@ OPTIONAL_VARS=(
   ASSISTANT_CONVERSATION_RETENTION_DAYS
   PARKWHIZ_ENABLED AUDIT_SUMMARY
   LINK_CLIENT_ID LINK_CLIENT_SECRET LINK_PUBLISHABLE_KEY LINK_REDIRECT_URI LINK_TEST_MODE
+  MCP_APPS
 )
 for var in "${OPTIONAL_VARS[@]}"; do unset "$var"; done
 # The misspelling "broken" sets, in case the caller's shell has it.
@@ -96,6 +97,7 @@ if [[ "$MODE" == "off" ]]; then
   export EMAIL_SIGNIN_ENABLED=false
   export GOOGLE_SIGNIN_ENABLED=false
   export PARKWHIZ_ENABLED=false
+  export MCP_APPS=false
   export EXECUTOR_WARM_AT_BOOT=false
   EXPECTED_METHODS='{"apple":true,"email":false,"google":false}'
   EXPECTED_DEGRADED='[]'
@@ -129,8 +131,9 @@ elif [[ "$MODE" == "broken" ]]; then
   export PARKWHIZ_ENABLED="nope"
   export ANTHROPIC_API_KEY="sk-proj-bootcheck0000"          # not an Anthropic key
   export AUDIT_SUMMARY="maybe"                              # not true or false
+  export MCP_APPS="on"                                      # not true or false
   EXPECTED_METHODS='{"apple":true,"email":false,"google":false}'
-  EXPECTED_DEGRADED='["live_payments","push","stripe","issuing","link_wallet","apple_signin_revoke","apple_maps","email_signin","google_signin","parkwhiz","assistant","audit_summary"]'
+  EXPECTED_DEGRADED='["live_payments","push","stripe","issuing","link_wallet","apple_signin_revoke","apple_maps","email_signin","google_signin","parkwhiz","assistant","audit_summary","mcp_apps"]'
 else
   # Live mode against an empty database: no users, sessions, or linked
   # accounts, and keys no real service accepts, so nothing can pay.
@@ -180,6 +183,7 @@ else
   export LINK_PUBLISHABLE_KEY="pk_test_bootcheck0000000000000000"
   export LINK_REDIRECT_URI="https://example.com/link/callback"
   export LINK_TEST_MODE=true
+  export MCP_APPS=true
   EXPECTED_METHODS='{"apple":true,"email":true,"google":true}'
   EXPECTED_DEGRADED='[]'
 fi

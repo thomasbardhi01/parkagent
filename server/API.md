@@ -1071,6 +1071,47 @@ One measurement sent twice (the app's heartbeat re-sends its last fix) is
 one measurement. A park nobody walked away from within an hour is
 `expired` and never asked about.
 
+**An agent's confirmed spot (WS-4).** An external agent's confirm of a
+street plan (`POST /agent/plans/:id/confirm` → `pending_arrival`) is the
+person's tap given ahead, for one spot, for the mandate's ten minutes; it
+creates no park. **A bound park pays on the app's `left_car` with no tap
+and no prompt at the curb.** The phone's next `/parked` that would be held
+for its walk-away is bound when all of these hold:
+- it is the person's own, and **the person still lets agents act**
+  (`agents_may_act`, read at arrival: the person's latest word wins over
+  the agent's earlier confirm);
+- its candidates agree on terms (zone lookup's "agree": the same rates,
+  hours and max stay), the pay-by-app number is known, and the nearest
+  zone, whose number is the one paid, is the plan's zone. Candidates
+  that disagree never bind, so a car across the street with different
+  terms gets the ordinary prompt. A neighbour on the same terms can share
+  the block, and **the bound path has no "Wrong spot" tap**: the nearest
+  zone's number is paid;
+- it is inside the mandate's window (the mandate an agent's, consumed,
+  unexpired);
+- dry run is what it was when the mandate was minted;
+- the plan's own stay (`durationMinutes`), priced here now, is within the
+  zone's max stay and the plan's price, and passes `/parked`'s own
+  auto-pay gate for that quote (the caps and the rate ceiling).
+
+Such a park is held `confirmed` from the start instead of `at_car`: the
+phone's own fix is the car, the zone is the plan's, and the shown quote is
+that stay at that price. It then runs as any Pay tapped at the car: it
+starts only on the app's `left_car`, where the start's own money gate runs
+again, and a walk-away by distance alone asks again. The mandate's ten
+minutes bound the arrival, not the walk-away: like a tap at the car, a
+bound park waits for `left_car` up to the park's hour (`PARK_TTL_MS`), so it
+can pay after the mandate itself has expired. A plan binds one park, once
+(a compare-and-set on `assistant_plans.bound_parked_event_id`, undone if
+the park can't be written); the plan reads `status: "bound"` on `GET
+/agent/plans/:id`. Expired, elsewhere, disagreeing, dearer, gated, under
+another dry run, with agents switched off, another person's, or an app
+tap's plan: the ordinary `at_car` hold, and the phone's own prompt. The
+`street_confirmed` decision (`rule: agent_plan_bound`) names the plan, the
+mandate and the agent key, and carries the key on its `agent_key_id`
+column; its actor is the phone's (arrival is the phone's act)
+(`routes/parked.ts`, `agentBindingFor` in `services/pendingSession.ts`).
+
 **A Pay tapped at the car starts only on the app's `left_car`.** Two
 fixes at nearly the same distance read like a walk, and so does a car
 stopped at a light a block away. So a walk-away by distance alone moves a
@@ -3661,16 +3702,19 @@ mint, list or revoke keys, or change consent: those routes refuse a key.
 **One surface per principal kind.** `Authorization: Bearer pak_…` is
 resolved in the one auth hook (`makeAuthenticate`) to an external-agent
 principal with the key's scopes and the person's id — never their admin
-rights. A key reaches the agent surfaces (`/agent/*`; `/mcp` once it
-exists) and nothing else: anywhere else is `403 agent_key_not_allowed_here`.
+rights. A key reaches the agent surfaces (`/agent/*` and `/mcp`) and nothing
+else: anywhere else is `403 agent_key_not_allowed_here`.
 The agent surfaces take nothing else: a session or the admin key there is
-`403 agent_surface_needs_agent_key`. An unknown or revoked key is `401`.
+`403 agent_surface_needs_agent_key`, and so is a call with no credentials
+at all. Only a `pak_` key that is unknown or revoked is `401`.
 Every agent call is logged with the key's prefix and route, and every
 decision it causes carries `actor: "external_agent"` and the key's id.
 
 **Rate limit.** 60 calls a minute per key (`429 rate_limited` with
-`Retry-After`), through the same limiter as the rest of the API. It's
-in-memory, per machine: on one Fly machine that's the whole limit.
+`Retry-After`), through the same limiter as the rest of the API, and one
+budget across both agent surfaces: a REST call and an MCP `tools/call` or
+`resources/read` take from the same bucket. It's in-memory, per machine:
+on one Fly machine that's the whole limit.
 
 ### The mandate
 
@@ -3691,11 +3735,131 @@ before the token is read. Mandates minted before this table was renamed
 from `assistant_confirmations` were stored in plain text and can't be
 consumed; they expired within ten minutes of the deploy.
 
-### GET /agent/me
+### The routes
 
-`{userId, agentKeyId, scopes, agentsMayAct}`: who the key acts for, what
-it may do, and whether the person has said agents may act. The routes
-that search, plan and confirm come with PR 2b.
+All take `Bearer pak_…` and the `read` scope unless noted, and answer as
+the capabilities do for the app (the same shapes the assistant's tools
+return). Places are **named**, never coordinates: a request is
+`{place, startsAt?, durationMinutes, maxPriceUsd?, maxWalkMinutes?,
+kinds?}` and the server looks the place up; a body with any other field
+is `400`. The full description is `GET /agent/openapi.json` (public,
+OpenAPI 3.1, generated from the routes' own zod schemas); the six tools as
+OpenAI-style functions are `examples/grok-tool.json` (regenerate with
+`pnpm -C server agent:tools`).
+
+- `GET /agent/me` → `{userId, agentKeyId, scopes, agentsMayAct}`.
+- `POST /agent/geocode {query, city?}` → a place lookup.
+- `POST /agent/quote-street {request}`, `POST /agent/garages/search
+  {request}` → a search: `{verdict, satisfying, nearMisses, …}`.
+- `POST /agent/itinerary {stops: [{place, label?, arrival,
+  durationMinutes}]}` (1–12) → each stop's street quote and best garage
+  against the daily cap; `422 place_not_found {stop}` when a place can't
+  be resolved to one spot. A stop resolved only to the closest place, not
+  the one named, is listed in `closestMatches: [{stop, place,
+  instruction}]`, as `/agent/geocode` says it.
+- `POST /agent/plans {request}` → searches (street then garages, as the
+  request's `kinds` allow) and proposes: `{planId, plan}`, the plan an
+  `assistant_plans` row like the app's. For a key with `confirm`, a
+  single-spot plan also carries `{confirmToken, optionId, expiresAt,
+  dryRun}`: the mandate for the recommended option, ten minutes, used
+  once, minted under the dry run it shows. The answer is never kept by the
+  idempotency layer (it carries the token): a lost one means proposing
+  again.
+- `POST /agent/plans/:planId/confirm {confirmToken}` (`confirm` scope)
+  runs the one confirm sequence the app's tap runs too
+  (`consumeConfirmation` in `services/capabilities/confirmPlan.ts`):
+  consent first (`403 agents_not_allowed`, before the mandate is read);
+  the mandate (`404 mandate_not_found`, also for another plan's token;
+  `409 mandate_used`; `410 mandate_expired`; `409 plan_hash_mismatch`);
+  `409 nothing_to_confirm` for a plan with no option; `409
+  dry_run_changed {shownDryRun, dryRun}` when dry run changed since the
+  proposal; an option the caps can't judge, a street option (or any an
+  agent confirms) with no numeric price (`409 policy_violation
+  {rule: "amount_invalid"}`); the caps now (`409 policy_violation
+  {rule}`); and for a
+  garage, an offer the provider's search still holds (`409
+  garage_option_expired`: search again). Each of those leaves the mandate
+  unspent. Only then is it claimed. Then:
+  - a garage → `{status: "garage_handoff", deepLink, priceUsd, dryRun}`:
+    the option's own checkout, as in the app; nothing is booked or paid
+    here (a provider failing after the claim is `409 garage_book_failed`,
+    the mandate spent);
+  - a street spot → `{status: "pending_arrival", zoneId,
+    durationMinutes, priceUsd, dryRun, expiresAt}`. No `pending_parks` row
+    is written and nothing pays here: arrival comes only from the phone's
+    `/parked`, and the park lifecycle (`services/pendingSession.ts`) is
+    the code that enforces it. **But the confirm is the person's tap,
+    given ahead.** When the phone's next `/parked` is at that spot (the
+    nearest of candidates that agree on terms), inside the mandate's
+    window, under the same dry run, with the person still letting agents
+    act, that park is held `confirmed` from the start. It
+    then **pays on the app's `left_car` with no tap and no prompt at the
+    curb**, for the plan's stay and no more than the plan's price (see
+    "Session lifecycle" → "An agent's confirmed spot"). Anywhere else,
+    later, or under another dry run, the phone's own prompt asks the
+    driver as it does without an agent.
+  Each answer writes an `agent_confirm` decision.
+- `GET /agent/plans/:planId` → `{planId, kind, plan, confirmedAt,
+  confirmedOptionId}`; `GET /agent/parks/:parkId` → a park's `{status,
+  zoneId, parkedAt, sessionId}`. Another person's is `404`.
+- `GET /agent/decisions/:decisionId/why` → `501` until Issue M.
+
+### MCP
+
+`POST /mcp` (and `GET`/`DELETE`, which a 2025-era client may send) is the
+same six calls as MCP tools, protocol revision **2026-07-28**, served by
+the MCP TypeScript SDK v2 (`createMcpHandler`, mounted with
+`toNodeHandler`, `routes/mcp.ts`). Configs: `examples/mcp-config.json`
+(Claude Code / Claude Desktop) and `examples/mcp-config.generic.json`.
+
+- **Who:** `Authorization: Bearer pak_…` only, resolved in
+  `makeAuthenticate` as on `/agent/*`; no key, a session or the admin key
+  is `403 agent_surface_needs_agent_key`, an unknown or revoked key `401`,
+  before the SDK sees the request. The SDK is handed that principal
+  (`authInfo`), never a header to re-read.
+- **Eras:** `server/discover` answers `supportedVersions: ["2026-07-28"]`
+  and capabilities `tools` and `resources` only (no roots, sampling or
+  logging). A 2025-era client (`initialize`, no per-request envelope) is
+  served statelessly from the same tools (`legacy: "stateless"`). The
+  `Mcp-Method`/`Mcp-Name` headers must agree with the body (`-32020`).
+  `subscriptions/listen` is `-32601`: the lists never change while the
+  server runs, so no change stream is held open.
+- **Ceiling:** every request to `/mcp` (initialize, discover, lists,
+  ping, GET) counts against a per-key ceiling of its own, 600 a minute
+  (`429 rate_limited`), apart from the per-call budget the tools share
+  with REST.
+- **Tools:** `geocode_place`, `quote_street`, `search_garages`,
+  `build_itinerary`, `propose_plan`, `confirm_plan`, always in that order
+  (`examples/grok-tool.json`'s), and `tools/list` is cacheable
+  `{ttlMs: 300000, cacheScope: "private"}`. Each takes the REST route's
+  body as its arguments; `confirm_plan` takes `{planId, confirmToken}`.
+  Each answers the REST body as `structuredContent` (and as JSON text). A
+  refusal is a tool error (`isError: true`) whose body carries the REST
+  code in `error`: `agents_not_allowed`, `scope_required`,
+  `mandate_not_found`, `mandate_used`, `mandate_expired`,
+  `plan_hash_mismatch`, `nothing_to_confirm`, `dry_run_changed
+  {shownDryRun, dryRun}`, `policy_violation {rule}`,
+  `garage_option_expired`, `garage_book_failed`, `rate_limited
+  {retryAfterS}`, and the rest as REST. `confirm_plan` runs the one
+  confirm sequence REST and the app's tap run (`consumeConfirmation`):
+  a refusal before the claim leaves the mandate unspent. `propose_plan`
+  hands back the mandate (`confirmToken`) as an ordinary result field;
+  nothing pays, and a street confirm answers `pending_arrival` exactly as
+  REST.
+- **Resources:** `parkagent://plans/{id}` and `parkagent://parks/{id}`,
+  the person's own only (`GET /agent/plans/:id`'s and
+  `/agent/parks/:id`'s bodies); anyone else's is not found. A read over
+  the key's budget is error `-32029` with `{error: "rate_limited",
+  retryAfterS}` as its data, never "not found".
+- **Tracing:** a `traceparent` in a request's `_meta` (else the HTTP
+  header) is the trace id on the decisions that call writes.
+- **The confirm card (`MCP_APPS`, off by default):** with `MCP_APPS=true`,
+  `propose_plan` carries `_meta.ui.resourceUri: "ui://parkagent/confirm-card"`
+  (on the tool and on a result with a token, with the person's caps under
+  `_meta["io.parkagent/caps"]`), and that resource is a static MCP Apps
+  page (`text/html;profile=mcp-app`) showing the spot, price, caps and the
+  arrival rule, whose one Confirm button calls `confirm_plan` through the
+  host. A host without UI confirms with the token the same way.
 
 ## Link wallet for agents
 

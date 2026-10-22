@@ -20,6 +20,7 @@ flowchart LR
     R1["/parked · /location<br/>/parked/:id/confirm"]
     R2["/session/start · extend · stop"]
     R3["/assistant/message · confirm"]
+    R4["/mcp · stateless 2026-07-28<br/>tools = the /agent calls"]
     PS["pendingSession<br/>advanceWalk · settlePark · startParkSession"]
     GATE["moneyGate<br/>caps · max stay · dry run · link · as shown<br/>consent · phone away (under lock)"]
     EXT["applyExtension<br/>advisory lock · asks the gate again"]
@@ -43,15 +44,17 @@ flowchart LR
 
   DB[("Postgres<br/>sessions · pending_parks<br/>location_fixes · users")]
   PF[("park_fixes<br/>every fix a park read or refused · 30 days")]
+  PLAN[("assistant_plans<br/>confirmed by an agent · bound once")]
 
   LR --> AUTH
   PL --> AUTH
   AV --> AUTH
-  AUTH --> R1 & R2 & R3
+  AUTH --> R1 & R2 & R3 & R4
   R1 --> PS
   PS --> GATE
   R2 --> GATE
   R3 --> AT
+  R4 -- "agentActions, as /agent" --> CAP
   AT --> AN
   AT --> CAP
   CAP --> AM & SH
@@ -73,6 +76,8 @@ flowchart LR
   AUD -. "reads" .-> DEC
   AUD -. "reads sessions · pending_parks · park_fixes" .-> DB & PF
   AUD -. "AUDIT_SUMMARY: findings only, grounded" .-> AN
+  AT -. "agent confirm: pending_arrival" .-> PLAN
+  R1 -- "/parked in the plan's zone (as /parked resolves it), in the window, same dry run: held confirmed, pays on left_car" --> PLAN
 
   classDef money stroke:#b42318,stroke-width:2.5px
   classDef ext stroke:#b7791f,stroke-width:2px
@@ -88,6 +93,7 @@ Each park the phone reports becomes a `pending_parks` row. Every transition is a
 stateDiagram-v2
   direction LR
   [*] --> at_car: /parked (app lists walk_away)
+  [*] --> confirmed: /parked at an agent's confirmed spot (its zone, its window, its dry run)
   at_car --> prompted: walk-away by pace
   at_car --> confirmed: Pay tapped at the car
   prompted --> confirmed: Pay tapped, back at car
@@ -137,11 +143,14 @@ flowchart LR
   DEC[("decisions<br/>actor · agent_key_id · trace_id")]
   KEYS[("agent_keys<br/>pak_ hash · scopes · revoked_at")]
   MAND[("mandates<br/>token hash · plan_hash · scopes · caps · consumed_at")]
+  CARD["MCP Apps confirm card<br/>ui:// · MCP_APPS, off by default"]
 
   APP --> P
   LOOP --> P
   GROK -- "Bearer pak_ (agent_keys)" --> P
   CL -- "Bearer pak_" --> P
+  CL -. "propose_plan _meta.ui" .-> CARD
+  CARD -- "confirm_plan via host" --> P
   SIRI -.-> P
   P --> C1 & C2 & C3
   P --> C4
@@ -150,7 +159,8 @@ flowchart LR
   C3 -- "consume once" --> MAND
   APP -- "Confirm tap: mint" --> MAND
   C3 --> GATE
-  GATE -- "street, start now" --> LIFE
+  C3 -. "street: pending_arrival (consent + cap, no park)" .-> LIFE
+  APP -- "/parked: the only arrival" --> LIFE
   LIFE --> GATE
   GATE --> EXE
   GATE --> DEC
@@ -159,7 +169,7 @@ flowchart LR
   classDef money stroke:#b42318,stroke-width:2.5px
   classDef planned stroke:#1d5fa8,stroke-width:2px,stroke-dasharray:5 4
   class GATE,EXE money
-  class CL,SIRI planned
+  class SIRI planned
   class C4 planned
 ```
 

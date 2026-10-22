@@ -1057,12 +1057,26 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
             r.userId === where.userId &&
             (!where.conversationId || where.conversationId.in.includes(r.conversationId)) &&
             // Loose: older tests push plan rows without the column.
-            (!where.confirmedAt || r.confirmedAt != null),
+            (!where.confirmedAt || r.confirmedAt != null) &&
+            (!where.confirmedAt?.gte ||
+              (r.confirmedAt != null &&
+                r.confirmedAt.getTime() >= where.confirmedAt.gte.getTime())) &&
+            (!("boundParkedEventId" in where) || (r.boundParkedEventId ?? null) === null),
         ),
       update: async ({ where, data }) => {
         const row = state.assistantPlans.find((r) => r.id === where.id);
         if (row) Object.assign(row, data);
         return {};
+      },
+      updateMany: async ({ where, data }) => {
+        // Compare-and-set, like UPDATE … WHERE bound_parked_event_id = $2
+        // (or IS NULL).
+        const row = state.assistantPlans.find(
+          (r) => r.id === where.id && (r.boundParkedEventId ?? null) === where.boundParkedEventId,
+        );
+        if (!row) return { count: 0 };
+        Object.assign(row, data);
+        return { count: 1 };
       },
     },
     mandate: {
@@ -1072,6 +1086,12 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
       },
       findUnique: async ({ where }) => {
         const row = state.mandates.find((r) => r.token === where.token);
+        return row ? { ...row } : null;
+      },
+      findFirst: async ({ where }) => {
+        const row = state.mandates
+          .filter((r) => r.planId === where.planId)
+          .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
         return row ? { ...row } : null;
       },
       updateMany: async ({ where, data }) => {
@@ -2278,6 +2298,8 @@ export function makeTestApp(options: {
   issuingLive?: boolean;
   /** A test-mode Stripe key: a Debug build's sandbox choice is honored. */
   issuingSandbox?: boolean;
+  /** MCP_APPS: /mcp offers its ui:// confirm card (default off). */
+  mcpApps?: boolean;
   /** LINK_TEST_MODE: spend requests are test requests (allowed in dry run). */
   linkTestMode?: boolean;
   /** Reporting APNs delivery for the admin push-test endpoint; absent →
@@ -2377,6 +2399,7 @@ export function makeTestApp(options: {
     linkWallet,
     ...(options.issuingLive !== undefined ? { issuingLive: options.issuingLive } : {}),
     ...(options.issuingSandbox !== undefined ? { issuingSandbox: options.issuingSandbox } : {}),
+    ...(options.mcpApps !== undefined ? { mcpApps: options.mcpApps } : {}),
     ...(options.apnsDelivery ? { apnsDelivery: options.apnsDelivery } : {}),
     ...(options.appleTokens ? { appleTokens: options.appleTokens } : {}),
     now,

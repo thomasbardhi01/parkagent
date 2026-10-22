@@ -13,7 +13,7 @@ import { LINK_MANAGE_URL } from "../link/linkClient.js";
 import type { LinkPaymentMethodSummary } from "../link/linkClient.js";
 import { LINK_COMMITTED_STATUSES, linkSpentSince } from "../link/linkSpend.js";
 import type { PendingLinkApproval } from "../link/linkWallet.js";
-import { spentToday } from "../sessions.js";
+import { spentToday } from "../moneyGate.js";
 import { activityPage } from "./activity.js";
 import type { ActivityPage } from "./activity.js";
 import { parkAgentCardOf } from "./parkagentCard.js";

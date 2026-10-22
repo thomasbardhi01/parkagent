@@ -1,8 +1,8 @@
 %% ParkAgent: phone → routes → services → providers.
 %% Rows and file:line anchors are in docs/feature-map.md.
-%% Every START passes the one money gate (runStart). Extensions and stops
-%% don't: they reach the executor through applyExtension / stop, drawn
-%% dashed, with their own checks.
+%% Every start, extension, stop, prompt, quote, assistant confirm and
+%% funding move asks the one money gate (services/moneyGate.ts) with who
+%% is acting (Principal); an extension asks again under its lock.
 flowchart LR
   subgraph phone["Phone (ios/ParkAgent)"]
     detector["ParkDetector + ParkFusionEngine"]
@@ -33,8 +33,8 @@ flowchart LR
   subgraph services["Services and jobs (server/src)"]
     zoneLookup["zoneLookup + quote + placeClassification"]
     pending["pendingSession (rules)"]
-    gate{{"MONEY GATE · runStart<br/>caps (policyFor) · dry run · quote/zone/dry-run as shown<br/>CAS before it: parked.ts confirm · location.ts walk-away<br/>one open session: unique index"}}
-    applyExt["applyExtension<br/>own cap check · advisory lock"]
+    gate{{"MONEY GATE · services/moneyGate<br/>caps (policyFor + spentToday) · max stay · dry run · provider link<br/>as shown (quote/zone/dry run) · phone away (auto extend) · agent consent<br/>CAS before it: parked.ts confirm · location.ts walk-away<br/>one open session: unique index"}}
+    applyExt["applyExtension<br/>advisory lock · asks the gate again on the fresh row"]
     extendTick["jobs/extendTick (60 s)<br/>only while the phone is away"]
     holds["wallet/holds<br/>hold → settle"]
     issuing["issuing.decideAuthorization<br/>daily cap · hold claim"]
@@ -77,11 +77,12 @@ flowchart LR
 
   gate --> holds --> stripe
   gate --> execGate
-  sessExtend -. "bypasses the gate" .-> applyExt
-  extendTick -. "bypasses the gate" .-> applyExt
+  sessExtend -- "extend" --> gate
+  extendTick -- "extend (job)" --> gate
+  gate --> applyExt
   applyExt --> holds
   applyExt --> execGate
-  sessStop -. "no money: stop" .-> execGate
+  sessStop -- "stop: consent only" --> gate
   location -. "return / drive-off: endSession" .-> execGate
   execGate --> passport
   execGate --> parknyc

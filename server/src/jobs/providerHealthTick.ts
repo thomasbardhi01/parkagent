@@ -25,6 +25,7 @@ import { providerRelinkPush } from "../services/apns.js";
 import type { PushSender } from "../services/apns.js";
 import type { StateCrypto } from "../services/crypto.js";
 import { openState } from "../services/providerLink.js";
+import { jobPrincipal, runAs } from "../services/principal.js";
 import type { ProviderOpsFactory, ProviderStorageState } from "../services/providerOps.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -164,7 +165,7 @@ export function makeProviderHealth(deps: ProviderHealthDeps) {
       );
       for (const account of due) {
         try {
-          await checkAccount(account);
+          await runAs(jobPrincipal(account.userId), () => checkAccount(account));
         } catch (err) {
           deps.log.warn(
             `provider health: ${account.provider}/${account.userId} check crashed: ${String(err)}`,

@@ -7,14 +7,16 @@
  */
 
 import type { AppDb, PendingParkRow, PendingParkWrite, SessionRow } from "../db.js";
-import { cityForZone, providerForCity, providerStatusUsable } from "../providers/registry.js";
+import { cityForZone, providerForCity } from "../providers/registry.js";
 import type { HoursInterval } from "./hours.js";
 import { easternWallClock } from "./hours.js";
 import { policyFor } from "./limits.js";
 import type { Policy } from "./policy.js";
+import { moneyGate } from "./moneyGate.js";
+import { principalFor } from "./principal.js";
 import type { Quote, ZoneTerms } from "./quote.js";
 import { quoteZone } from "./quote.js";
-import { spentToday, supportsEarlyStop } from "./sessions.js";
+import { supportsEarlyStop } from "./sessions.js";
 import { effectiveTerms, observedTermsFor } from "./zoneTermsObserved.js";
 
 export type PendingSessionCheck = (userId: string, at: Date) => Promise<boolean>;
@@ -513,23 +515,16 @@ export async function buildParkPrompt(
   if (quote.totalUsd === 0) return { kind: "free" };
 
   const provider = providerForCity(cityForZone(chosen.zoneId));
-  const account = provider
-    ? await deps.db.providerAccount.findUnique({
-        where: { userId_provider: { userId: park.userId, provider: provider.id } },
-      })
-    : null;
-  // The start path's own refusals, in its order: said now, in words,
-  // rather than offered as a Pay button that would be refused.
-  let reason: ParkPromptReason | null = null;
-  if (provider && !providerStatusUsable(account?.status)) reason = "provider_not_linked";
-  else if (provider && zoneNumber === "") reason = "needs_zone_number";
-  else if (quote.totalUsd > policy.session_cap_usd) reason = "session_cap_exceeded";
-  else if (
-    (await spentToday(deps.db, park.userId, at, { dryRun })) + quote.totalUsd >
-    policy.daily_cap_usd
-  ) {
-    reason = "daily_cap_exceeded";
-  }
+  // The start path's own refusals, in its order (the money gate's): said
+  // now, in words, rather than offered as a Pay button that would be
+  // refused.
+  const gate = await moneyGate(
+    deps,
+    principalFor(park.userId),
+    { kind: "prompt", provider, zoneNumber, totalUsd: quote.totalUsd },
+    at,
+  );
+  const reason: ParkPromptReason | null = gate.ok ? null : (gate.rule as ParkPromptReason);
 
   const parkedIn = zoneNumber === "" ? "Parked at a meter" : `Parked in zone ${zoneNumber}`;
   if (reason !== null) {

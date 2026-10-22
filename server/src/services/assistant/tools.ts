@@ -53,7 +53,8 @@ import { easternIso, parseEasternTime } from "../hours.js";
 import type { LinkWallet } from "../link/linkWallet.js";
 import { confirmWarnUsd } from "../policy.js";
 import type { PolicyService } from "../policy.js";
-import { spentToday } from "../sessions.js";
+import { moneyGate, refusedConsent, spentToday } from "../moneyGate.js";
+import { principalFor } from "../principal.js";
 import type { CandidateFetcher, NearbyZoneFetcher } from "../zoneLookup.js";
 import { currentTimeLine, scrubUngroundedAmounts } from "./loop.js";
 import {
@@ -1938,7 +1939,11 @@ export class AssistantTools {
         ...(garages.ok ? {} : { garageSearchUnavailable: true, garageSearchError: garages.error }),
       });
     }
-    const spentTodayUsd = await spentToday(this.deps.db, ctx.userId, at);
+    // The budget line counts spend the way the confirm gate will: under a
+    // dry run, today's dry runs included.
+    const spentTodayUsd = await spentToday(this.deps.db, ctx.userId, at, {
+      dryRun: this.deps.policy.effectiveDryRun(),
+    });
     const summary = {
       stops: out,
       dailyCapUsd: policy.daily_cap_usd,
@@ -2536,10 +2541,19 @@ export class AssistantTools {
     ctx: ToolContext,
     proposed: Extract<ProposedPlan, { kind: "itinerary" }>,
   ): Promise<ToolOutcome> {
-    const policy = await policyFor(this.deps, ctx.userId);
     const totalUsd = itineraryTotalUsd(proposed.stops);
-    const spentTodayUsd = await spentToday(this.deps.db, ctx.userId, this.now());
-    if (spentTodayUsd + totalUsd > policy.daily_cap_usd) {
+    const gate = await moneyGate(
+      this.deps,
+      principalFor(ctx.userId),
+      { kind: "plan", stopsUsd: [], totalUsd, perStop: false },
+      this.now(),
+    );
+    if (refusedConsent(gate)) {
+      await this.audit(ctx, "propose_plan", { kind: proposed.kind }, gate.rule, {});
+      return { result: { error: gate.rule } };
+    }
+    const { policy, spentTodayUsd } = gate;
+    if (!gate.ok) {
       await this.audit(ctx, "propose_plan", { kind: proposed.kind, totalUsd }, "over_daily_cap", {
         totalUsd,
         spentTodayUsd,

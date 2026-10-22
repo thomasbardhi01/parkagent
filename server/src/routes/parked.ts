@@ -30,8 +30,9 @@ import {
   startParkSession,
   supersedeParks,
 } from "../services/pendingSession.js";
+import { moneyGate } from "../services/moneyGate.js";
+import { principalFor } from "../services/principal.js";
 import type { Quote } from "../services/quote.js";
-import { spentToday } from "../services/sessions.js";
 import { quoteZone } from "../services/quote.js";
 import type { Candidate } from "../services/zoneLookup.js";
 import { lookupRadiusM, resolveCandidates } from "../services/zoneLookup.js";
@@ -205,26 +206,20 @@ export function registerParked(app: FastifyInstance, deps: AppDeps, sessions: Se
         resolution.nearest.rateFirstHourUsd,
         resolution.nearest.rateAdditionalHourUsd,
       );
-      if (quote.totalUsd === 0) {
-        action = "ignore";
-        rule = "free_period";
-      } else if (ladderMax > policy.auto_pay_max_rate_per_hour) {
-        action = "confirm";
-        rule = "rate_above_ceiling";
-      } else if (quote.totalUsd > policy.session_cap_usd) {
-        action = "confirm";
-        rule = "session_cap_exceeded";
+      // The auto-pay rule is the money gate's (services/moneyGate.ts): a
+      // free window is ignored, anything it refuses is asked about.
+      const gate = await moneyGate(
+        deps,
+        principalFor(user.id),
+        { kind: "quote", totalUsd: quote.totalUsd, ladderMaxRateUsd: ladderMax },
+        at,
+      );
+      if (gate.ok) {
+        action = "pay";
+        rule = "auto_pay_ok";
       } else {
-        const spentTodayUsd = await spentToday(deps.db, user.id, at, {
-          dryRun: deps.policy.effectiveDryRun(),
-        });
-        if (spentTodayUsd + quote.totalUsd > policy.daily_cap_usd) {
-          action = "confirm";
-          rule = "daily_cap_exceeded";
-        } else {
-          action = "pay";
-          rule = "auto_pay_ok";
-        }
+        action = gate.rule === "free_period" ? "ignore" : "confirm";
+        rule = gate.rule;
       }
     }
 

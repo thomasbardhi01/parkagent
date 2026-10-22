@@ -104,6 +104,7 @@ export function makeAppleRevocationJob(deps: AppleRevocationDeps): AppleRevocati
       }
       await deps.db.decision.create({
         data: {
+          actor: "job",
           kind: "account_delete",
           inputs: { step: "apple_token_revoke", retry: true, attempt: failures },
           rule,

@@ -38,6 +38,7 @@ import type { PushSender } from "../services/apns.js";
 import type { StateCrypto } from "../services/crypto.js";
 import type { GuardedAccountOpOptions } from "../services/parknycExecutor.js";
 import type { PolicyService } from "../services/policy.js";
+import { jobPrincipal, runAs } from "../services/principal.js";
 import { LinkJobStore, openState, runSetupCard } from "../services/providerLink.js";
 import type { ProviderLinkDeps } from "../services/providerLink.js";
 import type { ProviderOpsFactory } from "../services/providerOps.js";
@@ -131,10 +132,14 @@ export function makeLinkWorker(deps: LinkWorkerDeps): LinkWorker {
         running.add(job.id);
         const claimed = { ...job, attempts: job.attempts + 1 };
         try {
-          await attempt(claimed);
-        } catch (err) {
-          deps.log.warn(`link job ${job.id} crashed: ${String(err).split("\n")[0]}`);
-          await settleFailure(claimed, "unknown", `crashed: ${String(err).split("\n")[0]}`);
+          await runAs(jobPrincipal(job.userId), async () => {
+            try {
+              await attempt(claimed);
+            } catch (err) {
+              deps.log.warn(`link job ${job.id} crashed: ${String(err).split("\n")[0]}`);
+              await settleFailure(claimed, "unknown", `crashed: ${String(err).split("\n")[0]}`);
+            }
+          });
         } finally {
           running.delete(job.id);
         }

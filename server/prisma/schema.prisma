@@ -203,6 +203,10 @@ model User {
   // Gates PUT /policy and /admin/* (403 otherwise). Set at create:user
   // --admin, or by hand in SQL for an existing user.
   isAdmin   Boolean  @default(false) @map("is_admin")
+  // Consent for an external agent (WS-4) to act on this account; off
+  // until the person turns it on. The money gate reads it only when the
+  // actor is an external agent.
+  agentsMayAct Boolean @default(false) @map("agents_may_act")
   // Which of the Wallet's three ways to pay is active (one at a time):
   // "provider_card" (default) — the card saved on their ParkNYC/ParkBoston
   // account; "link_wallet" — their Stripe Link wallet (plans and garages,
@@ -746,6 +750,13 @@ model Decision {
   rule          String
   // What came of it: action, quote, zone.
   outcome       Json
+  // Who acted: "user", "admin", "job", or "external_agent" (services/principal.ts),
+  // stamped by the one decision writer; a bare script gets the default.
+  actor         String   @default("user")
+  // The agent key an external agent held, when one did (WS-4).
+  agentKeyId    String?  @map("agent_key_id")
+  // The request's W3C trace id (`traceparent`), when it carried one.
+  traceId       String?  @map("trace_id")
   userId        String?  @map("user_id")
   parkedEventId String?  @map("parked_event_id")
   sessionId     String?  @map("session_id")

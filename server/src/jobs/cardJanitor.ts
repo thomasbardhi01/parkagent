@@ -13,6 +13,7 @@
  */
 
 import type { AppDb } from "../db.js";
+import { jobPrincipal, runAs } from "../services/principal.js";
 import type { StripeGateway } from "../services/stripeGateway.js";
 
 export const ABANDONED_AFTER_DAYS = 7;
@@ -65,6 +66,7 @@ export function makeCardJanitor(deps: CardJanitorDeps): CardJanitor {
       });
       await deps.db.decision.create({
         data: {
+          actor: "job",
           kind: "card_janitor",
           inputs: { stripeCardId: card.stripeCardId, last4: card.last4, transacted: true },
           rule: "freeze_abandoned_transacted",
@@ -95,6 +97,7 @@ export function makeCardJanitor(deps: CardJanitorDeps): CardJanitor {
     }
     await deps.db.decision.create({
       data: {
+        actor: "job",
         kind: "card_janitor",
         inputs: { stripeCardId: card.stripeCardId, last4: card.last4, transacted: false },
         rule: "cancel_abandoned",
@@ -113,7 +116,10 @@ export function makeCardJanitor(deps: CardJanitorDeps): CardJanitor {
     });
     for (const card of stale) {
       try {
-        await sweepCard(card);
+        // A card with no holder left is swept with no owner to act for;
+        // its rows name the actor themselves.
+        const owner = card.cardholder?.userId;
+        await (owner ? runAs(jobPrincipal(owner), () => sweepCard(card)) : sweepCard(card));
       } catch (err) {
         deps.log.warn(`card janitor failed on ${card.stripeCardId}: ${String(err)}`);
       }

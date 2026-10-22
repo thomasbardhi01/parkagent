@@ -22,13 +22,9 @@ import { sessionExpiringPush } from "../services/apns.js";
 import { AT_CAR_RADIUS_M, FIX_USABLE_ACCURACY_M, clockLabel } from "../services/pendingSession.js";
 import { cityPolicy } from "../services/policy.js";
 import type { SessionDeps } from "../services/sessions.js";
-import {
-  applyExtension,
-  extensionPolicyViolation,
-  priceExtension,
-  sessionSpentUsd,
-  spentToday,
-} from "../services/sessions.js";
+import { applyExtension, priceExtension } from "../services/sessions.js";
+import { moneyGate, refusedConsent, sessionSpentUsd } from "../services/moneyGate.js";
+import { jobPrincipal, runAs } from "../services/principal.js";
 import { policyFor } from "../services/limits.js";
 
 const DECISION_WINDOW_MIN = 12; // only act when expiry is this close
@@ -323,7 +319,23 @@ export function makeExtender(deps: ExtenderDeps): Extender {
     // Ticket risk is priced with the session's city's ticket (a Boston
     // "Meter Fee Unpaid" is $40 where NYC's is $65 — policy city_overrides).
     const costTicketUsd = cityPolicy(policy, session.city).ticketCostUsd * (1 - pReturn);
-    const spentTodayUsd = await spentToday(deps.db, session.userId, at, { dryRun });
+    // The money gate's answer for this extension (caps, max stay); the
+    // ladder below asks it only once the cheaper holds are ruled out.
+    const gate = await moneyGate(
+      deps,
+      jobPrincipal(session.userId),
+      {
+        kind: "extend",
+        session,
+        minutes: Math.floor(desiredMinutes),
+        price,
+        source: "auto",
+      },
+      at,
+    );
+    // A job pass acts for the session's owner; it is never an external agent.
+    if (refusedConsent(gate)) throw new Error("a job pass needs no consent");
+    const { spentTodayUsd } = gate;
 
     // The decision ladder. Max-stay gate: the stay allowance left to buy is
     // either too small to be a meaningful extension or already inside the
@@ -366,13 +378,7 @@ export function makeExtender(deps: ExtenderDeps): Extender {
       rule = "hold_max_extensions";
       expiringReason = "no_auto_extend";
     } else {
-      const violation = extensionPolicyViolation(
-        policy,
-        session,
-        Math.floor(desiredMinutes),
-        price,
-        spentTodayUsd,
-      );
+      const violation = gate.ok ? null : gate.rule;
       if (violation === "session_cap_exceeded") {
         rule = "hold_session_cap";
         expiringReason = "budget";
@@ -439,9 +445,17 @@ export function makeExtender(deps: ExtenderDeps): Extender {
     }
 
     let outcome: Record<string, unknown> = { action: "hold" };
+    let heldUnderLock = false;
     if (rule === "extend") {
       const minutes = Math.floor(desiredMinutes);
-      const result = await applyExtension(deps, session, minutes, price, "auto");
+      const result = await applyExtension(
+        deps,
+        jobPrincipal(session.userId),
+        session,
+        minutes,
+        price,
+        "auto",
+      );
       if (result.ok) {
         outcome = {
           action: "extend",
@@ -452,6 +466,32 @@ export function makeExtender(deps: ExtenderDeps): Extender {
           ...(result.executor ? { executor: result.executor } : {}),
           ...(result.shadow ? { shadow: result.shadow } : {}),
           ...(result.hold ? { hold: result.hold } : {}),
+        };
+      } else if (
+        result.code === "session_cap_exceeded" ||
+        result.code === "daily_cap_exceeded" ||
+        result.code === "max_stay_exceeded"
+      ) {
+        // The gate refused the fresh row under the lock (another extension
+        // landed since this one was priced): the matching cap rule, as a
+        // hold, never an executor failure. Not booked as the settled rule:
+        // the next tick reads the same hold from its own ladder, sees the
+        // change, and sends the driver the warning this tick can't.
+        heldUnderLock = true;
+        rule =
+          result.code === "session_cap_exceeded"
+            ? "hold_session_cap"
+            : result.code === "daily_cap_exceeded"
+              ? "hold_daily_cap"
+              : "warn_max_stay";
+        outcome = {
+          action: "hold",
+          minutes,
+          ok: false,
+          code: result.code,
+          message: result.message,
+          underLock: true,
+          ...(result.spentTodayUsd !== undefined ? { spentTodayUsd: result.spentTodayUsd } : {}),
         };
       } else if (result.code === "extension_in_progress" || result.code === "phone_not_away") {
         // The user's own Extend (or a racing tick) got there first, or the
@@ -518,7 +558,12 @@ export function makeExtender(deps: ExtenderDeps): Extender {
       },
     });
 
-    if (changed && rule !== "extension_in_progress" && rule !== "phone_not_away") {
+    if (
+      changed &&
+      rule !== "extension_in_progress" &&
+      rule !== "phone_not_away" &&
+      !heldUnderLock
+    ) {
       await deps.db.session.update({
         where: { id: session.id },
         data: { lastExtenderRule: rule, lastExtenderRuleAt: at },
@@ -544,7 +589,9 @@ export function makeExtender(deps: ExtenderDeps): Extender {
       const active = await deps.db.session.findMany({ where: { status: "active" } });
       for (const session of active) {
         try {
-          await evaluateSession(session, at);
+          // Each session's pass runs as a job acting for its owner, so its
+          // decisions say so (services/principal.ts).
+          await runAs(jobPrincipal(session.userId), () => evaluateSession(session, at));
         } catch (err) {
           deps.log.warn(`extend tick failed for session ${session.id}: ${String(err)}`);
         }

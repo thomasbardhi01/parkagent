@@ -52,7 +52,7 @@ import { cityForZone, providerForCity } from "../providers/registry.js";
 import { nycStartOfDay, parseEasternTime } from "../services/hours.js";
 import { LINK_PENDING_STATUSES, linkSpentSince } from "../services/link/linkSpend.js";
 import { makeRateLimiter } from "../services/rateLimit.js";
-import { spentToday } from "../services/sessions.js";
+import { moneyGate, refusedConsent, spentToday } from "../services/moneyGate.js";
 import { normalizeSource } from "../services/wallet/summary.js";
 import { policyFor } from "../services/limits.js";
 
@@ -465,8 +465,10 @@ export function registerAssistant(
     // money path: never under dry run unless Link itself is in test mode
     // (test requests carry test:true and can't charge).
     const linkBlockedByDryRun = linkActive && dryRun && deps.linkWallet?.testMode !== true;
-    // Today's spend, whatever paid (approved Link garages included).
-    const spentTodayUsd = await spentToday(deps.db, user.id, at);
+    // Today's spend, whatever paid (approved Link garages included), as the
+    // gate counts it: under a dry run, dry runs recorded today count too,
+    // so the row, the response and the refusal agree.
+    const spentTodayUsd = await spentToday(deps.db, user.id, at, { dryRun });
     // Requests still awaiting approval become spend the moment the user
     // approves them, so they hold their room too: two confirms can't each
     // fit the cap and together pass it.
@@ -486,15 +488,23 @@ export function registerAssistant(
      * of today's cap. The sum is never held to the per-session cap — two
      * $30 garages are two purchases, not one $60 one.
      */
-    const linkGate = (stopsUsd: number[], planTotalUsd: number): string | null => {
+    const linkGate = async (stopsUsd: number[], planTotalUsd: number): Promise<string | null> => {
       if (!linkActive) return "link_not_active";
       if (!stopsUsd.some((usd) => usd > 0)) return "free";
       if (linkBlockedByDryRun) return "dry_run";
-      if (stopsUsd.some((usd) => usd > policy.session_cap_usd)) return "session_cap_exceeded";
-      if (spentTodayUsd + linkPendingTodayUsd + planTotalUsd > policy.daily_cap_usd) {
-        return "daily_cap_exceeded";
-      }
-      return null;
+      const gate = await moneyGate(
+        deps,
+        req.principal!,
+        {
+          kind: "plan",
+          stopsUsd,
+          totalUsd: planTotalUsd,
+          pendingUsd: linkPendingTodayUsd,
+          perStop: true,
+        },
+        at,
+      );
+      return gate.ok ? null : gate.rule;
     };
 
     if (planRow.kind === "single_spot") {
@@ -512,7 +522,9 @@ export function registerAssistant(
         // the garage's checkout — and the response says why.
         let linkApproval: { spendRequestId: string; approvalUrl: string | null } | null = null;
         let linkSkipped: string | null =
-          activeSource === "link_wallet" ? linkGate([option.priceUsd], option.priceUsd) : null;
+          activeSource === "link_wallet"
+            ? await linkGate([option.priceUsd], option.priceUsd)
+            : null;
         if (activeSource === "link_wallet" && linkSkipped === null) {
           try {
             const created = await deps.linkWallet!.createSpendRequestsForStops(user.id, {
@@ -637,7 +649,13 @@ export function registerAssistant(
       ? orderStopsByArrival(edited.stops)
       : plan.stops;
     const totalUsd = itineraryTotalUsd(signedStops);
-    if (spentTodayUsd + totalUsd > policy.daily_cap_usd) {
+    const dayGate = await moneyGate(
+      deps,
+      req.principal!,
+      { kind: "plan", stopsUsd: [], totalUsd, perStop: false },
+      at,
+    );
+    if (!dayGate.ok) {
       await decide("over_daily_cap", {
         allowed: false,
         totalUsd,
@@ -661,7 +679,7 @@ export function registerAssistant(
       linkSkipped =
         paidGarages.length === 0
           ? null
-          : linkGate(
+          : await linkGate(
               paidGarages.map((s) => s.costUsd),
               totalUsd,
             );
@@ -785,9 +803,27 @@ export function registerAssistant(
     const result = await deps.assistantTools.repriceStops(parsed.data.stops, proposed);
     const stops = orderStopsByArrival(result.stops);
     const totalUsd = itineraryTotalUsd(stops);
-    const spentTodayUsd = await spentToday(deps.db, user.id, now());
-    const capUsd = (await policyFor(deps, user.id)).daily_cap_usd;
-    const fitsCap = spentTodayUsd + totalUsd <= capUsd;
+    const gate = await moneyGate(
+      deps,
+      req.principal!,
+      { kind: "plan", stopsUsd: [], totalUsd, perStop: false },
+      now(),
+    );
+    if (refusedConsent(gate)) {
+      const decision = await deps.db.decision.create({
+        data: {
+          kind: "assistant_confirm",
+          inputs: { planId, stops: stops.length },
+          rule: gate.rule,
+          outcome: { allowed: false },
+          userId: user.id,
+        },
+      });
+      return reply.code(403).send({ error: gate.rule, decisionId: decision.id });
+    }
+    const { spentTodayUsd } = gate;
+    const capUsd = gate.policy.daily_cap_usd;
+    const fitsCap = gate.ok;
     await deps.db.decision.create({
       data: {
         kind: "assistant_confirm",
@@ -851,9 +887,26 @@ export function registerAssistant(
     const storedById = stopsById(row.stops);
     const priced = await deps.assistantTools!.repriceStops(parsed.data.stops, storedById);
     const totalUsd = itineraryTotalUsd(priced.stops);
-    const spentTodayUsd = await spentToday(deps.db, user.id, now());
-    const policy = await policyFor(deps, user.id);
-    if (spentTodayUsd + totalUsd > policy.daily_cap_usd) {
+    const gate = await moneyGate(
+      deps,
+      req.principal!,
+      { kind: "plan", stopsUsd: [], totalUsd, perStop: false },
+      now(),
+    );
+    if (refusedConsent(gate)) {
+      const decision = await deps.db.decision.create({
+        data: {
+          kind: "assistant_confirm",
+          inputs: { itineraryId: id, edit: true },
+          rule: gate.rule,
+          outcome: { allowed: false },
+          userId: user.id,
+        },
+      });
+      return reply.code(403).send({ error: gate.rule, decisionId: decision.id });
+    }
+    const { policy, spentTodayUsd } = gate;
+    if (!gate.ok) {
       await deps.db.decision.create({
         data: {
           kind: "assistant_confirm",

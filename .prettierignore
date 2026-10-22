@@ -3,6 +3,8 @@ node_modules
 dist
 pnpm-lock.yaml
 server/prisma/migrations/
+# The OpenAPI Initiative's published 3.1 schema, vendored minified.
+server/test/fixtures/openapi-3.1-schema-2022-10-07.json
 
 # Not ours to reformat: Swift lives under Xcode conventions, data/ is
 # Python (ruff's problem later), docs and prose stay byte-stable.

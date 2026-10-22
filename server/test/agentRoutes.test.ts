@@ -9,6 +9,7 @@
 
 import { readFileSync } from "node:fs";
 
+import { Ajv2020 } from "ajv/dist/2020.js";
 import { describe, expect, test, vi } from "vitest";
 
 import { agentFunctionTools, agentOpenApi } from "../src/routes/agentOpenApi.js";
@@ -20,6 +21,55 @@ import { BOYLSTON_BOS, MONDAY_2PM, NONADMIN_API_KEY, makeTestApp } from "./helpe
 const grokTools = JSON.parse(
   readFileSync(new URL("../../examples/grok-tool.json", import.meta.url), "utf8"),
 ) as { function: { name: string } }[];
+
+/** The OpenAPI Initiative's published schema for 3.1 documents
+ * (https://spec.openapis.org/oas/3.1/schema/2022-10-07, the same JSON,
+ * minified): what an OpenAPI 3.1 document must be, Schema Objects aside.
+ * Its four `$dynamicRef: "#meta"` name its one `$dynamicAnchor: meta`,
+ * `#/$defs/schema` (any object or boolean); ajv 8 resolves that dynamic
+ * scope wrongly here, so they are read as the plain `$ref` they resolve
+ * to. Each Schema Object is then checked against 2020-12 on its own. */
+const OAS_31_SCHEMA = (() => {
+  const schema = JSON.parse(
+    readFileSync(new URL("./fixtures/openapi-3.1-schema-2022-10-07.json", import.meta.url), "utf8"),
+  ) as object;
+  let swapped = 0;
+  const swap = (node: unknown) => {
+    if (!node || typeof node !== "object") return;
+    const record = node as Record<string, unknown>;
+    if (record["$dynamicRef"] === "#meta") {
+      delete record["$dynamicRef"];
+      record["$ref"] = "#/$defs/schema";
+      swapped += 1;
+    }
+    Object.values(record).forEach(swap);
+  };
+  swap(schema);
+  if (swapped !== 4) throw new Error(`expected 4 $dynamicRef "#meta", found ${swapped}`);
+  return schema;
+})();
+
+/** Every Schema Object the document carries (request and response bodies,
+ * parameters, components), with where it sits. */
+function schemaObjects(doc: Record<string, unknown>): [string, object][] {
+  const found: [string, object][] = [];
+  const walk = (node: unknown, path: string) => {
+    if (!node || typeof node !== "object") return;
+    for (const [key, value] of Object.entries(node)) {
+      if (key === "schema" && value && typeof value === "object") {
+        found.push([`${path}/schema`, value]);
+      } else if (key === "schemas" && path === "/components" && value) {
+        for (const [name, s] of Object.entries(value as object)) {
+          found.push([`/components/schemas/${name}`, s as object]);
+        }
+      } else {
+        walk(value, `${path}/${key}`);
+      }
+    }
+  };
+  walk(doc, "");
+  return found;
+}
 
 const NOW = new Date(MONDAY_2PM);
 const U2 = { "x-api-key": NONADMIN_API_KEY };
@@ -560,6 +610,35 @@ describe("the documents", () => {
       }
     }
     expect(JSON.stringify(doc)).not.toContain("$schema");
+  });
+
+  test("openapi.json validates against the OpenAPI 3.1 schema, and every Schema Object against JSON Schema 2020-12", () => {
+    const doc = agentOpenApi() as unknown as Record<string, unknown>;
+    const ajv = new Ajv2020({ allErrors: true, strict: false });
+    const validDocument = ajv.compile(OAS_31_SCHEMA);
+    expect(validDocument(doc), ajv.errorsText(validDocument.errors)).toBe(true);
+    // The document schema leaves Schema Objects to the dialect: each one
+    // must itself be a valid 2020-12 schema.
+    const schemas = schemaObjects(doc);
+    expect(schemas.length).toBeGreaterThan(10);
+    for (const [where, schema] of schemas) {
+      expect(ajv.validateSchema(schema), `${where}: ${ajv.errorsText(ajv.errors)}`).toBe(true);
+    }
+  });
+
+  test("the validator is not a rubber stamp: a broken document and a broken schema fail", () => {
+    const ajv = new Ajv2020({ allErrors: true, strict: false });
+    const validDocument = ajv.compile(OAS_31_SCHEMA);
+    const doc = agentOpenApi() as unknown as Record<string, unknown>;
+    // No info, a response map that isn't one, an operation with a bad key.
+    expect(validDocument({ ...doc, info: undefined })).toBe(false);
+    expect(validDocument({ ...doc, openapi: "3.0.3" })).toBe(false);
+    const [path] = Object.keys(doc["paths"] as object);
+    expect(validDocument({ ...doc, paths: { [path!]: { get: { responses: "none" } } } })).toBe(
+      false,
+    );
+    expect(ajv.validateSchema({ type: "objekt" })).toBe(false);
+    expect(ajv.validateSchema({ properties: { a: { minLength: -1 } } })).toBe(false);
   });
 
   test("examples/grok-tool.json is the six tools, as generated", () => {

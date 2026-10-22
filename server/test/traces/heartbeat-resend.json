@@ -1,7 +1,7 @@
 {
   "version": 1,
   "name": "heartbeat-resend",
-  "note": "one GPS jump re-sent by the heartbeat is one fix: no walk-away",
+  "note": "one seat measurement re-sent by the heartbeat for 90 s is no return: only measuredAt says so",
   "parkedAt": {
     "weekday": "Mon",
     "time": "14:00"
@@ -35,55 +35,82 @@
   ],
   "fixes": [
     {
-      "receivedS": 30,
-      "measuredS": 30,
-      "reportedS": 30,
-      "northM": 120,
+      "receivedS": 5,
+      "measuredS": 5,
+      "reportedS": 5,
+      "northM": 4,
       "eastM": 0,
       "accuracyM": 8,
       "rejected": null
     },
     {
-      "receivedS": 90,
-      "measuredS": 30,
-      "reportedS": 90,
-      "northM": 120,
+      "receivedS": 45,
+      "measuredS": 45,
+      "reportedS": 45,
+      "northM": 60,
       "eastM": 0,
       "accuracyM": 8,
       "rejected": null
     },
     {
-      "receivedS": 150,
-      "measuredS": 30,
-      "reportedS": 150,
-      "northM": 120,
+      "receivedS": 65,
+      "measuredS": 65,
+      "reportedS": 65,
+      "northM": 90,
       "eastM": 0,
       "accuracyM": 8,
       "rejected": null
     },
     {
-      "receivedS": 210,
-      "measuredS": 30,
-      "reportedS": 210,
-      "northM": 120,
+      "receivedS": 105,
+      "measuredS": 105,
+      "reportedS": 105,
+      "northM": 200,
       "eastM": 0,
       "accuracyM": 8,
       "rejected": null
     },
     {
-      "receivedS": 270,
-      "measuredS": 270,
-      "reportedS": 270,
-      "northM": 120,
+      "receivedS": 300,
+      "measuredS": 300,
+      "reportedS": 300,
+      "northM": 5,
       "eastM": 0,
       "accuracyM": 8,
       "rejected": null
     },
     {
       "receivedS": 330,
-      "measuredS": 330,
+      "measuredS": 300,
       "reportedS": 330,
-      "northM": 120,
+      "northM": 5,
+      "eastM": 0,
+      "accuracyM": 8,
+      "rejected": null
+    },
+    {
+      "receivedS": 360,
+      "measuredS": 300,
+      "reportedS": 360,
+      "northM": 5,
+      "eastM": 0,
+      "accuracyM": 8,
+      "rejected": null
+    },
+    {
+      "receivedS": 390,
+      "measuredS": 300,
+      "reportedS": 390,
+      "northM": 5,
+      "eastM": 0,
+      "accuracyM": 8,
+      "rejected": null
+    },
+    {
+      "receivedS": 420,
+      "measuredS": 420,
+      "reportedS": 420,
+      "northM": 180,
       "eastM": 0,
       "accuracyM": 8,
       "rejected": null
@@ -91,14 +118,14 @@
   ],
   "taps": [
     {
-      "atS": 0,
+      "atS": 75,
       "kind": "confirm"
     }
   ],
   "expected": {
-    "statuses": ["at_car", "confirmed"],
-    "park": "confirmed",
-    "session": null,
-    "starts": 0
+    "statuses": ["at_car", "prompted", "started"],
+    "park": "started",
+    "session": "active",
+    "starts": 1
   }
 }

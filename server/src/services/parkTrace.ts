@@ -211,6 +211,8 @@ export function traceToFixture(trace: ParkTrace, name: string): TraceFixture {
     version: 1,
     name,
     parkedAt: nyWallClock(trace.park.parkedAt),
+    // The park row doesn't keep what the phone listed; every held park
+    // came from a build that lists these (docs/park-traces.md).
     outcomes: ["garage", "nopay", "walk_away"],
     candidates: parkCandidates(trace.park),
     fixes,

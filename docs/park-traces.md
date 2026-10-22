@@ -33,7 +33,15 @@ prod through the Fly proxy; see `server/README.md`). The fixture has
 coordinates in metres north and east of the car, times in seconds after
 the park, the start as a weekday and a New York time, the candidate zones'
 terms, and the taps. It has no user id, no latitude or longitude, and no
-date. Read it before committing it: a fixture goes into a public repo.
+date.
+
+It **does** keep the zone and its number (`417371`), on purpose: the
+replay re-quotes the park from those terms. With a weekday and a time,
+that can still say "someone parked on this block on Mondays at 2 PM",
+and at field-test scale "someone" is one of a few people. So **a fixture
+made from a real park is reviewed before it is committed**: by the
+person whose park it is, or with their say-so. A fixture goes into a
+public repo.
 
 ## 4. Replay it
 
@@ -66,7 +74,7 @@ fix.
 | `normal-walk-away` | in the seat, two fixes clear of the car at a walk, Pay: one session |
 | `red-light` | Pay at the car, then a red light a block away: asked again, nothing paid |
 | `get-in-and-drive` | back in the car and driving without ever leaving: cancelled |
-| `heartbeat-resend` | one GPS jump re-sent by the heartbeat is one fix: no walk-away |
+| `heartbeat-resend` | one seat measurement re-sent by the heartbeat for 90 s is no return; only `measuredAt` says so |
 
 ## Limits
 
@@ -76,3 +84,10 @@ fix.
   timestamp; the replay's `statuses` and the decisions are the full path.
 - Motion and car-audio fields (`motionActivity`, `motionConfidence`,
   `btHint`) are kept and replayed, but no server rule reads them yet.
+- The park row doesn't keep the `outcomes` the phone sent with `/parked`.
+  An export writes the list a build that waits for the walk-away sends
+  (`garage`, `nopay`, `walk_away`): every held park came from one.
+- A fix the server never read against the park isn't on its trace. That
+  is the fix whose request found the park already closed, for example the
+  one on which it ran out of time, or one answered 409. The decisions
+  still say when it closed.

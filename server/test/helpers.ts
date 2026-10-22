@@ -1057,6 +1057,12 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
         return { id: data.id };
       },
       findUnique: async ({ where }) => state.assistantPlans.find((r) => r.id === where.id) ?? null,
+      findFirst: async ({ where }) => {
+        const row = state.assistantPlans.find(
+          (r) => r.boundParkedEventId === where.boundParkedEventId,
+        );
+        return row ? { ...row } : null;
+      },
       findMany: async ({ where }) =>
         state.assistantPlans.filter(
           (r) =>

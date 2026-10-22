@@ -15,7 +15,7 @@ import { z } from "zod";
 import type { AppDeps } from "../app.js";
 import { policyFor } from "../services/limits.js";
 import { executorOutcome } from "../services/executor.js";
-import { PARK_OPEN, settlePark } from "../services/pendingSession.js";
+import { PARK_OPEN, boundAgentKeyId, settlePark } from "../services/pendingSession.js";
 import type { SessionRow } from "../db.js";
 import { cityForZone, providerForCity } from "../providers/registry.js";
 import {
@@ -150,6 +150,10 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
     if (!parkedEvent || parkedEvent.userId !== user.id) {
       return reply.code(404).send({ error: "parked_event_not_found" });
     }
+    // A park an agent's confirmed plan is bound to (E3): the key consented,
+    // so every decision this start writes names it.
+    const agentKeyId = await boundAgentKeyId(deps.db, user.id, parkedEvent.id);
+    const keyed = agentKeyId ? { agentKeyId } : {};
     // A pending row is normally seconds old (created just before the
     // executor runs). One orphaned by a crash mid-start would block the
     // one-open-session-per-user index forever, so sweep stale ones first.
@@ -224,6 +228,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
       const decision = await deps.db.decision.create({
         data: {
           kind: "session_start",
+          ...keyed,
           inputs: { body, policyHash: deps.policy.hash() },
           rule: gate.rule,
           outcome: { allowed: false },
@@ -239,6 +244,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
       const decision = await deps.db.decision.create({
         data: {
           kind: "session_start",
+          ...keyed,
           inputs: {
             body,
             provider: provider.id,
@@ -264,6 +270,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
       const decision = await deps.db.decision.create({
         data: {
           kind: "session_start",
+          ...keyed,
           inputs: { body, provider: provider.id, dryRun, policyHash: deps.policy.hash() },
           rule: gate.rule,
           outcome: { allowed: false },
@@ -322,6 +329,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
       const decision = await deps.db.decision.create({
         data: {
           kind: "session_start",
+          ...keyed,
           inputs: decisionInputs,
           rule,
           outcome: { allowed: false },
@@ -346,6 +354,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
         const decision = await deps.db.decision.create({
           data: {
             kind: "session_start",
+            ...keyed,
             inputs: decisionInputs,
             rule: "wallet_not_ready",
             outcome: { allowed: false, reason: readiness.reason },
@@ -442,6 +451,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
         const decision = await deps.db.decision.create({
           data: {
             kind: "session_start",
+            ...keyed,
             inputs: decisionInputs,
             rule: hold.reason === "declined" ? "hold_declined" : "hold_failed",
             outcome: {
@@ -542,6 +552,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
       const decision = await deps.db.decision.create({
         data: {
           kind: "session_start",
+          ...keyed,
           inputs: {
             ...decisionInputs,
             providerNotice: result.freePeriod?.rawText ?? result.message,
@@ -590,6 +601,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
       const decision = await deps.db.decision.create({
         data: {
           kind: "session_start",
+          ...keyed,
           inputs: decisionInputs,
           rule: "executor_failed",
           outcome: {
@@ -682,6 +694,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
     await deps.db.decision.create({
       data: {
         kind: "session_start",
+        ...keyed,
         inputs: decisionInputs,
         rule: "start_ok",
         outcome: {

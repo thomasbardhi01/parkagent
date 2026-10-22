@@ -12,7 +12,7 @@ import { afterAll, beforeAll, beforeEach, expect, test } from "vitest";
 
 import type { ModelClient, ModelResponse } from "../src/services/assistant/loop.js";
 import type { Telemetry } from "../src/services/telemetry.js";
-import { GEN_AI, startTelemetry } from "../src/services/telemetry.js";
+import { GEN_AI, inSpan, startTelemetry } from "../src/services/telemetry.js";
 import { API_KEY, STEINWAY_A, makeTestApp, parkedBody } from "./helpers.js";
 
 const HEADERS = { "x-api-key": API_KEY, "content-type": "application/json" };
@@ -211,6 +211,73 @@ test("a caller's unsampled traceparent (-00) still gets the request's spans, on 
   expect(named(all, "money_gate").length).toBeGreaterThanOrEqual(1);
   const stamped = t.state.decisions.map((d) => (d as { traceId?: string | null }).traceId);
   expect(new Set(stamped)).toEqual(new Set([traceId]));
+});
+
+test("with tracing on, a span's work that throws throws to its caller, the same error", async () => {
+  const e = new Error("the work failed");
+  await expect(
+    inSpan("x", {}, async () => {
+      throw e;
+    }),
+  ).rejects.toBe(e);
+  const [span] = named(exporter.getFinishedSpans() as ReadableSpan[], "x");
+  expect(span!.attributes["error.type"]).toBe("Error");
+});
+
+test("with tracing on, /assistant/confirm runs start_session once: one mandate used, one row each", async () => {
+  const t = makeTestApp({
+    zones: [
+      {
+        zoneId: "nyc-417371",
+        providerZoneNumber: "417371",
+        rateFirstHour: 5,
+        rateAdditionalHour: 8.25,
+        maxStayMinutes: 120,
+        hoursJson: [],
+      },
+    ],
+  });
+  t.state.assistantPlans.push({
+    id: "plan1",
+    userId: "u1",
+    conversationId: "c1",
+    kind: "single_spot",
+    plan: {
+      kind: "single_spot",
+      options: [
+        {
+          id: "opt-street",
+          type: "street",
+          label: "Street: Zone 417371",
+          detail: "Meter, 90 min",
+          priceUsd: 3.65,
+          durationMinutes: 90,
+          zoneId: "nyc-417371",
+          recommended: true,
+        },
+      ],
+    },
+  });
+  const res = await t.app.inject({
+    method: "POST",
+    url: "/assistant/confirm",
+    headers: HEADERS,
+    payload: { planId: "plan1", optionId: "opt-street" },
+  });
+  // Run a second time, the tool would find its mandate spent and 409.
+  expect(res.statusCode).toBe(200);
+  expect(res.json()).toMatchObject({ kind: "street_confirmed", zoneId: "nyc-417371" });
+  expect(t.state.mandates).toHaveLength(1);
+  expect(t.state.mandates[0]!.consumedAt).not.toBeNull();
+  const starts = t.state.decisions.filter(
+    (d) => d.kind === "assistant_tool" && (d.inputs as { tool?: string }).tool === "start_session",
+  );
+  expect(starts.map((d) => d.rule)).toEqual(["confirmed"]);
+  expect(t.state.decisions.filter((d) => d.rule === "street_confirmed")).toHaveLength(1);
+  // The meter starts at the curb (/parked → /session/start), not here.
+  expect(t.state.sessions).toEqual([]);
+  const tools = named(await spans(), "execute_tool ");
+  expect(tools.map((s) => s.name)).toEqual(["execute_tool start_session"]);
 });
 
 test("a tool name the model made up is not put on a span", async () => {

@@ -100,6 +100,7 @@ if [[ "$MODE" == "off" ]]; then
   export GOOGLE_SIGNIN_ENABLED=false
   export PARKWHIZ_ENABLED=false
   export MCP_APPS=false
+  export OTEL_CONSOLE=false
   export SIGN_READER=false
   export EXECUTOR_WARM_AT_BOOT=false
   EXPECTED_METHODS='{"apple":true,"email":false,"google":false}'
@@ -134,6 +135,7 @@ elif [[ "$MODE" == "broken" ]]; then
   export PARKWHIZ_ENABLED="nope"
   export OTEL_EXPORTER_OTLP_ENDPOINT="ftp://collector.example"  # not an http(s) URL
   export OTEL_EXPORTER_OTLP_HEADERS="no-equals-sign"            # not name=value pairs
+  export OTEL_CONSOLE="yes"                                     # not true or false
   export ANTHROPIC_API_KEY="sk-proj-bootcheck0000"          # not an Anthropic key
   export AUDIT_SUMMARY="maybe"                              # not true or false
   export MCP_APPS="on"                                      # not true or false
@@ -190,6 +192,8 @@ else
   # quietly, which must never stop the server.
   export OTEL_EXPORTER_OTLP_ENDPOINT="http://127.0.0.1:4318"
   export OTEL_EXPORTER_OTLP_HEADERS="authorization=Bearer bootcheck"
+  # The console exporter too, so its path boots: spans print to stdout.
+  export OTEL_CONSOLE=true
   export LINK_CLIENT_ID="link_bootcheck"
   export LINK_CLIENT_SECRET="link_bootcheck_secret"
   export LINK_PUBLISHABLE_KEY="pk_test_bootcheck0000000000000000"

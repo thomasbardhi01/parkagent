@@ -52,10 +52,27 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
+        # Two commits: the PR's merge commit and its base, for the docs
+        # warning below.
+        with: { fetch-depth: 2 }
       - run: ./scripts/check-city-neutral.sh
       # The runner's own Node; the check uses built-ins only.
       - run: node --test scripts/check-feature-map.test.mjs
       - run: node scripts/check-feature-map.mjs
+      # A warning, never a failure: a PR that changes server routes or
+      # services and nothing under docs/ may have left docs/architecture.md
+      # or docs/feature-map.md behind (CLAUDE.md "Layout").
+      - name: Docs warning
+        if: github.event_name == 'pull_request'
+        run: |
+          git rev-parse -q --verify HEAD^2 >/dev/null || exit 0
+          changed=$(git diff --no-renames --name-only HEAD^1 HEAD)
+          if echo "$changed" | grep -qE '^server/src/(routes|services)/' &&
+             ! echo "$changed" | grep -q '^docs/'; then
+            echo "::warning::docs not updated: server/src/routes or services changed, nothing under docs/"
+            echo "### ⚠️ docs not updated" >> "$GITHUB_STEP_SUMMARY"
+            echo "This PR changes server/src/routes or server/src/services and nothing under docs/. If it changes a flow, update docs/architecture.md and docs/feature-map.md." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   server:
     runs-on: ubuntu-24.04

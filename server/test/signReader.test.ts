@@ -213,6 +213,18 @@ function setup(model?: ModelClient, opts: { cap?: number } = {}) {
   return { t, check };
 }
 
+describe("GET /me tells the app whether to offer the check", () => {
+  test.each([
+    ["off", undefined, false],
+    ["on", scripted([]).model, true],
+  ])("%s", async (_state, model, signReader) => {
+    const { t } = setup(model);
+    const me = await t.app.inject({ method: "GET", url: "/me", headers: U1 });
+    expect(me.statusCode).toBe(200);
+    expect(me.json().signReader).toBe(signReader);
+  });
+});
+
 describe("POST /parked/:id/signs", () => {
   test("off without SIGN_READER: 503, no model call", async () => {
     const { check } = setup();

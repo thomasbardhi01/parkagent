@@ -206,11 +206,13 @@ onboarding on true and goes straight Home on false.
 
 ### GET /me · PATCH /me
 
-`GET` → `{user, paymentSource, agentsMayAct, issuingLive}` —
+`GET` → `{user, paymentSource, agentsMayAct, issuingLive, signReader}` —
 `paymentSource` is the Wallet's active way to pay (`provider_card` |
 `link_wallet` | `parkagent_card`; see "Wallet"), so the Account sheet and
 the Wallet read the same fact; `agentsMayAct` is whether external agents
-may act for this person (see "External agents"). `PATCH {name?, phone?}`
+may act for this person (see "External agents"). `signReader` is true when
+the parking-sign reader is on (`SIGN_READER` and the model key), and the
+app shows "Check the signs" only then. `PATCH {name?, phone?}`
 edits the profile and returns `{user}`. Changing the phone clears
 `phoneVerified` (there is no SMS verification flow yet). The email is
 **not** editable here: it is the sign-in identity, and moving it needs

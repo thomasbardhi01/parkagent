@@ -23,12 +23,7 @@ import {
 } from "./services/principal.js";
 import type { Context, Span } from "@opentelemetry/api";
 import { SpanStatusCode, context, propagation, trace } from "@opentelemetry/api";
-import {
-  ATTR_HTTP_REQUEST_METHOD,
-  ATTR_HTTP_RESPONSE_STATUS_CODE,
-  ATTR_HTTP_ROUTE,
-} from "@opentelemetry/semantic-conventions";
-import { activeTraceId, quietly, startRequestSpan } from "./services/telemetry.js";
+import { HTTP, activeTraceId, quietly, startRequestSpan } from "./services/telemetry.js";
 import type { EmailSender } from "./services/emailer.js";
 import type { IdTokenResult } from "./services/idToken.js";
 import { registerCard } from "./routes/card.js";
@@ -345,8 +340,8 @@ function registerRequestSpans(app: FastifyInstance): void {
       const span = startRequestSpan(
         `${req.method} ${route}`,
         {
-          [ATTR_HTTP_REQUEST_METHOD]: req.method,
-          [ATTR_HTTP_ROUTE]: route,
+          [HTTP.requestMethod]: req.method,
+          [HTTP.route]: route,
         },
         parent,
       );
@@ -360,7 +355,7 @@ function registerRequestSpans(app: FastifyInstance): void {
   app.addHook("onResponse", (req, reply, done) => {
     const span = spans.get(req);
     if (span) {
-      quietly(() => span.setAttribute(ATTR_HTTP_RESPONSE_STATUS_CODE, reply.statusCode));
+      quietly(() => span.setAttribute(HTTP.responseStatusCode, reply.statusCode));
       if (reply.statusCode >= 500) quietly(() => span.setStatus({ code: SpanStatusCode.ERROR }));
       quietly(() => span.end());
       spans.delete(req);

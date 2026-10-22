@@ -30,8 +30,16 @@ import type { SpanExporter, SpanProcessor } from "@opentelemetry/sdk-trace-node"
 
 import type { ModelResponse } from "./assistant/modelClient.js";
 
-/** The semantic-conventions release the GenAI names below are from. */
+/** The semantic-conventions release the GenAI and HTTP names below are from. */
 export const GEN_AI_SEMCONV_VERSION = "1.43.0";
+
+/** The stable HTTP server names, as semantic conventions 1.43.0 writes
+ * them: inlined, since the conventions package is 12 MB for three strings. */
+export const HTTP = {
+  requestMethod: "http.request.method",
+  route: "http.route",
+  responseStatusCode: "http.response.status_code",
+} as const;
 
 export const GEN_AI = {
   operation: "gen_ai.operation.name",

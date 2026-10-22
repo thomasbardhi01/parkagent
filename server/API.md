@@ -2387,8 +2387,9 @@ The `gen_ai.*` names are from the OpenTelemetry semantic conventions
 status. They are pinned as written there (not read from the package's
 unstable `incubating` entry), and `gen_ai.provider.name` replaces the
 deprecated `gen_ai.system`. Moving to a newer conventions release is
-its own change. The HTTP names are the stable ones from
-`@opentelemetry/semantic-conventions`.
+its own change. The HTTP names are the stable ones from the same
+release, written out in `telemetry.ts` (`HTTP`) rather than taken from
+the 12 MB `@opentelemetry/semantic-conventions` package.
 
 ## GET /health · GET /health/ready
 

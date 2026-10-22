@@ -1067,6 +1067,7 @@ guarantees and cannot be confirmed through — raise them via `PUT /policy`):
 | `409 {"error": "policy_violation", "rule": …}` | Condition |
 |---|---|
 | `amount_invalid` | checked first: the price, or the amount the tap was shown, isn't a finite number ≥ 0, or today's spend doesn't sum to one. Every cap compares `amount > cap`, which a missing or NaN amount would pass, so the gate refuses instead (the same holds for extensions, the walk-away prompt, the assistant's caps and funding moves) |
+| `minutes_invalid` | next: the minutes to buy aren't a whole number above 0 (the route's own validation refuses them first; the gate's check is the backstop, and holds the extension worker too, which reads the stay left as max stay − minutes bought) |
 | `max_stay_exceeded` | `minutes` > zone max stay |
 | `free_period` | the whole stay prices to $0 (outside enforcement) — nothing to buy, and typing minutes into the provider anyway could charge money the quote never priced |
 | `session_cap_exceeded` | purchase total > `session_cap_usd` |

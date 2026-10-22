@@ -401,8 +401,8 @@ export function makeExtender(deps: ExtenderDeps): Extender {
         rule = "warn_max_stay";
         expiringReason = "max_stay";
       } else if (violation !== null) {
-        // amount_invalid, or a rule named after this ladder was written: a
-        // refusal holds, never extends.
+        // amount_invalid, minutes_invalid, or a rule named after this
+        // ladder was written: a refusal holds, never extends.
         rule = "hold_gate_refused";
         expiringReason = "no_auto_extend";
       } else {
@@ -488,7 +488,8 @@ export function makeExtender(deps: ExtenderDeps): Extender {
         result.code === "session_cap_exceeded" ||
         result.code === "daily_cap_exceeded" ||
         result.code === "max_stay_exceeded" ||
-        result.code === "amount_invalid"
+        result.code === "amount_invalid" ||
+        result.code === "minutes_invalid"
       ) {
         // The gate refused the fresh row under the lock (another extension
         // landed since this one was priced): the matching cap rule, as a
@@ -501,7 +502,7 @@ export function makeExtender(deps: ExtenderDeps): Extender {
             ? "hold_session_cap"
             : result.code === "daily_cap_exceeded"
               ? "hold_daily_cap"
-              : result.code === "amount_invalid"
+              : result.code === "amount_invalid" || result.code === "minutes_invalid"
                 ? "hold_gate_refused"
                 : "warn_max_stay";
         outcome = {

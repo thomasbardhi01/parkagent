@@ -34,7 +34,7 @@ import {
 import { moneyGate } from "../services/moneyGate.js";
 import { principalFor } from "../services/principal.js";
 import type { Quote } from "../services/quote.js";
-import { quoteZone } from "../services/quote.js";
+import { priceStay, quoteZone } from "../services/quote.js";
 import type { Candidate } from "../services/zoneLookup.js";
 import { lookupRadiusM, resolveCandidates } from "../services/zoneLookup.js";
 import { applyObservedToCandidates } from "../services/zoneTermsObserved.js";
@@ -361,19 +361,35 @@ export function registerParked(app: FastifyInstance, deps: AppDeps, sessions: Se
       (answer.action === "pay" || answer.action === "confirm") &&
       candidates.some((c) => c.quote.totalUsd > 0);
     // A spot an agent of this person confirmed, inside its mandate's
-    // window (WS-4 E3): the park is held `confirmed` from the start — the
-    // agent's confirm was the tap — with the phone's own fix as the car
-    // and the lower of the plan's amount and this quote as the shown cap.
-    // The start still waits for the walk-away like any confirmed park.
-    // A plan binds once (CAS on the plan, keyed by this park).
-    const binding = awaitsWalkAway
-      ? await agentBindingFor(deps.db, user.id, candidates, serverNow)
-      : null;
-    const boundQuote = binding
-      ? candidates.find((c) => c.zoneId === binding.zoneId)?.quote
-      : undefined;
+    // window, under the dry run it was shown (WS-4 E3): the park is held
+    // `confirmed` from the start — the agent's confirm was the tap — and
+    // pays on the app's left_car with no prompt. Only where this route
+    // would itself pay without asking: the candidates agree on one zone,
+    // its pay-by-app number known, and that zone is the plan's. The car is
+    // the phone's own fix; the quote is the plan's stay here, now, and it
+    // must be within the plan's price (a dearer spot is asked about, at
+    // its real price). A plan binds once (CAS on the plan, keyed by this
+    // park).
+    const payableZone = resolution.kind === "agree" && !needsZoneNumber ? resolution.nearest : null;
+    const binding =
+      awaitsWalkAway && payableZone
+        ? await agentBindingFor(deps.db, user.id, { zoneId: payableZone.zoneId, dryRun }, serverNow)
+        : null;
+    const boundQuote: Quote | null =
+      binding && payableZone && binding.durationMinutes <= (payableZone.maxStayMinutes ?? Infinity)
+        ? {
+            zoneId: payableZone.zoneId,
+            providerZoneNumber: payableZone.providerZoneNumber,
+            ...priceStay(payableZone, policy, at, binding.durationMinutes),
+          }
+        : null;
+    const bindable =
+      binding !== null &&
+      boundQuote !== null &&
+      boundQuote.totalUsd > 0 &&
+      boundQuote.totalUsd <= binding.planPriceUsd + 0.005;
     const bound =
-      binding && boundQuote
+      bindable && binding
         ? (
             await deps.db.assistantPlan.updateMany({
               where: { id: binding.planId, boundParkedEventId: null },
@@ -382,25 +398,31 @@ export function registerParked(app: FastifyInstance, deps: AppDeps, sessions: Se
           ).count === 1
         : false;
     if (awaitsWalkAway && bound && binding && boundQuote) {
-      const shown = {
-        ...boundQuote,
-        totalUsd: Math.min(boundQuote.totalUsd, binding.planPriceUsd),
-      };
-      await deps.db.pendingPark.create({
-        data: {
-          userId: user.id,
-          parkedEventId: parkedEvent.id,
-          status: "confirmed",
-          candidates,
-          quote: shown,
-          zoneId: binding.zoneId,
-          confirmedAt: serverNow,
-          shownDryRun: dryRun,
-          carLat: body.lat,
-          carLng: body.lng,
-          parkedAt: at,
-        },
-      });
+      const shown = boundQuote;
+      try {
+        await deps.db.pendingPark.create({
+          data: {
+            userId: user.id,
+            parkedEventId: parkedEvent.id,
+            status: "confirmed",
+            candidates,
+            quote: shown,
+            zoneId: binding.zoneId,
+            confirmedAt: serverNow,
+            shownDryRun: dryRun,
+            carLat: body.lat,
+            carLng: body.lng,
+            parkedAt: at,
+          },
+        });
+      } catch (err) {
+        // No park, no binding: the plan is left for the next /parked.
+        await deps.db.assistantPlan.updateMany({
+          where: { id: binding.planId, boundParkedEventId: parkedEvent.id },
+          data: { boundParkedEventId: null, boundAt: null },
+        });
+        throw err;
+      }
       await deps.db.decision.create({
         data: {
           kind: "street_confirmed",
@@ -412,6 +434,7 @@ export function registerParked(app: FastifyInstance, deps: AppDeps, sessions: Se
             car: { lat: body.lat, lng: body.lng, accuracyM: body.accuracy },
             shown,
             planPriceUsd: binding.planPriceUsd,
+            durationMinutes: binding.durationMinutes,
             dryRun,
           },
           rule: "agent_plan_bound",

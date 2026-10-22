@@ -365,8 +365,10 @@ export function registerAgent(app: FastifyInstance, deps: AppDeps): void {
         decisionId: decision.id,
       };
     }
-    // A street spot: consent and a cap for that spot, never a park here.
-    // The phone reports where the car is (pendingSession.ts binds it).
+    // A street spot: no park here; the phone reports where the car is. But
+    // this is the person's tap given ahead: the phone's next park at that
+    // spot, in the window, is held confirmed and pays on left_car with no
+    // prompt (agentBindingFor in pendingSession.ts, E3).
     await markConfirmed(option.id);
     const decision = await decide("pending_arrival", {
       allowed: true,

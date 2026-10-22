@@ -1053,7 +1053,11 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
             r.userId === where.userId &&
             (!where.conversationId || where.conversationId.in.includes(r.conversationId)) &&
             // Loose: older tests push plan rows without the column.
-            (!where.confirmedAt || r.confirmedAt != null),
+            (!where.confirmedAt || r.confirmedAt != null) &&
+            (!where.confirmedAt?.gte ||
+              (r.confirmedAt != null &&
+                r.confirmedAt.getTime() >= where.confirmedAt.gte.getTime())) &&
+            (!("boundParkedEventId" in where) || (r.boundParkedEventId ?? null) === null),
         ),
       update: async ({ where, data }) => {
         const row = state.assistantPlans.find((r) => r.id === where.id);
@@ -1061,9 +1065,10 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
         return {};
       },
       updateMany: async ({ where, data }) => {
-        // Compare-and-set, like UPDATE … WHERE bound_parked_event_id IS NULL.
+        // Compare-and-set, like UPDATE … WHERE bound_parked_event_id = $2
+        // (or IS NULL).
         const row = state.assistantPlans.find(
-          (r) => r.id === where.id && (r.boundParkedEventId ?? null) === null,
+          (r) => r.id === where.id && (r.boundParkedEventId ?? null) === where.boundParkedEventId,
         );
         if (!row) return { count: 0 };
         Object.assign(row, data);

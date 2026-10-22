@@ -918,12 +918,15 @@ export interface AppDb {
       data: { id: string; userId: string; conversationId: string; kind: string; plan: unknown };
     }): Promise<{ id: string }>;
     findUnique(args: { where: { id: string } }): Promise<AssistantPlanRow | null>;
-    /** A conversation's plans (history), or a user's confirmed ones (Activity). */
+    /** A conversation's plans (history), a user's confirmed ones
+     * (Activity), or those confirmed since a moment and not yet bound to
+     * a park (an agent's spot meeting the phone, E3). */
     findMany(args: {
       where: {
         userId: string;
         conversationId?: { in: string[] };
-        confirmedAt?: { not: null };
+        confirmedAt?: { not: null; gte?: Date };
+        boundParkedEventId?: null;
       };
     }): Promise<AssistantPlanRow[]>;
     /** The user's tap: when, and which option (null for an itinerary). */
@@ -931,10 +934,11 @@ export interface AppDb {
       where: { id: string };
       data: { confirmedAt: Date; confirmedOptionId: string | null };
     }): Promise<unknown>;
-    /** The bind, once: matches only a plan no park is bound to yet. */
+    /** The bind, once: matches only a plan no park is bound to yet; or
+     * its undo, matching only the park it was bound to. */
     updateMany(args: {
-      where: { id: string; boundParkedEventId: null };
-      data: { boundParkedEventId: string; boundAt: Date };
+      where: { id: string; boundParkedEventId: string | null };
+      data: { boundParkedEventId: string | null; boundAt: Date | null };
     }): Promise<{ count: number }>;
   };
   mandate: {

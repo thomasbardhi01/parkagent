@@ -1074,20 +1074,31 @@ one measurement. A park nobody walked away from within an hour is
 **An agent's confirmed spot (WS-4).** An external agent's confirm of a
 street plan (`POST /agent/plans/:id/confirm` → `pending_arrival`) is the
 person's tap given ahead, for one spot, for the mandate's ten minutes; it
-creates no park. The phone's next `/parked` that would be held for its
-walk-away, for that person, with the plan's zone among its candidates
-within `SAME_SPOT_M` (100 m) of the phone's fix, inside the mandate's
-window, is held `confirmed` from the start instead of `at_car`: the
-phone's own fix is the car, the zone is the plan's, and the shown cap is
-the lower of the plan's amount and this park's quote. It then runs as any
-Pay tapped at the car: it starts only on the app's `left_car`, and a
-walk-away by distance alone asks again. A plan binds one park, once (a
-compare-and-set on `assistant_plans.bound_parked_event_id`); the plan reads
-`status: "bound"` on `GET /agent/plans/:id`. Expired, elsewhere, another
-person's, or an app tap's plan: the ordinary `at_car` hold. The
-`street_confirmed` decision (`rule: agent_plan_bound`) names the plan, the
-mandate and the agent key (`routes/parked.ts`, `agentBindingFor` in
-`services/pendingSession.ts`).
+creates no park. **A bound park pays on the app's `left_car` with no tap
+and no prompt at the curb.** The phone's next `/parked` that would be held
+for its walk-away is bound when all of these hold:
+- it is the person's own;
+- its zone is the one `/parked` would itself pay without asking (its
+  candidates agree, the pay-by-app number known), and that zone is the
+  plan's: a car across the street or in the next zone is never bound;
+- it is inside the mandate's window (the mandate an agent's, consumed,
+  unexpired);
+- dry run is what it was when the mandate was minted;
+- the plan's own stay (`durationMinutes`), priced here now, is within the
+  zone's max stay and the plan's price.
+
+Such a park is held `confirmed` from the start instead of `at_car`: the
+phone's own fix is the car, the zone is the plan's, and the shown quote is
+that stay at that price. It then runs as any Pay tapped at the car: it
+starts only on the app's `left_car`, and a walk-away by distance alone asks
+again. A plan binds one park, once (a compare-and-set on
+`assistant_plans.bound_parked_event_id`, undone if the park can't be
+written); the plan reads `status: "bound"` on `GET /agent/plans/:id`.
+Expired, elsewhere, disagreeing candidates, dearer, another dry run,
+another person's, or an app tap's plan: the ordinary `at_car` hold, and
+the phone's own prompt. The `street_confirmed` decision (`rule:
+agent_plan_bound`) names the plan, the mandate and the agent key
+(`routes/parked.ts`, `agentBindingFor` in `services/pendingSession.ts`).
 
 **A Pay tapped at the car starts only on the app's `left_car`.** Two
 fixes at nearly the same distance read like a walk, and so does a car

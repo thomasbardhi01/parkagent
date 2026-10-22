@@ -11,6 +11,7 @@ import { cityForZone, providerForCity } from "../providers/registry.js";
 import type { HoursInterval } from "./hours.js";
 import { easternWallClock } from "./hours.js";
 import { policyFor } from "./limits.js";
+import { MANDATE_TTL_MS } from "./mandates.js";
 import type { Policy } from "./policy.js";
 import { moneyGate } from "./moneyGate.js";
 import { principalFor } from "./principal.js";
@@ -122,8 +123,10 @@ export interface AgentBinding {
   mandateId: string;
   agentKeyId: string;
   zoneId: string;
+  /** The stay the agent confirmed: the bound park is quoted for it. */
+  durationMinutes: number;
   /** What the plan said this spot costs: the shown cap is the lower of
-   * this and the park's own quote. */
+   * this and the bound park's quote. */
   planPriceUsd: number;
 }
 
@@ -131,46 +134,58 @@ export interface AgentBinding {
  * Whether the park the phone just reported is at a spot an agent of this
  * person confirmed (`POST /agent/plans/:id/confirm` answered
  * `pending_arrival`), inside that mandate's window. The phone is the only
- * source of arrival: the binding reads the phone's fix (as the park's
- * candidates measured it) against the plan's zone, and binds nothing the
- * phone didn't report. Within SAME_SPOT_M of the plan's zone; a plan not
- * yet bound; its mandate an agent's, consumed, and not expired. The
- * newest such plan wins. Pure read: the caller binds (once, by CAS).
+ * source of arrival, and `/parked` the only judge of which zone the car is
+ * in: `zoneId` is the zone `/parked` would itself pay without asking (its
+ * candidates agree, the pay-by-app number known), or null — a car across
+ * the street or in the next zone never binds to the plan's. The plan's
+ * zone must be that zone; the plan not yet bound and confirmed within the
+ * mandate's window; its mandate an agent's, consumed, unexpired, and
+ * minted under the dry run in force now (what the agent was shown is what
+ * runs). The newest such plan wins. Pure read: the caller binds (once,
+ * by CAS).
  */
 export async function agentBindingFor(
   db: Pick<AppDb, "assistantPlan" | "mandate">,
   userId: string,
-  candidates: readonly { zoneId: string; distanceM: number }[],
+  here: { zoneId: string | null; dryRun: boolean },
   at: Date,
 ): Promise<AgentBinding | null> {
-  const plans = (await db.assistantPlan.findMany({ where: { userId, confirmedAt: { not: null } } }))
-    .filter(
-      (p) =>
-        p.kind === "single_spot" &&
-        p.conversationId.startsWith("agent:") &&
-        (p.boundParkedEventId ?? null) === null,
-    )
+  if (here.zoneId === null) return null;
+  const since = new Date(at.getTime() - MANDATE_TTL_MS);
+  const plans = (
+    await db.assistantPlan.findMany({
+      where: { userId, confirmedAt: { not: null, gte: since }, boundParkedEventId: null },
+    })
+  )
+    .filter((p) => p.kind === "single_spot" && p.conversationId.startsWith("agent:"))
     .sort((a, b) => (b.confirmedAt?.getTime() ?? 0) - (a.confirmedAt?.getTime() ?? 0));
   for (const plan of plans) {
     const options = (plan.plan as { options?: unknown }).options;
     const option = Array.isArray(options)
-      ? (options as { id: string; type: string; zoneId?: string; priceUsd: number }[]).find(
-          (o) => o.id === plan.confirmedOptionId,
-        )
+      ? (
+          options as {
+            id: string;
+            type: string;
+            zoneId?: string;
+            priceUsd: number;
+            durationMinutes: number;
+          }[]
+        ).find((o) => o.id === plan.confirmedOptionId)
       : undefined;
-    if (!option || option.type !== "street" || !option.zoneId) continue;
-    const here = candidates.find((c) => c.zoneId === option.zoneId);
-    if (!here || here.distanceM > SAME_SPOT_M) continue;
+    if (!option || option.type !== "street" || option.zoneId !== here.zoneId) continue;
     const mandate = await db.mandate.findFirst({
       where: { planId: plan.id },
       orderBy: { createdAt: "desc" },
     });
+    const shownDryRun = (mandate?.capsSnapshot as { dryRun?: unknown } | null)?.dryRun;
     if (
       !mandate ||
       mandate.userId !== userId ||
       mandate.agentKeyId === null ||
       mandate.consumedAt === null ||
-      mandate.expiresAt.getTime() <= at.getTime()
+      mandate.expiresAt.getTime() <= at.getTime() ||
+      // A mandate that recorded no dry run binds nothing.
+      shownDryRun !== here.dryRun
     ) {
       continue;
     }
@@ -179,6 +194,7 @@ export async function agentBindingFor(
       mandateId: mandate.token,
       agentKeyId: mandate.agentKeyId,
       zoneId: option.zoneId,
+      durationMinutes: option.durationMinutes,
       planPriceUsd: option.priceUsd,
     };
   }

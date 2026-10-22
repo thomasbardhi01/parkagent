@@ -54,6 +54,7 @@ function everythingOn() {
     GOOGLE_CLIENT_ID: "123-abc.apps.googleusercontent.com",
     ANTHROPIC_API_KEY: "sk-ant-abc123",
     PARKWHIZ_ENABLED: "true",
+    AUDIT_SUMMARY: "true",
     LINK_CLIENT_ID: "link_client",
     LINK_CLIENT_SECRET: "link_secret",
     LINK_PUBLISHABLE_KEY: "pk_test_abc123",
@@ -173,6 +174,12 @@ describe("optional features never refuse boot", () => {
     ["google_signin", { GOOGLE_CLIENT_ID: undefined }, /GOOGLE_CLIENT_ID is not set/],
     ["google_signin", { GOOGLE_CLIENT_ID: "12345" }, /^GOOGLE_CLIENT_ID doesn't look like/],
     ["parkwhiz", { PARKWHIZ_ENABLED: "off" }, /^PARKWHIZ_ENABLED is "off"/],
+    ["audit_summary", { AUDIT_SUMMARY: "maybe" }, /^AUDIT_SUMMARY is "maybe"/],
+    [
+      "audit_summary",
+      { ANTHROPIC_API_KEY: "sk-proj-nope" },
+      /^AUDIT_SUMMARY is true but ANTHROPIC_API_KEY is not usable/,
+    ],
     ["assistant", { ANTHROPIC_API_KEY: "sk-proj-abc" }, /^ANTHROPIC_API_KEY doesn't look like/],
   ])("%s: %j → degraded, named, and off", (id, patch, detail) => {
     const report = checkEnv({ ...everythingOn(), ...patch });

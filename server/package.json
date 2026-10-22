@@ -17,6 +17,7 @@
     "decisions:recent": "tsx src/scripts/recent-decisions.ts",
     "trace:export": "tsx src/scripts/trace-export.ts",
     "trace:replay": "tsx test/traces/replay-cli.ts",
+    "audit:eval-live": "tsx test/audit/eval-live.ts",
     "issuing:setup": "tsx src/scripts/issuing-setup.ts",
     "stripe:trigger": "tsx src/scripts/stripe-trigger.ts",
     "migrate:api-keys": "tsx src/scripts/migrate-api-keys.ts",

@@ -2383,6 +2383,67 @@ It carries the driver's raw positions, which is why it is admin only.
 time, no user id) that `pnpm -C server trace:replay <fixture>` runs
 through the lifecycle.
 
+## GET /admin/audit
+
+**Admin only** (`403 forbidden`; `400` for a `date` that isn't
+`YYYY-MM-DD`). The nightly decisions audit (`services/audit`): a reviewer
+of production behavior that runs while nobody is watching. It is
+report-only: it reads the window's `decisions`, `sessions`,
+`pending_parks`, `park_fixes` and `location_fixes`, writes its one
+`audit_summary` decision, and changes nothing else. `?date=2026-10-21` audits
+that New York calendar day; without it, the last 24 hours.
+
+```json
+{
+  "window": { "from": "2026-10-21T04:00:00.000Z", "to": "2026-10-22T04:00:00.000Z" },
+  "findings": [
+    { "invariant": "extended_at_car", "severity": "high",
+      "description": "the worker extended a session whose phone it didn't read as away",
+      "count": 1, "examples": ["cm…"] }
+  ],
+  "summary": { "lines": ["…five lines…"], "source": "template", "reason": "off" }
+}
+```
+
+`findings` always lists every invariant, a count of 0 included, with up
+to five example park (`parkedEventId`) or session ids:
+
+| Invariant | Severity | Fires when |
+|---|---|---|
+| `extended_at_car` | high | an `extend_tick` row extended with `position` other than `away` |
+| `confirmed_started_without_left_car` | high | a walk-away start of a Pay tapped at the car had no `left_car`, on its fix or on any fix the park kept before it |
+| `dry_run_mismatch` | high | a walk-away start's dry run differs from the prompt's (`shownDryRun`) |
+| `starting_too_long` | medium | a start timed out, was swept (`start_stale`), was adopted late, or is still `starting` past 3 minutes |
+| `transition_skipped` | medium | a paid, held park's decisions lack `street_pending`, `street_confirmed`, or its start |
+| `session_without_fix_30min` | medium | an active session went 30 minutes or more without a fix |
+| `prompted_more_than_twice` | low | a park got more than two `street_prompt` rows |
+
+`summary` is five lines. With **`AUDIT_SUMMARY=true`** (off by default; it
+also needs `ANTHROPIC_API_KEY`, or `/health` lists `audit_summary` as
+degraded), they come from `claude-haiku-5-5`. The model is asked with
+the findings only, never rows, under a strict JSON schema
+(`{"lines": [...]}`). Its budget is **its own pool**: the audit's
+`audit_summary` spend today, held to the same number as the assistant's
+per-user daily cap (`ASSISTANT_DAILY_SPEND_CAP_USD`), and never counted
+against any user's. Its lines are kept only when grounded: exactly five;
+every number a finding's count or a tally of them (how many fired, of
+how many, by severity), not a date or a description's "30 minutes"; an
+invariant's name is not read as a number; no dollar amount; and every
+invariant that fired named. A call cut off at the 30 s deadline isn't
+cancelled (the client takes no signal), so its spend is unrecorded: the
+row says `estimatedCostUsd: 0`.
+Otherwise, and whenever the flag is off, the model refuses, fails, takes
+longer than 30 s or is over budget, `source` is `"template"`: the
+deterministic five lines, with `reason` saying why. Each call writes an
+`audit_summary` decision with the model, tokens and estimated cost.
+
+The `nightly-fr` workflow calls this for yesterday after the FR suite and
+posts the answer to one open GitHub issue titled **"Nightly audit"**
+(label `audit`), using the workflow's own token. The server holds no
+GitHub token. The manual `audit-eval` workflow holds the live model to
+the golden eval set (`server/test/audit/evals`); CI holds the template
+to the same set on every PR.
+
 ## GET /admin/summary
 
 Auth-gated like everything else (`x-api-key`) and **admin only**

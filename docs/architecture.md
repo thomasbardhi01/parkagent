@@ -30,6 +30,7 @@ flowchart LR
     JOBS["Jobs<br/>extendTick · settle · janitors"]
     DEC[("decisions<br/>actor · agent_key_id · trace_id")]
     TR["/admin/parks/:id/trace (admin)<br/>trace:export · trace:replay"]
+    AUD["/admin/audit · audit invariants<br/>report-only · template summary"]
   end
 
   subgraph Out["Outside services"]
@@ -69,6 +70,9 @@ flowchart LR
   R1 -- "each fix, read or refused (why)" --> PF
   TR --> PF & DEC
   JOBS -. "retention: delete after 30 days" .-> PF
+  AUD -. "reads" .-> DEC
+  AUD -. "reads sessions · pending_parks · park_fixes" .-> DB & PF
+  AUD -. "AUDIT_SUMMARY: findings only, grounded" .-> AN
 
   classDef money stroke:#b42318,stroke-width:2.5px
   classDef ext stroke:#b7791f,stroke-width:2px
@@ -178,6 +182,7 @@ flowchart TB
   CI["CI<br/>Linux jobs · ios only if iOS changed<br/>ui-tests by label · server-pg races (not required)"]
   PROD["Fly: parkagent-api<br/>DRY_RUN=true"]
   FR["nightly FR suite<br/>73 tests vs prod"]
+  NA["nightly audit step<br/>(nightly-fr)"]
 
   COORD -- "issues via SendMessage" --> W1 & W2 & W3
   W1 & W2 & W3 -- "/report" --> COORD
@@ -190,9 +195,11 @@ flowchart TB
   GH -- "main" --> PROD
   PROD --> FR
   FR -- "red opens an issue" --> GH
+  PROD --> NA
+  NA -- "one 'Nightly audit' issue (GITHUB_TOKEN)" --> GH
 
   classDef safe stroke:#2f7a4a,stroke-width:2px
   classDef money stroke:#b42318,stroke-width:2.5px
-  class GUARD,CI,FR,REV safe
+  class GUARD,CI,FR,NA,REV safe
   class PROD money
 ```

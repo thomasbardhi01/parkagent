@@ -204,6 +204,35 @@ jobs:
             echo 'EOF'
           } >> "$GITHUB_OUTPUT"
 
+      # The decisions auditor (GET /admin/audit) over yesterday in New York,
+      # filed as one "Nightly audit" issue. Report-only, and never turns the
+      # run red: a failed call is a warning on the run.
+      - name: Nightly audit
+        if: always() && steps.executor.conclusion != 'cancelled'
+        continue-on-error: true
+        env:
+          FR_API_KEY: ${{ secrets.FR_API_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          date=$(TZ=America/New_York date -d yesterday +%F)
+          if ! curl -sS --fail-with-body --max-time 120 -H "x-api-key: $FR_API_KEY" \
+              "$FR_API_BASE/admin/audit?date=$date" -o audit.json; then
+            echo "::warning::GET /admin/audit failed for $date; no audit issue this run"
+            exit 0
+          fi
+          node server/fr/audit-issue.mjs audit.json \
+            "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" > audit.md
+          cat audit.md >> "$GITHUB_STEP_SUMMARY"
+          gh label create audit --color B60205 --description "Nightly decisions audit" 2>/dev/null || true
+          title="Nightly audit"
+          number=$(gh issue list --state open --label audit --search "in:title \"$title\"" --json number,title \
+            --jq '[.[] | select(.title == "Nightly audit")][0].number // empty')
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body-file audit.md
+          else
+            gh issue create --title "$title" --label audit --body-file audit.md
+          fi
+
       - uses: actions/upload-artifact@v7
         if: always()
         with:

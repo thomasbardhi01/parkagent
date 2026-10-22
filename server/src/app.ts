@@ -131,6 +131,9 @@ export interface AppDeps {
   /** ASSISTANT_DAILY_SPEND_CAP_USD: per-user daily ceiling on estimated
    * model spend; unset → uncapped. Over the cap → /assistant/message 429. */
   assistantDailySpendCapUsd?: number;
+  /** The nightly audit's summary model (Haiku), present only with
+   * AUDIT_SUMMARY on; absent → the audit's deterministic template. */
+  auditModel?: ModelClient;
   /** ASSISTANT_CONVERSATION_RETENTION_DAYS; the history list reports it. */
   conversationRetentionDays?: number;
   /** Link wallet for agents; absent/unconfigured → /link/* answers 503. */

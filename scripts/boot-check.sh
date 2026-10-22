@@ -73,7 +73,7 @@ OPTIONAL_VARS=(
   PARKNYC_PLATE
   ANTHROPIC_API_KEY ASSISTANT_MODEL ANTHROPIC_MODEL EXPLAIN_MODEL ASSISTANT_DAILY_SPEND_CAP_USD
   ASSISTANT_CONVERSATION_RETENTION_DAYS
-  PARKWHIZ_ENABLED
+  PARKWHIZ_ENABLED AUDIT_SUMMARY
   LINK_CLIENT_ID LINK_CLIENT_SECRET LINK_PUBLISHABLE_KEY LINK_REDIRECT_URI LINK_TEST_MODE
 )
 for var in "${OPTIONAL_VARS[@]}"; do unset "$var"; done
@@ -128,8 +128,9 @@ elif [[ "$MODE" == "broken" ]]; then
   export GOOGLE_CLIENT_ID="12345"                           # not a client id
   export PARKWHIZ_ENABLED="nope"
   export ANTHROPIC_API_KEY="sk-proj-bootcheck0000"          # not an Anthropic key
+  export AUDIT_SUMMARY="maybe"                              # not true or false
   EXPECTED_METHODS='{"apple":true,"email":false,"google":false}'
-  EXPECTED_DEGRADED='["live_payments","push","stripe","issuing","link_wallet","apple_signin_revoke","apple_maps","email_signin","google_signin","parkwhiz","assistant"]'
+  EXPECTED_DEGRADED='["live_payments","push","stripe","issuing","link_wallet","apple_signin_revoke","apple_maps","email_signin","google_signin","parkwhiz","assistant","audit_summary"]'
 else
   # Live mode against an empty database: no users, sessions, or linked
   # accounts, and keys no real service accepts, so nothing can pay.
@@ -173,6 +174,7 @@ else
   export ASSISTANT_DAILY_SPEND_CAP_USD=5
   export ASSISTANT_CONVERSATION_RETENTION_DAYS=90
   export PARKWHIZ_ENABLED=true
+  export AUDIT_SUMMARY=true
   export LINK_CLIENT_ID="link_bootcheck"
   export LINK_CLIENT_SECRET="link_bootcheck_secret"
   export LINK_PUBLISHABLE_KEY="pk_test_bootcheck0000000000000000"

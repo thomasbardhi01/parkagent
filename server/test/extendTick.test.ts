@@ -174,6 +174,25 @@ test("daily budget exhausted: hold and warn with reason budget", async () => {
   expect(pushes[0]!.push.extra).toMatchObject({ reason: "budget" });
 });
 
+test("an amount the gate can't judge (a garbled spend row): hold, never extend", async () => {
+  const { state, extender, pushes } = makeTickApp({
+    policy: { dry_run: false },
+    envDryRun: false,
+  });
+  // Today's sum is NaN, and NaN passes every `>` cap: the gate refuses
+  // it as amount_invalid, and the ladder holds on any refusal.
+  seedSession(state, { status: "stopped", dryRun: false, amountUsd: Number.NaN });
+  const session = activeSession(state, { dryRun: false });
+  addFixes(state, session.id, [100, 300, 600]);
+
+  await extender.tick();
+
+  expect(lastTick(state).rule).toBe("hold_gate_refused");
+  expect(session.extendCount).toBe(0);
+  expect(pushes.map((p) => p.push.type)).toEqual(["session_expiring"]);
+  expect(pushes[0]!.push.extra).toMatchObject({ reason: "no_auto_extend" });
+});
+
 test("dry run: the daily budget counts what dry runs recorded today, and holds as a real run would", async () => {
   const { state, extender, pushes } = makeTickApp();
   // $60 a day: $59.95 of it on this session and an earlier one, all dry run.

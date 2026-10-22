@@ -44,7 +44,10 @@ export type GateRule =
   | "zone_number_changed"
   | "dry_run_changed"
   | "phone_not_away"
-  | "amount_over_daily_cap";
+  | "amount_over_daily_cap"
+  /** An amount the gate would judge, or a cap it would judge it against,
+   * is not a finite number >= 0. */
+  | "amount_invalid";
 
 export type GateIntent =
   /** A street start (POST /session/start, the tap, the walk-away). */
@@ -94,7 +97,9 @@ export type GateIntent =
 export interface GateFacts {
   policy: Policy;
   dryRun: boolean;
-  spentTodayUsd: number;
+  /** Today's spend as the gate read it; null when it never read it (a
+   * refusal before the read, or a funding move, which doesn't count it). */
+  spentTodayUsd: number | null;
   /** The linked account the start or prompt was judged on (`start`, `prompt`). */
   accountStatus: string | null;
 }
@@ -149,6 +154,43 @@ export function sessionSpentUsd(session: SessionRow): number {
   return Number(session.amountUsd ?? 0) + Number(session.feeUsd ?? 0);
 }
 
+/** Every comparison here is `amount > cap`, and NaN or undefined makes
+ * each one false, so a missing or garbled amount, or cap, would pass.
+ * Each amount and each cap is held to this first, and the gate refuses
+ * otherwise. */
+function validAmount(usd: unknown): boolean {
+  return typeof usd === "number" && Number.isFinite(usd) && usd >= 0;
+}
+
+/** The amounts an intent asks the gate to judge, before any is compared. */
+function intentAmounts(intent: GateIntent): unknown[] {
+  switch (intent.kind) {
+    case "start":
+      return [
+        intent.price?.totalUsd,
+        // "Not shown" is undefined; a shown amount must be a real one.
+        ...(intent.shown?.maxTotalUsd !== undefined ? [intent.shown.maxTotalUsd] : []),
+      ];
+    case "quote":
+      return [intent.totalUsd, intent.ladderMaxRateUsd];
+    case "prompt":
+      return [intent.totalUsd];
+    case "extend":
+      return [intent.price?.totalUsd, sessionSpentUsd(intent.session)];
+    case "plan":
+      return [
+        intent.totalUsd,
+        ...(Array.isArray(intent.stopsUsd) ? intent.stopsUsd : [Number.NaN]),
+        ...(intent.pendingUsd !== undefined ? [intent.pendingUsd] : []),
+      ];
+    case "funding":
+      return [intent.amountUsd];
+    case "stop":
+    case "confirm":
+      return [];
+  }
+}
+
 export async function moneyGate(
   deps: GateDeps,
   principal: Principal,
@@ -168,7 +210,7 @@ export async function moneyGate(
 
   const policy = await policyFor(deps, principal.userId);
   const dryRun = deps.policy.effectiveDryRun();
-  const facts: GateFacts = { policy, dryRun, spentTodayUsd: 0, accountStatus: null };
+  const facts: GateFacts = { policy, dryRun, spentTodayUsd: null, accountStatus: null };
   const refuse = (rule: Exclude<GateRule, "agents_not_allowed">): GateResult => ({
     ...facts,
     ok: false,
@@ -176,7 +218,17 @@ export async function moneyGate(
   });
   const allow = (): GateResult => ({ ...facts, ok: true, rule: null });
 
+  // Fail closed, before any account or spend is read and before any
+  // comparison: the amounts the intent carries, and the caps they are
+  // compared to (a saved cap Postgres stores as 'NaN' would pass them all).
+  if (!intentAmounts(intent).every(validAmount)) return refuse("amount_invalid");
   if (intent.kind === "stop" || intent.kind === "confirm") return allow();
+  const caps = [
+    policy.session_cap_usd,
+    policy.daily_cap_usd,
+    ...(intent.kind === "quote" ? [policy.auto_pay_max_rate_per_hour] : []),
+  ];
+  if (!caps.every(validAmount)) return refuse("amount_invalid");
   if (intent.kind === "funding") {
     return intent.amountUsd > policy.daily_cap_usd ? refuse("amount_over_daily_cap") : allow();
   }
@@ -196,8 +248,11 @@ export async function moneyGate(
     }
   }
 
-  facts.spentTodayUsd = await spentToday(deps.db, principal.userId, at, { dryRun });
-  const overDaily = (usd: number) => facts.spentTodayUsd + usd > policy.daily_cap_usd;
+  const spent = await spentToday(deps.db, principal.userId, at, { dryRun });
+  facts.spentTodayUsd = spent;
+  // A garbled ledger amount makes today's sum NaN, and NaN passes the cap.
+  if (!validAmount(spent)) return refuse("amount_invalid");
+  const overDaily = (usd: number) => spent + usd > policy.daily_cap_usd;
 
   switch (intent.kind) {
     case "start": {

@@ -113,13 +113,15 @@ export type ExtensionOutcome =
         | "max_stay_exceeded"
         | "session_cap_exceeded"
         | "daily_cap_exceeded"
+        | "amount_invalid"
         | "agents_not_allowed";
       message: string;
       price: StayPrice;
       durationMs: number;
       /** Today's spend as the gate read it under the lock, on a refusal
-       * it made there (the caller's ledger row says what it judged on). */
-      spentTodayUsd?: number;
+       * it made there (the caller's ledger row says what it judged on);
+       * null when it refused before reading it. */
+      spentTodayUsd?: number | null;
       diagnostics?: ExecutorDiagnostics;
       executor?: Record<string, unknown>;
       hold?: HoldOutcome;
@@ -212,12 +214,13 @@ export async function applyExtension(
     if (!gate.ok) {
       const outcome: ExtensionOutcome = {
         ok: false,
-        // The extend intent refuses with one of these five, never a start's.
+        // The extend intent refuses with one of these six, never a start's.
         code: gate.rule as
           | "phone_not_away"
           | "max_stay_exceeded"
           | "session_cap_exceeded"
           | "daily_cap_exceeded"
+          | "amount_invalid"
           | "agents_not_allowed",
         message:
           gate.rule === "phone_not_away"

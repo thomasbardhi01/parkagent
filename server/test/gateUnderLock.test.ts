@@ -122,6 +122,55 @@ describe("the gate under the extension lock", () => {
     expect(t.pushes).toHaveLength(1);
     expect(JSON.stringify(t.pushes[0]!.push)).toContain("budget");
   });
+
+  // A garbled ledger row landing as the lock is taken: today's sum is NaN
+  // there, the gate refuses amount_invalid, and that refusal is booked as
+  // one, never as an executor failure.
+  test("a manual extension refused there as amount_invalid answers 409 with that rule", async () => {
+    const t = makeTestApp({ policy: CAPS, envDryRun: false, now: () => T("14:20") });
+    const session = activeSession(t.state, "u2", T("15:00"));
+    spendUnderLock(t, "u2", Number.NaN);
+    const res = await t.app.inject({
+      method: "POST",
+      url: "/session/extend",
+      headers: { "x-api-key": NONADMIN_API_KEY },
+      payload: { sessionId: session.id, minutes: 30 },
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ error: "policy_violation", rule: "amount_invalid" });
+    const row = t.state.decisions.filter((d) => d.kind === "session_extend").at(-1)!;
+    expect(row.rule).toBe("amount_invalid");
+    expect(row.outcome).toMatchObject({ allowed: false });
+    expect(row.inputs).toMatchObject({ underLock: true });
+    expect(t.executorCalls.filter((c) => c.op === "extend")).toHaveLength(0);
+  });
+
+  test("the worker books an under-lock amount_invalid as a hold, not an executor failure", async () => {
+    const t = makeTestApp({ policy: CAPS, envDryRun: false, now: () => T("14:20") });
+    const extender = makeExtender({ ...t.deps, log: { info() {}, warn() {} } });
+    const session = activeSession(t.state, "u2", T("14:30"));
+    [100, 300, 600].forEach((m, i) =>
+      t.state.locationFixes.push({
+        id: `f-${i}`,
+        sessionId: session.id,
+        userId: "u2",
+        lat: 40.7702 + m / 111_320,
+        lng: -73.9077,
+        accuracyM: 10,
+        ts: new Date(T("14:10").getTime() + i * 60_000),
+      }),
+    );
+    spendUnderLock(t, "u2", Number.NaN);
+    await extender.tick();
+    const row = t.state.decisions.filter((d) => d.kind === "extend_tick").at(-1)!;
+    expect(row.rule).toBe("hold_gate_refused");
+    expect(row.outcome).toMatchObject({
+      action: "hold",
+      code: "amount_invalid",
+      underLock: true,
+    });
+    expect(t.executorCalls.filter((c) => c.op === "extend")).toHaveLength(0);
+  });
 });
 
 describe("one spend sum", () => {

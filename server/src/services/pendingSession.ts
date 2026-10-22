@@ -100,9 +100,27 @@ export const MAX_WALK_MPS = 3;
  * reads 0 for a phone standing still (a car at a light included), and a
  * few tenths for one sitting in GPS noise. */
 export const MIN_WALK_MPS = 0.5;
-/** The app's "left the car" is refused only by a sharp fix this close. */
+/** The app's "left the car" is refused on a fix that may have the phone
+ * at the car's door (mayBeAtTheDoor): a sharp one (DOOR_ACCURACY_M or
+ * better) this close, or a blurrier one whose error reaches this close. */
 export const DOOR_RADIUS_M = 10;
 export const DOOR_ACCURACY_M = 20;
+
+/**
+ * Whether a fix may have the phone at the car's door, so the app's
+ * `left_car` on it can't be the walk-away: nothing pays on a fix that has
+ * the phone at the car. Sharp, it says where the phone is, and the door is
+ * DOOR_RADIUS_M. Blurrier, the phone may be anywhere in its error, and the
+ * whole of that must be clear of the door: in an urban canyon a seat fix
+ * reads 30–50 m off, 30–50 m blurry (#264). Too blurry to read at all, it
+ * can't show the phone has left. The app says it again with the next fix
+ * while the driver is still on foot (LocationReporter.taken).
+ */
+export function mayBeAtTheDoor(fix: { distanceM: number; accuracyM: number }): boolean {
+  if (fix.accuracyM > FIX_USABLE_ACCURACY_M) return true;
+  const reach = fix.accuracyM <= DOOR_ACCURACY_M ? 0 : fix.accuracyM;
+  return fix.distanceM - reach <= DOOR_RADIUS_M;
+}
 /** A report, or a measurement, older than this describes where the phone
  * was. */
 export const LIFECYCLE_FIX_MAX_AGE_MS = 5 * 60_000;
@@ -345,8 +363,7 @@ export function advanceWalk(before: WalkState, fix: WalkFix): WalkStep {
       state.farDistanceM = null;
       return step({});
     }
-    const atTheDoor = usable && fix.accuracyM <= DOOR_ACCURACY_M && fix.distanceM <= DOOR_RADIUS_M;
-    if (fix.event === "left_car" && !atTheDoor) {
+    if (fix.event === "left_car" && !mayBeAtTheDoor(fix)) {
       // The app's own word first, even on a fix that also finishes a pair:
       // only it starts an early Pay. On foot, not necessarily far: a
       // return by distance waits for a fix that is clear of the car.

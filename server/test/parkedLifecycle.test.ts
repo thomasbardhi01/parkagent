@@ -20,6 +20,7 @@ import {
   LIFECYCLE_FIX_MAX_AGE_MS,
   START_DEADLINE_MS,
   STARTING_STALE_MS,
+  mayBeAtTheDoor,
   startParkSession,
 } from "../src/services/pendingSession.js";
 import type { FakeDbState } from "./helpers.js";
@@ -341,6 +342,58 @@ test("the app's own left_car report is a walk-away too, unless its fix is at the
   expect(left.json()).toMatchObject({ park: { status: "prompted" } });
   expect((left.json()["prompt"] as { kind: string }).kind).toBe("confirm");
   expect(t.state.decisions.find((d) => d.kind === "street_prompt")!.rule).toBe("left_car_event");
+});
+
+test("a left_car on a blurry seat fix never starts a Pay tapped at the car; the app's next, clearer one does (#264)", async () => {
+  const t = makeApp();
+  const parked = await park(t.app);
+  await post(t.app, `/parked/${parked.parkedEventId}/confirm`, {});
+  expect(t.state.pendingParks[0]!.status).toBe("confirmed");
+
+  // In the seat between tall buildings: 35 m off, 35 m blurry. The phone
+  // may be in the car, so the app's left_car on it is no walk-away.
+  t.tick(30);
+  const seat = await post(t.app, "/location", fix(t, 35, { accuracy: 35, event: "left_car" }));
+  expect(seat.json()).toMatchObject({ park: { status: "confirmed" } });
+  expect(t.state.pendingParks[0]!.leftCarAt).toBeNull();
+  // Too blurry to place the phone at all is no walk-away either.
+  t.tick(20);
+  const lost = await post(t.app, "/location", fix(t, 300, { accuracy: 80, event: "left_car" }));
+  expect(lost.json()).toMatchObject({ park: { status: "confirmed" } });
+  expect(t.calls.start).toBe(0);
+  expect(t.state.sessions).toEqual([]);
+
+  // The app says it again with the next fix while the driver is still on
+  // foot: 70 m off, 30 m blurry, so not within reach of the door.
+  t.tick(20);
+  const away = await post(t.app, "/location", fix(t, 70, { accuracy: 30, event: "left_car" }));
+  expect(away.json()).toMatchObject({ park: { status: "started" } });
+  expect(t.calls.start).toBe(1);
+});
+
+test("a left_car on a blurry fix within reach of the car asks nothing; one clear of the door asks", async () => {
+  const t = makeApp();
+  await park(t.app);
+  t.tick(30);
+  const seat = await post(t.app, "/location", fix(t, 30, { accuracy: 45, event: "left_car" }));
+  expect(seat.json()).toMatchObject({ park: { status: "at_car" } });
+  expect(seat.json()["prompt"]).toBeUndefined();
+  t.tick(20);
+  const left = await post(t.app, "/location", fix(t, 60, { accuracy: 45, event: "left_car" }));
+  expect(left.json()).toMatchObject({ park: { status: "prompted" } });
+  expect(t.state.decisions.find((d) => d.kind === "street_prompt")!.rule).toBe("left_car_event");
+});
+
+test.each([
+  // [distance, accuracy, may be at the door]
+  [10, 5, true], // sharp, at the door
+  [11, 20, false], // sharp, just past it
+  [35, 35, true], // the urban seat fix of #264
+  [46, 35, false], // its error stops 11 m short of the car: past the door
+  [45, 35, true], // …10 m short: the door
+  [300, 66, true], // too blurry to read: never shows the phone has left
+])("mayBeAtTheDoor(%i m, ±%i m) is %s", (distanceM, accuracyM, expected) => {
+  expect(mayBeAtTheDoor({ distanceM, accuracyM })).toBe(expected);
 });
 
 test("candidates that disagree get the side question at walk-away, and Pay needs the side", async () => {
@@ -962,9 +1015,12 @@ test("a tap from the seat waits even after a fix a little past 30 m: the phone w
 test("a tap from the seat waits after a left_car that was never clear of the car", async () => {
   const t = makeApp();
   const parked = await park(t.app);
-  // On foot at 20 m with 25 m of error: left, with no fix clear of the car.
+  // On foot at 40 m with 25 m of error: left (its error stops 15 m short of
+  // the car, past the door), with no fix clear of the car. (At 20 m with
+  // 25 m of error, as this once read, the phone may be in the seat, and
+  // that left_car is refused now: #264.)
   t.tick(30);
-  await post(t.app, "/location", { ...fix(t, 20), accuracy: 25, event: "left_car" });
+  await post(t.app, "/location", { ...fix(t, 40), accuracy: 25, event: "left_car" });
   expect(t.state.pendingParks[0]).toMatchObject({ status: "prompted", farAt: null });
   // Back to the car on sharp fixes, and Pay from the seat.
   t.tick(30);

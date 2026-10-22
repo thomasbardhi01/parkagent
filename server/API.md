@@ -1238,8 +1238,15 @@ the car. The record is one `pending_parks` row per held park
 10 s apart are clear of the car even allowing for their own error
 (`distance − accuracy > 30 m`) and no more than 3 m/s apart (a car pulling
 away covers the same ground, faster, and is not a walk-away), or when the
-app reports `left_car` (motion has the driver on foot) and no sharp fix
-(accuracy ≤ 20 m) has it within 10 m of the car. A fix whose `speedMps` is
+app reports `left_car` (motion has the driver on foot) on a fix that
+can't have the phone at the car's door: a sharp one (accuracy ≤ 20 m) more
+than 10 m from the car, or a blurrier usable one whose whole error is (more
+than 10 m from the car after subtracting its accuracy). An urban seat fix
+reads 30–50 m off and 30–50 m blurry, and the driver is still in the car
+(#264). One too blurry to read (worse than 65 m) can't show the phone has
+left either. A `left_car` refused this way is no walk-away: the park waits,
+and the app says it again with its next fix while the driver is still on
+foot. A fix whose `speedMps` is
 over 3 m/s is a moving car: it never counts toward leaving (its
 `left_car` included) and starts the pair over. A fix with accuracy worse
 than 65 m, reported more than 5 minutes off the server's clock, measured

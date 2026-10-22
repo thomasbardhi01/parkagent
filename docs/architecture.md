@@ -110,7 +110,7 @@ stateDiagram-v2
   at_car --> confirmed: Pay tapped at the car
   prompted --> confirmed: Pay tapped, back at car
   prompted --> starting: Pay tapped while away
-  confirmed --> starting: app sends left_car (on foot)
+  confirmed --> starting: app sends left_car (on foot, on a fix clear of the door)
   confirmed --> prompted: pace only (red light can't pay)
   starting --> started: provider confirmed
   starting --> start_failed: failed, or stale with no live session

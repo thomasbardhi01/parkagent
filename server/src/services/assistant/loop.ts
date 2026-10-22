@@ -23,7 +23,7 @@
 
 import type { AppDb } from "../../db.js";
 import { coveredCitiesSentence, providerForCity } from "../../providers/registry.js";
-import { nycStartOfDay } from "../hours.js";
+import { estimateCostUsd } from "./spend.js";
 import { homeMetroForPoint } from "./geocoder.js";
 import { suggestionsForQuestion } from "./clarify.js";
 import {
@@ -123,43 +123,9 @@ const PROPOSE_PLAN_REMINDER =
   'plan of option ids from the latest search, or {kind: "none_meets"} if nothing met the request. Do not ' +
   "ask the user to say or type anything — they act by tapping the card.";
 
-/** Anthropic list prices per million tokens (checked 2026-09-24), most
- * specific first: a generation can reprice a family (Sonnet 5 is $2/$10,
- * Sonnet 4.x $3/$15). Unknown models estimate at the priciest tier so the
- * cap errs toward refusing. */
-const MODEL_PRICES_PER_MTOK: { match: RegExp; inputUsd: number; outputUsd: number }[] = [
-  { match: /haiku-5-5/, inputUsd: 0.1, outputUsd: 0.5 },
-  { match: /haiku/, inputUsd: 1, outputUsd: 5 },
-  { match: /sonnet-5/, inputUsd: 2, outputUsd: 10 },
-  { match: /sonnet/, inputUsd: 3, outputUsd: 15 },
-  { match: /opus-5-5/, inputUsd: 4, outputUsd: 20 },
-  { match: /opus/, inputUsd: 5, outputUsd: 25 },
-  { match: /fable|mythos/, inputUsd: 10, outputUsd: 50 },
-];
-
-export function estimateCostUsd(model: string, inputTokens: number, outputTokens: number): number {
-  const price = MODEL_PRICES_PER_MTOK.find((p) => p.match.test(model)) ?? {
-    inputUsd: 10,
-    outputUsd: 50,
-  };
-  const usd = (inputTokens * price.inputUsd + outputTokens * price.outputUsd) / 1_000_000;
-  return Math.round(usd * 10_000) / 10_000;
-}
-
-/** Today's (ET) estimated assistant model spend for one user, from the
- * assistant_turn decision rows — what the daily cap compares against. */
-export async function assistantSpendTodayUsd(db: AppDb, userId: string, at: Date): Promise<number> {
-  const rows = await db.decision.findMany({
-    // Midnight ET, the same day boundary the parking caps use.
-    where: { userId, kind: "assistant_turn", createdAt: { gte: nycStartOfDay(at) } },
-  });
-  return rows
-    .filter((r) => r.kind === "assistant_turn" && r.userId === userId)
-    .reduce((sum, r) => {
-      const outcome = r.outcome as { estimatedCostUsd?: number } | null;
-      return sum + (typeof outcome?.estimatedCostUsd === "number" ? outcome.estimatedCostUsd : 0);
-    }, 0);
-}
+// The spend estimate and today's sum live in the leaf spend.ts (the
+// explain capability reads them too, and must not import this module).
+export { assistantSpendTodayUsd, estimateCostUsd } from "./spend.js";
 
 export interface AssistantResult {
   conversationId: string;

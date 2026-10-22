@@ -207,14 +207,16 @@ const linkWallet = new LinkWallet({
   testMode: env.LINK_TEST_MODE === "true",
 });
 // Model routing: ASSISTANT_MODEL (→ ANTHROPIC_MODEL → sonnet) runs the
-// tool loop; EXPLAIN_MODEL (haiku) phrases explanations.
+// tool loop; EXPLAIN_MODEL, when set, phrases "why" explanations (off by
+// default: the template is the answer).
 const models = resolveAssistantModels(env);
 const assistantModel = env.ANTHROPIC_API_KEY
   ? makeAnthropicModelClient(env.ANTHROPIC_API_KEY, models.assistant)
   : undefined;
-const explainModel = env.ANTHROPIC_API_KEY
-  ? makeAnthropicModelClient(env.ANTHROPIC_API_KEY, models.explain)
-  : undefined;
+const explainModel =
+  env.ANTHROPIC_API_KEY && env.EXPLAIN_MODEL
+    ? makeAnthropicModelClient(env.ANTHROPIC_API_KEY, env.EXPLAIN_MODEL)
+    : undefined;
 // The nightly audit's summary (GET /admin/audit), only with AUDIT_SUMMARY on.
 const auditModel =
   env.AUDIT_SUMMARY === "true" && env.ANTHROPIC_API_KEY

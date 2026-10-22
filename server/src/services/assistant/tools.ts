@@ -572,47 +572,20 @@ export class AssistantTools {
 
   private async explain(ctx: ToolContext, input: Record<string, unknown>): Promise<ToolOutcome> {
     const id = String(input["decision_id"]);
-    const found = await explainDecision(this.deps, principalFor(ctx.userId), { decisionId: id });
+    // The capability phrases (EXPLAIN_MODEL, when on) or answers with the
+    // template. Its call counts toward this turn's spend, or, with no turn
+    // to bill, on a spend row of its own: never on neither.
+    const found = await explainDecision(
+      this.deps,
+      principalFor(ctx.userId),
+      { decisionId: id },
+      ctx.onModelUsage,
+    );
     if (!found.ok) {
       await this.audit(ctx, "explain_decision", input, "not_found", {});
       return { result: { error: "no such decision (or it belongs to another user)" } };
     }
-    const { template } = found;
-    // Phrasing runs on the cheap EXPLAIN_MODEL; the template is the
-    // factual floor — a phrasing failure falls back to it, and the model
-    // is told to add nothing the template doesn't say.
-    let text = template;
-    if (this.deps.explainModel) {
-      try {
-        const phrased = await this.deps.explainModel.create({
-          system:
-            "Rewrite the given parking-decision record as one or two friendly plain-English sentences. State only facts present in the input — never add, guess, or soften facts. No preamble.",
-          messages: [{ role: "user", content: template }],
-          // Room for the model's thinking (on by default on Claude Haiku
-          // 5.5) before its one or two sentences.
-          maxTokens: 1024,
-        });
-        // A paid call like any other: it counts toward this turn's spend.
-        ctx.onModelUsage?.({
-          model: phrased.model ?? "unknown",
-          inputTokens: phrased.usage?.inputTokens ?? 0,
-          outputTokens: phrased.usage?.outputTokens ?? 0,
-        });
-        const joined = phrased.content
-          .filter((b): b is { type: "text"; text: string } => b.type === "text")
-          .map((b) => b.text)
-          .join(" ")
-          .trim();
-        // Only a finished answer replaces the template: a refusal or a
-        // cut-off (max_tokens) keeps the factual floor.
-        if (phrased.stopReason === "end_turn" && joined.length > 0) text = joined;
-      } catch {
-        // Fall back to the template — an explanation must never fail the turn.
-      }
-    }
-    await this.audit(ctx, "explain_decision", input, "ok", {
-      phrased: text !== template,
-    });
-    return { result: { explanation: text } };
+    await this.audit(ctx, "explain_decision", input, "ok", { phrased: found.phrased });
+    return { result: { explanation: found.text } };
   }
 }

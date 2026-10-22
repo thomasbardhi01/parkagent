@@ -53,6 +53,7 @@ function everythingOn() {
     GOOGLE_SIGNIN_ENABLED: "true",
     GOOGLE_CLIENT_ID: "123-abc.apps.googleusercontent.com",
     ANTHROPIC_API_KEY: "sk-ant-abc123",
+    EXPLAIN_MODEL: "claude-haiku-5-5",
     PARKWHIZ_ENABLED: "true",
     AUDIT_SUMMARY: "true",
     MCP_APPS: "true",
@@ -190,6 +191,7 @@ describe("optional features never refuse boot", () => {
     ],
     ["assistant", { ANTHROPIC_API_KEY: "sk-proj-abc" }, /^ANTHROPIC_API_KEY doesn't look like/],
     ["mcp_apps", { MCP_APPS: "on" }, /^MCP_APPS is "on"/],
+    ["explanations", { EXPLAIN_MODEL: "gpt-4" }, /^EXPLAIN_MODEL doesn't look like/],
   ])("%s: %j → degraded, named, and off", (id, patch, detail) => {
     const report = checkEnv({ ...everythingOn(), ...patch });
     expect(report.fatal).toEqual([]);
@@ -232,7 +234,6 @@ describe("optional features never refuse boot", () => {
       PORT: "http",
       EXECUTOR_CONCURRENCY: "20",
       ASSISTANT_DAILY_SPEND_CAP_USD: "-1",
-      EXPLAIN_MODEL: "gpt-4",
       APPLE_AUDIENCE: "not a bundle",
     });
     expect(report.fatal).toEqual([]);
@@ -240,10 +241,32 @@ describe("optional features never refuse boot", () => {
     expect(report.env.PORT).toBe(3000);
     expect(report.env.EXECUTOR_CONCURRENCY).toBe(2);
     expect(report.env.ASSISTANT_DAILY_SPEND_CAP_USD).toBe(5);
-    expect(report.env.EXPLAIN_MODEL).toBe("claude-haiku-5-5");
     expect(report.env.APPLE_AUDIENCE).toBe("com.thomasbardhi.parkagent");
-    expect(report.warnings).toHaveLength(5);
+    expect(report.warnings).toHaveLength(4);
     expect(report.warnings[0]).toMatch(/^APPLE_AUDIENCE isn't a bundle id/);
+  });
+
+  test("EXPLAIN_MODEL is a switch, off by default (Issue M)", () => {
+    const state = (extra: Record<string, string>) => {
+      const report = checkEnv({ ...MINIMAL, ...extra });
+      return [
+        report.features.find((f) => f.id === "explanations")!.state,
+        report.env.EXPLAIN_MODEL,
+      ];
+    };
+    const key = { ANTHROPIC_API_KEY: "sk-ant-api03-0000000000000000000000" };
+    expect(state(key)).toEqual(["off", undefined]);
+    expect(state({ ...key, EXPLAIN_MODEL: "claude-haiku-5-5" })).toEqual([
+      "on",
+      "claude-haiku-5-5",
+    ]);
+    // A malformed id is a mistake: degraded, never a silent default.
+    expect(state({ ...key, EXPLAIN_MODEL: "gpt-4" })).toEqual(["degraded", undefined]);
+    expect(checkEnv({ ...MINIMAL, ...key, EXPLAIN_MODEL: "gpt-4" }).degraded).toEqual([
+      "explanations",
+    ]);
+    // Named but with no key to call it with: off.
+    expect(state({ EXPLAIN_MODEL: "claude-haiku-5-5" })).toEqual(["off", undefined]);
   });
 });
 

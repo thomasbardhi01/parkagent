@@ -2558,10 +2558,9 @@ two jobs — find one spot, or plan a multi-stop day.
 
 **Model routing.** The loop runs on `ASSISTANT_MODEL` (default
 `claude-sonnet-5`; the legacy `ANTHROPIC_MODEL` is still honored as a
-fallback), while `explain_decision` phrasing runs on the cheap
-`EXPLAIN_MODEL` (default `claude-haiku-4-5-20251001`) — and falls back to
-the plain template sentence if that call fails, so an explanation never
-fails a turn. Every turn writes an `assistant_turn` decisions row with
+fallback). `explain_decision` answers with the decision's reason (see
+"Why a decision came out as it did" below), phrased by `EXPLAIN_MODEL`
+only when that switch is set. Every turn writes an `assistant_turn` decisions row with
 the model, summed input/output tokens, model-call count, wall-clock
 latency, and an estimated cost from published per-model list prices —
 including any call a tool made on its own model (`explain_decision`'s
@@ -2744,15 +2743,43 @@ filled in. A new rule without a reason fails CI three ways:
 for the vocabularies rules are drawn from, and the fake DB fails any test
 file that writes a rule with no reason (`test/setup/reasonsGate.ts`).
 
-The reason's **template** (`services/explanations.ts`) is the
-deterministic sentence `explainDecision`
-(`services/capabilities/explainDecision.ts`, owner or admin only) answers
-with.
+`explainDecision` (`services/capabilities/explainDecision.ts`) is the one
+reader every surface uses. It serves the owner, or an admin; anyone else
+gets not-found. It answers with the reason's **template**
+(`services/explanations.ts`), a deterministic sentence, and when
+`EXPLAIN_MODEL` is set (off by default; a `FEATURES` switch,
+`explanations` in `/health`), with that model's phrasing of the reason.
+
+The model call:
+- gets the structured reason only (`{subject, what, because: [{label,
+  value}], youCan}`), never the row or the template;
+- answers in a strict JSON schema (`output_config.format`, `{answer}`), at
+  most three sentences, with `max_tokens` 1024 and `output_config.effort:
+  "low"` (thinking counts against the budget, and three sentences need
+  little), no prefill and no thinking budget. An `EXPLAIN_MODEL` that takes
+  no `effort` answers 400, and the template stands;
+- has any sentence dropped that carries an amount not among the evidence's
+  (`scrubUngroundedAmounts`), and is replaced by the template outright if
+  any number in what's left (a distance, a stay, a zone, a time) isn't a
+  digit run of what it was sent.
+
+An error is evidence only as a known code, never its free text, and a row
+with no user (an Issuing decision for an unknown card) reads for an admin
+only.
+
+A refusal, a cut-off, unreadable JSON, a model error, a rule with no reason,
+or the person's assistant spend already at `ASSISTANT_DAILY_SPEND_CAP_USD`
+all answer with the template. The call's cost counts toward that cap: inside
+an assistant turn on the turn's own row, elsewhere as an `assistant_turn`
+row of its own (`rule: explain_phrased`). It never touches the money path.
 
 The eval: 30 golden decisions across every rule family
 (`src/eval/explainGolden.ts`), each with the facts its answer must state.
 A fact is an invariant named with its value in one sentence, never a bare
-number. CI holds the template to them (`test/explainEval.test.ts`).
+number. CI holds the template to them (`test/explainEval.test.ts`). The
+manual `explain-eval` workflow (`pnpm -C server explain:eval`, which needs
+`ANTHROPIC_API_KEY`) holds the model's phrasing to the same facts and
+prints the estimated cost.
 
 **The street search** (`services/assistant/streetOptions.ts`) covers
 **every metered zone within a walking radius** of the place (400 m, about

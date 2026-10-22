@@ -132,8 +132,9 @@ elif [[ "$MODE" == "broken" ]]; then
   export ANTHROPIC_API_KEY="sk-proj-bootcheck0000"          # not an Anthropic key
   export AUDIT_SUMMARY="maybe"                              # not true or false
   export MCP_APPS="on"                                      # not true or false
+  export EXPLAIN_MODEL="gpt-4o"                             # not a Claude model id
   EXPECTED_METHODS='{"apple":true,"email":false,"google":false}'
-  EXPECTED_DEGRADED='["live_payments","push","stripe","issuing","link_wallet","apple_signin_revoke","apple_maps","email_signin","google_signin","parkwhiz","assistant","audit_summary","mcp_apps"]'
+  EXPECTED_DEGRADED='["live_payments","push","stripe","issuing","link_wallet","apple_signin_revoke","apple_maps","email_signin","google_signin","parkwhiz","assistant","audit_summary","mcp_apps","explanations"]'
 else
   # Live mode against an empty database: no users, sessions, or linked
   # accounts, and keys no real service accepts, so nothing can pay.
@@ -173,7 +174,7 @@ else
   export ANTHROPIC_API_KEY="sk-ant-bootcheck-0000000000000000"
   export ASSISTANT_MODEL="claude-sonnet-5"
   export ANTHROPIC_MODEL="claude-sonnet-5"
-  export EXPLAIN_MODEL="claude-haiku-4-5-20251001"
+  export EXPLAIN_MODEL="claude-haiku-5-5"
   export ASSISTANT_DAILY_SPEND_CAP_USD=5
   export ASSISTANT_CONVERSATION_RETENTION_DAYS=90
   export PARKWHIZ_ENABLED=true

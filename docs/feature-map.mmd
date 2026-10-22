@@ -53,6 +53,7 @@ flowchart LR
     parkTrace["parkTrace<br/>trace → anonymized fixture"]
     retention["jobs/conversationRetentionTick<br/>(hourly retention sweep)"]
     audit["audit invariants + summary<br/>report-only · Haiku behind AUDIT_SUMMARY, template otherwise"]
+    explain["capabilities/explainDecision<br/>reasons.ts: what · evidence · what you can do<br/>EXPLAIN_MODEL phrasing (off by default) · template fallback"]
     execGate["ExecutorGate + CircuitBreaker<br/>DRY_RUN → DryRunExecutor"]
     agentActions["agentActions + mandates<br/>one call, two surfaces · one budget per key"]
   end
@@ -106,6 +107,8 @@ flowchart LR
   gate --> ledger
   applyExt --> ledger
   pending --> ledger
+  asst -. "explain_decision" .-> explain
+  explain -. "reads one row (owner or admin)" .-> ledger
 
   location -- "each fix, read or refused (why)" --> parkFixes
   traceR --> parkTrace

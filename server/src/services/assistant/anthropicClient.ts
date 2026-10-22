@@ -63,8 +63,15 @@ export function makeAnthropicModelClient(
         max_tokens: args.maxTokens,
         system: args.system,
         ...(args.tools ? { tools: args.tools as Anthropic.Tool[] } : {}),
-        ...(args.outputSchema
-          ? { output_config: { format: { type: "json_schema", schema: args.outputSchema } } }
+        ...(args.outputSchema || args.effort
+          ? {
+              output_config: {
+                ...(args.outputSchema
+                  ? { format: { type: "json_schema" as const, schema: args.outputSchema } }
+                  : {}),
+                ...(args.effort ? { effort: args.effort } : {}),
+              },
+            }
           : {}),
         messages: args.messages as Anthropic.MessageParam[],
       });

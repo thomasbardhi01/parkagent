@@ -144,6 +144,9 @@ export interface Env {
   // The nightly audit's five-line summary from Haiku (GET /admin/audit).
   // Off by default: off, the audit's deterministic template says it.
   AUDIT_SUMMARY: Flag;
+  // The parking-sign reader (POST /parked/:id/signs): off unless "true",
+  // and only with the assistant's ANTHROPIC_API_KEY.
+  SIGN_READER: Flag;
 
   // Link wallet for agents (Stripe agentic commerce), as a set of four:
   // all present → /link/* live; otherwise 503.
@@ -201,6 +204,7 @@ export const ENV_NAMES = [
   "ASSISTANT_CONVERSATION_RETENTION_DAYS",
   "PARKWHIZ_ENABLED",
   "AUDIT_SUMMARY",
+  "SIGN_READER",
   "LINK_CLIENT_ID",
   "LINK_CLIENT_SECRET",
   "LINK_PUBLISHABLE_KEY",
@@ -236,6 +240,7 @@ export const WATCHED_PREFIXES = [
   "PROVIDER_",
   "AUTH_",
   "MCP_",
+  "SIGN_",
 ];
 
 /** The optional features, and what each needs. Feature ids are what
@@ -288,6 +293,7 @@ export const FEATURES = {
   },
   mcp_apps: { vars: ["MCP_APPS"], what: "the MCP Apps confirm card on /mcp" },
   explanations: { vars: ["EXPLAIN_MODEL"], what: "model-phrased why explanations" },
+  sign_reader: { vars: ["SIGN_READER"], what: "the parking-sign reader" },
 } as const satisfies Record<string, { vars: readonly (keyof Env)[]; what: string }>;
 
 export type FeatureId = keyof typeof FEATURES;
@@ -828,6 +834,16 @@ export function checkEnv(source: EnvSource, options: CheckOptions = {}): EnvRepo
         ? set("explanations", "off", "EXPLAIN_MODEL needs the assistant's ANTHROPIC_API_KEY")
         : set("explanations", "on", "");
 
+  // -------- the parking-sign reader (off by default; an AI component)
+  const signReader = flag("SIGN_READER", "false");
+  const signReaderOn = signReader.problem
+    ? set("sign_reader", "degraded", `SIGN_READER ${signReader.problem}`)
+    : signReader.value !== "true"
+      ? set("sign_reader", "off", "SIGN_READER is false")
+      : !assistantOn
+        ? set("sign_reader", "degraded", "SIGN_READER needs the assistant's ANTHROPIC_API_KEY")
+        : set("sign_reader", "on", "");
+
   // -------- the same key or secret under two names
   const p8s = P8_SLOTS.filter((s) => has(s.key) && !unchecked.has(s.key)).flatMap((slot) => {
     const inspected = inspectP8(raw(slot.key)!);
@@ -927,6 +943,7 @@ export function checkEnv(source: EnvSource, options: CheckOptions = {}): EnvRepo
     ASSISTANT_CONVERSATION_RETENTION_DAYS: retentionDays,
     PARKWHIZ_ENABLED: parkwhizOn ? "true" : "false",
     AUDIT_SUMMARY: auditOn ? "true" : "false",
+    SIGN_READER: signReaderOn ? "true" : "false",
     LINK_CLIENT_ID: linkOn ? text("LINK_CLIENT_ID") : undefined,
     LINK_CLIENT_SECRET: linkOn ? text("LINK_CLIENT_SECRET") : undefined,
     LINK_PUBLISHABLE_KEY: linkOn ? text("LINK_PUBLISHABLE_KEY") : undefined,

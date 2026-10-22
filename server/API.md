@@ -616,6 +616,65 @@ else's; `429` (the limit is shared with `POST /parked`: 30 a minute).
 
 ---
 
+## POST /parked/:id/signs (parking-sign reader)
+
+Behind `SIGN_READER` (off by default; needs the assistant's
+`ANTHROPIC_API_KEY`): `503 sign_reader_off` without it. **Advisory only**:
+a reading can warn, or offer a shorter max stay for this park; it never
+loosens a limit, changes a price, or starts, stops or extends anything.
+
+`{text, fix: {lat, lng, accuracy}, photo?: {mediaType: "image/jpeg" |
+"image/png", data: <base64>}, storePhoto?}`. `text` is what the phone
+recognized on the signs (on-device OCR, up to 4,000 characters); a photo
+(downscaled, under ~1.1 MB) is sent only when that recognition was unsure,
+and goes to the model only then. `:id` is the caller's parkedEventId
+(`404 parked_event_not_found` for someone else's). Six a minute per user.
+
+One call to Claude Sonnet 5.5 (`SIGN_READER_MODEL`), its answer held to a
+strict JSON schema (`output_config.format`, `SIGN_RULES_JSON_SCHEMA` in
+`services/signs/signRules.ts`): `SignRules {rules: [{kind, days, start,
+end, limitMinutes, permitZone, exceptions}], confidence, unreadable}`, with
+`kind` one of `time_limit`, `meter`, `no_parking`, `no_stopping`,
+`street_cleaning`, `permit_only`, `tow_zone`. Then:
+
+- **Grounded:** a rule whose time limit or clock hour appears neither in
+  `text` nor in the zone data is dropped; a permit zone the text doesn't
+  show is cleared; an exception naming a dollar amount the text doesn't
+  show is scrubbed (`scrubUngroundedAmounts`).
+- **Compared** with the zone data at the fix, over the stay from now:
+  `conflicts` (a rule forbids leaving the car then, a posted limit is
+  longer than the zone's, or a meter runs where the data says free),
+  `stricter` (a shorter posted limit: `offer.maxStayMinutes`), `agrees`,
+  or `unreadable`. A failed call, a refusal, an answer off the schema, a
+  confidence under 0.4, or no rule left after grounding is `unreadable`.
+- **Counted** against `ASSISTANT_DAILY_SPEND_CAP_USD` with the assistant's
+  own turns (`429 assistant_budget_exhausted`, before any call).
+
+→ `{checkId, verdict, rules, confidence, reasons, offer: {maxStayMinutes} |
+null, zone: {zoneId, maxStayMinutes} | null, photoKept, advisory: true,
+decisionId}`. Every check writes a `sign_check` decision (verdict, rules,
+what was dropped, the model, its tokens and estimated cost) and a
+`sign_checks` row. The OCR text is kept 30 days; a photo only with
+`storePhoto: true`, for the zone-data review queue, 30 days; both are
+cleared by the hourly retention sweep (`retention_purge`) and go with an
+account on `DELETE /me`.
+
+### POST /parked/:id/signs/:checkId/accept
+
+The driver takes a `stricter` check's shorter max stay for this park
+(`409 nothing_to_accept` for any other verdict). It only ever tightens: a
+running session for this park drops its `maxStayMinutes` to it now, so
+the money gate holds every extension (manual or automatic) to it, and a
+session started for this park later starts under it (the start path and
+the walk-away prompt read the shortest accepted stay). Accepting again is
+a no-op. → `{accepted: true, maxStayMinutes, sessionId}`; a
+`sign_check` decision (`accepted_shorter_stay`).
+
+### GET /admin/sign-checks
+
+Admin only. The zone-data review queue: the newest 50 checks whose driver
+kept a photo, with the reading, the OCR text and the photo as a data URL.
+
 ## GET /city
 
 `?lat=…&lng=…` — which city's meter system (and so which provider) covers

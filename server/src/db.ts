@@ -336,6 +336,22 @@ export interface ParkFixRow extends ParkFixWrite {
   id: string;
 }
 
+export interface SignCheckRow {
+  id: string;
+  userId: string;
+  parkedEventId: string;
+  createdAt: Date;
+  verdict: string;
+  result: unknown;
+  ocrText: string | null;
+  textExpiresAt: Date;
+  photo: Uint8Array | null;
+  photoMediaType: string | null;
+  photoExpiresAt: Date | null;
+  offerMaxStayMinutes: number | null;
+  acceptedAt: Date | null;
+}
+
 export interface PendingParkRow {
   id: string;
   userId: string;
@@ -1492,6 +1508,46 @@ export interface AppDb {
         details?: unknown;
       };
     }): Promise<{ id: string }>;
+  };
+  /** Parking-sign checks (Issue N): advisory, one per check asked for. */
+  signCheck: {
+    create(args: {
+      data: {
+        userId: string;
+        parkedEventId: string;
+        verdict: string;
+        result: unknown;
+        ocrText: string | null;
+        textExpiresAt: Date;
+        photo?: Uint8Array | null;
+        photoMediaType?: string | null;
+        photoExpiresAt?: Date | null;
+        offerMaxStayMinutes?: number | null;
+      };
+    }): Promise<SignCheckRow>;
+    findUnique(args: { where: { id: string } }): Promise<SignCheckRow | null>;
+    /** A park's checks, or the review queue's (a photo kept). */
+    findMany(args: {
+      where:
+        { parkedEventId: string; acceptedAt?: { not: null } } | { photoExpiresAt: { not: null } };
+      orderBy?: { createdAt: "desc" };
+      take?: number;
+    }): Promise<SignCheckRow[]>;
+    /** Accept a check's offer, once: the CAS is `acceptedAt: null`. */
+    updateMany(
+      args:
+        | { where: { id: string; acceptedAt: null }; data: { acceptedAt: Date } }
+        | {
+            where: { textExpiresAt: { lt: Date }; ocrText: { not: null } };
+            data: { ocrText: null };
+          }
+        | {
+            where: { photoExpiresAt: { lt: Date } };
+            data: { photo: null; photoMediaType: null; photoExpiresAt: null };
+          },
+    ): Promise<{ count: number }>;
+    /** Account deletion. */
+    deleteMany(args: { where: { userId: string } }): Promise<{ count: number }>;
   };
   locationFix: {
     create(args: {

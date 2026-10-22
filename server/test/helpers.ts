@@ -27,6 +27,7 @@ import type {
   LinkSpendRequestRow,
   ParkFixRow,
   PendingParkRow,
+  SignCheckRow,
   SessionHoldRow,
   ProviderAccountRow,
   RefreshTokenRow,
@@ -281,6 +282,7 @@ export interface FakeDbState {
   sessions: SessionRow[];
   sessionEvents: FakeSessionEvent[];
   locationFixes: FakeFix[];
+  signChecks: SignCheckRow[];
   deviceTokens: {
     id: string;
     userId: string;
@@ -477,6 +479,7 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
     sessions: [],
     sessionEvents: [],
     locationFixes: [],
+    signChecks: [],
     deviceTokens: [],
     zones: [],
     issuingCards: [],
@@ -1655,6 +1658,57 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
             ...e,
           })),
     },
+    signCheck: {
+      create: async ({ data }) => {
+        const row: SignCheckRow = {
+          id: `sc${state.signChecks.length + 1}`,
+          createdAt: new Date(),
+          photo: null,
+          photoMediaType: null,
+          photoExpiresAt: null,
+          offerMaxStayMinutes: null,
+          acceptedAt: null,
+          ...data,
+        };
+        state.signChecks.push(row);
+        return { ...row };
+      },
+      findUnique: async ({ where }) => {
+        const row = state.signChecks.find((c) => c.id === where.id);
+        return row ? { ...row } : null;
+      },
+      findMany: async ({ where, take }) => {
+        const rows = state.signChecks
+          .filter((c) =>
+            "parkedEventId" in where
+              ? c.parkedEventId === where.parkedEventId &&
+                (where.acceptedAt === undefined || c.acceptedAt !== null)
+              : c.photoExpiresAt !== null,
+          )
+          .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+        return rows.slice(0, take ?? rows.length).map((r) => ({ ...r }));
+      },
+      updateMany: async ({ where, data }) => {
+        let count = 0;
+        for (const row of state.signChecks) {
+          const hit =
+            "id" in where
+              ? row.id === where.id && row.acceptedAt === null
+              : "textExpiresAt" in where
+                ? row.textExpiresAt < where.textExpiresAt.lt && row.ocrText !== null
+                : row.photoExpiresAt !== null && row.photoExpiresAt < where.photoExpiresAt.lt;
+          if (!hit) continue;
+          Object.assign(row, data);
+          count++;
+        }
+        return { count };
+      },
+      deleteMany: async ({ where }) => {
+        const before = state.signChecks.length;
+        state.signChecks = state.signChecks.filter((c) => c.userId !== where.userId);
+        return { count: before - state.signChecks.length };
+      },
+    },
     locationFix: {
       create: async ({ data }) => {
         const row = { id: `f${state.locationFixes.length + 1}`, ...data };
@@ -2286,6 +2340,8 @@ export function makeTestApp(options: {
   seedLinkedProvider?: boolean;
   /** Scripted assistant transport; absent → /assistant/message 503s. */
   assistantModel?: ModelClient;
+  /** The sign reader's transport (SIGN_READER); absent → 503. */
+  signReaderModel?: ModelClient;
   /** Scripted EXPLAIN_MODEL transport for explain_decision phrasing. */
   explainModel?: ModelClient;
   /** ASSISTANT_DAILY_SPEND_CAP_USD equivalent; unset → uncapped. */
@@ -2399,6 +2455,7 @@ export function makeTestApp(options: {
     ...(options.providerOps ? { providerOps: options.providerOps } : {}),
     ...(options.stripe ? { stripe: options.stripe } : {}),
     ...(options.assistantModel ? { assistantModel: options.assistantModel } : {}),
+    ...(options.signReaderModel ? { signReaderModel: options.signReaderModel } : {}),
     assistantTools,
     ...(options.assistantDailySpendCapUsd !== undefined
       ? { assistantDailySpendCapUsd: options.assistantDailySpendCapUsd }

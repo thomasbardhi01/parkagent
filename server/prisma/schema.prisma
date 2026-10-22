@@ -345,10 +345,41 @@ model ParkedEvent {
   signals   Json
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  user      User       @relation(fields: [userId], references: [id])
-  decisions Decision[]
+  user       User        @relation(fields: [userId], references: [id])
+  decisions  Decision[]
+  signChecks SignCheck[]
 
   @@map("parked_events")
+}
+
+// A parking-sign check the driver asked for at a park (Issue N). Advisory
+// only: it can warn, or offer a SHORTER max stay the driver may accept;
+// it never loosens a limit, changes a price, starts or stops anything.
+// The OCR text expires after 30 days; a photo is kept only on the
+// driver's per-photo opt-in, for the zone-data review queue, 30 days.
+model SignCheck {
+  id                  String    @id @default(cuid())
+  userId              String    @map("user_id")
+  parkedEventId       String    @map("parked_event_id")
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  // agrees | stricter | conflicts | unreadable
+  verdict             String
+  // The grounded SignRules and the comparison (no text, no photo).
+  result              Json
+  ocrText             String?   @map("ocr_text")
+  textExpiresAt       DateTime  @map("text_expires_at") @db.Timestamptz(6)
+  photo               Bytes?
+  photoMediaType      String?   @map("photo_media_type")
+  photoExpiresAt      DateTime? @map("photo_expires_at") @db.Timestamptz(6)
+  // A stricter verdict's shorter max stay, and when the driver took it.
+  offerMaxStayMinutes Int?      @map("offer_max_stay_minutes")
+  acceptedAt          DateTime? @map("accepted_at") @db.Timestamptz(6)
+
+  parkedEvent ParkedEvent @relation(fields: [parkedEventId], references: [id], onDelete: Cascade)
+
+  @@index([parkedEventId])
+  @@index([userId])
+  @@map("sign_checks")
 }
 
 // One ParkNYC paid session. zoneId is a plain string, NOT a relation: the

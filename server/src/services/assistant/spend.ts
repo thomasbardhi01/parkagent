@@ -31,15 +31,24 @@ export function estimateCostUsd(model: string, inputTokens: number, outputTokens
   return Math.round(usd * 10_000) / 10_000;
 }
 
-/** Today's (ET) estimated assistant model spend for one user, from the
- * assistant_turn decision rows — what the daily cap compares against. */
+/** The decision kinds whose model spend counts against the daily cap: the
+ * assistant's turns and the parking-sign checks (one budget for both). */
+const MODEL_SPEND_KINDS = ["assistant_turn", "sign_check"] as const;
+
+/** Today's (ET) estimated model spend for one user, from the assistant's
+ * turns and the sign checks — what the daily cap compares against. */
 export async function assistantSpendTodayUsd(db: AppDb, userId: string, at: Date): Promise<number> {
-  const rows = await db.decision.findMany({
-    // Midnight ET, the same day boundary the parking caps use.
-    where: { userId, kind: "assistant_turn", createdAt: { gte: nycStartOfDay(at) } },
-  });
+  const rows = [];
+  for (const kind of MODEL_SPEND_KINDS) {
+    rows.push(
+      ...(await db.decision.findMany({
+        // Midnight ET, the same day boundary the parking caps use.
+        where: { userId, kind, createdAt: { gte: nycStartOfDay(at) } },
+      })),
+    );
+  }
   return rows
-    .filter((r) => r.kind === "assistant_turn" && r.userId === userId)
+    .filter((r) => (MODEL_SPEND_KINDS as readonly string[]).includes(r.kind) && r.userId === userId)
     .reduce((sum, r) => {
       const outcome = r.outcome as { estimatedCostUsd?: number } | null;
       return sum + (typeof outcome?.estimatedCostUsd === "number" ? outcome.estimatedCostUsd : 0);

@@ -74,6 +74,7 @@ OPTIONAL_VARS=(
   ANTHROPIC_API_KEY ASSISTANT_MODEL ANTHROPIC_MODEL EXPLAIN_MODEL ASSISTANT_DAILY_SPEND_CAP_USD
   ASSISTANT_CONVERSATION_RETENTION_DAYS
   PARKWHIZ_ENABLED AUDIT_SUMMARY
+  SIGN_READER
   LINK_CLIENT_ID LINK_CLIENT_SECRET LINK_PUBLISHABLE_KEY LINK_REDIRECT_URI LINK_TEST_MODE
   MCP_APPS
 )
@@ -98,6 +99,7 @@ if [[ "$MODE" == "off" ]]; then
   export GOOGLE_SIGNIN_ENABLED=false
   export PARKWHIZ_ENABLED=false
   export MCP_APPS=false
+  export SIGN_READER=false
   export EXECUTOR_WARM_AT_BOOT=false
   EXPECTED_METHODS='{"apple":true,"email":false,"google":false}'
   EXPECTED_DEGRADED='[]'
@@ -133,8 +135,9 @@ elif [[ "$MODE" == "broken" ]]; then
   export AUDIT_SUMMARY="maybe"                              # not true or false
   export MCP_APPS="on"                                      # not true or false
   export EXPLAIN_MODEL="gpt-4o"                             # not a Claude model id
+  export SIGN_READER="yes"                                  # not true or false
   EXPECTED_METHODS='{"apple":true,"email":false,"google":false}'
-  EXPECTED_DEGRADED='["live_payments","push","stripe","issuing","link_wallet","apple_signin_revoke","apple_maps","email_signin","google_signin","parkwhiz","assistant","audit_summary","mcp_apps","explanations"]'
+  EXPECTED_DEGRADED='["live_payments","push","stripe","issuing","link_wallet","apple_signin_revoke","apple_maps","email_signin","google_signin","parkwhiz","assistant","audit_summary","mcp_apps","explanations","sign_reader"]'
 else
   # Live mode against an empty database: no users, sessions, or linked
   # accounts, and keys no real service accepts, so nothing can pay.
@@ -179,6 +182,7 @@ else
   export ASSISTANT_CONVERSATION_RETENTION_DAYS=90
   export PARKWHIZ_ENABLED=true
   export AUDIT_SUMMARY=true
+  export SIGN_READER=true
   export LINK_CLIENT_ID="link_bootcheck"
   export LINK_CLIENT_SECRET="link_bootcheck_secret"
   export LINK_PUBLISHABLE_KEY="pk_test_bootcheck0000000000000000"

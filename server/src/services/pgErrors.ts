@@ -23,3 +23,11 @@ export function isBadInputSqlState(err: unknown): boolean {
   const code = sqlStateOf(err);
   return code !== null && BAD_INPUT_SQLSTATES.has(code);
 }
+
+/** Postgres refusing the request's own input, and nothing paid on the way:
+ * a start that reached the provider and then failed (whatever made it
+ * fail) is a server error, since what it charged is unknown, and keeps its
+ * 500 and its error log. */
+export function isBadRequestInput(err: unknown): boolean {
+  return isBadInputSqlState(err) && (err as { reachedProvider?: unknown }).reachedProvider !== true;
+}

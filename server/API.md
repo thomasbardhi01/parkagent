@@ -43,14 +43,19 @@ make every "per-IP" bucket global); off Fly that header is ignored, since
 any caller could set it. Unhandled errors
 answer `500 {"error": "internal"}` — details go to the server log only.
 
-**Path ids.** An id in a path (`:id`, `:planId`, `:checkId`, …) is
-letters, digits, `_` and `-`, up to 64 characters (a zone's or a Link
+**Path ids.** Every path param but `:provider` (a registry key) is an
+id: letters, digits, `_` and `-`, up to 64 characters (a zone's or a Link
 spend request's up to 100). Anything else (a NUL byte, a space, a `;`)
 answers `400 {"error": <zod tree naming the param>}` before the database
-is read; `/garages/:id` answers its own `404 garage_not_found`. A
-well-formed id that isn't yours answers exactly as a missing one does. A
-NUL byte that reaches the database some other way (a body field)
-answers `400 {"error": "bad_request"}`, not 500 (#281).
+is read, an `Idempotency-Key` on the request included (nothing is stored
+for it). It answers ahead of the route's own 403, 404 or 503;
+`/garages/:id` answers its own `404 garage_not_found`, and `/agent/*`
+refuses a key without the scope first where the scope is all it checks.
+A well-formed id that isn't yours answers exactly as a missing one does.
+A NUL byte that reaches the database some other way (a body field)
+answers `400 {"error": "bad_request"}`, not 500, unless the request had
+already reached the parking provider: then whether it charged is unknown,
+and it stays a `500 internal` (#281).
 
 ---
 

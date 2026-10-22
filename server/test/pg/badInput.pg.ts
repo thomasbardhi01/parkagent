@@ -62,7 +62,9 @@ test("a path id with a NUL never reaches Postgres", async () => {
   const res = await t.app.inject({
     method: "POST",
     url: "/parked/a%00b/confirm",
-    headers: { "x-api-key": t.user.apiKey },
+    // As the app sends it: the idempotency hook stores nothing for it, so
+    // the route's own 400 answers (the zod tree), not the backstop's.
+    headers: { "x-api-key": t.user.apiKey, "idempotency-key": "pg-bad-path-id-0001" },
     payload: {},
   });
   expect(res.statusCode, res.body).toBe(400);

@@ -43,35 +43,62 @@ export function idParams(shape: IdShape): preHandlerHookHandler {
   };
 }
 
-/** The `:id` / `:…Id` params that are someone else's ids, by route.
- * Every other one is one of our rows' (recordId). */
+/** The path params that are someone else's ids, by route. Every other
+ * one is one of our rows' (recordId). */
 const EXTERNAL_IDS: Record<string, string> = {
   "/zones/:zoneId/provider-number": "zoneId",
   "/link/spend-requests/:id/sync": "id",
   "/link/spend-requests/:id/card": "id",
 };
 
-/** Routes that parse their ids themselves, before the database:
- * `/agent/*` in the handler, after the key's scope (a key without the
- * scope is refused whatever it sent); a garage's by its own stricter
- * pattern, a malformed one answering garage_not_found (FR-49). */
+/** Path params that aren't ids: a provider is a registry key, looked up
+ * with no database call (an unknown one answers 404). Every other param,
+ * whatever it's called, is parsed as an id; a new kind of param is a
+ * decision, and test/pathIds.test.ts pins this list. */
+export const NOT_IDS: readonly string[] = ["provider"];
+
+/** Routes that parse their ids themselves, before the database: `/agent/*`
+ * in the handler (the why route after the key's scope, as a key without it
+ * is refused whatever it sent); a garage's by its own stricter pattern, a
+ * malformed one answering garage_not_found (FR-49). Everywhere else the
+ * id is parsed before the handler, so a malformed one answers 400 ahead of
+ * the route's own 403, 404 or 503. */
 const OWN_PARSE = (url: string) => url.startsWith("/agent/") || url === "/garages/:id";
 
-/** What a route's path ids are parsed with; null for a route with none,
- * or one that parses its own. */
-export function idShapeFor(url: string): IdShape | null {
-  if (OWN_PARSE(url)) return null;
+/** A route's path params, by name. */
+export function pathParams(url: string): string[] {
+  return [...url.matchAll(/:([A-Za-z0-9_]+)/g)].map((m) => m[1]!);
+}
+
+/** The schemas a route's path ids parse with, whoever parses them; null
+ * for a route with none. */
+function idShapeOf(url: string): IdShape | null {
   const shape: IdShape = {};
-  for (const [, name] of url.matchAll(/:([A-Za-z]+)/g)) {
-    if (name === undefined || (name !== "id" && !name.endsWith("Id"))) continue;
+  for (const name of pathParams(url)) {
+    if (NOT_IDS.includes(name)) continue;
     shape[name] = EXTERNAL_IDS[url] === name ? externalId : recordId;
   }
   return Object.keys(shape).length > 0 ? shape : null;
 }
 
+/** What the hook parses a route's path ids with; null for a route with
+ * none, or one that parses its own. */
+export function idShapeFor(url: string): IdShape | null {
+  return OWN_PARSE(url) ? null : idShapeOf(url);
+}
+
+/** Whether a request's path ids would parse: the idempotency hook, which
+ * runs before any route's own preHandlers, stores nothing for one that
+ * won't (a NUL there is a Postgres error too), and leaves the 400 to the
+ * route. */
+export function pathIdsParse(url: string, params: unknown): boolean {
+  const shape = idShapeOf(url);
+  return shape === null || z.object(shape).safeParse(params).success;
+}
+
 /** Every route registered after this parses its path ids before its
  * handler, after its own preHandlers (the rate limiter): default-on, like
- * auth, so a new `:…Id` route can't forget. */
+ * auth, so a new id route can't forget. */
 export function registerIdParams(app: FastifyInstance): void {
   app.addHook("onRoute", (route) => {
     const shape = idShapeFor(route.url);

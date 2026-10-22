@@ -38,7 +38,7 @@ import { z } from "zod";
 import type { AppDeps } from "../app.js";
 import type { AgentActions, AgentAnswer } from "../services/agentActions.js";
 import { policyFor } from "../services/limits.js";
-import { isBadInputSqlState, sqlStateOf } from "../services/pgErrors.js";
+import { isBadRequestInput, sqlStateOf } from "../services/pgErrors.js";
 import type { Principal } from "../services/principal.js";
 import { currentTraceId, runAs, traceIdFrom } from "../services/principal.js";
 import { agentKeyBucket, makeRateLimiter } from "../services/rateLimit.js";
@@ -180,8 +180,8 @@ export function buildMcpServer(
    * names the query and the build's paths, and log nothing. */
   const failed = (err: unknown, what: string): AgentAnswer => {
     // A NUL byte that reached a query: the call's fault, as REST answers it.
-    if (isBadInputSqlState(err)) {
-      log.warn({ sqlState: sqlStateOf(err), mcp: what }, "mcp: input the database refused");
+    if (isBadRequestInput(err)) {
+      log.warn({ err, sqlState: sqlStateOf(err), mcp: what }, "mcp: input the database refused");
       return { status: 400, body: { error: "bad_request" } };
     }
     log.error({ err, mcp: what }, "mcp: call failed");

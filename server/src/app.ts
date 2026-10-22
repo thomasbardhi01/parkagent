@@ -35,7 +35,7 @@ import { registerLocation } from "./routes/location.js";
 import { registerSigns } from "./routes/signs.js";
 import { registerLimits } from "./routes/limits.js";
 import { registerIdempotency } from "./services/idempotency.js";
-import { isBadInputSqlState, sqlStateOf } from "./services/pgErrors.js";
+import { isBadRequestInput, sqlStateOf } from "./services/pgErrors.js";
 import { makeAssistantHealth } from "./services/assistant/health.js";
 import { registerMe } from "./routes/me.js";
 import { registerAgentKeys } from "./routes/agentKeys.js";
@@ -385,9 +385,10 @@ export function buildApp(deps?: AppDeps, app: FastifyInstance = createFastify())
     if (statusCode < 500) {
       return reply.code(statusCode).send({ error: err.code ?? "bad_request" });
     }
-    // A NUL byte that reached a query: the request's fault (#281).
-    if (isBadInputSqlState(err)) {
-      req.log.warn({ sqlState: sqlStateOf(err) }, "input the database refused");
+    // A NUL byte that reached a query: the request's fault (#281), unless
+    // the provider had been asked by then.
+    if (isBadRequestInput(err)) {
+      req.log.warn({ err, sqlState: sqlStateOf(err) }, "input the database refused");
       return reply.code(400).send({ error: "bad_request" });
     }
     req.log.error({ err }, "unhandled error");

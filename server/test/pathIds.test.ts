@@ -6,11 +6,11 @@
  * The error handler maps a 22021 that reaches a query anyway to 400.
  */
 
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import { buildApp, createFastify } from "../src/app.js";
 import type { Db } from "../src/db.js";
-import { idShapeFor } from "../src/routes/ids.js";
+import { NOT_IDS, idShapeFor, pathParams } from "../src/routes/ids.js";
 import type { GeocoderProvider } from "../src/services/assistant/geocoder.js";
 import { API_KEY, BOYLSTON_BOS, MONDAY_2PM, NONADMIN_API_KEY, makeTestApp } from "./helpers.js";
 
@@ -112,10 +112,14 @@ describe("every route's path ids", () => {
     await app.ready();
 
     const swept: string[] = [];
+    const notIds = new Set<string>();
     for (const { method, url } of routes) {
-      const names = [...url.matchAll(/:([A-Za-z]+)/g)]
-        .map((m) => m[1]!)
-        .filter((n) => n === "id" || n.endsWith("Id"));
+      // Every param, whatever it's called, unless it's one NOT_IDS names.
+      const names = pathParams(url).filter((n) => {
+        if (!NOT_IDS.includes(n)) return true;
+        notIds.add(n);
+        return false;
+      });
       for (const name of names) {
         swept.push(`${method} ${url} ${name}`);
         // Over-long only for our rows' ids (64); a zone's or a garage's
@@ -123,13 +127,23 @@ describe("every route's path ids", () => {
         const max = idShapeFor(url)?.[name]?.maxLength ?? 64;
         const bads = ["%00", "a%20b", "d1%3B", ...(max === 64 ? ["a".repeat(65)] : [])];
         for (const bad of bads) {
-          const path = url.replace(/:([A-Za-z]+)/g, (_, n: string) => (n === name ? bad : "x1"));
+          const path = url.replace(/:([A-Za-z0-9_]+)/g, (_, n: string) =>
+            n === name ? bad : "x1",
+          );
           const agentRoute = url.startsWith("/agent/");
           calls.length = 0;
           const res = await app.inject({
             method: method as "GET",
             url: path,
-            headers: agentRoute ? { authorization: `Bearer ${key}` } : { "x-api-key": API_KEY },
+            headers: {
+              ...(agentRoute ? { authorization: `Bearer ${key}` } : { "x-api-key": API_KEY }),
+              // As the app sends every unsafe request (LiveAPI.send): the
+              // idempotency hook, which runs before any route's own, must
+              // store nothing for it either.
+              ...(method === "GET"
+                ? {}
+                : { "idempotency-key": `sweep-${calls.length}-${swept.length}` }),
+            },
             // A body that passes the agent confirm's own parse, so its id
             // is what's refused.
             ...(method === "GET" || method === "DELETE"
@@ -180,6 +194,31 @@ describe("every route's path ids", () => {
       "POST /zones/:zoneId/provider-number zoneId",
       "PUT /wallet/funding-methods/:id/default id",
     ]);
+    // And every param that isn't an id: a new kind is a decision (ids.ts).
+    expect([...notIds]).toEqual(["provider"]);
+    expect(NOT_IDS).toEqual(["provider"]);
+  });
+
+  test("a param named any other way is parsed as an id too", () => {
+    const shape = idShapeFor("/me/things/:thing_id/parts/:partID")!;
+    expect(Object.keys(shape).sort()).toEqual(["partID", "thing_id"]);
+    expect(shape["thing_id"]!.safeParse("a\u0000b").success).toBe(false);
+    expect(shape["partID"]!.safeParse("cm2x7k9qa0000abcd1234efgh").success).toBe(true);
+  });
+
+  test("link-status's job id, a query param, is parsed as one: 400, no job read", async () => {
+    const t = makeTestApp({ now: () => NOW });
+    const read = vi.spyOn(t.deps.db.linkJob, "findUnique");
+    for (const jobId of ["a%00b", "a%20b", "a".repeat(65)]) {
+      const res = await t.app.inject({
+        method: "GET",
+        url: `/providers/parknyc/link-status?jobId=${jobId}`,
+        headers: { "x-api-key": API_KEY },
+      });
+      expect(res.statusCode, jobId).toBe(400);
+      expect(res.json().error.properties?.jobId, jobId).toBeDefined();
+    }
+    expect(read).not.toHaveBeenCalled();
   });
 
   test("ours are cuids up to 64; a zone's and a garage's are names, up to 100", () => {

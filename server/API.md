@@ -2939,7 +2939,8 @@ row of its own (`rule: explain_phrased`). It never touches the money path.
 
 The app reads it at `GET /me/decisions/:decisionId/why` (the session
 timeline's "Why?"; same answer as the agent route above, owner or admin
-only, `404 decision_not_found` otherwise); the assistant through its
+only, `404 decision_not_found` otherwise; an id that isn't one, anything
+but letters, digits, `_` and `-`, is `400`); the assistant through its
 `explain_decision` tool; an agent at `GET /agent/decisions/:decisionId/why`.
 
 The eval: 30 golden decisions across every rule family

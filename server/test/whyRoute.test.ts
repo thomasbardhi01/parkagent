@@ -6,7 +6,7 @@
  * key, gets nothing.
  */
 
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import type { ModelClient } from "../src/services/assistant/modelClient.js";
 import { MONDAY_2PM, NONADMIN_API_KEY, makeTestApp } from "./helpers.js";
@@ -67,6 +67,17 @@ describe("GET /me/decisions/:decisionId/why", () => {
     const theirs = seed("u1");
     expect((await why(theirs)).statusCode).toBe(404);
     expect((await why("d999")).statusCode).toBe(404);
+  });
+
+  test("an id that isn't one: 400 before the database, as the agent's why (#279 review)", async () => {
+    const { t, why } = setup();
+    const read = vi.spyOn(t.deps.db.decision, "findUnique");
+    for (const id of ["%00", "d1%3B", "a%20b"]) {
+      const res = await why(id);
+      expect(res.statusCode, id).toBe(400);
+      expect(res.json().error, id).toBeDefined();
+    }
+    expect(read).not.toHaveBeenCalled();
   });
 
   test("phrased when EXPLAIN_MODEL is on, and billed to the person", async () => {

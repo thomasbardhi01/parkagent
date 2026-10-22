@@ -2754,10 +2754,18 @@ The model call:
 - gets the structured reason only (`{subject, what, because: [{label,
   value}], youCan}`), never the row or the template;
 - answers in a strict JSON schema (`output_config.format`, `{answer}`), at
-  most three sentences, with `max_tokens` 1024 (room for Haiku's thinking),
-  no prefill and no thinking budget;
+  most three sentences, with `max_tokens` 1024 and `output_config.effort:
+  "low"` (thinking counts against the budget, and three sentences need
+  little), no prefill and no thinking budget. An `EXPLAIN_MODEL` that takes
+  no `effort` answers 400, and the template stands;
 - has any sentence dropped that carries an amount not among the evidence's
-  (`scrubUngroundedAmounts`).
+  (`scrubUngroundedAmounts`), and is replaced by the template outright if
+  any number in what's left (a distance, a stay, a zone, a time) isn't a
+  digit run of what it was sent.
+
+An error is evidence only as a known code, never its free text, and a row
+with no user (an Issuing decision for an unknown card) reads for an admin
+only.
 
 A refusal, a cut-off, unreadable JSON, a model error, a rule with no reason,
 or the person's assistant spend already at `ASSISTANT_DAILY_SPEND_CAP_USD`

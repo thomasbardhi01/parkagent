@@ -573,12 +573,13 @@ export class AssistantTools {
   private async explain(ctx: ToolContext, input: Record<string, unknown>): Promise<ToolOutcome> {
     const id = String(input["decision_id"]);
     // The capability phrases (EXPLAIN_MODEL, when on) or answers with the
-    // template; its call counts toward this turn's spend.
+    // template. Its call counts toward this turn's spend, or, with no turn
+    // to bill, on a spend row of its own: never on neither.
     const found = await explainDecision(
       this.deps,
       principalFor(ctx.userId),
       { decisionId: id },
-      ctx.onModelUsage ?? (() => {}),
+      ctx.onModelUsage,
     );
     if (!found.ok) {
       await this.audit(ctx, "explain_decision", input, "not_found", {});

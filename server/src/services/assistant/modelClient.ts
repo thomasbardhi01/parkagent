@@ -83,6 +83,8 @@ export interface ModelClient {
        * `output_config.format`): the nightly audit's summary and
        * explain_decision's phrasing. Absent for every assistant turn. */
       outputSchema?: Record<string, unknown>;
+      /** `output_config.effort`; omitted → the model's default. */
+      effort?: "low" | "medium" | "high";
     },
     onText?: (delta: string) => void,
   ): Promise<ModelResponse>;

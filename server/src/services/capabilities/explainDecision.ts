@@ -74,9 +74,10 @@ export async function explainDecision(
   onModelUsage?: (usage: ModelUsage) => void,
 ): Promise<ExplainOutcome> {
   const row = await deps.db.decision.findUnique({ where: { id: input.decisionId } });
-  // A row with no user (an Issuing decision for an unknown card) reads for
-  // anyone who has its id; another user's row reads as not there.
-  const theirs = row !== null && (row.userId === null || row.userId === principal.userId);
+  // The owner's, or an admin's: another user's row reads as not there, and
+  // so does a row with no user (an Issuing decision for an unknown card),
+  // whoever holds its id.
+  const theirs = row !== null && row.userId === principal.userId;
   if (!row || !(theirs || principal.actor === "admin")) return { ok: false, reason: "not_found" };
   const reason = reasonOf(row);
   const template = templateFor(row);
@@ -113,13 +114,17 @@ async function phrase(
     because: reason.because.map(({ label, value }) => ({ label, value })),
     youCan: reason.youCan,
   };
+  const sent = JSON.stringify(facts);
   let answer: string | null;
   try {
     const response = await deps.explainModel.create({
       system: EXPLAIN_SYSTEM,
-      messages: [{ role: "user", content: JSON.stringify(facts) }],
+      messages: [{ role: "user", content: sent }],
       maxTokens: EXPLAIN_MAX_TOKENS,
       outputSchema: EXPLAIN_SCHEMA,
+      // Three sentences of rewording: thinking counts against max_tokens,
+      // and low keeps it from crowding the answer out.
+      effort: "low",
     });
     const usage: ModelUsage = {
       model: response.model ?? "unknown",
@@ -150,7 +155,12 @@ async function phrase(
       .map((m) => Number(m[1]) * 100 + Number(m[2])),
   );
   const scrubbed = scrubUngroundedAmounts(answer, grounded).text.trim();
-  return scrubbed.length > 0 ? scrubbed : null;
+  if (scrubbed.length === 0) return null;
+  // …and every number at all (a distance, a stay, a zone, a time) must
+  // be one the model was sent: any other digit run is the template.
+  const sentRuns = new Set(sent.match(/\d+/g) ?? []);
+  const invented = (scrubbed.match(/\d+/g) ?? []).some((run) => !sentRuns.has(run));
+  return invented ? null : scrubbed;
 }
 
 /** A phrasing outside an assistant turn is still assistant spend. */

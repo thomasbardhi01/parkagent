@@ -76,6 +76,14 @@ describe("who may read it", () => {
     const agent = agentPrincipal({ userId: "u1", id: "ak1", scopes: ["read"] });
     expect((await explainDecision(deps, agent, { decisionId: "d1" })).ok).toBe(true);
   });
+
+  test("a row with no user reads for an admin only, not for whoever has its id (#266 review)", async () => {
+    const { t, deps } = setup();
+    t.state.decisions.push({ ...ROW, userId: null });
+    expect((await explainDecision(deps, U1, { decisionId: "d2" })).ok).toBe(false);
+    const admin = userPrincipal({ id: "u2", isAdmin: true });
+    expect((await explainDecision(deps, admin, { decisionId: "d2" })).ok).toBe(true);
+  });
 });
 
 describe("the template, and the model on top of it", () => {
@@ -116,6 +124,28 @@ describe("the template, and the model on top of it", () => {
     const out = await explainDecision(deps, U1, { decisionId: "d1" });
     if (!out.ok) throw new Error("unreachable");
     expect(out.text).toBe("Your $5.40 stay passed your $5.00 cap.");
+  });
+
+  test("any number not in what the model was sent is the template (#266 review)", async () => {
+    // A distance, a stay, a zone or a clock time the row never held.
+    for (const made of [
+      "You were about 200 m away when it was refused.",
+      "Your 2 hour stay passed the cap.",
+      "Zone 417731 was over your cap.",
+      "It was refused at 21:00.",
+    ]) {
+      const { deps } = setup(model(made).client);
+      expect(await explainDecision(deps, U1, { decisionId: "d1" }), made).toMatchObject({
+        phrased: false,
+      });
+    }
+  });
+
+  test("the call asks for low effort: three sentences need little thinking", async () => {
+    const m = model("Your stay passed your cap.");
+    const { deps } = setup(m.client);
+    await explainDecision(deps, U1, { decisionId: "d1" });
+    expect(m.calls[0]!.effort).toBe("low");
   });
 
   test("every sentence ungrounded: the template", async () => {
@@ -171,6 +201,22 @@ describe("what it costs", () => {
     await explainDecision(deps, U1, { decisionId: "d1" }, (u) => usage.push(u));
     expect(usage).toEqual([{ model: "claude-haiku-5-5", inputTokens: 300, outputTokens: 60 }]);
     expect(t.state.decisions.filter((d) => d.kind === "assistant_turn")).toHaveLength(0);
+  });
+
+  test("the tool with no turn to bill still records its spend (#266 review)", async () => {
+    const t = makeTestApp({
+      now: () => NOW,
+      explainModel: model("Your stay passed your cap.").client,
+    });
+    t.state.decisions.push({ ...ROW });
+    await t.deps.assistantTools!.execute(
+      { userId: "u1", conversationId: "c1" } as Parameters<
+        NonNullable<typeof t.deps.assistantTools>["execute"]
+      >[0],
+      "explain_decision",
+      { decision_id: "d1" },
+    );
+    expect(t.state.decisions.some((d) => d.rule === "explain_phrased")).toBe(true);
   });
 
   test("today's budget spent: the template, and no call", async () => {

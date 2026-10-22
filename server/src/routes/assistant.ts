@@ -80,6 +80,10 @@ const messageSchema = z
 
 const editedStopsSchema = z.array(editedItineraryStopSchema).min(1).max(12);
 
+/** The errors consumeConfirmation answers with when it refuses the
+ * confirm itself (capabilities/confirmPlan.ts). */
+const CONFIRM_REFUSALS = new Set(["needs_confirmation", "policy_violation", "dry_run_changed"]);
+
 const confirmSchema = z.object({
   planId: z.string().min(1),
   /** Single-spot plans confirm one option; itineraries sign off whole. */
@@ -563,8 +567,10 @@ export function registerAssistant(
           confirmation_token: token,
         });
         const booked = outcome.result as { deepLink?: string | null; error?: string };
+        // A refusal of the confirm itself (the mandate, dry run, a cap) is
+        // never a cache miss; anything else from the provider is.
         const cacheExpired =
-          booked.error !== undefined && booked.error !== "needs_confirmation" && !!option.deepLink;
+          booked.error !== undefined && !CONFIRM_REFUSALS.has(booked.error) && !!option.deepLink;
         if (booked.error && !cacheExpired) {
           await decide("book_failed", { allowed: true, error: booked.error });
           return reply.code(409).send({ error: "book_failed", detail: booked.error });

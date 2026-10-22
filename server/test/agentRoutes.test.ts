@@ -120,6 +120,55 @@ describe("reading", () => {
     const { call } = await setup();
     expect((await call("GET", "/agent/decisions/d1/why")).statusCode).toBe(501);
   });
+
+  test("geocode: the place named, or the closest one said as such", async () => {
+    const { call } = await setup();
+    const exact = await call("POST", "/agent/geocode", { query: "Newbury Street" });
+    expect(exact.statusCode).toBe(200);
+    expect(exact.json()).toMatchObject({ found: true, match: "exact" });
+    const closest = await call("POST", "/agent/geocode", { query: "Newbury lounge downstairs" });
+    expect(closest.json()).toMatchObject({ found: true, match: "closest" });
+    expect(typeof closest.json().instruction).toBe("string");
+  });
+
+  test("itinerary: each stop looked up by name; a closest match is carried through", async () => {
+    const { call } = await setup();
+    const stop = { arrival: "2026-09-21T14:30:00-04:00", durationMinutes: 60 };
+    const res = await call("POST", "/agent/itinerary", {
+      stops: [
+        { place: "Newbury Street", ...stop },
+        { place: "Newbury lounge downstairs", ...stop, arrival: "2026-09-21T16:00:00-04:00" },
+      ],
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    const body = res.json() as { closestMatches?: { stop: number; instruction?: string }[] };
+    expect(body.closestMatches).toHaveLength(1);
+    expect(body.closestMatches![0]).toMatchObject({ stop: 1 });
+    expect(typeof body.closestMatches![0]!.instruction).toBe("string");
+    // Coordinates are not a place.
+    const coords = await call("POST", "/agent/itinerary", {
+      stops: [{ place: "Newbury Street", lat: 42.35, lng: -71.08, ...stop }],
+    });
+    expect(coords.statusCode).toBe(400);
+  });
+
+  test("a plan's answer, which carries its mandate, is never kept by idempotency", async () => {
+    const { t, key } = await setup();
+    const res = await t.app.inject({
+      method: "POST",
+      url: "/agent/plans",
+      headers: {
+        authorization: `Bearer ${key}`,
+        "idempotency-key": "11111111-2222-3333-4444-555555555555",
+      },
+      payload: { request: REQUEST },
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    const token = res.json().confirmToken as string;
+    expect(token).toBeTruthy();
+    expect(t.state.idempotencyKeys).toHaveLength(0);
+    expect(JSON.stringify(t.state.idempotencyKeys)).not.toContain(token);
+  });
 });
 
 describe("confirming", () => {
@@ -283,6 +332,116 @@ describe("confirming", () => {
     expect(res.statusCode).toBe(409);
     expect(res.json()).toMatchObject({ error: "policy_violation", rule: "session_cap_exceeded" });
     expect(t.state.mandates[0]!.consumedAt).toBeNull();
+  });
+
+  test("the dry run shown rides on the mandate; a confirm under another is refused", async () => {
+    const { t, call } = await setup();
+    const proposed = await propose(call);
+    expect(proposed).toMatchObject({ dryRun: true });
+    // Dry run is switched off between the proposal and the confirm.
+    t.deps.policy.effectiveDryRun = () => false;
+    const res = await call("POST", `/agent/plans/${proposed.planId}/confirm`, {
+      confirmToken: proposed.confirmToken,
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({
+      error: "dry_run_changed",
+      shownDryRun: true,
+      dryRun: false,
+    });
+    expect(t.state.mandates[0]!.consumedAt).toBeNull();
+    expect(t.state.decisions.at(-1)).toMatchObject({
+      kind: "agent_confirm",
+      rule: "dry_run_changed",
+    });
+  });
+
+  test("a plan with nothing to confirm is refused on the record", async () => {
+    const { t, call } = await setup();
+    const proposed = await propose(call);
+    // The plan behind the mandate is a "no" card now (the mandate has no
+    // plan hash, so only the kind decides).
+    const row = t.state.assistantPlans.find((p) => p.id === proposed.planId)!;
+    row.kind = "none_meets";
+    t.state.mandates[0]!.planHash = null;
+    const res = await call("POST", `/agent/plans/${proposed.planId}/confirm`, {
+      confirmToken: proposed.confirmToken,
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ error: "nothing_to_confirm" });
+    expect(res.json().decisionId).toBeTruthy();
+    expect(t.state.mandates[0]!.consumedAt).toBeNull();
+  });
+
+  test("a garage offer expired with the search: 409, mandate unspent, on the record", async () => {
+    const GARAGE = {
+      id: "g1",
+      provider: "spothero",
+      name: "Deck",
+      address: "1 Test St",
+      priceUsd: 18,
+      distanceM: 240,
+      walkMinutes: 3,
+      entryType: "self" as const,
+      deepLink: "https://spothero.com/search?latitude=42.35",
+      lat: NEWBURY.lat,
+      lng: NEWBURY.lng,
+    };
+    let cached = true;
+    const t = makeTestApp({
+      candidates: [BOYLSTON_BOS],
+      geocoder,
+      now: () => NOW,
+      garage: {
+        id: "spothero",
+        canReserve: false,
+        search: async () => ({ ok: true, options: [GARAGE], fromCache: false }),
+        optionById: (id) => (cached && id === "g1" ? GARAGE : null),
+        book: async () => {
+          throw new Error(
+            "unknown garage option g1 (search first — options expire with the cache)",
+          );
+        },
+      },
+    });
+    const key = (
+      await t.app.inject({
+        method: "POST",
+        url: "/me/agent-keys",
+        headers: U2,
+        payload: { label: "Grok", scopes: ["read", "confirm"] },
+      })
+    ).json().key as string;
+    await t.app.inject({
+      method: "PATCH",
+      url: "/me/settings",
+      headers: U2,
+      payload: { agentsMayAct: true },
+    });
+    const auth = { authorization: `Bearer ${key}` };
+    const proposed = (
+      await t.app.inject({
+        method: "POST",
+        url: "/agent/plans",
+        headers: auth,
+        payload: { request: { ...REQUEST, kinds: ["garage"] } },
+      })
+    ).json();
+    cached = false; // the provider's ten-minute cache lapses
+    const res = await t.app.inject({
+      method: "POST",
+      url: `/agent/plans/${proposed.planId}/confirm`,
+      headers: auth,
+      payload: { confirmToken: proposed.confirmToken },
+    });
+    expect(res.statusCode, res.body).toBe(409);
+    expect(res.json()).toMatchObject({ error: "garage_option_expired" });
+    expect(t.state.mandates.at(-1)!.consumedAt).toBeNull();
+    expect(t.state.assistantPlans.find((p) => p.id === proposed.planId)!.confirmedAt).toBeNull();
+    expect(t.state.decisions.at(-1)).toMatchObject({
+      kind: "agent_confirm",
+      rule: "garage_option_expired",
+    });
   });
 });
 

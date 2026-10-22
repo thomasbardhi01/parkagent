@@ -3560,7 +3560,8 @@ principal with the key's scopes and the person's id — never their admin
 rights. A key reaches the agent surfaces (`/agent/*`; `/mcp` once it
 exists) and nothing else: anywhere else is `403 agent_key_not_allowed_here`.
 The agent surfaces take nothing else: a session or the admin key there is
-`403 agent_surface_needs_agent_key`. An unknown or revoked key is `401`.
+`403 agent_surface_needs_agent_key`, and so is a call with no credentials
+at all. Only a `pak_` key that is unknown or revoked is `401`.
 Every agent call is logged with the key's prefix and route, and every
 decision it causes carries `actor: "external_agent"` and the key's id.
 
@@ -3606,26 +3607,40 @@ OpenAI-style functions are `examples/grok-tool.json` (regenerate with
 - `POST /agent/itinerary {stops: [{place, label?, arrival,
   durationMinutes}]}` (1–12) → each stop's street quote and best garage
   against the daily cap; `422 place_not_found {stop}` when a place can't
-  be resolved to one spot.
+  be resolved to one spot. A stop resolved only to the closest place, not
+  the one named, is listed in `closestMatches: [{stop, place,
+  instruction}]`, as `/agent/geocode` says it.
 - `POST /agent/plans {request}` → searches (street then garages, as the
   request's `kinds` allow) and proposes: `{planId, plan}`, the plan an
   `assistant_plans` row like the app's. For a key with `confirm`, a
-  single-spot plan also carries `{confirmToken, optionId, expiresAt}`: the
-  mandate for the recommended option, ten minutes, used once.
-- `POST /agent/plans/:planId/confirm {confirmToken}` (`confirm` scope) →
-  consent first (`403 agents_not_allowed`, before the mandate is read),
-  then the mandate (`404 mandate_not_found`, `409 mandate_used`, `410
-  mandate_expired`, `409 plan_hash_mismatch`), then the caps now (`409
-  policy_violation {rule}`, the mandate left unspent). Then:
-  - a garage → `{status: "garage_handoff", deepLink, priceUsd}`: the
-    option's own checkout, as in the app; nothing is booked or paid here;
+  single-spot plan also carries `{confirmToken, optionId, expiresAt,
+  dryRun}`: the mandate for the recommended option, ten minutes, used
+  once, minted under the dry run it shows. The answer is never kept by the
+  idempotency layer (it carries the token): a lost one means proposing
+  again.
+- `POST /agent/plans/:planId/confirm {confirmToken}` (`confirm` scope)
+  runs the one confirm sequence the app's tap runs too
+  (`consumeConfirmation` in `services/capabilities/confirmPlan.ts`):
+  consent first (`403 agents_not_allowed`, before the mandate is read);
+  the mandate (`404 mandate_not_found`, also for another plan's token;
+  `409 mandate_used`; `410 mandate_expired`; `409 plan_hash_mismatch`);
+  `409 nothing_to_confirm` for a plan with no option; `409
+  dry_run_changed {shownDryRun, dryRun}` when dry run changed since the
+  proposal; the caps now (`409 policy_violation {rule}`); and for a
+  garage, an offer the provider's search still holds (`409
+  garage_option_expired`: search again). Each of those leaves the mandate
+  unspent. Only then is it claimed. Then:
+  - a garage → `{status: "garage_handoff", deepLink, priceUsd, dryRun}`:
+    the option's own checkout, as in the app; nothing is booked or paid
+    here (a provider failing after the claim is `409 garage_book_failed`,
+    the mandate spent);
   - a street spot → `{status: "pending_arrival", zoneId,
-    durationMinutes, priceUsd, expiresAt}`. **An agent's confirm is
-    consent and a cap for a spot, never a park.** No `pending_parks` row
-    is written and nothing pays: arrival comes only from the phone, and
-    the phone's own prompt still asks the driver ("Pay $X for zone N?"),
-    as it does without an agent. Binding the next `/parked` at that spot
-    to this consent is the next PR (E3).
+    durationMinutes, priceUsd, dryRun, expiresAt}`. **An agent's confirm
+    is consent and a cap for a spot, never a park here.** No
+    `pending_parks` row is written and nothing pays: arrival comes only
+    from the phone's `/parked`, and the park lifecycle
+    (`services/pendingSession.ts`) is the code that enforces it. Binding
+    the next `/parked` at that spot to this consent is the next PR (E3).
   Each answer writes an `agent_confirm` decision.
 - `GET /agent/plans/:planId` → `{planId, kind, plan, confirmedAt,
   confirmedOptionId}`; `GET /agent/parks/:parkId` → a park's `{status,

@@ -51,6 +51,9 @@ const NEVER_STORED = [
   // An agent key is shown once: never kept to replay (a retried create
   // mints a second key, which the person can revoke).
   /^\/me\/agent-keys$/,
+  // A proposed plan's answer carries its mandate token: never kept (a
+  // lost answer means the agent proposes again).
+  /^\/agent\/plans$/,
 ];
 
 declare module "fastify" {

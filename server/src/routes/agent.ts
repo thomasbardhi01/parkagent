@@ -21,20 +21,15 @@ import { applyPatch, emptyState } from "../services/assistant/requestState.js";
 import type { RequestState } from "../services/assistant/requestState.js";
 import type { SearchResult } from "../services/assistant/search.js";
 import { buildItinerary } from "../services/capabilities/buildItinerary.js";
+import type { ConfirmRefusal } from "../services/capabilities/confirmPlan.js";
+import { consumeConfirmation } from "../services/capabilities/confirmPlan.js";
 import { geocodePlace } from "../services/capabilities/geocodePlace.js";
 import { proposePlan } from "../services/capabilities/proposePlan.js";
 import { quoteStreet, searchGarages } from "../services/capabilities/search.js";
 import type { CapabilityDeps, TurnState } from "../services/capabilities/turn.js";
 import { policyFor } from "../services/limits.js";
 import type { MandateRefusal } from "../services/mandates.js";
-import {
-  claimMandate,
-  mintMandate,
-  planHashOf,
-  planUnchanged,
-  readMandate,
-} from "../services/mandates.js";
-import { moneyGate, refusedConsent } from "../services/moneyGate.js";
+import { mintMandate, planHashOf } from "../services/mandates.js";
 import type { Principal, Scope } from "../services/principal.js";
 import { makeRateLimiter } from "../services/rateLimit.js";
 import {
@@ -57,6 +52,34 @@ const MANDATE_ERRORS: Record<MandateRefusal, { code: number; error: string }> = 
   plan_changed: { code: 409, error: "plan_hash_mismatch" },
   scope: { code: 403, error: "scope_required" },
 };
+
+/** How a refused confirm answers over REST. */
+function refusalAnswer(refusal: ConfirmRefusal): {
+  code: number;
+  error: string;
+  extra: Record<string, unknown>;
+} {
+  switch (refusal.why) {
+    case "consent":
+      return { code: 403, error: refusal.rule, extra: {} };
+    case "mandate":
+      return { ...MANDATE_ERRORS[refusal.reason], extra: {} };
+    case "different_option":
+      return { code: 404, error: "mandate_not_found", extra: {} };
+    case "nothing_to_confirm":
+      return { code: 409, error: "nothing_to_confirm", extra: {} };
+    case "dry_run_changed":
+      return {
+        code: 409,
+        error: "dry_run_changed",
+        extra: { shownDryRun: refusal.shown, dryRun: refusal.now },
+      };
+    case "over_cap":
+      return { code: 409, error: "policy_violation", extra: { rule: refusal.rule } };
+    case "option_expired":
+      return { code: 409, error: "garage_option_expired", extra: {} };
+  }
+}
 
 export function registerAgent(app: FastifyInstance, deps: AppDeps): void {
   const now = () => deps.now?.() ?? new Date();
@@ -179,11 +202,22 @@ export function registerAgent(app: FastifyInstance, deps: AppDeps): void {
     // Each stop's place is looked up here: the agent names places, never
     // coordinates.
     const stops: Record<string, unknown>[] = [];
+    const closest: Record<string, unknown>[] = [];
     for (const [index, stop] of body.stops.entries()) {
       const looked = (await geocodePlace(ok.deps, ok.principal, turn.turn, { query: stop.place }))
-        .result as { found?: boolean; ambiguous?: boolean; place?: { lat: number; lng: number } };
+        .result as {
+        found?: boolean;
+        ambiguous?: boolean;
+        match?: string;
+        instruction?: string;
+        place?: { lat: number; lng: number };
+      };
       if (!looked.found || looked.ambiguous || !looked.place) {
         return reply.code(422).send({ error: "place_not_found", stop: index, place: stop.place });
+      }
+      // The closest place, not the one named: said, as /agent/geocode says it.
+      if (looked.match === "closest") {
+        closest.push({ stop: index, place: looked.place, instruction: looked.instruction });
       }
       stops.push({
         label: stop.label ?? stop.place,
@@ -193,7 +227,10 @@ export function registerAgent(app: FastifyInstance, deps: AppDeps): void {
         duration_minutes: stop.durationMinutes,
       });
     }
-    return (await buildItinerary(ok.deps, ok.principal, turn.turn, { stops })).result;
+    const built = (await buildItinerary(ok.deps, ok.principal, turn.turn, { stops })).result;
+    return closest.length > 0 && built && typeof built === "object"
+      ? { ...(built as Record<string, unknown>), closestMatches: closest }
+      : built;
   });
 
   /** Search a request and propose a plan: the options that meet it, by
@@ -231,6 +268,9 @@ export function registerAgent(app: FastifyInstance, deps: AppDeps): void {
     }
     const option = (plan as SingleSpotPlan).options[0]!;
     const policy = await policyFor(ok.deps, ok.principal.userId);
+    // The dry run the agent is shown rides on the mandate: a confirm or an
+    // arrival under a different one is refused (dry_run_changed).
+    const dryRun = deps.policy.effectiveDryRun();
     const { token, expiresAt } = await mintMandate(
       { db: deps.db, pepper: deps.apiKeyPepper },
       ok.principal,
@@ -239,7 +279,11 @@ export function registerAgent(app: FastifyInstance, deps: AppDeps): void {
         optionId: option.id,
         planHash: planHashOf(plan),
         scopes: ["confirm"],
-        capsSnapshot: { sessionCapUsd: policy.session_cap_usd, dailyCapUsd: policy.daily_cap_usd },
+        capsSnapshot: {
+          sessionCapUsd: policy.session_cap_usd,
+          dailyCapUsd: policy.daily_cap_usd,
+          dryRun,
+        },
       },
       now(),
     );
@@ -249,6 +293,7 @@ export function registerAgent(app: FastifyInstance, deps: AppDeps): void {
       confirmToken: token,
       optionId: option.id,
       expiresAt: expiresAt.toISOString(),
+      dryRun,
     };
   });
 
@@ -269,80 +314,72 @@ export function registerAgent(app: FastifyInstance, deps: AppDeps): void {
           userId: principal.userId,
         },
       });
-    // Who is acting, before anything else is read.
-    const consent = await moneyGate(deps, principal, { kind: "confirm" }, at);
-    if (!consent.ok) {
-      const decision = await decide(consent.rule, { allowed: false });
-      return reply.code(403).send({ error: consent.rule, decisionId: decision.id });
-    }
-    const planRow = await deps.db.assistantPlan.findUnique({ where: { id: planId } });
-    if (!planRow || planRow.userId !== principal.userId) {
-      return reply.code(404).send({ error: "plan_not_found" });
-    }
-    const mandates = { db: deps.db, pepper: deps.apiKeyPepper };
-    const read = await readMandate(mandates, principal, body.confirmToken, at);
-    const refuse = async (reason: MandateRefusal) => {
-      const { code, error } = MANDATE_ERRORS[reason];
-      const decision = await decide(error, { allowed: false });
-      return reply.code(code).send({ error, decisionId: decision.id });
-    };
-    if (!read.ok) return refuse(read.reason);
-    if (read.row.planId !== planId) return refuse("not_valid");
-    if (!planUnchanged(read.row, planRow.plan)) return refuse("plan_changed");
-    const option =
-      planRow.kind === "single_spot"
-        ? (planRow.plan as SingleSpotPlan).options.find((o) => o.id === read.row.optionId)
-        : undefined;
-    if (!option) return reply.code(409).send({ error: "nothing_to_confirm" });
-    // The caps, now: each spot is one purchase against the per-stop cap
-    // and today's.
-    const gate = await moneyGate(
-      deps,
-      principal,
-      { kind: "plan", stopsUsd: [option.priceUsd], totalUsd: option.priceUsd, perStop: true },
-      at,
-    );
-    if (refusedConsent(gate) || !gate.ok) {
-      const decision = await decide(gate.rule, { allowed: false });
-      return reply
-        .code(409)
-        .send({ error: "policy_violation", rule: gate.rule, decisionId: decision.id });
-    }
-    const claimed = await claimMandate(mandates, read.row, at);
-    if (!claimed.ok) return refuse(claimed.reason);
-    await deps.db.assistantPlan.update({
-      where: { id: planId },
-      data: { confirmedAt: at, confirmedOptionId: option.id },
+    const markConfirmed = (optionId: string) =>
+      deps.db.assistantPlan.update({
+        where: { id: planId },
+        data: { confirmedAt: at, confirmedOptionId: optionId },
+      });
+    // The one confirm sequence the app's tap runs too (confirmPlan.ts):
+    // consent first, then the mandate, the plan unchanged, the dry run as
+    // shown, the caps now, a garage still bookable; only then the claim.
+    const turn = turnFor(principal);
+    if (!turn.ok) return reply.code(400).send({ error: "invalid_request", issues: turn.issues });
+    const confirmed = await consumeConfirmation(ok.deps, principal, turn.turn, body.confirmToken, {
+      tool: "agent_confirm",
+      planId,
     });
+    if (!confirmed.ok) {
+      const { code, error, extra } = refusalAnswer(confirmed.refusal);
+      const decision = await decide(error, { allowed: false, ...extra });
+      return reply.code(code).send({ error, ...extra, decisionId: decision.id });
+    }
+    const { option, dryRun } = confirmed;
     if (option.type === "garage") {
-      const booking = await ok.deps.garage.book(option.garageOptionId ?? option.id);
+      // Bookable a moment ago (the sequence checked); a provider that
+      // still fails here leaves the mandate spent, and says so.
+      let booking: Awaited<ReturnType<typeof ok.deps.garage.book>>;
+      try {
+        booking = await ok.deps.garage.book(option.garageOptionId ?? option.id);
+      } catch (err) {
+        const detail = err instanceof Error ? (err.message.split("\n")[0] ?? "") : String(err);
+        const decision = await decide("garage_book_failed", { allowed: true, detail });
+        return reply
+          .code(409)
+          .send({ error: "garage_book_failed", detail, decisionId: decision.id });
+      }
+      await markConfirmed(option.id);
       const decision = await decide("garage_handoff", {
         allowed: true,
         optionId: option.id,
         provider: booking.option.provider,
         priceUsd: booking.option.priceUsd,
+        dryRun,
       });
       return {
         status: "garage_handoff",
         deepLink: booking.deepLink ?? null,
         priceUsd: booking.option.priceUsd,
+        dryRun,
         decisionId: decision.id,
       };
     }
-    // A street spot: consent and a cap for that spot, never a park. The
-    // phone reports where the car is; its own prompt still asks.
+    // A street spot: consent and a cap for that spot, never a park here.
+    // The phone reports where the car is (pendingSession.ts binds it).
+    await markConfirmed(option.id);
     const decision = await decide("pending_arrival", {
       allowed: true,
       optionId: option.id,
       zoneId: option.zoneId ?? null,
       priceUsd: option.priceUsd,
+      dryRun,
     });
     return {
       status: "pending_arrival",
       zoneId: option.zoneId ?? null,
       durationMinutes: option.durationMinutes,
       priceUsd: option.priceUsd,
-      expiresAt: read.row.expiresAt.toISOString(),
+      dryRun,
+      expiresAt: confirmed.expiresAt.toISOString(),
       decisionId: decision.id,
     };
   });

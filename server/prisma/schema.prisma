@@ -349,6 +349,9 @@ model ParkedEvent {
   decisions  Decision[]
   signChecks SignCheck[]
 
+  // The user's newest park since a time (pendingSession noteNewerParkSince,
+  // on every move to started and before every bought extension).
+  @@index([userId, ts])
   @@map("parked_events")
 }
 

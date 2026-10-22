@@ -2010,3 +2010,53 @@ test("a spend the gate can't sum (a garbled ledger row): no Pay offered, the tap
   expect(t.calls.start).toBe(0);
   expect(t.state.sessions.filter((s) => s.status !== "stopped")).toEqual([]);
 });
+
+test("a fix relinks a closed park to its late session before the adopt: the relink marks the car moved, once, and nothing is bought (#246)", async () => {
+  const t = makeApp();
+  const extender = makeExtender({ ...t.deps, log: { info() {}, warn() {} } });
+  const parked = await park(t.app);
+  await walkAway(t);
+  const real = t.deps.db.vehicle.findFirst;
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  t.deps.db.vehicle.findFirst = async (args) => {
+    await gate;
+    return real(args);
+  };
+  const paying = tap(t, parked.parkedEventId);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  t.tick(11 * 60);
+  await post(t.app, "/location", fix(t, 300));
+  expect(t.state.pendingParks[0]!.status).toBe("start_failed");
+  t.tick(30);
+  await park(t.app, { lat: CAR.lat + 0.01, ts: t.clock.now.toISOString() });
+  // The late start pays, then waits a moment before its reply.
+  const realEvent = t.deps.db.sessionEvent.create;
+  let reply = () => {};
+  const replyGate = new Promise<void>((resolve) => (reply = resolve));
+  t.deps.db.sessionEvent.create = async (args) => {
+    if ((args.data as { kind: string }).kind === "started") await replyGate;
+    return realEvent(args);
+  };
+  release();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const session = t.state.sessions[0]!;
+  expect(session.status).toBe("active");
+  // A fix in that moment relinks the park to its session.
+  t.tick(10);
+  await post(t.app, "/location", fix(t, 400));
+  reply();
+  expect((await paying).statusCode).toBe(200);
+  const old = t.state.pendingParks.find((p) => p.parkedEventId === parked.parkedEventId)!;
+  expect(old).toMatchObject({ status: "started", sessionId: session.id });
+  t.clock.now = new Date(session.expiresAt!.getTime() - 6 * 60_000);
+  await post(t.app, "/location", fix(t, 1500));
+  await extender.tick();
+  expect({
+    carMoved: old.carMovedAt !== null,
+    rows: t.state.decisions
+      .filter((d) => d.kind === "session_car_moved")
+      .map((d) => (d.inputs as { seenAt?: string }).seenAt),
+    extend: t.calls.extend,
+  }).toEqual({ carMoved: true, rows: ["relinked"], extend: 0 });
+});

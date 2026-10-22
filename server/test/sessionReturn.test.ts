@@ -1116,3 +1116,105 @@ test("the phone back at the car while the worker is buying time: the extension i
     });
   }
 });
+
+test("the settle's newer-park read and a newer park's own mark both see the session running: one row (#246)", async () => {
+  const { t, id, paying, release } = await midStart();
+  const realFirst = t.deps.db.parkedEvent.findFirst;
+  let resume = () => {};
+  const gate = new Promise<void>((resolve) => (resume = resolve));
+  t.deps.db.parkedEvent.findFirst = async (args) => {
+    await gate;
+    return realFirst(args);
+  };
+  release();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const old = t.state.pendingParks.find((p) => p.parkedEventId === id)!;
+  expect(old.status).toBe("started");
+  t.tick(60);
+  await post(
+    t.app,
+    "/parked",
+    parkedBody({ outcomes: OUTCOMES, lat: ELSEWHERE.lat, ts: t.clock.now.toISOString() }),
+  );
+  resume();
+  expect((await paying).statusCode).toBe(200);
+  expect(t.state.decisions.filter((d) => d.kind === "session_car_moved")).toHaveLength(1);
+});
+
+test("a start that throws after its session went active still sees the newer park: nothing is bought (#246)", async () => {
+  const { t, id, paying, release } = await midStart();
+  const extender = makeExtender({ ...t.deps, log: { info() {}, warn() {} } });
+  await post(
+    t.app,
+    "/parked",
+    parkedBody({ outcomes: OUTCOMES, lat: ELSEWHERE.lat, ts: t.clock.now.toISOString() }),
+  );
+  const realEvent = t.deps.db.sessionEvent.create;
+  t.deps.db.sessionEvent.create = async (args) => {
+    if ((args.data as { kind: string }).kind === "started") throw new Error("db blip after pay");
+    return realEvent(args);
+  };
+  release();
+  await paying;
+  t.deps.db.sessionEvent.create = realEvent;
+  const session = t.state.sessions[0]!;
+  expect(session.status).toBe("active");
+  const old = t.state.pendingParks.find((p) => p.parkedEventId === id)!;
+  expect(old).toMatchObject({ status: "started", sessionId: session.id });
+  t.clock.now = new Date(session.expiresAt!.getTime() - 6 * 60_000);
+  await post(t.app, "/location", fixAt(t, 400));
+  await extender.tick();
+  expect({
+    carMoved: old.carMovedAt !== null,
+    // Marked where the park took its session, not only by the belt.
+    rows: t.state.decisions
+      .filter((d) => d.kind === "session_car_moved")
+      .map((d) => (d.inputs as { seenAt?: string }).seenAt),
+    rule: t.state.decisions.filter((d) => d.kind === "extend_tick").at(-1)?.rule,
+    extend: t.calls.extend,
+  }).toEqual({ carMoved: true, rows: ["start_threw"], rule: "hold_car_moved", extend: 0 });
+});
+
+test("a park swept from starting to started (its process died after paying) still sees the newer park: nothing is bought (#246)", async () => {
+  const { t, id, paying, release } = await midStart();
+  const extender = makeExtender({ ...t.deps, log: { info() {}, warn() {} } });
+  // The start pays, then never gets further (the process died).
+  const realEvent = t.deps.db.sessionEvent.create;
+  let resume = () => {};
+  const dead = new Promise<void>((resolve) => (resume = resolve));
+  t.deps.db.sessionEvent.create = async (args) => {
+    if ((args.data as { kind: string }).kind === "started") await dead;
+    return realEvent(args);
+  };
+  release();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const session = t.state.sessions[0]!;
+  expect(session.status).toBe("active");
+  expect(t.state.pendingParks.find((p) => p.parkedEventId === id)!.status).toBe("starting");
+  // The car parks a kilometre away.
+  t.tick(60);
+  await post(
+    t.app,
+    "/parked",
+    parkedBody({ outcomes: OUTCOMES, lat: ELSEWHERE.lat, ts: t.clock.now.toISOString() }),
+  );
+  // Past the starting window, the app retries the tap whose reply never came.
+  t.tick(11 * 60);
+  await post(t.app, `/parked/${id}/confirm`, {});
+  const old = t.state.pendingParks.find((p) => p.parkedEventId === id)!;
+  expect(old).toMatchObject({ status: "started", sessionId: session.id });
+  resume();
+  await paying;
+  t.clock.now = new Date(session.expiresAt!.getTime() - 6 * 60_000);
+  await post(t.app, "/location", fixAt(t, 400));
+  await extender.tick();
+  expect({
+    carMoved: old.carMovedAt !== null,
+    // Marked where the park took its session, not only by the belt.
+    rows: t.state.decisions
+      .filter((d) => d.kind === "session_car_moved")
+      .map((d) => (d.inputs as { seenAt?: string }).seenAt),
+    rule: t.state.decisions.filter((d) => d.kind === "extend_tick").at(-1)?.rule,
+    extend: t.calls.extend,
+  }).toEqual({ carMoved: true, rows: ["swept"], rule: "hold_car_moved", extend: 0 });
+});

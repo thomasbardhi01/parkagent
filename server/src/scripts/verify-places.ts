@@ -217,6 +217,8 @@ async function main(): Promise<void> {
       fileURLToPath(new URL("../../../policy.json", import.meta.url)),
       true,
     ),
+    // Place lookups only: no mandate is minted or read here.
+    apiKeyPepper: "verify-places-mints-no-mandates",
     findCandidates: prisma ? makeCandidateFetcher(prisma) : async () => [],
     ...(prisma ? { findNearbyZones: makeNearbyZoneFetcher(prisma) } : {}),
     garage: {

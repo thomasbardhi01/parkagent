@@ -25,6 +25,8 @@ import { createHash } from "node:crypto";
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
+import { decodedPath, routePath } from "./routePath.js";
+
 import type { AppDb } from "../db.js";
 
 export const IDEMPOTENCY_HEADER = "idempotency-key";
@@ -46,6 +48,9 @@ const NEVER_STORED = [
   /^\/wallet\/setup-intent$/,
   /^\/card\/funding\/topup-intent$/,
   /^\/link\/connect$/,
+  // An agent key is shown once: never kept to replay (a retried create
+  // mints a second key, which the person can revoke).
+  /^\/me\/agent-keys$/,
 ];
 
 declare module "fastify" {
@@ -97,8 +102,13 @@ export function registerIdempotency(
       return reply.code(400).send({ error: "invalid_idempotency_key" });
     }
     const userId = req.authedUser.id;
-    const path = req.url.split("?")[0] ?? req.url;
-    if (NEVER_STORED.some((pattern) => pattern.test(path))) return;
+    // The concrete path, decoded once (routePath.ts): a percent-encoded
+    // spelling of a never-stored route is that route, and the key stays
+    // scoped to this path, not to the route's pattern.
+    const path = decodedPath(req);
+    if (NEVER_STORED.some((pattern) => pattern.test(path) || pattern.test(routePath(req)))) {
+      return;
+    }
     const hash = requestHash(req.method, path, req.body);
     const at = now();
 

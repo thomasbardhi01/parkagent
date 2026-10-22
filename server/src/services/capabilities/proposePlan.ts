@@ -8,7 +8,6 @@ import { type RequestState } from "../assistant/requestState.js";
 import { easternIso, parseEasternTime } from "../hours.js";
 import { confirmWarnUsd } from "../policy.js";
 import { moneyGate, refusedConsent } from "../moneyGate.js";
-import { principalFor } from "../principal.js";
 import type { CandidateFetcher } from "../zoneLookup.js";
 import {
   itineraryTotalUsd,
@@ -450,7 +449,7 @@ export async function proposeItinerary(
   const totalUsd = itineraryTotalUsd(proposed.stops);
   const gate = await moneyGate(
     deps,
-    principalFor(principal.userId),
+    principal,
     { kind: "plan", stopsUsd: [], totalUsd, perStop: false },
     now(deps),
   );

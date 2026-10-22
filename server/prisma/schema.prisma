@@ -226,6 +226,7 @@ model User {
   deviceTokens DeviceToken[]
   refreshTokens RefreshToken[]
   limits       UserLimits?
+  agentKeys    AgentKey[]
 
   @@map("users")
 }
@@ -678,21 +679,52 @@ model AssistantPlan {
   @@map("assistant_plans")
 }
 
-// Single-use sign-off token: minted by POST /assistant/confirm (the
-// user's tap), consumed by the booking/session tool it authorizes.
-// Nothing books or spends without one — tools enforce it.
-model AssistantConfirmation {
-  token     String   @id
-  userId    String   @map("user_id")
-  planId    String   @map("plan_id")
+// The one mandate (WS-4): what a person's Confirm tap, or an external
+// agent's confirm call, authorizes — one plan option, once, for ten
+// minutes. Minted by services/mandates.ts and nowhere else; the token
+// itself is shown once and stored as its hash (API_KEY_PEPPER).
+model Mandate {
+  // SHA-256(pepper:token). The column keeps its name across the rename.
+  token        String    @id
+  userId       String    @map("user_id")
+  planId       String    @map("plan_id")
   // Which option/stop of the plan this tap authorized (null = whole plan).
-  optionId  String?  @map("option_id")
-  expiresAt DateTime @map("expires_at") @db.Timestamptz(6)
-  usedAt    DateTime? @map("used_at") @db.Timestamptz(6)
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  optionId     String?   @map("option_id")
+  // The agent key that holds it; null for the app's own tap.
+  agentKeyId   String?   @map("agent_key_id")
+  // SHA-256 of the plan's canonical JSON: a confirm for a plan that
+  // changed since is refused.
+  planHash     String?   @map("plan_hash")
+  // What it may do ("confirm"); the key's scopes at mint, or the tap's.
+  scopes       String[]  @default([])
+  // The caps the plan was judged against when minted.
+  capsSnapshot Json?     @map("caps_snapshot")
+  expiresAt    DateTime  @map("expires_at") @db.Timestamptz(6)
+  consumedAt   DateTime? @map("consumed_at") @db.Timestamptz(6)
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
 
   @@index([userId, createdAt])
-  @@map("assistant_confirmations")
+  @@map("mandates")
+}
+
+// A person's key for an external agent (WS-4): `pak_<prefix>_<secret>`,
+// shown once; only the hash and the prefix are kept. Scopes ⊆
+// {read, confirm}; revoked keys stay, for the ledger's agent_key_id.
+model AgentKey {
+  id         String    @id @default(cuid())
+  userId     String    @map("user_id")
+  prefix     String
+  hash       String    @unique
+  scopes     String[]  @default([])
+  label      String
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  lastUsedAt DateTime? @map("last_used_at") @db.Timestamptz(6)
+  revokedAt  DateTime? @map("revoked_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@map("agent_keys")
 }
 
 // A signed-off multi-stop day. Stops are a JSON array (address, arrival,

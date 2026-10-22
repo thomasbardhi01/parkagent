@@ -242,6 +242,7 @@ const geocoder = new FallbackGeocoder(
 const assistantTools = new AssistantTools({
   db,
   policy,
+  apiKeyPepper: env.API_KEY_PEPPER,
   findCandidates,
   findNearbyZones,
   garage,
@@ -322,6 +323,7 @@ buildApp(
     findNearbyZones,
     garageFootprints,
     auth,
+    apiKeyPepper: env.API_KEY_PEPPER,
     authenticate: makeAuthenticate(db, env.API_KEY_PEPPER, env.AUTH_JWT_SECRET),
     ...(assistantModel ? { assistantModel } : {}),
     assistantTools,

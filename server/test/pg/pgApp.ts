@@ -254,11 +254,13 @@ export async function makePgApp(
     findCandidates,
     garage,
     linkWallet,
+    apiKeyPepper: TEST_PEPPER,
     now,
   });
   const deps: AppDeps = {
     db,
     policy,
+    apiKeyPepper: TEST_PEPPER,
     findCandidates,
     findNearbyZones: async () => ({ zones: [], truncated: false }),
     auth: {

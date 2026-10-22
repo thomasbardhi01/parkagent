@@ -21,7 +21,7 @@
  * Every tool call and every confirmation writes a decisions row.
  */
 
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 
 import type { FastifyBaseLogger, FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
@@ -39,7 +39,7 @@ import {
   titleFromTurns,
 } from "../services/assistant/history.js";
 import type { DisplayEntry } from "../services/assistant/history.js";
-import { CONFIRMATION_TTL_MS } from "../services/assistant/tools.js";
+import { mintMandate, planHashOf } from "../services/mandates.js";
 import type { PreviousStop, PricedStop, RepriceResult } from "../services/assistant/tools.js";
 import {
   editedItineraryStopSchema,
@@ -402,19 +402,27 @@ export function registerAssistant(
       }
     }
 
-    // The tap IS the authorization: mint the single-use token here and
-    // nowhere else, then run the consequential tool through the same
-    // gate the model faces.
-    const token = randomBytes(24).toString("base64url");
-    await deps.db.assistantConfirmation.create({
-      data: {
-        token,
-        userId: user.id,
+    // The tap IS the authorization: mint the mandate here — the one
+    // mechanism every surface mints through (services/mandates.ts) —
+    // then run the consequential tool through the same gate the model
+    // faces. Bound to the plan as it is now and to the caps it was
+    // judged against.
+    const policy = await policyFor(deps, user.id);
+    const { token } = await mintMandate(
+      { db: deps.db, pepper: deps.apiKeyPepper },
+      req.principal!,
+      {
         planId: planRow.id,
         optionId: parsed.data.optionId ?? null,
-        expiresAt: new Date(at.getTime() + CONFIRMATION_TTL_MS),
+        planHash: planHashOf(planRow.plan),
+        scopes: ["confirm"],
+        capsSnapshot: {
+          sessionCapUsd: policy.session_cap_usd,
+          dailyCapUsd: policy.daily_cap_usd,
+        },
       },
-    });
+      at,
+    );
     // What the cap checks below saw, filled in once measured.
     const spendInputs: Record<string, number> = {};
     const decide = (rule: string, outcome: Record<string, unknown>) =>
@@ -454,7 +462,6 @@ export function registerAssistant(
     });
     const activeSource = normalizeSource(userRow?.paymentSource);
     const streetSource = activeSource === "parkagent_card" ? "parkagent_card" : "provider_card";
-    const policy = await policyFor(deps, user.id);
     const dryRun = deps.policy.effectiveDryRun();
     const linkActive =
       activeSource === "link_wallet" &&

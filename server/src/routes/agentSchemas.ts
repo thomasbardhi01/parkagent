@@ -10,6 +10,8 @@
 
 import { z } from "zod";
 
+import { recordId } from "./ids.js";
+
 const kind = z.enum(["street", "garage"]);
 
 /** One parking request: a named place, when, for how long, and limits. */
@@ -59,14 +61,9 @@ export const confirmSchema = z.strictObject({
 });
 
 export const explainSchema = z.strictObject({
-  decisionId: z
-    .string()
-    .min(1)
-    .max(64)
-    // A cuid: anything else never reaches the database (a NUL byte there
-    // is a Postgres error, not a not-found).
-    .regex(/^[A-Za-z0-9_-]+$/)
-    .describe("The decisionId a confirm or a refusal answered with"),
+  // A cuid: anything else never reaches the database (a NUL byte there
+  // is a Postgres error, not a not-found; routes/ids.ts).
+  decisionId: recordId.describe("The decisionId a confirm or a refusal answered with"),
 });
 
 /** The six tools an agent calls, with the route each one is. */

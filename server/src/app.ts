@@ -29,11 +29,13 @@ import type { IdTokenResult } from "./services/idToken.js";
 import { registerCard } from "./routes/card.js";
 import { registerCity } from "./routes/city.js";
 import { registerDevice } from "./routes/device.js";
+import { registerIdParams } from "./routes/ids.js";
 import { registerGarages } from "./routes/garages.js";
 import { registerLocation } from "./routes/location.js";
 import { registerSigns } from "./routes/signs.js";
 import { registerLimits } from "./routes/limits.js";
 import { registerIdempotency } from "./services/idempotency.js";
+import { isBadRequestInput, sqlStateOf } from "./services/pgErrors.js";
 import { makeAssistantHealth } from "./services/assistant/health.js";
 import { registerMe } from "./routes/me.js";
 import { registerAgentKeys } from "./routes/agentKeys.js";
@@ -383,6 +385,12 @@ export function buildApp(deps?: AppDeps, app: FastifyInstance = createFastify())
     if (statusCode < 500) {
       return reply.code(statusCode).send({ error: err.code ?? "bad_request" });
     }
+    // A NUL byte that reached a query: the request's fault (#281), unless
+    // the provider had been asked by then.
+    if (isBadRequestInput(err)) {
+      req.log.warn({ err, sqlState: sqlStateOf(err) }, "input the database refused");
+      return reply.code(400).send({ error: "bad_request" });
+    }
     req.log.error({ err }, "unhandled error");
     return reply.code(500).send({ error: "internal" });
   });
@@ -419,6 +427,8 @@ export function buildApp(deps?: AppDeps, app: FastifyInstance = createFastify())
 
   // After auth (the key is per user), before any route runs.
   if (deps) registerIdempotency(app, deps);
+  // A path id that couldn't be one is a 400 before the database (#281).
+  registerIdParams(app);
 
   // Readiness: the server can reach its database. Fly routes traffic by it
   // (fly.toml); /health stays the build-identity check deploys wait on.

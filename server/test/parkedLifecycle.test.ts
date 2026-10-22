@@ -1501,6 +1501,42 @@ test("a start that throws after the provider was asked fails its park and its ow
   expect(lifecycleRows(t.state)).toEqual([]);
 });
 
+test("Postgres refusing a write after the provider was asked is a 500, never the request's 400 (#281)", async () => {
+  const t = makeApp();
+  const parked = await park(t.app);
+  await walkAway(t);
+  // The first session event written once the provider has been asked
+  // fails as a NUL in JSON would (22P05): what the start charged is
+  // unknown, so it's the server's failure, logged as one.
+  const real = t.deps.db.sessionEvent.create;
+  vi.spyOn(t.deps.db.sessionEvent, "create").mockImplementation((args) => {
+    if (t.calls.start === 0) return real(args);
+    return Promise.reject(
+      Object.assign(new Error("Database error. Code: `22P05`. unsupported Unicode escape"), {
+        code: "P2039",
+        meta: { driverAdapterError: { cause: { kind: "postgres", originalCode: "22P05" } } },
+      }),
+    );
+  });
+  // A request's logger is a child of the app's: it logs through these.
+  const errors = vi.spyOn(t.app.log, "error");
+  const warnings = vi.spyOn(t.app.log, "warn");
+
+  const res = await tap(t, parked.parkedEventId);
+  expect(t.calls.start).toBe(1);
+  expect(res.statusCode, res.body).toBe(500);
+  expect(res.json()).toEqual({ error: "internal" });
+  expect(errors).toHaveBeenCalledTimes(1);
+  expect(warnings).not.toHaveBeenCalled();
+  // The session the provider started is kept, and the park's own row
+  // says the provider was asked.
+  expect(t.state.sessions.at(-1)!.status).toBe("active");
+  const row = t.state.decisions.find(
+    (d) => d.kind === "session_start_walkaway" && d.rule === "error",
+  )!;
+  expect(row.outcome).toMatchObject({ reachedProvider: true, parkStatus: "started" });
+});
+
 test("a start that answers after the sweep closed its park: the park takes the session, on the ledger", async () => {
   const t = makeApp();
   const parked = await park(t.app);

@@ -26,6 +26,7 @@ import { createHash } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
 import { decodedPath, routePath } from "./routePath.js";
+import { pathIdsParse } from "../routes/ids.js";
 
 import type { AppDb } from "../db.js";
 
@@ -116,6 +117,9 @@ export function registerIdempotency(
     if (NEVER_STORED.some((pattern) => pattern.test(path) || pattern.test(routePath(req)))) {
       return;
     }
+    // A path id that couldn't be one is stored nowhere: the route answers
+    // its 400 (routes/ids.ts), and a NUL here would be a Postgres error.
+    if (!pathIdsParse(routePath(req), req.params)) return;
     const hash = requestHash(req.method, path, req.body);
     const at = now();
 

@@ -13,7 +13,19 @@ import { afterAll, beforeAll, beforeEach, expect, test } from "vitest";
 import type { ModelClient, ModelResponse } from "../src/services/assistant/loop.js";
 import type { Telemetry } from "../src/services/telemetry.js";
 import { GEN_AI, inSpan, startTelemetry } from "../src/services/telemetry.js";
-import { API_KEY, STEINWAY_A, makeTestApp, parkedBody } from "./helpers.js";
+import { providerForCity } from "../src/providers/registry.js";
+import { moneyGate } from "../src/services/moneyGate.js";
+import { userPrincipal } from "../src/services/principal.js";
+import type { StayPrice } from "../src/services/quote.js";
+import {
+  API_KEY,
+  MONDAY_2PM,
+  STEINWAY_A,
+  makeFakeDb,
+  makePolicyService,
+  makeTestApp,
+  parkedBody,
+} from "./helpers.js";
 
 const HEADERS = { "x-api-key": API_KEY, "content-type": "application/json" };
 const HERE = { lat: 40.7784, lng: -73.9819 };
@@ -285,6 +297,35 @@ test("with tracing on, /assistant/confirm runs start_session once: one mandate u
   expect(t.state.sessions).toEqual([]);
   const tools = named(await spans(), "execute_tool ");
   expect(tools.map((s) => s.name)).toEqual(["execute_tool start_session"]);
+});
+
+test("with tracing on, a start with no price is refused amount_invalid, on a span with no amount", async () => {
+  const { db } = makeFakeDb();
+  const policy = makePolicyService(
+    { session_cap_usd: 10, daily_cap_usd: 20, auto_pay_max_rate_per_hour: 5, dry_run: false },
+    false,
+  );
+  const result = await moneyGate(
+    { db, policy },
+    userPrincipal({ id: "u2", isAdmin: false }),
+    {
+      kind: "start",
+      provider: providerForCity("nyc"),
+      zoneNumber: "1234",
+      minutes: 60,
+      maxStayMinutes: 120,
+      price: undefined as unknown as StayPrice,
+    },
+    new Date(MONDAY_2PM),
+  );
+  expect(result).toMatchObject({ ok: false, rule: "amount_invalid" });
+  const [gate] = named(exporter.getFinishedSpans() as ReadableSpan[], "money_gate");
+  expect(gate!.attributes).toMatchObject({
+    "parkagent.gate.intent": "start",
+    "parkagent.gate.ok": false,
+    "parkagent.gate.rule": "amount_invalid",
+  });
+  expect(gate!.attributes["parkagent.gate.amount_usd"]).toBeUndefined();
 });
 
 test("a tool name the model made up is not put on a span", async () => {

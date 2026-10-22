@@ -425,6 +425,17 @@ describe("an amount the gate can't judge is refused, never allowed (fail closed)
     ["funding: the amount", (b) => ({ kind: "funding", amountUsd: b })],
   ];
 
+  // The span's amount is read before the gate judges it (moneyGate's
+  // amountOf): no price object at all must still be a refusal, not a
+  // throw. Tracing on: telemetry.test.ts.
+  test("start with no price at all, tracing off: refused amount_invalid", async () => {
+    const intent = start({ price: undefined as unknown as StayPrice });
+    expect(await makeGate().gate(USER, intent)).toMatchObject({
+      ok: false,
+      rule: "amount_invalid",
+    });
+  });
+
   describe.each(BAD.map((b) => [String(b), b] as const))("%s", (_label, b) => {
     test.each(INTENTS)("%s", async (_name, intent) => {
       for (const p of [USER, JOB]) {

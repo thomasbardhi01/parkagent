@@ -13,6 +13,7 @@ import { describe, expect, test } from "vitest";
 
 import { agentFunctionTools, agentOpenApi } from "../src/routes/agentOpenApi.js";
 import type { GeocoderProvider } from "../src/services/assistant/geocoder.js";
+import { planHashOf } from "../src/services/mandates.js";
 import { BOYLSTON_BOS, MONDAY_2PM, NONADMIN_API_KEY, makeTestApp } from "./helpers.js";
 
 /** Regenerate with `pnpm -C server exec tsx src/scripts/agent-tools.ts > examples/grok-tool.json`. */
@@ -332,6 +333,24 @@ describe("confirming", () => {
     expect(res.statusCode).toBe(409);
     expect(res.json()).toMatchObject({ error: "policy_violation", rule: "session_cap_exceeded" });
     expect(t.state.mandates[0]!.consumedAt).toBeNull();
+  });
+
+  test("a street option with no price: 409 policy_violation amount_invalid, mandate unspent", async () => {
+    const { t, call } = await setup();
+    const proposed = await propose(call);
+    // The stored option loses its price (and the mandate names the plan as
+    // it now is, so plan_changed doesn't answer first).
+    const row = t.state.assistantPlans.find((p) => p.id === proposed.planId)!;
+    const plan = row.plan as { options: Record<string, unknown>[] };
+    for (const o of plan.options) delete o["priceUsd"];
+    t.state.mandates[0]!.planHash = planHashOf(row.plan);
+    const res = await call("POST", `/agent/plans/${proposed.planId}/confirm`, {
+      confirmToken: proposed.confirmToken,
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ error: "policy_violation", rule: "amount_invalid" });
+    expect(t.state.mandates[0]!.consumedAt).toBeNull();
+    expect(t.state.sessions).toHaveLength(0);
   });
 
   test("the dry run shown rides on the mandate; a confirm under another is refused", async () => {

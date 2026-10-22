@@ -17,6 +17,8 @@ export type ConfirmRefusal =
   | { why: "nothing_to_confirm" }
   | { why: "dry_run_changed"; shown: boolean; now: boolean }
   | { why: "over_cap"; rule: string }
+  /** A capped option without a price the caps can be judged against. */
+  | { why: "amount_invalid" }
   | { why: "option_expired" };
 
 /** What is being confirmed. A model tool's input must be the option the
@@ -138,6 +140,21 @@ export async function consumeConfirmation(
   // is paid at the garage's own checkout, by them (Link has its own cap
   // gate in the route); an agent confirming anything is held to the caps.
   const capped = option.type === "street" || principal.actor === "external_agent";
+  // No price, no confirm: the caps are judged on the price shown, and an
+  // option without one is refused here, not left to the gate.
+  const price: unknown = option.priceUsd;
+  if (capped && !(typeof price === "number" && Number.isFinite(price) && price >= 0)) {
+    return refuse(
+      { why: "amount_invalid" },
+      "amount_invalid",
+      {
+        error: "policy_violation",
+        rule: "amount_invalid",
+        message: "This option has no price to hold to the user's limits. Propose it again.",
+      },
+      { priceUsd: price ?? null },
+    );
+  }
   const caps = capped
     ? await moneyGate(
         deps,

@@ -76,6 +76,8 @@ function refusalAnswer(refusal: ConfirmRefusal): {
       };
     case "over_cap":
       return { code: 409, error: "policy_violation", extra: { rule: refusal.rule } };
+    case "amount_invalid":
+      return { code: 409, error: "policy_violation", extra: { rule: "amount_invalid" } };
     case "option_expired":
       return { code: 409, error: "garage_option_expired", extra: {} };
   }

@@ -496,7 +496,7 @@ describe("model times without an offset are Eastern, on any host", () => {
 });
 
 describe("the confirmation token authorizes the tapped option, once", () => {
-  async function tapped(optionId: string) {
+  async function tapped(optionId: string, s1: Record<string, unknown> = {}) {
     const t = makeTestApp({ candidates: [BOYLSTON_BOS], now: () => NOW });
     t.state.assistantPlans.push({
       id: "plan1",
@@ -506,7 +506,7 @@ describe("the confirmation token authorizes the tapped option, once", () => {
       plan: {
         kind: "single_spot",
         options: [
-          streetOption({ id: "s1" }),
+          streetOption({ id: "s1", ...s1 }),
           streetOption({ id: "s2", zoneId: "bos-other", recommended: false }),
         ],
       },
@@ -569,6 +569,31 @@ describe("the confirmation token authorizes the tapped option, once", () => {
     const wins = results.filter((r) => (r.result as { confirmed?: boolean }).confirmed === true);
     expect(arrived).toBe(2);
     expect(wins).toHaveLength(1);
+  });
+
+  // A street option is held to the caps as the price shown; one without a
+  // number there (missing, null as a JSON NaN is stored, or text) is
+  // refused at the confirm, before the gate, and the mandate stays unspent.
+  test.each([
+    ["no price", { priceUsd: undefined }],
+    ["a null price", { priceUsd: null }],
+    ["a price as text", { priceUsd: "3.75" }],
+  ])("a street option with %s is refused, never confirmed", async (_n, s1) => {
+    const { tools, token, ctx, t } = await tapped("s1", s1);
+    const out = await tools.execute(ctx, "start_session", {
+      zone: BOYLSTON_BOS.zoneId,
+      duration_minutes: 60,
+      confirmation_token: token,
+    });
+    expect(out.result).toMatchObject({ error: "policy_violation", rule: "amount_invalid" });
+    // The confirm's own refusal, not the gate's catch behind it.
+    expect((out.result as { message: string }).message).toContain("no price");
+    expect((out.result as { confirmed?: boolean }).confirmed).toBeUndefined();
+    expect(t.state.mandates[0]!.consumedAt).toBeNull();
+    expect(t.state.decisions.at(-1)).toMatchObject({
+      kind: "assistant_tool",
+      rule: "amount_invalid",
+    });
   });
 });
 

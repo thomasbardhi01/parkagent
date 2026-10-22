@@ -3626,7 +3626,10 @@ OpenAI-style functions are `examples/grok-tool.json` (regenerate with
   `409 mandate_used`; `410 mandate_expired`; `409 plan_hash_mismatch`);
   `409 nothing_to_confirm` for a plan with no option; `409
   dry_run_changed {shownDryRun, dryRun}` when dry run changed since the
-  proposal; the caps now (`409 policy_violation {rule}`); and for a
+  proposal; an option the caps can't judge, a street option (or any an
+  agent confirms) with no numeric price (`409 policy_violation
+  {rule: "amount_invalid"}`); the caps now (`409 policy_violation
+  {rule}`); and for a
   garage, an offer the provider's search still holds (`409
   garage_option_expired`: search again). Each of those leaves the mandate
   unspent. Only then is it claimed. Then:

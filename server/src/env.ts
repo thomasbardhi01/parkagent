@@ -141,6 +141,9 @@ export interface Env {
   // ParkWhiz is a read-only public search (no credentials); "false" drops
   // back to SpotHero only.
   PARKWHIZ_ENABLED: Flag;
+  // The nightly audit's five-line summary from Haiku (GET /admin/audit).
+  // Off by default: off, the audit's deterministic template says it.
+  AUDIT_SUMMARY: Flag;
 
   // Link wallet for agents (Stripe agentic commerce), as a set of four:
   // all present → /link/* live; otherwise 503.
@@ -194,6 +197,7 @@ export const ENV_NAMES = [
   "ASSISTANT_DAILY_SPEND_CAP_USD",
   "ASSISTANT_CONVERSATION_RETENTION_DAYS",
   "PARKWHIZ_ENABLED",
+  "AUDIT_SUMMARY",
   "LINK_CLIENT_ID",
   "LINK_CLIENT_SECRET",
   "LINK_PUBLISHABLE_KEY",
@@ -273,6 +277,10 @@ export const FEATURES = {
   google_signin: { vars: ["GOOGLE_SIGNIN_ENABLED", "GOOGLE_CLIENT_ID"], what: "Google sign-in" },
   parkwhiz: { vars: ["PARKWHIZ_ENABLED"], what: "ParkWhiz garage search" },
   assistant: { vars: ["ANTHROPIC_API_KEY"], what: "the assistant" },
+  audit_summary: {
+    vars: ["AUDIT_SUMMARY", "ANTHROPIC_API_KEY"],
+    what: "the nightly audit's model summary",
+  },
 } as const satisfies Record<string, { vars: readonly (keyof Env)[]; what: string }>;
 
 export type FeatureId = keyof typeof FEATURES;
@@ -780,6 +788,20 @@ export function checkEnv(source: EnvSource, options: CheckOptions = {}): EnvRepo
     : anthropicBad
       ? set("assistant", "degraded", `ANTHROPIC_API_KEY ${anthropicBad}`)
       : set("assistant", "on", "");
+  // The audit's summary: asked of Haiku only when switched on and the
+  // key is usable; the template stands in otherwise.
+  const audit = flag("AUDIT_SUMMARY", "false");
+  const auditOn = audit.problem
+    ? set("audit_summary", "degraded", `AUDIT_SUMMARY ${audit.problem}`)
+    : audit.value !== "true"
+      ? set("audit_summary", "off", "AUDIT_SUMMARY is false: the audit's template summarizes")
+      : !assistantOn
+        ? set(
+            "audit_summary",
+            "degraded",
+            "AUDIT_SUMMARY is true but ANTHROPIC_API_KEY is not usable",
+          )
+        : set("audit_summary", "on", "");
 
   // -------- the same key or secret under two names
   const p8s = P8_SLOTS.filter((s) => has(s.key) && !unchecked.has(s.key)).flatMap((slot) => {
@@ -879,6 +901,7 @@ export function checkEnv(source: EnvSource, options: CheckOptions = {}): EnvRepo
     ASSISTANT_DAILY_SPEND_CAP_USD: spendCap,
     ASSISTANT_CONVERSATION_RETENTION_DAYS: retentionDays,
     PARKWHIZ_ENABLED: parkwhizOn ? "true" : "false",
+    AUDIT_SUMMARY: auditOn ? "true" : "false",
     LINK_CLIENT_ID: linkOn ? text("LINK_CLIENT_ID") : undefined,
     LINK_CLIENT_SECRET: linkOn ? text("LINK_CLIENT_SECRET") : undefined,
     LINK_PUBLISHABLE_KEY: linkOn ? text("LINK_PUBLISHABLE_KEY") : undefined,

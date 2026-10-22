@@ -1,0 +1,44 @@
+# The nightly audit's summary model against its golden eval set
+# (server/test/audit/evals): ten findings documents, each with the facts
+# its five lines must say. CI holds the deterministic template to the same
+# set on every PR (evals.test.ts); this asks the live model, by hand,
+# before AUDIT_SUMMARY is switched on or its model changes. It spends a
+# few cents and changes nothing. Needs the repo secret ANTHROPIC_API_KEY.
+
+name: audit-eval
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Model to evaluate (default claude-haiku-5-5)"
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  eval:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@v7
+        with: { node-version: 24, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      # generate never connects, but prisma7.config.ts wants a URL present.
+      - run: pnpm -C server exec prisma generate
+        env:
+          DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
+      - name: Live summary against the eval set
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AUDIT_EVAL_MODEL: ${{ inputs.model }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::error::the repo secret ANTHROPIC_API_KEY is not set"
+            exit 1
+          fi
+          [ -n "$AUDIT_EVAL_MODEL" ] || unset AUDIT_EVAL_MODEL
+          pnpm -C server audit:eval-live | tee eval.txt
+          cat eval.txt >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,62 @@
+{
+  "name": "dst-day",
+  "note": "the autumn clock change: a 25-hour day",
+  "report": {
+    "window": {
+      "from": "2026-11-01T04:00:00.000Z",
+      "to": "2026-11-02T05:00:00.000Z"
+    },
+    "findings": [
+      {
+        "invariant": "extended_at_car",
+        "severity": "high",
+        "description": "the worker extended a session whose phone it didn't read as away",
+        "count": 0,
+        "examples": []
+      },
+      {
+        "invariant": "confirmed_started_without_left_car",
+        "severity": "high",
+        "description": "a Pay tapped at the car started without the app's left_car",
+        "count": 0,
+        "examples": []
+      },
+      {
+        "invariant": "dry_run_mismatch",
+        "severity": "high",
+        "description": "a start's dry run differed from what the prompt told the driver",
+        "count": 0,
+        "examples": []
+      },
+      {
+        "invariant": "starting_too_long",
+        "severity": "medium",
+        "description": "a start took longer than its 3-minute deadline",
+        "count": 1,
+        "examples": ["pe-starti-1"]
+      },
+      {
+        "invariant": "transition_skipped",
+        "severity": "medium",
+        "description": "a paid park's decisions skip a lifecycle step (held, tapped, started)",
+        "count": 0,
+        "examples": []
+      },
+      {
+        "invariant": "session_without_fix_30min",
+        "severity": "medium",
+        "description": "an active session went 30 minutes or more without a fix",
+        "count": 1,
+        "examples": ["s-sessio-1"]
+      },
+      {
+        "invariant": "prompted_more_than_twice",
+        "severity": "low",
+        "description": "a park was asked about more than twice",
+        "count": 0,
+        "examples": []
+      }
+    ]
+  },
+  "facts": ["starting_too_long", "1", "session_without_fix_30min", "1"]
+}

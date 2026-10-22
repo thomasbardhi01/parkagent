@@ -1,0 +1,62 @@
+{
+  "name": "many-medium",
+  "note": "the medium ones, large counts",
+  "report": {
+    "window": {
+      "from": "2026-10-21T04:00:00.000Z",
+      "to": "2026-10-22T04:00:00.000Z"
+    },
+    "findings": [
+      {
+        "invariant": "extended_at_car",
+        "severity": "high",
+        "description": "the worker extended a session whose phone it didn't read as away",
+        "count": 0,
+        "examples": []
+      },
+      {
+        "invariant": "confirmed_started_without_left_car",
+        "severity": "high",
+        "description": "a Pay tapped at the car started without the app's left_car",
+        "count": 0,
+        "examples": []
+      },
+      {
+        "invariant": "dry_run_mismatch",
+        "severity": "high",
+        "description": "a start's dry run differed from what the prompt told the driver",
+        "count": 0,
+        "examples": []
+      },
+      {
+        "invariant": "starting_too_long",
+        "severity": "medium",
+        "description": "a start took longer than its 3-minute deadline",
+        "count": 12,
+        "examples": ["pe-starti-1", "pe-starti-2", "pe-starti-3", "pe-starti-4", "pe-starti-5"]
+      },
+      {
+        "invariant": "transition_skipped",
+        "severity": "medium",
+        "description": "a paid park's decisions skip a lifecycle step (held, tapped, started)",
+        "count": 7,
+        "examples": ["s-transi-1", "s-transi-2", "s-transi-3", "s-transi-4", "s-transi-5"]
+      },
+      {
+        "invariant": "session_without_fix_30min",
+        "severity": "medium",
+        "description": "an active session went 30 minutes or more without a fix",
+        "count": 23,
+        "examples": ["s-sessio-1", "s-sessio-2", "s-sessio-3", "s-sessio-4", "s-sessio-5"]
+      },
+      {
+        "invariant": "prompted_more_than_twice",
+        "severity": "low",
+        "description": "a park was asked about more than twice",
+        "count": 0,
+        "examples": []
+      }
+    ]
+  },
+  "facts": ["starting_too_long", "12", "transition_skipped", "7", "session_without_fix_30min", "23"]
+}

@@ -29,6 +29,7 @@ flowchart LR
     providersR["POST /providers/:provider/link"]
     webhook["POST /webhooks/stripe"]
     traceR["GET /admin/parks/:id/trace (admin)"]
+    auditR["GET /admin/audit (admin)"]
   end
 
   subgraph services["Services and jobs (server/src)"]
@@ -46,6 +47,7 @@ flowchart LR
     parkFixes[("park_fixes<br/>every fix a park read or refused · 30 days")]
     parkTrace["parkTrace<br/>trace → anonymized fixture"]
     retention["jobs/conversationRetentionTick<br/>(hourly retention sweep)"]
+    audit["audit invariants + summary<br/>report-only · Haiku behind AUDIT_SUMMARY, template otherwise"]
     execGate["ExecutorGate + CircuitBreaker<br/>DRY_RUN → DryRunExecutor"]
   end
 
@@ -105,6 +107,11 @@ flowchart LR
   parkTrace --> ledger
   parkTrace -. "trace:export → test/traces/*.json → trace:replay" .-> pending
   retention -. "deletes after 30 days" .-> parkFixes
+  auditR --> audit
+  audit -. "reads" .-> ledger
+  audit -. "reads" .-> parkFixes
+  audit -. "reads sessions, pending_parks" .-> pending
+  nightly(["nightly-fr workflow"]) -- "yesterday's audit → one 'Nightly audit' issue" --> auditR
 
   subgraph pp["pending_parks state machine (server/src/services/pendingSession.ts)"]
     direction TB

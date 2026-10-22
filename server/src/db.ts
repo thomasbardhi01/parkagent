@@ -1256,7 +1256,7 @@ export interface AppDb {
      * ignores them, so callers re-filter in JS). */
     findMany(args: {
       where:
-        | { createdAt: { gte: Date }; userId?: string; kind?: string }
+        | { createdAt: { gte: Date; lt?: Date }; userId?: string; kind?: string }
         /** Activity's explanation lines: a page's session decisions. */
         | { sessionId: { in: string[] } }
         /** The FR throwaway purge: every account create-fr-throwaway minted. */
@@ -1273,6 +1273,7 @@ export interface AppDb {
         inputs: unknown;
         userId: string | null;
         sessionId: string | null;
+        parkedEventId: string | null;
         createdAt: Date;
       }[]
     >;
@@ -1441,9 +1442,10 @@ export interface AppDb {
       where: { userId: string; status: { in: string[] } };
       orderBy: { createdAt: "desc" };
     }): Promise<PendingParkRow | null>;
-    /** All the user's parks in one of these states. */
+    /** All the user's parks in one of these states; or, for the nightly
+     * audit, every park made in a window. */
     findMany(args: {
-      where: { userId: string; status: { in: string[] } };
+      where: { userId: string; status: { in: string[] } } | { createdAt: { gte: Date; lt: Date } };
     }): Promise<PendingParkRow[]>;
     update(args: { where: { id: string }; data: PendingParkWrite }): Promise<PendingParkRow>;
     /** Compare-and-set: the status in `where` is what makes a transition

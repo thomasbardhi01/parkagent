@@ -1440,7 +1440,9 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
                 ? d.parkedEventId === where.parkedEventId
                 : "rule" in where
                   ? d.kind === where.kind && d.rule === where.rule
-                  : (d.createdAt ?? new Date(MONDAY_2PM)) >= where.createdAt.gte,
+                  : (d.createdAt ?? new Date(MONDAY_2PM)) >= where.createdAt.gte &&
+                    (where.createdAt.lt === undefined ||
+                      (d.createdAt ?? new Date(MONDAY_2PM)) < where.createdAt.lt),
           )
           .map(({ d, i }) => ({
             kind: d.kind,
@@ -1449,6 +1451,7 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
             inputs: d.inputs,
             userId: d.userId ?? null,
             sessionId: d.sessionId ?? null,
+            parkedEventId: d.parkedEventId ?? null,
             createdAt: d.createdAt ?? new Date(MONDAY_2PM),
             id: `d${i + 1}`,
           })),
@@ -1577,7 +1580,11 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
       },
       findMany: async ({ where }) =>
         state.pendingParks
-          .filter((park) => park.userId === where.userId && where.status.in.includes(park.status))
+          .filter((park) =>
+            "createdAt" in where
+              ? park.createdAt >= where.createdAt.gte && park.createdAt < where.createdAt.lt
+              : park.userId === where.userId && where.status.in.includes(park.status),
+          )
           .map((park) => ({ ...park })),
       update: async ({ where, data }) => {
         const row = state.pendingParks.find((p) => p.id === where.id);

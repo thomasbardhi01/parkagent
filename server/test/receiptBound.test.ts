@@ -97,6 +97,18 @@ describe("boundReceipt", () => {
     }
   });
 
+  test("a total that is the card's charge still counts beyond the price, whatever its lines say", () => {
+    // The provider's parser reads a missing "Convenience Fee" line as 0:
+    // meter + fee falls short of the $4.29 the card paid.
+    expect(boundReceipt(PRICE, { meterUsd: 3.94, feeUsd: 0, totalUsd: 4.29 }, undefined)).toEqual(
+      priced(true, 3),
+    );
+    // Lines that overshoot a total under the price: nothing on top.
+    expect(boundReceipt(PRICE, { meterUsd: 0.9, feeUsd: 0.35, totalUsd: 1.1 }, undefined)).toEqual(
+      priced(true),
+    );
+  });
+
   test("a huge receipt is counted at the column's ceiling, which every cap refuses past", () => {
     const receipt = { meterUsd: 1e12, feeUsd: 0.35, totalUsd: 1e12 + 0.35 };
     expect(boundReceipt(PRICE, receipt, undefined)).toEqual(priced(true, 99_999_999.99));
@@ -371,6 +383,47 @@ describe("a flagged session gets no automatic time", () => {
       expect(t.state.sessions.find((s) => s.id === session.id)!.extendCount).toBe(
         needsReview ? 0 : 1,
       );
+      if (needsReview) {
+        // The driver is told why, and what to do.
+        expect(t.pushes).toHaveLength(1);
+        expect(t.pushes[0]!.push).toMatchObject({
+          type: "session_expiring",
+          extra: { reason: "receipt_review" },
+        });
+        expect(t.pushes[0]!.push.body).toMatch(/receipt didn't match what you were shown/);
+        expect(t.pushes[0]!.push.body).toMatch(/extend yourself/);
+      }
     }
+  });
+});
+
+describe("every reader of spend counts what the caps count", () => {
+  const CHARGED = { meterUsd: 3.94, feeUsd: 0.35, totalUsd: 4.29 };
+
+  test("the Wallet: this month and this city never read less than today", async () => {
+    const t = makeApp(CHARGED);
+    expect((await start(t, "pe1")).statusCode).toBe(200);
+    const wallet = (await t.app.inject({ method: "GET", url: "/wallet", headers: HEADERS })).json();
+    expect(wallet.spending.todayUsd).toBeCloseTo(4.29, 2);
+    expect(wallet.spending.monthUsd).toBeCloseTo(4.29, 2);
+    const bos = (wallet.spending.byCity as { city: string; monthUsd: number }[]).find(
+      (c) => c.city === "bos",
+    );
+    expect(bos?.monthUsd).toBeCloseTo(4.29, 2);
+  });
+
+  test("/admin/summary: the city's spend counts the excess", async () => {
+    const t = makeApp(CHARGED);
+    expect((await start(t, "pe1")).statusCode).toBe(200);
+    const summary = await t.app.inject({ method: "GET", url: "/admin/summary", headers: HEADERS });
+    expect(summary.json().cities.bos.spendUsd).toBeCloseTo(4.29, 2);
+  });
+
+  test("a receipt with no fee line: its total, the card's charge, is what the caps count", async () => {
+    const t = makeApp({ meterUsd: 3.94, feeUsd: 0, totalUsd: 4.29 });
+    const res = await start(t, "pe1");
+    expect(res.json()).toMatchObject({ amountUsd: 1.29, needsReview: true });
+    expect(Number(t.state.sessions.at(-1)!.receiptExcessUsd)).toBe(3);
+    expect(await spentToday(t.deps.db, "u1", NOW)).toBeCloseTo(4.29, 2);
   });
 });

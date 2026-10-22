@@ -16,6 +16,7 @@ import { buildParkTrace } from "../services/parkTrace.js";
 import { runAudit } from "../services/audit/invariants.js";
 import { summarize } from "../services/audit/summary.js";
 import { PUSH_TEST_TYPES, samplePush } from "../services/apns.js";
+import { sessionSpentUsd } from "../services/moneyGate.js";
 import { providerReliability } from "../services/providerMetrics.js";
 import type { PushTestType } from "../services/apns.js";
 
@@ -155,7 +156,8 @@ export function registerAdmin(app: FastifyInstance, deps: AppDeps): void {
       if (session.status === "failed") city.sessionsFailed += 1;
       else city.sessionsStarted += 1;
       if (session.needsReview) city.sessionsNeedReview += 1;
-      city.spendUsd += Number(session.amountUsd ?? 0) + Number(session.feeUsd ?? 0);
+      // What the caps count: a flagged receipt's excess included.
+      city.spendUsd += sessionSpentUsd(session);
       city.extensionsAuto += 0; // counted from extend_tick decisions below
     }
 

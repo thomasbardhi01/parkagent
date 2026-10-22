@@ -406,7 +406,7 @@ export function makeExtender(deps: ExtenderDeps): Extender {
         expiringReason = "max_stay";
       } else if (violation === "receipt_needs_review") {
         rule = "hold_needs_review";
-        expiringReason = "no_auto_extend";
+        expiringReason = "receipt_review";
       } else if (violation !== null) {
         // amount_invalid, minutes_invalid, or a rule named after this
         // ladder was written: a refusal holds, never extends.

@@ -17,8 +17,9 @@
  * shows makes the caps refuse sooner, never later.
  *
  * A receipt that doesn't add up (not a finite amount >= 0, or meter + fee
- * not its total) records the price and is flagged; there is no amount to
- * count on top of it. The receipt itself rides on the decision's inputs.
+ * not its total) records the price and is flagged; when its total is still
+ * a real amount (the card's charge), what it says beyond the price counts
+ * on top, as above. The receipt itself rides on the decision's inputs.
  */
 
 /** How far a receipt may sit from the price, either way. */
@@ -76,7 +77,15 @@ export function boundReceipt(
         : null,
   });
   if (!receipt) return recorded(price, false);
-  if (!wellFormed(receipt)) return recorded(price, true);
+  if (!wellFormed(receipt)) {
+    // The total is what the card was charged (the provider's own parser
+    // reads a missing fee line as 0, so meter + fee can fall short of it):
+    // a total that is a real amount still counts what it says beyond the
+    // price.
+    const total = receipt.totalUsd;
+    const readable = typeof total === "number" && Number.isFinite(total) && total >= 0;
+    return recorded(price, true, readable ? cents(total) - cents(price.totalUsd) : null);
+  }
   const charged = cents(receipt.totalUsd);
   if (Math.abs(charged - cents(price.totalUsd)) > cents(RECEIPT_BOUND_USD)) {
     return recorded(price, true, charged - cents(price.totalUsd));

@@ -631,7 +631,7 @@ test("a receipt above the amount the tap was shown is never recorded above it (t
   await walkAway(t);
   const tap = await post(t.app, `/parked/${parked.parkedEventId}/confirm`, {});
   expect(tap.statusCode).toBe(200);
-  expect(tap.json()).toMatchObject({ status: "started", amountUsd: 3.65 });
+  expect(tap.json()).toMatchObject({ status: "started", amountUsd: 3.65, needsReview: true });
   const session = t.state.sessions.at(-1)!;
   expect(Number(session.amountUsd) + Number(session.feeUsd)).toBe(3.65);
   expect(Number(session.feeUsd)).toBe(0.15);
@@ -644,6 +644,10 @@ test("a receipt above the amount the tap was shown is never recorded above it (t
     receiptBound: { shownTotalUsd: 3.65, boundUsd: 0.25 },
   });
   expect(start.outcome).toMatchObject({ recordedTotalUsd: 3.65, receiptExcessUsd: 0.15 });
+  // A retried tap answers the same session, and says the same.
+  const again = await post(t.app, `/parked/${parked.parkedEventId}/confirm`, {});
+  expect(again.json()).toMatchObject({ status: "started", amountUsd: 3.65, needsReview: true });
+  expect(t.executorCalls.filter((c) => c.op === "start")).toHaveLength(1);
 });
 
 test("a start that reached the provider and failed closes the park: no second attempt from it", async () => {

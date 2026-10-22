@@ -595,6 +595,8 @@ export function registerParked(app: FastifyInstance, deps: AppDeps, sessions: Se
         expiresAt: session?.expiresAt ?? null,
         amountUsd:
           Math.round((Number(session?.amountUsd ?? 0) + Number(session?.feeUsd ?? 0)) * 100) / 100,
+        // As the first answer said it (the receipt bound).
+        needsReview: session?.needsReview === true,
       };
     }
     if (park.status === "starting") {

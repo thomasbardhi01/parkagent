@@ -58,6 +58,7 @@ const NOT_RULES = new Set([
   "budget",
   "max_stay",
   "no_auto_extend",
+  "receipt_review",
   // location.ts close(status, kind, rule, …): the park's new status.
   "cancelled",
   "covered",

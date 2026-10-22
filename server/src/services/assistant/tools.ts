@@ -281,6 +281,12 @@ export const TOOL_DEFINITIONS = [
 export class AssistantTools {
   constructor(private readonly deps: AssistantDeps) {}
 
+  /** What the capabilities run with: the same deps every surface uses
+   * (the model's adapter here, REST in routes/agent.ts). */
+  get capabilityDeps(): CapabilityDeps {
+    return this.deps;
+  }
+
   private now(): Date {
     return this.deps.now?.() ?? new Date();
   }

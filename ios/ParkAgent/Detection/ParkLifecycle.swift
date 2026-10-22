@@ -142,6 +142,10 @@ extension AppModel {
         case "prompted":
             guard let prompt = response.prompt, prompt != waiting.shown else { return }
             waiting.shown = prompt
+            // Asked again (a Pay kept at the car that left by distance):
+            // that Pay no longer stands, and an hour with no answer is not
+            // "an hour before you walked away".
+            waiting.confirmed = false
             reporter.setWaiting(waiting)
             await present(prompt, for: waiting)
         default:

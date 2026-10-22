@@ -167,6 +167,22 @@ struct ParkLifecycleTests {
         #expect(ParkedNotice.restoreWaiting()?.confirmed == false)
     }
 
+    /// A Pay kept at the car whose park is asked about again (it left by
+    /// distance, not CoreMotion's walk): the kept Pay no longer stands, so
+    /// an hour with no answer isn't said as "an hour before you walked away".
+    @Test func aParkAskedAgainForgetsTheKeptPay() async {
+        let model = modelWaiting(waitingPark(confirmed: true))
+        defer { tearDown(model) }
+        let asked = ParkPrompt(
+            kind: "confirm", parkedEventId: "pe1", title: "Pay $3.65 for zone 417371?", body: "1 h 30 m",
+            zoneId: "nyc-417371", zoneNumber: "417371", amountUsd: 3.65, minutes: 90, dryRun: true
+        )
+        await model.handleLocationResponse(LocationResponse(park: .init(parkedEventId: "pe1", status: "prompted"), prompt: asked))
+        #expect(model.reporter.waiting?.confirmed == false)
+        #expect(model.reporter.waiting?.shown == asked)
+        #expect(ParkedNotice.restoreWaiting()?.confirmed == false)
+    }
+
     /// A session the app already shows is not read again.
     @Test func aSessionAlreadyHeldIsNotReadAgain() {
         let waiting = waitingPark()

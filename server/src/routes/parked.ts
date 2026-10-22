@@ -363,16 +363,27 @@ export function registerParked(app: FastifyInstance, deps: AppDeps, sessions: Se
     // A spot an agent of this person confirmed, inside its mandate's
     // window, under the dry run it was shown (WS-4 E3): the park is held
     // `confirmed` from the start — the agent's confirm was the tap — and
-    // pays on the app's left_car with no prompt. Only where this route
-    // would itself pay without asking: the candidates agree on one zone,
-    // its pay-by-app number known, and that zone is the plan's. The car is
-    // the phone's own fix; the quote is the plan's stay here, now, and it
-    // must be within the plan's price (a dearer spot is asked about, at
-    // its real price). A plan binds once (CAS on the plan, keyed by this
-    // park).
+    // pays on the app's left_car with no prompt. Only where the candidates
+    // agree on terms (zoneLookup's "agree": same rates, hours and max
+    // stay; the nearest zone's number is the one paid), that number known,
+    // the nearest zone the plan's, and the person still letting agents act
+    // (their latest word wins over the agent's earlier confirm). The car
+    // is the phone's own fix; the quote is the plan's stay here, now,
+    // within the plan's price and passing this route's own auto-pay gate
+    // for that quote (a dearer or gated spot is asked about, at its real
+    // price). A plan binds once (CAS on the plan, keyed by this park).
     const payableZone = resolution.kind === "agree" && !needsZoneNumber ? resolution.nearest : null;
-    const binding =
+    const agentsMayAct =
       awaitsWalkAway && payableZone
+        ? (
+            await deps.db.user.findUnique({
+              where: { id: user.id },
+              select: { agentsMayAct: true },
+            })
+          )?.agentsMayAct === true
+        : false;
+    const binding =
+      agentsMayAct && payableZone
         ? await agentBindingFor(deps.db, user.id, { zoneId: payableZone.zoneId, dryRun }, serverNow)
         : null;
     const boundQuote: Quote | null =
@@ -383,9 +394,26 @@ export function registerParked(app: FastifyInstance, deps: AppDeps, sessions: Se
             ...priceStay(payableZone, policy, at, binding.durationMinutes),
           }
         : null;
+    const boundGate =
+      boundQuote && payableZone
+        ? await moneyGate(
+            deps,
+            principalFor(user.id),
+            {
+              kind: "quote",
+              totalUsd: boundQuote.totalUsd,
+              ladderMaxRateUsd: Math.max(
+                payableZone.rateFirstHourUsd,
+                payableZone.rateAdditionalHourUsd,
+              ),
+            },
+            at,
+          )
+        : null;
     const bindable =
       binding !== null &&
       boundQuote !== null &&
+      boundGate?.ok === true &&
       boundQuote.totalUsd > 0 &&
       boundQuote.totalUsd <= binding.planPriceUsd + 0.005;
     const bound =
@@ -407,7 +435,7 @@ export function registerParked(app: FastifyInstance, deps: AppDeps, sessions: Se
             status: "confirmed",
             candidates,
             quote: shown,
-            zoneId: binding.zoneId,
+            zoneId: shown.zoneId,
             confirmedAt: serverNow,
             shownDryRun: dryRun,
             carLat: body.lat,
@@ -423,9 +451,14 @@ export function registerParked(app: FastifyInstance, deps: AppDeps, sessions: Se
         });
         throw err;
       }
+      // Like the at_car branch, a throw here leaves the park held with no
+      // row for it; the plan's bound_parked_event_id still names it.
       await deps.db.decision.create({
         data: {
           kind: "street_confirmed",
+          // Arrival is the phone's act (actor stays the user's), but the
+          // consent was the agent key's: a per-key ledger query finds it.
+          agentKeyId: binding.agentKeyId,
           inputs: {
             mode: "agent_plan",
             planId: binding.planId,
@@ -438,7 +471,7 @@ export function registerParked(app: FastifyInstance, deps: AppDeps, sessions: Se
             dryRun,
           },
           rule: "agent_plan_bound",
-          outcome: { status: "confirmed", startsAt: "walk_away", zoneId: binding.zoneId },
+          outcome: { status: "confirmed", startsAt: "walk_away", zoneId: shown.zoneId },
           userId: user.id,
           parkedEventId: parkedEvent.id,
         },

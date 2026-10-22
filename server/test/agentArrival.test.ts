@@ -47,15 +47,20 @@ const STEINWAY_ZONE: ZoneTermsRow = {
   hoursJson: HOURS_MON_SAT,
 };
 
-function makeApp(opts: { candidates?: Candidate[]; dryRun?: boolean } = {}) {
+function makeApp(
+  opts: { candidates?: Candidate[]; dryRun?: boolean; policy?: Record<string, unknown> } = {},
+) {
   const clock = { now: new Date(NOW) };
   const real = opts.dryRun === false;
   const t = makeTestApp({
     candidates: opts.candidates ?? [STEINWAY_A],
     zones: [STEINWAY_ZONE],
     now: () => clock.now,
-    ...(real ? { envDryRun: false, policy: { dry_run: false } } : {}),
+    ...(real ? { envDryRun: false } : {}),
+    policy: { ...(real ? { dry_run: false } : {}), ...opts.policy },
   });
+  // Both people let agents act, unless a test says otherwise.
+  for (const user of t.state.users) user.agentsMayAct = true;
   return {
     ...t,
     clock,
@@ -153,6 +158,10 @@ describe("binding the phone's park to an agent's confirmed spot", () => {
     expect(held.shownDryRun).toBe(true);
     const row = t.state.decisions.find((d) => d.rule === "agent_plan_bound")!;
     expect(row.inputs).toMatchObject({ planId: "plan-a", mandateId: "hash-plan-a" });
+    // Arrival is the phone's act; the consent was the key's, on the column
+    // a per-key ledger query reads.
+    // (u1 is the harness's admin key, so the phone's principal is admin.)
+    expect(row).toMatchObject({ actor: "admin", agentKeyId: "ak1" });
     expect(bound(t)).toBe(held.parkedEventId);
     // A second park, even at the same spot, is the ordinary one.
     t.tick(120);
@@ -191,6 +200,22 @@ describe("binding the phone's park to an agent's confirmed spot", () => {
     const held = await park(t);
     expect(held.status).toBe("at_car");
     expect(held.shownDryRun).toBe(false);
+    expect(bound(t)).toBeNull();
+  });
+
+  test("agents switched off after the confirm: the person's latest word wins (#262 review)", async () => {
+    const t = makeApp();
+    seedAgentPlan(t.state);
+    t.state.users.find((u) => u.id === "u1")!.agentsMayAct = false;
+    expect((await park(t)).status).toBe("at_car");
+    expect(bound(t)).toBeNull();
+  });
+
+  test("the plan's stay must pass /parked's own auto-pay gate (#262 review)", async () => {
+    // A per-stop cap under the hour's $2.15: /parked would ask, so no bind.
+    const t = makeApp({ policy: { session_cap_usd: 2 } });
+    seedAgentPlan(t.state);
+    expect((await park(t)).status).toBe("at_car");
     expect(bound(t)).toBeNull();
   });
 

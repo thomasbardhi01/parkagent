@@ -1077,27 +1077,39 @@ person's tap given ahead, for one spot, for the mandate's ten minutes; it
 creates no park. **A bound park pays on the app's `left_car` with no tap
 and no prompt at the curb.** The phone's next `/parked` that would be held
 for its walk-away is bound when all of these hold:
-- it is the person's own;
-- its zone is the one `/parked` would itself pay without asking (its
-  candidates agree, the pay-by-app number known), and that zone is the
-  plan's: a car across the street or in the next zone is never bound;
+- it is the person's own, and **the person still lets agents act**
+  (`agents_may_act`, read at arrival: the person's latest word wins over
+  the agent's earlier confirm);
+- its candidates agree on terms (zone lookup's "agree": the same rates,
+  hours and max stay), the pay-by-app number is known, and the nearest
+  zone, whose number is the one paid, is the plan's zone. Candidates
+  that disagree never bind, so a car across the street with different
+  terms gets the ordinary prompt. A neighbour on the same terms can share
+  the block, and **the bound path has no "Wrong spot" tap**: the nearest
+  zone's number is paid;
 - it is inside the mandate's window (the mandate an agent's, consumed,
   unexpired);
 - dry run is what it was when the mandate was minted;
 - the plan's own stay (`durationMinutes`), priced here now, is within the
-  zone's max stay and the plan's price.
+  zone's max stay and the plan's price, and passes `/parked`'s own
+  auto-pay gate for that quote (the caps and the rate ceiling).
 
 Such a park is held `confirmed` from the start instead of `at_car`: the
 phone's own fix is the car, the zone is the plan's, and the shown quote is
 that stay at that price. It then runs as any Pay tapped at the car: it
-starts only on the app's `left_car`, and a walk-away by distance alone asks
-again. A plan binds one park, once (a compare-and-set on
-`assistant_plans.bound_parked_event_id`, undone if the park can't be
-written); the plan reads `status: "bound"` on `GET /agent/plans/:id`.
-Expired, elsewhere, disagreeing candidates, dearer, another dry run,
-another person's, or an app tap's plan: the ordinary `at_car` hold, and
-the phone's own prompt. The `street_confirmed` decision (`rule:
-agent_plan_bound`) names the plan, the mandate and the agent key
+starts only on the app's `left_car`, where the start's own money gate runs
+again, and a walk-away by distance alone asks again. The mandate's ten
+minutes bound the arrival, not the walk-away: like a tap at the car, a
+bound park waits for `left_car` up to the park's hour (`PARK_TTL_MS`), so it
+can pay after the mandate itself has expired. A plan binds one park, once
+(a compare-and-set on `assistant_plans.bound_parked_event_id`, undone if
+the park can't be written); the plan reads `status: "bound"` on `GET
+/agent/plans/:id`. Expired, elsewhere, disagreeing, dearer, gated, under
+another dry run, with agents switched off, another person's, or an app
+tap's plan: the ordinary `at_car` hold, and the phone's own prompt. The
+`street_confirmed` decision (`rule: agent_plan_bound`) names the plan, the
+mandate and the agent key, and carries the key on its `agent_key_id`
+column; its actor is the phone's (arrival is the phone's act)
 (`routes/parked.ts`, `agentBindingFor` in `services/pendingSession.ts`).
 
 **A Pay tapped at the car starts only on the app's `left_car`.** Two
@@ -3672,8 +3684,9 @@ OpenAI-style functions are `examples/grok-tool.json` (regenerate with
     `/parked`, and the park lifecycle (`services/pendingSession.ts`) is
     the code that enforces it. **But the confirm is the person's tap,
     given ahead.** When the phone's next `/parked` is at that spot (the
-    zone `/parked` itself would pay), inside the mandate's window, under
-    the same dry run, that park is held `confirmed` from the start. It
+    nearest of candidates that agree on terms), inside the mandate's
+    window, under the same dry run, with the person still letting agents
+    act, that park is held `confirmed` from the start. It
     then **pays on the app's `left_car` with no tap and no prompt at the
     curb**, for the plan's stay and no more than the plan's price (see
     "Session lifecycle" → "An agent's confirmed spot"). Anywhere else,

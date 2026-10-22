@@ -116,13 +116,13 @@ export const START_DEADLINE_MS = 3 * 60_000;
 export const SAME_SPOT_M = 100;
 
 /** An agent's confirmed street plan the park the phone just reported may
- * be held for (WS-4 E3): its consent, its zone, and the cap. */
+ * be held for (WS-4 E3): its consent, its stay, and the cap. The zone is
+ * the one the caller resolved and asked about. */
 export interface AgentBinding {
   planId: string;
   /** The mandate's id (its token's hash). */
   mandateId: string;
   agentKeyId: string;
-  zoneId: string;
   /** The stay the agent confirmed: the bound park is quoted for it. */
   durationMinutes: number;
   /** What the plan said this spot costs: the shown cap is the lower of
@@ -193,7 +193,6 @@ export async function agentBindingFor(
       planId: plan.id,
       mandateId: mandate.token,
       agentKeyId: mandate.agentKeyId,
-      zoneId: option.zoneId,
       durationMinutes: option.durationMinutes,
       planPriceUsd: option.priceUsd,
     };

@@ -58,5 +58,14 @@
       }
     ]
   },
-  "facts": ["starting_too_long", "1", "session_without_fix_30min", "1"]
+  "facts": [
+    {
+      "invariant": "starting_too_long",
+      "count": 1
+    },
+    {
+      "invariant": "session_without_fix_30min",
+      "count": 1
+    }
+  ]
 }

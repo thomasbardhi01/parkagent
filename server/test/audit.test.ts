@@ -13,11 +13,13 @@ import type { ModelClient, ModelResponse } from "../src/services/assistant/loop.
 import type { AuditWindow, Finding } from "../src/services/audit/invariants.js";
 import { INVARIANTS, runAudit } from "../src/services/audit/invariants.js";
 import {
+  AUDIT_MODEL,
   SUMMARY_SCHEMA,
   summarize,
   templateSummary,
   ungrounded,
 } from "../src/services/audit/summary.js";
+import { estimateCostUsd } from "../src/services/assistant/loop.js";
 import {
   API_KEY,
   HOURS_MON_SAT,
@@ -501,6 +503,11 @@ test("the template stands in for a model that is off, refuses, fails, or writes 
   }
 });
 
+test("the summary's model is priced as Haiku 5.5, not as the Haiku 4.5 row", () => {
+  expect(estimateCostUsd(AUDIT_MODEL, 1_000_000, 1_000_000)).toBeCloseTo(0.6);
+  expect(estimateCostUsd("claude-haiku-4-5-20251001", 1_000_000, 1_000_000)).toBe(6);
+});
+
 test("over the daily budget, the model isn't asked", async () => {
   const t = makeApp();
   decision(t, { kind: "audit_summary", rule: "model", outcome: { estimatedCostUsd: 5 } });
@@ -515,6 +522,26 @@ test("over the daily budget, the model isn't asked", async () => {
 
 test("the grounding check reads numbers, dollar amounts and the fired invariants", () => {
   expect(ungrounded(GOOD_LINES, REPORT)).toBeNull();
+  // The descriptions' "30 minutes" and "3-minute" and the window's date
+  // ground nothing: only the counts and their tallies do.
+  for (const made of [
+    "30 sessions went quiet.",
+    "3 starts were slow.",
+    "It was 2026.",
+    "On the 05th.",
+  ]) {
+    expect(
+      ungrounded(
+        GOOD_LINES.map((l, i) => (i === 3 ? made : l)),
+        REPORT,
+      ),
+    ).toMatch(/^the number /);
+  }
+  // A name with digits in it is not a number it says.
+  const withName = GOOD_LINES.map((l, i) =>
+    i === 3 ? "session_without_fix_30min stayed quiet." : l,
+  );
+  expect(ungrounded(withName, REPORT)).toBeNull();
   expect(
     ungrounded(
       GOOD_LINES.map((l) => l.replace("2 times", "12 times")),

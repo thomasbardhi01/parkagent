@@ -58,5 +58,10 @@
       }
     ]
   },
-  "facts": ["extended_at_car", "1"]
+  "facts": [
+    {
+      "invariant": "extended_at_car",
+      "count": 1
+    }
+  ]
 }

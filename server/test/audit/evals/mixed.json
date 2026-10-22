@@ -58,5 +58,18 @@
       }
     ]
   },
-  "facts": ["dry_run_mismatch", "1", "starting_too_long", "2", "prompted_more_than_twice", "6"]
+  "facts": [
+    {
+      "invariant": "dry_run_mismatch",
+      "count": 1
+    },
+    {
+      "invariant": "starting_too_long",
+      "count": 2
+    },
+    {
+      "invariant": "prompted_more_than_twice",
+      "count": 6
+    }
+  ]
 }

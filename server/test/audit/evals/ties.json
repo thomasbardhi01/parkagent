@@ -58,5 +58,18 @@
       }
     ]
   },
-  "facts": ["extended_at_car", "2", "transition_skipped", "2", "prompted_more_than_twice", "2"]
+  "facts": [
+    {
+      "invariant": "extended_at_car",
+      "count": 2
+    },
+    {
+      "invariant": "transition_skipped",
+      "count": 2
+    },
+    {
+      "invariant": "prompted_more_than_twice",
+      "count": 2
+    }
+  ]
 }

@@ -23,7 +23,10 @@ let failed = 0;
 for (const doc of EVAL_DOCS) {
   const { db } = makeFakeDb();
   const summary = await summarize({ db, model, capUsd: 1, now: new Date() }, doc.report);
-  const missing = summary.source === "model" ? missingFacts(summary.lines, doc) : doc.facts;
+  const missing =
+    summary.source === "model"
+      ? missingFacts(summary.lines, doc)
+      : ["the model's lines weren't used"];
   const ok = summary.source === "model" && missing.length === 0;
   if (!ok) failed += 1;
   console.log(

@@ -58,5 +58,10 @@
       }
     ]
   },
-  "facts": ["session_without_fix_30min", "140"]
+  "facts": [
+    {
+      "invariant": "session_without_fix_30min",
+      "count": 140
+    }
+  ]
 }

@@ -58,5 +58,10 @@
       }
     ]
   },
-  "facts": ["prompted_more_than_twice", "3"]
+  "facts": [
+    {
+      "invariant": "prompted_more_than_twice",
+      "count": 3
+    }
+  ]
 }

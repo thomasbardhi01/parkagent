@@ -58,5 +58,18 @@
       }
     ]
   },
-  "facts": ["starting_too_long", "12", "transition_skipped", "7", "session_without_fix_30min", "23"]
+  "facts": [
+    {
+      "invariant": "starting_too_long",
+      "count": 12
+    },
+    {
+      "invariant": "transition_skipped",
+      "count": 7
+    },
+    {
+      "invariant": "session_without_fix_30min",
+      "count": 23
+    }
+  ]
 }

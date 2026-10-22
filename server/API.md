@@ -2416,10 +2416,16 @@ to five example park (`parkedEventId`) or session ids:
 also needs `ANTHROPIC_API_KEY`, or `/health` lists `audit_summary` as
 degraded), they come from `claude-haiku-5-5`. The model is asked with
 the findings only, never rows, under a strict JSON schema
-(`{"lines": [...]}`), and is held to the assistant's daily cap
-(`ASSISTANT_DAILY_SPEND_CAP_USD`) on the audit's own spend. Its lines are
-kept only when grounded: exactly five, every number one the report
-carries, no dollar amount, and every invariant that fired named.
+(`{"lines": [...]}`). Its budget is **its own pool**: the audit's
+`audit_summary` spend today, held to the same number as the assistant's
+per-user daily cap (`ASSISTANT_DAILY_SPEND_CAP_USD`), and never counted
+against any user's. Its lines are kept only when grounded: exactly five;
+every number a finding's count or a tally of them (how many fired, of
+how many, by severity), not a date or a description's "30 minutes"; an
+invariant's name is not read as a number; no dollar amount; and every
+invariant that fired named. A call cut off at the 30 s deadline isn't
+cancelled (the client takes no signal), so its spend is unrecorded: the
+row says `estimatedCostUsd: 0`.
 Otherwise, and whenever the flag is off, the model refuses, fails, takes
 longer than 30 s or is over budget, `source` is `"template"`: the
 deterministic five lines, with `reason` saying why. Each call writes an

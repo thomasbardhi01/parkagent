@@ -59,11 +59,17 @@
     ]
   },
   "facts": [
-    "extended_at_car",
-    "2",
-    "confirmed_started_without_left_car",
-    "1",
-    "dry_run_mismatch",
-    "4"
+    {
+      "invariant": "extended_at_car",
+      "count": 2
+    },
+    {
+      "invariant": "confirmed_started_without_left_car",
+      "count": 1
+    },
+    {
+      "invariant": "dry_run_mismatch",
+      "count": 4
+    }
   ]
 }

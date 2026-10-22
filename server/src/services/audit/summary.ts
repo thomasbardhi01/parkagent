@@ -50,7 +50,7 @@ const SYSTEM = [
   "The input is JSON: the audit window and one finding per invariant (its name, severity, what it checks, how many parks or sessions broke it).",
   'Answer with JSON {"lines": [...]}: exactly five short lines of plain English.',
   "Name every invariant whose count is above zero, exactly as written in the input, with its count, most severe first.",
-  "Every number you write must appear in the input. Write no dollar amounts, no ids, and nothing the input doesn't say.",
+  "The only numbers you may write are the counts, and how many invariants fired out of how many were checked (overall or by severity): no dates, times or durations. Write no dollar amounts, no ids, and nothing the input doesn't say.",
   "When nothing fired, say so plainly.",
 ].join(" ");
 
@@ -81,10 +81,12 @@ export function templateSummary(report: AuditReport): string[] {
   if (rest.length > 0) {
     lines.push(`Also: ${rest.map((f) => `${f.invariant} ×${f.count}`).join(", ")}.`);
   }
+  // On a day something fired, the last line names what stayed quiet; on
+  // a quiet day no invariant is named at all.
   const quiet = report.findings.filter((f) => f.count === 0).map((f) => f.invariant);
   while (lines.length < SUMMARY_LINES) {
     lines.push(
-      lines.length === SUMMARY_LINES - 1 && quiet.length > 0
+      lines.length === SUMMARY_LINES - 1 && hits.length > 0 && quiet.length > 0
         ? `Quiet: ${quiet.join(", ")}.`
         : "Nothing else to report.",
     );
@@ -92,26 +94,20 @@ export function templateSummary(report: AuditReport): string[] {
   return lines.slice(0, SUMMARY_LINES);
 }
 
-/** Every number the report itself says: what a summary's numbers must be. */
+/** The numbers a summary may say: the findings' counts and the tallies
+ * derived from them (how many fired, of how many, by severity). Not the
+ * window's date, nor the digits in a description ("3-minute", "30
+ * minutes"): a "30 sessions" no count says is made up. */
 export function reportNumbers(report: AuditReport): Set<string> {
-  const said = JSON.stringify({
-    window: report.window,
-    // The example ids are cuids: their digits are no number of the report's.
-    findings: report.findings.map((f) => ({
-      invariant: f.invariant,
-      severity: f.severity,
-      description: f.description,
-      count: f.count,
-    })),
-    tallies: {
-      fired: fired(report.findings).length,
-      checked: report.findings.length,
-      high: tally(report.findings, "high"),
-      medium: tally(report.findings, "medium"),
-      low: tally(report.findings, "low"),
-    },
-  });
-  return new Set(said.match(/\d+(?:\.\d+)?/g) ?? []);
+  const numbers = [
+    ...report.findings.map((f) => f.count),
+    fired(report.findings).length,
+    report.findings.length,
+    tally(report.findings, "high"),
+    tally(report.findings, "medium"),
+    tally(report.findings, "low"),
+  ];
+  return new Set(numbers.map(String));
 }
 
 /** Why `lines` can't stand for the report, or null when they can. */
@@ -121,7 +117,9 @@ export function ungrounded(lines: unknown, report: AuditReport): string | null {
   const text = (lines as string[]).join("\n");
   if (scrubUngroundedAmounts(text, new Set()).dropped.length > 0) return "a dollar amount";
   const allowed = reportNumbers(report);
-  const stray = (text.match(/\d+(?:\.\d+)?/g) ?? []).find((n) => !allowed.has(n));
+  // An invariant's name is not a number it says ("…_30min").
+  const prose = report.findings.reduce((t, f) => t.split(f.invariant).join(" "), text);
+  const stray = (prose.match(/\d+(?:\.\d+)?/g) ?? []).find((n) => !allowed.has(n));
   if (stray !== undefined) return `the number ${stray}`;
   const missing = fired(report.findings).find((f) => !text.includes(f.invariant));
   if (missing) return `no mention of ${missing.invariant}`;

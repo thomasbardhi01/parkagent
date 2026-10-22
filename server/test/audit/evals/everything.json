@@ -59,19 +59,33 @@
     ]
   },
   "facts": [
-    "extended_at_car",
-    "1",
-    "confirmed_started_without_left_car",
-    "2",
-    "dry_run_mismatch",
-    "3",
-    "starting_too_long",
-    "4",
-    "transition_skipped",
-    "5",
-    "session_without_fix_30min",
-    "6",
-    "prompted_more_than_twice",
-    "7"
+    {
+      "invariant": "extended_at_car",
+      "count": 1
+    },
+    {
+      "invariant": "confirmed_started_without_left_car",
+      "count": 2
+    },
+    {
+      "invariant": "dry_run_mismatch",
+      "count": 3
+    },
+    {
+      "invariant": "starting_too_long",
+      "count": 4
+    },
+    {
+      "invariant": "transition_skipped",
+      "count": 5
+    },
+    {
+      "invariant": "session_without_fix_30min",
+      "count": 6
+    },
+    {
+      "invariant": "prompted_more_than_twice",
+      "count": 7
+    }
   ]
 }

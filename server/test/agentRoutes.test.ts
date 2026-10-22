@@ -89,7 +89,12 @@ describe("reading", () => {
     expect(rows.length).toBeGreaterThan(0);
     expect(rows.every((d) => d.actor === "external_agent" && d.agentKeyId)).toBe(true);
     const plan = await call("GET", `/agent/plans/${proposed.planId}`);
-    expect(plan.json()).toMatchObject({ planId: proposed.planId, confirmedAt: null });
+    expect(plan.json()).toMatchObject({
+      planId: proposed.planId,
+      status: "proposed",
+      confirmedAt: null,
+      boundAt: null,
+    });
   });
 
   test("a read-only key plans but gets no token, and can't confirm", async () => {
@@ -194,7 +199,18 @@ describe("confirming", () => {
       actor: "external_agent",
     });
     const plan = await call("GET", `/agent/plans/${proposed.planId}`);
-    expect(plan.json().confirmedOptionId).toBe(proposed.plan.options[0]!.id);
+    expect(plan.json()).toMatchObject({
+      status: "confirmed",
+      confirmedOptionId: proposed.plan.options[0]!.id,
+      boundAt: null,
+    });
+    // The phone's park bound it (agentArrival.test.ts pins when): the
+    // agent reads it as bound (MCP's plan resource reads the same getPlan).
+    const row = t.state.assistantPlans.find((p) => p.id === proposed.planId)!;
+    row.boundParkedEventId = "pe-1";
+    row.boundAt = NOW;
+    const after = await call("GET", `/agent/plans/${proposed.planId}`);
+    expect(after.json()).toMatchObject({ status: "bound", boundAt: NOW.toISOString() });
   });
 
   test("no consent: 403 before the mandate is read", async () => {

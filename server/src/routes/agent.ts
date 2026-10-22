@@ -121,108 +121,11 @@ export function registerAgent(
     if (!body) return reply;
     const { planId } = req.params as { planId: string };
     return send(reply, await actions.confirm(req.principal!, planId, body.confirmToken));
-    const at = now();
-    const { principal } = ok;
-    const decide = (rule: string, outcome: Record<string, unknown>) =>
-      deps.db.decision.create({
-        data: {
-          kind: "agent_confirm",
-          inputs: { planId },
-          rule,
-          outcome,
-          userId: principal.userId,
-        },
-      });
-    const markConfirmed = (optionId: string) =>
-      deps.db.assistantPlan.update({
-        where: { id: planId },
-        data: { confirmedAt: at, confirmedOptionId: optionId },
-      });
-    // The one confirm sequence the app's tap runs too (confirmPlan.ts):
-    // consent first, then the mandate, the plan unchanged, the dry run as
-    // shown, the caps now, a garage still bookable; only then the claim.
-    const turn = turnFor(principal);
-    if (!turn.ok) return reply.code(400).send({ error: "invalid_request", issues: turn.issues });
-    const confirmed = await consumeConfirmation(ok.deps, principal, turn.turn, body.confirmToken, {
-      tool: "agent_confirm",
-      planId,
-    });
-    if (!confirmed.ok) {
-      const { code, error, extra } = refusalAnswer(confirmed.refusal);
-      const decision = await decide(error, { allowed: false, ...extra });
-      return reply.code(code).send({ error, ...extra, decisionId: decision.id });
-    }
-    const { option, dryRun } = confirmed;
-    if (option.type === "garage") {
-      // Bookable a moment ago (the sequence checked); a provider that
-      // still fails here leaves the mandate spent, and says so.
-      let booking: Awaited<ReturnType<typeof ok.deps.garage.book>>;
-      try {
-        booking = await ok.deps.garage.book(option.garageOptionId ?? option.id);
-      } catch (err) {
-        const detail = err instanceof Error ? (err.message.split("\n")[0] ?? "") : String(err);
-        const decision = await decide("garage_book_failed", { allowed: true, detail });
-        return reply
-          .code(409)
-          .send({ error: "garage_book_failed", detail, decisionId: decision.id });
-      }
-      await markConfirmed(option.id);
-      const decision = await decide("garage_handoff", {
-        allowed: true,
-        optionId: option.id,
-        provider: booking.option.provider,
-        priceUsd: booking.option.priceUsd,
-        dryRun,
-      });
-      return {
-        status: "garage_handoff",
-        deepLink: booking.deepLink ?? null,
-        priceUsd: booking.option.priceUsd,
-        dryRun,
-        decisionId: decision.id,
-      };
-    }
-    // A street spot: no park here; the phone reports where the car is. But
-    // this is the person's tap given ahead: the phone's next park at that
-    // spot, in the window, is held confirmed and pays on left_car with no
-    // prompt (agentBindingFor in pendingSession.ts, E3).
-    await markConfirmed(option.id);
-    const decision = await decide("pending_arrival", {
-      allowed: true,
-      optionId: option.id,
-      zoneId: option.zoneId ?? null,
-      priceUsd: option.priceUsd,
-      dryRun,
-    });
-    return {
-      status: "pending_arrival",
-      zoneId: option.zoneId ?? null,
-      durationMinutes: option.durationMinutes,
-      priceUsd: option.priceUsd,
-      dryRun,
-      expiresAt: confirmed.expiresAt.toISOString(),
-      decisionId: decision.id,
-    };
   });
 
   app.get("/agent/plans/:planId", { preHandler: limit }, async (req, reply) => {
     const { planId } = req.params as { planId: string };
     return send(reply, await actions.getPlan(req.principal!, planId));
-    const row = await deps.db.assistantPlan.findUnique({ where: { id: planId } });
-    if (!row || row.userId !== req.principal!.userId) {
-      return reply.code(404).send({ error: "plan_not_found" });
-    }
-    return {
-      planId: row.id,
-      kind: row.kind,
-      // proposed → confirmed (the agent's confirm) → bound (the phone
-      // reported the car at its spot, inside the mandate's window: E3).
-      status: row.boundParkedEventId ? "bound" : row.confirmedAt ? "confirmed" : "proposed",
-      plan: row.plan,
-      confirmedAt: row.confirmedAt?.toISOString() ?? null,
-      confirmedOptionId: row.confirmedOptionId ?? null,
-      boundAt: row.boundAt?.toISOString() ?? null,
-    };
   });
 
   /** A park the phone reported, by id: its status only. */

@@ -92,6 +92,9 @@ targets:
             ParkAgent needs your exact spot for a moment to find the meter
             zone you just parked in. Neighboring blocks can have different
             rates and zone numbers.
+        NSCameraUsageDescription: >-
+          ParkAgent reads the parking signs where you parked when you ask it to.
+          Photos stay on your phone unless you choose to send one.
         NSMotionUsageDescription: >-
           ParkAgent uses motion activity to tell when you have stopped
           driving, so it only offers to pay once you have actually parked.

@@ -37,6 +37,12 @@ struct UnconfiguredAPI: APIClient {
         throw failure
     }
     func reportZoneNumber(zoneId: String, number: String) async throws -> ZoneNumberReportResponse { throw failure }
+    func checkSigns(parkedEventId: String, request: SignCheckRequest) async throws -> SignCheckResponse {
+        throw failure
+    }
+    func acceptSignStay(parkedEventId: String, checkId: String) async throws -> SignAcceptResponse {
+        throw failure
+    }
     func policy() async throws -> PolicyResponse { throw failure }
     func startSession(_ request: SessionStartRequest) async throws -> SessionStartOutcome { throw failure }
     func stopSession(sessionId: String) async throws -> SessionStopResponse { throw failure }

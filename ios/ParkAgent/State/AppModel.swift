@@ -50,6 +50,9 @@ final class AppModel {
     /// The park whose sheet should ask what the place is (the "Not a
     /// garage" button on its notification).
     var placeAskFor: String?
+    /// The parking-sign reader is on (GET /me's `signReader`, Issue N);
+    /// nil until asked, and asked again after a failed read.
+    private(set) var signReaderOn: Bool?
     var isPaying = false
     var paymentError: APIError?
     /// Set when session/start answered free_period: the provider says the
@@ -310,6 +313,26 @@ final class AppModel {
             if let me = try? await api.me() {
                 authStore.update(user: me.user)
             }
+        }
+    }
+
+    // MARK: - Parking-sign reader (Issue N)
+
+    /// Learn whether to offer "Check the signs", once. A failed read leaves
+    /// it unknown (no button) and the next parked sheet asks again.
+    func loadSignReaderIfNeeded() async {
+        guard signReaderOn == nil, authStore.isSignedIn else { return }
+        if let me = try? await api.me() { signReaderOn = me.signReader ?? false }
+    }
+
+    /// A check for this park. It sends where the phone is when the detector
+    /// has a recent fix; without one the server uses where the park was
+    /// reported.
+    func signCheckModel(for parkedEventId: String) -> SignCheckModel {
+        SignCheckModel(parkedEventId: parkedEventId, api: api) { [detector] in
+            guard let fix = detector.lastFix, fix.accuracy >= 0,
+                  AppClock.now.timeIntervalSince(fix.at) < 120 else { return nil }
+            return SignFix(lat: fix.latitude, lng: fix.longitude, accuracy: fix.accuracy)
         }
     }
 

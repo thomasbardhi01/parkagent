@@ -25,6 +25,9 @@ struct MeResponse: Codable, Sendable {
     var user: AuthUser
     var paymentSource: PaymentSource
     var issuingLive: Bool
+    /// The parking-sign reader is on (Issue N): offer "Check the signs".
+    /// Absent from an older server, which has no reader.
+    var signReader: Bool? = nil
 }
 
 struct VehicleSummary: Codable, Sendable, Identifiable, Equatable {

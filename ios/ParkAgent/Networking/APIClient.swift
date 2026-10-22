@@ -43,6 +43,12 @@ protocol APIClient: Sendable {
     func answerPlace(parkedEventId: String, placeClass: String, name: String?) async throws -> PlaceAnswerResponse
     /// The zone number the driver read off the meter (needsZoneNumber flow).
     func reportZoneNumber(zoneId: String, number: String) async throws -> ZoneNumberReportResponse
+    /// What the signs at this park say (server/API.md "POST
+    /// /parked/:id/signs"). Advisory: it pays and extends nothing.
+    func checkSigns(parkedEventId: String, request: SignCheckRequest) async throws -> SignCheckResponse
+    /// Take a stricter check's shorter max stay for this park. Only ever
+    /// tightens.
+    func acceptSignStay(parkedEventId: String, checkId: String) async throws -> SignAcceptResponse
     func policy() async throws -> PolicyResponse
     /// 200 is either a started session or a typed free period (the
     /// provider says the zone is not charging right now).
@@ -370,6 +376,11 @@ enum APIError: Error, LocalizedError {
         case "auth_not_configured": "This server isn't set up for sign-in yet."
         case "assistant_budget_exhausted": "You've used today's assistant allowance. It resets at midnight."
         case "assistant_not_configured": "The assistant isn't set up on this server yet."
+        // The parking-sign reader (server/API.md "POST /parked/:id/signs").
+        case "sign_reader_off": "Checking signs isn't available right now."
+        case "park_closed": "That park is over, so there's nothing to check."
+        case "nothing_to_accept": "There's no shorter limit to use for this check."
+        case "sign_check_not_found": "That check isn't available any more. Check the signs again."
         case "assistant_failed": "The assistant hit a problem. Try asking again."
         case "conversation_not_found": "That conversation isn't available. Start a new one."
         case "rate_limited": "That's a lot of requests at once. Wait a moment and try again."

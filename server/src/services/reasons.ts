@@ -449,6 +449,24 @@ const REASONS: Record<string, Spec> = {
   conflicting_patch: ["the request change contradicted itself", NONE],
   explain_phrased: ["a decision was explained in plain words", NONE],
 
+  // ---- the nightly audit's summary (#256): the model's words, checked
+  // against the findings, or the template's when it can't be used
+  model: ["the model wrote it, and every line was checked against the facts", NONE],
+  "audit_summary:template_off": [
+    "the model summary is switched off, so the template wrote it",
+    NONE,
+  ],
+  "audit_summary:template_over_budget": [
+    "the model's daily budget was spent, so the template wrote it",
+    NONE,
+  ],
+  "audit_summary:template_refused": ["the model declined, so the template wrote it", NONE],
+  "audit_summary:template_failed": ["the model call failed, so the template wrote it", NONE],
+  "audit_summary:template_ungrounded": [
+    "the model's lines didn't match the findings, so the template wrote it",
+    NONE,
+  ],
+
   // ---- external agents (WS-4)
   agents_may_act: ["you said agents may act for you", NONE],
   agents_may_not_act: ["you said agents may not act for you", NONE],
@@ -688,6 +706,7 @@ const KIND_TEXT: Record<string, string> = {
   account_delete: "Account deletion",
   auth_identity: "Sign-in",
   circuit_breaker: "The provider",
+  audit_summary: "Nightly audit summary",
 };
 
 /** Whether `rule` (on `kind`, when a kind-specific entry exists) has a

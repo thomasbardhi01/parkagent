@@ -3670,6 +3670,12 @@ the MCP TypeScript SDK v2 (`createMcpHandler`, mounted with
   logging). A 2025-era client (`initialize`, no per-request envelope) is
   served statelessly from the same tools (`legacy: "stateless"`). The
   `Mcp-Method`/`Mcp-Name` headers must agree with the body (`-32020`).
+  `subscriptions/listen` is `-32601`: the lists never change while the
+  server runs, so no change stream is held open.
+- **Ceiling:** every request to `/mcp` (initialize, discover, lists,
+  ping, GET) counts against a per-key ceiling of its own, 600 a minute
+  (`429 rate_limited`), apart from the per-call budget the tools share
+  with REST.
 - **Tools:** `geocode_place`, `quote_street`, `search_garages`,
   `build_itinerary`, `propose_plan`, `confirm_plan`, always in that order
   (`examples/grok-tool.json`'s), and `tools/list` is cacheable
@@ -3679,13 +3685,20 @@ the MCP TypeScript SDK v2 (`createMcpHandler`, mounted with
   refusal is a tool error (`isError: true`) whose body carries the REST
   code in `error`: `agents_not_allowed`, `scope_required`,
   `mandate_not_found`, `mandate_used`, `mandate_expired`,
-  `plan_hash_mismatch`, `policy_violation {rule}`, `rate_limited
-  {retryAfterS}`, and the rest as REST. `propose_plan` hands back the
-  mandate (`confirmToken`) as an ordinary result field; nothing pays, and a
-  street confirm answers `pending_arrival` exactly as REST.
+  `plan_hash_mismatch`, `nothing_to_confirm`, `dry_run_changed
+  {shownDryRun, dryRun}`, `policy_violation {rule}`,
+  `garage_option_expired`, `garage_book_failed`, `rate_limited
+  {retryAfterS}`, and the rest as REST. `confirm_plan` runs the one
+  confirm sequence REST and the app's tap run (`consumeConfirmation`):
+  a refusal before the claim leaves the mandate unspent. `propose_plan`
+  hands back the mandate (`confirmToken`) as an ordinary result field;
+  nothing pays, and a street confirm answers `pending_arrival` exactly as
+  REST.
 - **Resources:** `parkagent://plans/{id}` and `parkagent://parks/{id}`,
   the person's own only (`GET /agent/plans/:id`'s and
-  `/agent/parks/:id`'s bodies); anyone else's is not found.
+  `/agent/parks/:id`'s bodies); anyone else's is not found. A read over
+  the key's budget is error `-32029` with `{error: "rate_limited",
+  retryAfterS}` as its data, never "not found".
 - **Tracing:** a `traceparent` in a request's `_meta` (else the HTTP
   header) is the trace id on the decisions that call writes.
 - **The confirm card (`MCP_APPS`, off by default):** with `MCP_APPS=true`,

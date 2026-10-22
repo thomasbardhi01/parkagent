@@ -404,3 +404,88 @@ describe("extend", () => {
     expect((await g.gate(JOB, extend(s, { source: "auto", underLock: true }))).ok).toBe(true);
   });
 });
+
+describe("an amount the gate can't judge is refused, never allowed (fail closed)", () => {
+  // Every cap is `amount > cap`, and NaN or undefined makes that false: an
+  // amount the gate let through unread would pass every cap.
+  const BAD = [Number.NaN, undefined, Number.POSITIVE_INFINITY, -1] as unknown as number[];
+
+  const INTENTS: [string, (b: number) => GateIntent][] = [
+    ["start: the price", (b) => start({ price: { ...price(4), totalUsd: b } })],
+    ["quote: the total", (b) => ({ kind: "quote", totalUsd: b, ladderMaxRateUsd: 2 })],
+    ["quote: the ladder's rate", (b) => ({ kind: "quote", totalUsd: 4, ladderMaxRateUsd: b })],
+    ["prompt: the total", (b) => ({ kind: "prompt", provider: NYC, zoneNumber: "1", totalUsd: b })],
+    ["plan: the total", (b) => ({ kind: "plan", stopsUsd: [3], totalUsd: b, perStop: true })],
+    ["plan: a stop", (b) => ({ kind: "plan", stopsUsd: [3, b], totalUsd: 7, perStop: true })],
+    [
+      "plan: a stop, per-day only",
+      (b) => ({ kind: "plan", stopsUsd: [b], totalUsd: 3, perStop: false }),
+    ],
+    ["funding: the amount", (b) => ({ kind: "funding", amountUsd: b })],
+  ];
+
+  describe.each(BAD.map((b) => [String(b), b] as const))("%s", (_label, b) => {
+    test.each(INTENTS)("%s", async (_name, intent) => {
+      for (const p of [USER, JOB]) {
+        const result = await makeGate().gate(p, intent(b));
+        expect(result).toMatchObject({ ok: false, rule: "amount_invalid" });
+      }
+    });
+
+    test("extend: the price", async () => {
+      const g = makeGate();
+      const s = seedSession(g.state, { userId: "u2", status: "active", amountUsd: 6 });
+      const intent: GateIntent = {
+        kind: "extend",
+        session: s,
+        minutes: 30,
+        price: { ...price(3), totalUsd: b },
+        source: "auto",
+      };
+      expect(await g.gate(JOB, intent)).toMatchObject({ ok: false, rule: "amount_invalid" });
+    });
+  });
+
+  test("a shown amount that isn't one, and pending Link spend that isn't one", async () => {
+    const g = makeGate();
+    expect(await g.gate(USER, start({ shown: { maxTotalUsd: Number.NaN } }))).toMatchObject({
+      ok: false,
+      rule: "amount_invalid",
+    });
+    const pending: GateIntent = {
+      kind: "plan",
+      stopsUsd: [3],
+      totalUsd: 3,
+      pendingUsd: Number.NaN,
+      perStop: true,
+    };
+    expect(await g.gate(USER, pending)).toMatchObject({ ok: false, rule: "amount_invalid" });
+    // Left out, they are "not shown" and "none pending": allowed.
+    expect((await g.gate(USER, start({ shown: {} }))).ok).toBe(true);
+    const none: GateIntent = { kind: "plan", stopsUsd: [3], totalUsd: 3, perStop: true };
+    expect((await g.gate(USER, none)).ok).toBe(true);
+  });
+
+  test("a stops list that isn't one", async () => {
+    const intent = { kind: "plan", totalUsd: 3, perStop: true } as unknown as GateIntent;
+    expect(await makeGate().gate(USER, intent)).toMatchObject({
+      ok: false,
+      rule: "amount_invalid",
+    });
+  });
+
+  test("refused before the account is read, and only after an agent's consent", async () => {
+    const g = makeGate();
+    g.state.providerAccounts.splice(0);
+    const intent = start({ price: { ...price(4), totalUsd: Number.NaN } });
+    expect(await g.gate(USER, intent)).toMatchObject({ ok: false, rule: "amount_invalid" });
+    expect(await g.gate(AGENT, intent)).toEqual({ ok: false, rule: "agents_not_allowed" });
+  });
+
+  test("today's spend that sums to NaN (a garbled ledger amount) refuses too", async () => {
+    const g = makeGate();
+    seedSession(g.state, { userId: "u2", status: "stopped", dryRun: false, amountUsd: Number.NaN });
+    const quote: GateIntent = { kind: "quote", totalUsd: 4, ladderMaxRateUsd: 2 };
+    expect(await g.gate(USER, quote)).toMatchObject({ ok: false, rule: "amount_invalid" });
+  });
+});

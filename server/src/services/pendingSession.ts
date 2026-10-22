@@ -388,7 +388,11 @@ export function parkCandidates(park: Pick<PendingParkRow, "candidates">): ParkCa
 }
 
 export type ParkPromptReason =
-  "needs_zone_number" | "provider_not_linked" | "session_cap_exceeded" | "daily_cap_exceeded";
+  | "needs_zone_number"
+  | "provider_not_linked"
+  | "session_cap_exceeded"
+  | "daily_cap_exceeded"
+  | "amount_invalid";
 
 /**
  * What the phone shows at walk-away, word for word. `confirm` carries the
@@ -544,6 +548,10 @@ export async function buildParkPrompt(
       daily_cap_exceeded: {
         title: parkedIn,
         body: `${usd(quote.totalUsd)} is over today's limit, so ParkAgent won't pay it. Pay at the meter or in your parking app.`,
+      },
+      amount_invalid: {
+        title: parkedIn,
+        body: "ParkAgent couldn't work out what this stop costs, so it won't pay it. Pay at the meter or in your parking app.",
       },
     }[reason];
     return {

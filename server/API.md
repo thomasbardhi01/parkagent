@@ -484,6 +484,7 @@ agree.
 |---|---|---|---|
 | `unknown_zone` | no candidate in radius | `unknown_zone` | `[]`, quote `null` |
 | `candidates_disagree` | some candidate disagrees with the nearest | `confirm` | nearest + nearest disagreeing, each with its own quote; top-level quote is the nearest's |
+| `amount_invalid` | the quote's total or the ladder's rate isn't a finite number ≥ 0, or today's spend doesn't sum to one: never paid on an amount the caps can't judge | `confirm` | nearest only |
 | `free_period` | all agree, `totalUsd` is 0 | `ignore` | nearest only |
 | `rate_above_ceiling` | ladder max > `auto_pay_max_rate_per_hour` | `confirm` | nearest only |
 | `session_cap_exceeded` | `totalUsd` > `session_cap_usd` | `confirm` | nearest only |
@@ -959,6 +960,7 @@ guarantees and cannot be confirmed through — raise them via `PUT /policy`):
 
 | `409 {"error": "policy_violation", "rule": …}` | Condition |
 |---|---|
+| `amount_invalid` | checked first: the price, or the amount the tap was shown, isn't a finite number ≥ 0, or today's spend doesn't sum to one. Every cap compares `amount > cap`, which a missing or NaN amount would pass, so the gate refuses instead (the same holds for extensions, the walk-away prompt, the assistant's caps and funding moves) |
 | `max_stay_exceeded` | `minutes` > zone max stay |
 | `free_period` | the whole stay prices to $0 (outside enforcement) — nothing to buy, and typing minutes into the provider anyway could charge money the quote never priced |
 | `session_cap_exceeded` | purchase total > `session_cap_usd` |
@@ -1671,6 +1673,7 @@ Both are policy-gated and audited — every call writes a `decisions` row
 
 | Refusal | Status | Condition |
 |---|---|---|
+| `amount_invalid` | 409 | the amount isn't a finite number ≥ 0 (the gate's own check, behind the route's validation) |
 | `amount_over_daily_cap` | 409 | a single move may not exceed `daily_cap_usd` |
 | `insufficient_funds` | 409 | withdraw only; carries `balanceUsd` |
 | `dry_run` | 409 | either dry-run switch on; outcome records `wouldAllow: true` |

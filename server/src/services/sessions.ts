@@ -113,6 +113,7 @@ export type ExtensionOutcome =
         | "max_stay_exceeded"
         | "session_cap_exceeded"
         | "daily_cap_exceeded"
+        | "amount_invalid"
         | "agents_not_allowed";
       message: string;
       price: StayPrice;
@@ -212,12 +213,13 @@ export async function applyExtension(
     if (!gate.ok) {
       const outcome: ExtensionOutcome = {
         ok: false,
-        // The extend intent refuses with one of these five, never a start's.
+        // The extend intent refuses with one of these six, never a start's.
         code: gate.rule as
           | "phone_not_away"
           | "max_stay_exceeded"
           | "session_cap_exceeded"
           | "daily_cap_exceeded"
+          | "amount_invalid"
           | "agents_not_allowed",
         message:
           gate.rule === "phone_not_away"

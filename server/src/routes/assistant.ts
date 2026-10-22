@@ -809,7 +809,18 @@ export function registerAssistant(
       { kind: "plan", stopsUsd: [], totalUsd, perStop: false },
       now(),
     );
-    if (refusedConsent(gate)) return reply.code(403).send({ error: gate.rule });
+    if (refusedConsent(gate)) {
+      const decision = await deps.db.decision.create({
+        data: {
+          kind: "assistant_confirm",
+          inputs: { planId, stops: stops.length },
+          rule: gate.rule,
+          outcome: { allowed: false },
+          userId: user.id,
+        },
+      });
+      return reply.code(403).send({ error: gate.rule, decisionId: decision.id });
+    }
     const { spentTodayUsd } = gate;
     const capUsd = gate.policy.daily_cap_usd;
     const fitsCap = gate.ok;
@@ -882,7 +893,18 @@ export function registerAssistant(
       { kind: "plan", stopsUsd: [], totalUsd, perStop: false },
       now(),
     );
-    if (refusedConsent(gate)) return reply.code(403).send({ error: gate.rule });
+    if (refusedConsent(gate)) {
+      const decision = await deps.db.decision.create({
+        data: {
+          kind: "assistant_confirm",
+          inputs: { itineraryId: id, edit: true },
+          rule: gate.rule,
+          outcome: { allowed: false },
+          userId: user.id,
+        },
+      });
+      return reply.code(403).send({ error: gate.rule, decisionId: decision.id });
+    }
     const { policy, spentTodayUsd } = gate;
     if (!gate.ok) {
       await deps.db.decision.create({

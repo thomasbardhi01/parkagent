@@ -445,6 +445,7 @@ export function makeExtender(deps: ExtenderDeps): Extender {
     }
 
     let outcome: Record<string, unknown> = { action: "hold" };
+    let heldUnderLock = false;
     if (rule === "extend") {
       const minutes = Math.floor(desiredMinutes);
       const result = await applyExtension(
@@ -473,7 +474,10 @@ export function makeExtender(deps: ExtenderDeps): Extender {
       ) {
         // The gate refused the fresh row under the lock (another extension
         // landed since this one was priced): the matching cap rule, as a
-        // hold, never an executor failure. The next tick reads it anew.
+        // hold, never an executor failure. Not booked as the settled rule:
+        // the next tick reads the same hold from its own ladder, sees the
+        // change, and sends the driver the warning this tick can't.
+        heldUnderLock = true;
         rule =
           result.code === "session_cap_exceeded"
             ? "hold_session_cap"
@@ -554,7 +558,12 @@ export function makeExtender(deps: ExtenderDeps): Extender {
       },
     });
 
-    if (changed && rule !== "extension_in_progress" && rule !== "phone_not_away") {
+    if (
+      changed &&
+      rule !== "extension_in_progress" &&
+      rule !== "phone_not_away" &&
+      !heldUnderLock
+    ) {
       await deps.db.session.update({
         where: { id: session.id },
         data: { lastExtenderRule: rule, lastExtenderRuleAt: at },

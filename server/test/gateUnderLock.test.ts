@@ -109,6 +109,18 @@ describe("the gate under the extension lock", () => {
       underLock: true,
     });
     expect(t.executorCalls.filter((c) => c.op === "extend")).toHaveLength(0);
+    // Not booked as the settled rule, so the driver isn't left unwarned:
+    // the next tick reads the same hold from its own ladder and pushes.
+    expect(t.state.sessions.find((s) => s.id === session.id)!.lastExtenderRule).not.toBe(
+      "hold_daily_cap",
+    );
+    expect(t.pushes).toHaveLength(0);
+    await extender.tick();
+    expect(t.state.decisions.filter((d) => d.kind === "extend_tick").at(-1)!.rule).toBe(
+      "hold_daily_cap",
+    );
+    expect(t.pushes).toHaveLength(1);
+    expect(JSON.stringify(t.pushes[0]!.push)).toContain("budget");
   });
 });
 

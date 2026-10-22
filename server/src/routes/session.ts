@@ -842,7 +842,8 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
       !outcome.ok &&
       (outcome.code === "max_stay_exceeded" ||
         outcome.code === "session_cap_exceeded" ||
-        outcome.code === "daily_cap_exceeded")
+        outcome.code === "daily_cap_exceeded" ||
+        outcome.code === "agents_not_allowed")
     ) {
       // The gate refused the fresh row under the lock: another extension
       // landed between pricing and now, and this one no longer fits. Its

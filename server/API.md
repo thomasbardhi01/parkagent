@@ -3426,8 +3426,9 @@ before it is made**: `linkSkipped` says why none was — `dry_run` (either
 dry-run switch on, unless `LINK_TEST_MODE`, whose requests carry
 `test: true` and can't charge), `session_cap_exceeded` (a garage over
 `session_cap_usd` — each garage stop is its own purchase, so the cap
-binds each stop, never their sum), `daily_cap_exceeded` (today's real
-spend — sessions and garages already approved in Link — plus requests
+binds each stop, never their sum), `daily_cap_exceeded` (today's spend
+as the money gate counts it — sessions and garages already approved in
+Link, and under a dry run today's dry runs too — plus requests
 still awaiting approval today, plus this confirm's whole plan — an
 itinerary's street stops included — over `daily_cap_usd`; a pending
 request holds its room because approving it makes it spendable), or

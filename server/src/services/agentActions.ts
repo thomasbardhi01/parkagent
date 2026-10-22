@@ -85,6 +85,18 @@ function refusalAnswer(refusal: ConfirmRefusal): {
       return { code: 409, error: "policy_violation", extra: { rule: "amount_invalid" } };
     case "option_expired":
       return { code: 409, error: "garage_option_expired", extra: {} };
+    default: {
+      // A refusal added to ConfirmRefusal without a case here fails tsc
+      // (`never`). At run time it still answers as a refusal carrying its
+      // own rule, never a throw: it comes before the mandate is claimed.
+      const unhandled: never = refusal;
+      const { why, rule } = unhandled as { why?: unknown; rule?: unknown };
+      return {
+        code: 409,
+        error: "policy_violation",
+        extra: { rule: typeof rule === "string" ? rule : String(why) },
+      };
+    }
   }
 }
 

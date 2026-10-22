@@ -9,7 +9,7 @@
 
 import { readFileSync } from "node:fs";
 
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import { AGENT_TOOLS } from "../src/routes/agentSchemas.js";
 import { CONFIRM_CARD_MIME, CONFIRM_CARD_URI } from "../src/routes/mcpConfirmCard.js";
@@ -25,6 +25,18 @@ import {
   TEST_JWT_SECRET,
   makeTestApp,
 } from "./helpers.js";
+
+/** A refusal the gate might add later, forced through the real confirm
+ * path; null leaves the sequence as it is. */
+const forced = vi.hoisted(() => ({ refusal: null as null | { why: string; rule?: string } }));
+vi.mock("../src/services/capabilities/confirmPlan.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../src/services/capabilities/confirmPlan.js")>();
+  const consumeConfirmation: typeof real.consumeConfirmation = (...args) =>
+    forced.refusal
+      ? Promise.resolve({ ok: false, refusal: forced.refusal as never, result: {} })
+      : real.consumeConfirmation(...args);
+  return { ...real, consumeConfirmation };
+});
 
 const NOW = new Date(MONDAY_2PM);
 const U2 = { "x-api-key": NONADMIN_API_KEY };
@@ -349,6 +361,22 @@ describe("refusals are tool errors with REST's codes", () => {
     expect(result.isError).toBe(true);
     expect(errorOf(result)).toBe("policy_violation");
     expect(result.structuredContent!["rule"]).toBe("amount_invalid");
+    expect(s.t.state.mandates[0]!.consumedAt).toBeNull();
+    expect(s.t.state.sessions).toHaveLength(0);
+  });
+
+  test("a refusal rule with no case yet: a policy_violation refusal carrying the rule, not a crash", async () => {
+    const s = await setup();
+    const proposed = await proposeOver(s.tool);
+    forced.refusal = { why: "some_new_rule" };
+    try {
+      const result = await confirmOnce(s, proposed);
+      expect(errorOf(result)).toBe("policy_violation");
+      expect(result.structuredContent!["rule"]).toBe("some_new_rule");
+      expect(result.structuredContent!["decisionId"]).toEqual(expect.any(String));
+    } finally {
+      forced.refusal = null;
+    }
     expect(s.t.state.mandates[0]!.consumedAt).toBeNull();
     expect(s.t.state.sessions).toHaveLength(0);
   });

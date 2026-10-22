@@ -58,6 +58,17 @@ enum SignCopy {
         "Done. ParkAgent won't keep this park past \(Format.minutes(minutes))."
     }
 
+    /// The accept's answer in words: the stay accepted, or, when the
+    /// running session already has more time than that on the meter, that
+    /// time and that no more is added (the server never cuts below it).
+    static func accepted(_ answer: SignAcceptResponse) -> String {
+        if let held = answer.sessionMaxStayMinutes, held > answer.maxStayMinutes {
+            let onMeter = answer.paidMinutes ?? held
+            return "Done. This park already has \(Format.minutes(onMeter)) on the meter, so ParkAgent won't add any more."
+        }
+        return accepted(answer.maxStayMinutes)
+    }
+
     /// What a reason code means, in words; nil for one this build doesn't know.
     static func reason(_ code: String) -> String? {
         switch code {

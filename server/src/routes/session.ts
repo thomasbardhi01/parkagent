@@ -31,7 +31,7 @@ import { principalFor } from "../services/principal.js";
 import { applyExtension, priceExtension } from "../services/sessions.js";
 import { fireShadowAuthorization } from "../services/shadow.js";
 import type { PlaceHoldResult, SettleReason, SettleResult } from "../services/wallet/holds.js";
-import { acceptedSignStay } from "../services/signs/acceptedStay.js";
+import { acceptedSignStay, holdAcceptedAfter } from "../services/signs/acceptedStay.js";
 import { tightenedMaxStay } from "../services/signs/signRules.js";
 import { placeHold, settleHold } from "../services/wallet/holds.js";
 import { parkAgentCardReadiness } from "../services/wallet/parkagentCard.js";
@@ -662,6 +662,11 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
         parknycConfirmation: result.providerSessionId,
       },
     });
+    // A stay the driver accepted from the signs while this start was still
+    // pending: held to it now, never below the minutes just bought. The
+    // provider has charged, so a failure here is logged, never thrown (the
+    // next extension holds it again).
+    await holdAcceptedAfter(deps, session.id, user.id, parkedEvent.id, "start", app.log);
     await deps.db.sessionEvent.create({
       data: {
         sessionId: session.id,

@@ -24,10 +24,10 @@ import { z } from "zod";
 import type { AppDeps } from "../app.js";
 import { requireAdmin } from "../app.js";
 import { readSigns } from "../services/capabilities/readSigns.js";
+import { holdToAcceptedStay } from "../services/signs/acceptedStay.js";
 import { PARK_OPEN, PARK_TTL_MS } from "../services/pendingSession.js";
 import { principalFor } from "../services/principal.js";
 import { makeRateLimiter } from "../services/rateLimit.js";
-import { tightenedMaxStay } from "../services/signs/signRules.js";
 
 /** How long the OCR text, and a photo the driver chose to keep, stay. */
 export const SIGN_CHECK_RETENTION_DAYS = 30;
@@ -202,42 +202,47 @@ export function registerSigns(app: FastifyInstance, deps: AppDeps): void {
     });
     // A running session for this park: its max stay tightens now, and the
     // money gate holds every extension to it. Never loosened, and never
-    // below what the session has already bought.
+    // below what the session has already bought. A start still pending
+    // takes it once its session is active, and an extension buying now
+    // re-holds it once it has bought (signs/acceptedStay.ts).
     const session = await deps.db.session.findFirst({
-      where: { userId, status: "active", parkedEventId: id },
+      where: { userId, status: { in: ["pending", "active"] }, parkedEventId: id },
     });
-    let tightenedSession: string | null = null;
-    // What the session is held to, and what it had bought (the floor).
-    const held = session
-      ? {
-          sessionMaxStayMinutes: tightenedMaxStay(
-            session.maxStayMinutes ?? null,
-            offer,
-            session.purchasedMinutes,
-          ),
-          paidMinutes: session.purchasedMinutes,
-        }
-      : null;
-    if (session && held && held.sessionMaxStayMinutes !== (session.maxStayMinutes ?? null)) {
-      await deps.db.session.update({
-        where: { id: session.id },
-        data: { maxStayMinutes: held.sessionMaxStayMinutes },
-      });
-      tightenedSession = session.id;
-    }
-    if (won.count > 0) {
+    const held =
+      session?.status === "active" ? await holdToAcceptedStay(deps.db, session.id) : null;
+    // On the ledger the first time it's accepted, and whenever it held a
+    // session tighter (a second tap after the session started).
+    if (won.count > 0 || held?.tightened) {
       await deps.db.decision.create({
         data: {
           kind: "sign_check",
           inputs: { checkId, parkedEventId: id },
           rule: "accepted_shorter_stay",
-          outcome: { maxStayMinutes: offer, tightenedSession, ...held },
+          outcome: {
+            maxStayMinutes: offer,
+            tightenedSession: held?.tightened ? held.sessionId : null,
+            ...(held
+              ? {
+                  sessionMaxStayMinutes: held.sessionMaxStayMinutes,
+                  paidMinutes: held.paidMinutes,
+                }
+              : {}),
+            ...(session?.status === "pending" ? { pendingSession: session.id } : {}),
+          },
           userId,
           parkedEventId: id,
         },
       });
     }
-    return { accepted: true, maxStayMinutes: offer, sessionId: session?.id ?? null };
+    // What the app says: the stay accepted, and what the running session
+    // is held to and has paid for (the floor), when there is one.
+    return {
+      accepted: true,
+      maxStayMinutes: offer,
+      sessionId: session?.id ?? null,
+      sessionMaxStayMinutes: held?.sessionMaxStayMinutes ?? null,
+      paidMinutes: held?.paidMinutes ?? null,
+    };
   });
 
   /** The zone-data review queue: checks whose driver kept a photo, a

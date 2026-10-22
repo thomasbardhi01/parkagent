@@ -73,6 +73,13 @@ struct SignCheckResponse: Codable, Sendable, Equatable {
 
 struct SignAcceptResponse: Codable, Sendable, Equatable {
     var accepted: Bool
+    /// The stay accepted from the signs.
     var maxStayMinutes: Int
     var sessionId: String?
+    /// What a running session is held to: never below what it has already
+    /// bought, so it can be longer than the stay accepted. Nil with no
+    /// running session, and from a server that doesn't say.
+    var sessionMaxStayMinutes: Int? = nil
+    /// What that session has bought.
+    var paidMinutes: Int? = nil
 }

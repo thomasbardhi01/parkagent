@@ -111,7 +111,9 @@ final class SignCheckTests: XCTestCase {
             response(verdict, offer: verdict == .stricter ? 45 : nil)
         }
         let words = checks.map(SignCopy.detail) + checks.map { SignCopy.headline($0.verdict) }
-            + [SignCopy.intro, SignCopy.advisory, SignCopy.accept(45), SignCopy.accepted(45)]
+            + [SignCopy.intro, SignCopy.advisory, SignCopy.accept(45), SignCopy.accepted(45),
+               SignCopy.accepted(SignAcceptResponse(accepted: true, maxStayMinutes: 60, sessionId: "s1",
+                                                    sessionMaxStayMinutes: 90, paidMinutes: 90))]
         for sentence in words {
             for claim in ["paid", "extended", "charged", "refund"] {
                 XCTAssertFalse(sentence.lowercased().contains(claim), "\"\(sentence)\" says \(claim)")
@@ -126,6 +128,23 @@ final class SignCheckTests: XCTestCase {
         XCTAssertTrue(detail.contains("35 min for this park"), detail)
         XCTAssertFalse(detail.contains("from now"), detail)
         XCTAssertEqual(SignCopy.accept(60), "Hold this park to 1 hr")
+    }
+
+    /// An accepted stay shorter than what the running session has already
+    /// bought: the words say the time on the meter and that no more is
+    /// added, never "won't keep this park past" a time already passed.
+    func testAnAcceptBelowWhatIsOnTheMeterSaysSo() {
+        let floored = SignAcceptResponse(accepted: true, maxStayMinutes: 60, sessionId: "s1",
+                                         sessionMaxStayMinutes: 90, paidMinutes: 90)
+        XCTAssertEqual(SignCopy.accepted(floored),
+                       "Done. This park already has 1 hr 30 min on the meter, so ParkAgent won't add any more.")
+        // Held to the offer itself, or no session yet, or an older server
+        // that doesn't say: the stay accepted.
+        let held = SignAcceptResponse(accepted: true, maxStayMinutes: 60, sessionId: "s1",
+                                      sessionMaxStayMinutes: 60, paidMinutes: 45)
+        XCTAssertEqual(SignCopy.accepted(held), SignCopy.accepted(60))
+        let older = SignAcceptResponse(accepted: true, maxStayMinutes: 60, sessionId: nil)
+        XCTAssertEqual(SignCopy.accepted(older), SignCopy.accepted(60))
     }
 
     /// The sheet says what the camera permission says about what leaves

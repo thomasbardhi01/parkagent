@@ -31,6 +31,7 @@ import type { StripeGateway } from "./stripeGateway.js";
 import type { SettleReason } from "./wallet/holds.js";
 import { placeHold, settleHold } from "./wallet/holds.js";
 import { parkAgentCardReadiness } from "./wallet/parkagentCard.js";
+import { holdAcceptedAfter } from "./signs/acceptedStay.js";
 
 export interface SessionDeps {
   db: AppDb;
@@ -426,6 +427,11 @@ async function extendLocked(
       extendCount: session.extendCount + 1,
     },
   });
+  // A stay accepted from the signs after this extension read its row:
+  // held to it now, never below what was just bought.
+  if (session.parkedEventId) {
+    await holdAcceptedAfter(deps, session.id, session.userId, session.parkedEventId, "extend");
+  }
   await deps.db.sessionEvent.create({
     data: {
       sessionId: session.id,

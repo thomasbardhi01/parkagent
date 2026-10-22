@@ -1464,7 +1464,12 @@ export interface AppDb {
     updateMany(
       args:
         | { where: { userId: string } | { vehicleId: string }; data: { vehicleId: null } }
-        | { where: { id: string; status: string }; data: { status: string } },
+        | { where: { id: string; status: string }; data: { status: string } }
+        // Compare-and-set of the max stay on the row read (signs/acceptedStay.ts).
+        | {
+            where: { id: string; purchasedMinutes: number; maxStayMinutes: number | null };
+            data: { maxStayMinutes: number | null };
+          },
     ): Promise<{ count: number }>;
   };
   /** The street session lifecycle (FR-55). */

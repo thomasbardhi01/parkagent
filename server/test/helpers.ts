@@ -1005,6 +1005,10 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
       },
       findUnique: async ({ where }) => state.parkedEvents.find((p) => p.id === where.id) ?? null,
       findMany: async ({ where }) => state.parkedEvents.filter((p) => p.ts >= where.ts.gte),
+      findFirst: async ({ where }) =>
+        state.parkedEvents
+          .filter((p) => p.userId === where.userId && p.ts > where.ts.gt)
+          .sort((a, b) => b.ts.getTime() - a.ts.getTime())[0] ?? null,
     },
     conversation: {
       findUnique: async ({ where }) => state.conversations.find((c) => c.id === where.id) ?? null,

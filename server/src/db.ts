@@ -929,6 +929,11 @@ export interface AppDb {
     findMany(args: {
       where: { ts: { gte: Date } };
     }): Promise<{ id: string; userId: string; signals: unknown; ts: Date }[]>;
+    /** The user's newest park after a time: where the car is now. */
+    findFirst(args: {
+      where: { userId: string; ts: { gt: Date } };
+      orderBy: { ts: "desc" };
+    }): Promise<{ id: string; lat: number; lng: number; ts: Date } | null>;
   };
   conversation: {
     findUnique(args: { where: { id: string } }): Promise<ConversationRow | null>;

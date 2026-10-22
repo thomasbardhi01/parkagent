@@ -200,6 +200,39 @@ test("a newer park against a tap on the old one: the old park is superseded or s
     }
   }));
 
+test("two newer parks elsewhere against one running session: the car is marked moved once, on the ledger once", () =>
+  rounds(async () => {
+    const t = await makePgApp();
+    const { parkedEventId } = await park(t);
+    await walkAway(t);
+    t.tick(5);
+    expect((await tap(t, parkedEventId)).statusCode).toBe(200);
+
+    // Both reach the mark (car_moved_at IS NULL) before either has written it.
+    const race = hold("pendingPark.updateMany", 2, (a) => "carMovedAt" in where(a));
+    t.tick(60);
+    const [a, b] = await Promise.all(
+      [0.01, 0.012].map((north) =>
+        t.post(
+          "/parked",
+          parkedBody({
+            ts: t.now().toISOString(),
+            outcomes: OUTCOMES,
+            lat: CAR.lat + north,
+            lng: CAR.lng,
+          }),
+        ),
+      ),
+    );
+    await race.done;
+    expect(race.arrived()).toBe(2);
+    expect([a.statusCode, b.statusCode]).toEqual([200, 200]);
+
+    const old = (await parksOf(t)).find((p) => p.parkedEventId === parkedEventId)!;
+    expect(old.carMovedAt).not.toBeNull();
+    expect(await decisionsOf(t, "session_car_moved")).toHaveLength(1);
+  }));
+
 test("a relink against a late success, both from `start_failed`: one moves the park, once, onto its one session", () =>
   rounds(async () => {
     const t = await makePgApp();

@@ -11,6 +11,7 @@
 import { afterEach, expect, test, vi } from "vitest";
 
 import type { PendingParkRow, ZoneTermsRow } from "../src/db.js";
+import { makeExtender } from "../src/jobs/extendTick.js";
 import type { Executor, ExecutorResult } from "../src/services/executor.js";
 import { DryRunExecutor } from "../src/services/executor.js";
 import type { ParkStarter } from "../src/services/pendingSession.js";
@@ -1578,6 +1579,60 @@ test("a start that answers after the sweep closed its park: the park takes the s
     outcome: { previousStatus: "start_failed", parkStatus: "started", sessionId: session.id },
   });
   expect(t.calls.start).toBe(1);
+});
+
+test("a newer park elsewhere while a stalled start's park is closed: the late success takes a session whose car moved, and buys nothing (#246)", async () => {
+  const t = makeApp();
+  const extender = makeExtender({ ...t.deps, log: { info() {}, warn() {} } });
+  const parked = await park(t.app);
+  await walkAway(t);
+  // The start stalls before it has made its session row…
+  const real = t.deps.db.vehicle.findFirst;
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  t.deps.db.vehicle.findFirst = async (args) => {
+    await gate;
+    return real(args);
+  };
+  const paying = tap(t, parked.parkedEventId);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  // …the sweep closes its park, and then the car parks 1.1 km away.
+  t.tick(11 * 60);
+  await post(t.app, "/location", fix(t, 300));
+  expect(t.state.pendingParks[0]!.status).toBe("start_failed");
+  t.tick(30);
+  const newer = await park(t.app, {
+    lat: CAR.lat + 0.01,
+    ts: t.clock.now.toISOString(),
+  });
+  expect(t.state.decisions.filter((d) => d.kind === "session_car_moved")).toEqual([]);
+
+  // The start pays after all: the old park takes the session, moved.
+  release();
+  expect((await paying).statusCode).toBe(200);
+  const session = t.state.sessions[0]!;
+  const old = t.state.pendingParks.find((p) => p.parkedEventId === parked.parkedEventId)!;
+  expect(old).toMatchObject({ status: "started", sessionId: session.id });
+  expect(old.carMovedAt).not.toBeNull();
+  const moved = t.state.decisions.filter((d) => d.kind === "session_car_moved");
+  expect(moved).toHaveLength(1);
+  expect(moved[0]).toMatchObject({
+    rule: "newer_park_elsewhere",
+    sessionId: session.id,
+    parkedEventId: parked.parkedEventId,
+    inputs: expect.objectContaining({
+      newParkedEventId: newer.parkedEventId,
+      seenAt: "late_success",
+    }),
+  });
+
+  // Near expiry, nothing is bought for the spot the car left.
+  t.clock.now = new Date(session.expiresAt!.getTime() - 8 * 60_000);
+  await extender.tick();
+  expect(t.state.decisions.filter((d) => d.kind === "extend_tick").at(-1)).toMatchObject({
+    rule: "hold_car_moved",
+  });
+  expect(t.calls.extend).toBe(0);
 });
 
 test("a start with no answer by its deadline stops holding the park; a success after that is adopted", async () => {

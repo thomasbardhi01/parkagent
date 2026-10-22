@@ -1022,23 +1022,43 @@ test("a newer park elsewhere while the old one is mid-start: the session it star
     parkedBody({ outcomes: OUTCOMES, lat: ELSEWHERE.lat, ts: t.clock.now.toISOString() }),
   );
   expect(newer.statusCode).toBe(200);
-  // Written on the park mid-start, from its own car fix: no session yet.
+  // Mid-start the park is neither superseded nor marked: it has no session.
   const old = t.state.pendingParks.find((p) => p.parkedEventId === id)!;
-  expect(old).toMatchObject({ status: "starting", carMovedAt: t.clock.now });
-  const moved = t.state.decisions.filter((d) => d.kind === "session_car_moved");
-  expect(moved).toHaveLength(1);
-  expect(moved[0]).toMatchObject({
-    rule: "newer_park_elsewhere",
-    parkedEventId: newer.json()["parkedEventId"],
-    inputs: expect.objectContaining({ startingParkedEventId: id, parkStatus: "starting" }),
-  });
+  expect(old.status).toBe("starting");
 
-  // The start settles: the park takes its session and keeps the move.
+  // The start settles: the park takes its session, and the newest park
+  // since it says the car has moved, on the ledger against both.
   release();
   expect((await paying).statusCode).toBe(200);
   const session = t.state.sessions[0]!;
   expect(old).toMatchObject({ status: "started", sessionId: session.id });
   expect(old.carMovedAt).not.toBeNull();
+  const moved = () => t.state.decisions.filter((d) => d.kind === "session_car_moved");
+  expect(moved()).toHaveLength(1);
+  expect(moved()[0]).toMatchObject({
+    rule: "newer_park_elsewhere",
+    sessionId: session.id,
+    parkedEventId: id,
+    inputs: expect.objectContaining({
+      newParkedEventId: newer.json()["parkedEventId"],
+      seenAt: "start_settled",
+    }),
+  });
+
+  // Two more parks elsewhere: the move is on the ledger once.
+  for (const metres of [500, 900]) {
+    t.tick(60);
+    await post(
+      t.app,
+      "/parked",
+      parkedBody({
+        outcomes: OUTCOMES,
+        lat: ELSEWHERE.lat + metres / 111_320,
+        ts: t.clock.now.toISOString(),
+      }),
+    );
+  }
+  expect(moved()).toHaveLength(1);
 
   // Near expiry, the worker reads the car as moved and buys nothing.
   t.clock.now = new Date(session.expiresAt!.getTime() - 8 * 60_000);
@@ -1046,8 +1066,6 @@ test("a newer park elsewhere while the old one is mid-start: the session it star
   const tick = t.state.decisions.filter((d) => d.kind === "extend_tick").at(-1)!;
   expect(tick).toMatchObject({ rule: "hold_car_moved", inputs: { position: "moved" } });
   expect(t.calls.extend).toBe(0);
-  // Once: a second newer park elsewhere writes no second row.
-  expect(t.state.decisions.filter((d) => d.kind === "session_car_moved")).toHaveLength(1);
 });
 
 test("a newer park at the same spot while the old one is mid-start: the car hasn't moved, and nothing is written", async () => {

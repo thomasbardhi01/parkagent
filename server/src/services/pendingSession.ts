@@ -994,6 +994,7 @@ export async function lifecycleOf(
       await recordParkChange(deps, earlier, next, "linked_to_session", at, {
         previousSessionId: earlier.sessionId,
       });
+      await noteNewerParkSince(deps, earlier, session.id, at, "relinked");
       return db.pendingPark.findUnique({ where: { id: earlier.id } });
     }
     return await db.pendingPark.create({
@@ -1160,14 +1161,18 @@ export async function noteCarMoved(
   at: Date,
   parkedEventId: string,
 ): Promise<void> {
-  await noteStartingParksMoved(deps, userId, point, at, parkedEventId);
   const session = await deps.db.session.findFirst({ where: { userId, status: "active" } });
   if (!session || session.carLat === null || session.carLng === null) return;
   const distanceM = metersBetween(point.lat, point.lng, session.carLat, session.carLng);
   if (distanceM <= SAME_SPOT_M) return;
   const row = await lifecycleOf(deps, session, at);
   if (!row || row.carMovedAt !== null) return;
-  await deps.db.pendingPark.update({ where: { id: row.id }, data: { carMovedAt: at } });
+  // Once, however many newer parks race for it.
+  const marked = await deps.db.pendingPark.updateMany({
+    where: { id: row.id, status: row.status, carMovedAt: null },
+    data: { carMovedAt: at },
+  });
+  if (marked.count !== 1) return;
   await deps.db.decision.create({
     data: {
       kind: "session_car_moved",
@@ -1189,55 +1194,55 @@ export async function noteCarMoved(
 }
 
 /**
- * The same, for a park mid-start (#246). A `starting` park is never
- * superseded (its start may be paying), and until the start settles it
- * has no session the step above can find, or one its park can't be
- * linked to yet. So the move is written on the park itself, measured from
- * the park's own car fix, from the state it was read in; the start's
- * settle writes the status and the session, never `carMovedAt`, so the
- * session it starts is one whose car has moved, and the worker buys it
- * nothing more.
+ * A park that just took its session (its start settled, a late success
+ * adopted it, or a relink): a newer /parked may have landed while it was
+ * mid-start or closed (#246). A `starting` park is never superseded, a
+ * `start_failed` or `superseded` one has no session, and noteCarMoved
+ * finds neither. So, the moment it holds a session, the user's newest
+ * park since this one says where the car is: more than SAME_SPOT_M from
+ * this park's car, the car has moved, once (compare-and-set on
+ * `car_moved_at` null), on the ledger against this park and its session.
+ * A newer /parked that lands after this read finds the session running
+ * and marks it itself (noteCarMoved).
  */
-async function noteStartingParksMoved(
-  deps: LifecycleDeps,
-  userId: string,
-  point: { lat: number; lng: number },
+async function noteNewerParkSince(
+  deps: Pick<LifecycleDeps, "db" | "policy">,
+  park: PendingParkRow,
+  sessionId: string,
   at: Date,
-  parkedEventId: string,
+  seenAt: "start_settled" | "late_success" | "relinked",
 ): Promise<void> {
-  const starting = await deps.db.pendingPark.findMany({
-    where: { userId, status: { in: ["starting"] } },
+  const newer = await deps.db.parkedEvent.findFirst({
+    where: { userId: park.userId, ts: { gt: park.parkedAt } },
+    orderBy: { ts: "desc" },
   });
-  for (const park of starting) {
-    if (park.parkedEventId === parkedEventId || park.carMovedAt !== null) continue;
-    const distanceM = metersBetween(point.lat, point.lng, park.carLat, park.carLng);
-    if (distanceM <= SAME_SPOT_M) continue;
-    const moved = await deps.db.pendingPark.updateMany({
-      where: { id: park.id, status: "starting", carMovedAt: null },
-      data: { carMovedAt: at },
-    });
-    if (moved.count !== 1) continue;
-    await deps.db.decision.create({
-      data: {
-        kind: "session_car_moved",
-        inputs: {
-          car: { lat: park.carLat, lng: park.carLng },
-          newPark: point,
-          distanceM: Math.round(distanceM),
-          newParkedEventId: parkedEventId,
-          // Mid-start: no session yet to name; the park's own event.
-          startingParkedEventId: park.parkedEventId,
-          parkStatus: "starting",
-          dryRun: deps.policy.effectiveDryRun(),
-          policyHash: deps.policy.hash(),
-        },
-        rule: "newer_park_elsewhere",
-        outcome: { autoExtend: false, stopped: false },
-        userId,
-        parkedEventId,
+  if (!newer || newer.id === park.parkedEventId) return;
+  const distanceM = metersBetween(newer.lat, newer.lng, park.carLat, park.carLng);
+  if (distanceM <= SAME_SPOT_M) return;
+  const marked = await deps.db.pendingPark.updateMany({
+    where: { id: park.id, status: "started", carMovedAt: null },
+    data: { carMovedAt: at },
+  });
+  if (marked.count !== 1) return;
+  await deps.db.decision.create({
+    data: {
+      kind: "session_car_moved",
+      inputs: {
+        car: { lat: park.carLat, lng: park.carLng },
+        newPark: { lat: newer.lat, lng: newer.lng },
+        distanceM: Math.round(distanceM),
+        newParkedEventId: newer.id,
+        seenAt,
+        dryRun: deps.policy.effectiveDryRun(),
+        policyHash: deps.policy.hash(),
       },
-    });
-  }
+      rule: "newer_park_elsewhere",
+      outcome: { autoExtend: false, stopped: false },
+      userId: park.userId,
+      sessionId,
+      ...(park.parkedEventId ? { parkedEventId: park.parkedEventId } : {}),
+    },
+  });
 }
 
 /** The start path, as the lifecycle calls it (routes/session.ts SessionOps). */
@@ -1332,6 +1337,7 @@ export async function startParkSession(
         { previousStatus: current.status, parkStatus: "started", sessionId },
         sessionId,
       );
+      await noteNewerParkSince(deps, park, sessionId, args.at, "late_success");
     }
   };
   const sessionIdOf = (body: Record<string, unknown>) =>
@@ -1515,6 +1521,9 @@ export async function startParkSession(
           };
   }
   const moved = next === null ? null : await settle(next);
+  if (moved?.count === 1 && next?.status === "started" && typeof next.sessionId === "string") {
+    await noteNewerParkSince(deps, park, next.sessionId, args.at, "start_settled");
+  }
   const stale = moved?.count === 1 && stalePending ? await failStale(stalePending) : null;
   await record(
     outcome.kind,

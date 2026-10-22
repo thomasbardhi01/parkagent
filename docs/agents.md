@@ -18,4 +18,6 @@ The same six tools, the same answers and refusals, and one budget across REST an
 Hosts with MCP Apps can show a confirm card (`MCP_APPS`, off unless the server turns it on).
 2025-era MCP clients work too; nothing over MCP pays, and arrival still comes only from the phone.
 
+Why something happened: `GET /agent/decisions/:id/why` answers with what happened, the facts on the record, and what you can do.
+
 Details: `server/API.md` → "External agents".

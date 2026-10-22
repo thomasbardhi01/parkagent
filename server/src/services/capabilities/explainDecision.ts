@@ -95,6 +95,41 @@ export async function explainDecision(
     : { ...base, text: phrased, phrased: true };
 }
 
+/** What the capability runs with on a REST surface (the app's and the
+ * agent's "why"): the model only when EXPLAIN_MODEL is on, the person's
+ * assistant budget, and no turn to bill. */
+export function explainDepsFor(deps: {
+  db: ExplainDeps["db"];
+  now?: (() => Date) | undefined;
+  assistantTools?: { explainModel: ModelClient | undefined } | undefined;
+  assistantDailySpendCapUsd?: number | undefined;
+}): ExplainDeps {
+  return {
+    db: deps.db,
+    now: deps.now,
+    explainModel: deps.assistantTools?.explainModel,
+    assistantDailySpendCapUsd: deps.assistantDailySpendCapUsd,
+  };
+}
+
+/** The "why" answer every REST surface sends: the reason as data, and the
+ * sentence to show. */
+export function whyBody(out: Extract<ExplainOutcome, { ok: true }>) {
+  return {
+    decisionId: out.decisionId,
+    kind: out.kind,
+    rule: out.rule,
+    reason: {
+      subject: out.reason.subject,
+      what: out.reason.what,
+      because: out.reason.because,
+      youCan: out.reason.youCan,
+    },
+    text: out.text,
+    phrased: out.phrased,
+  };
+}
+
 /** The model's phrasing of a reason, or null for the template. */
 async function phrase(
   deps: ExplainDeps,

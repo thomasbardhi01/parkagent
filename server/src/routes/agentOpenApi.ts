@@ -32,7 +32,8 @@ const reads: Record<string, { summary: string; param?: string }> = {
   "/agent/plans/{planId}": { summary: "A plan the key proposed", param: "planId" },
   "/agent/parks/{parkId}": { summary: "A park the phone reported: its status", param: "parkId" },
   "/agent/decisions/{decisionId}/why": {
-    summary: "Why a decision came out as it did (501 until Issue M)",
+    summary:
+      "Why a decision came out as it did: {reason: {subject, what, because: [{name, label, value}], youCan}, text, phrased}",
     param: "decisionId",
   },
 };
@@ -86,9 +87,6 @@ export function agentOpenApi(): Record<string, unknown> {
           ...refusals,
           ...(read.param
             ? { "404": { description: "Not this person's", content: json(errorBody) } }
-            : {}),
-          ...(route.endsWith("/why")
-            ? { "501": { description: "Not built yet", content: json(errorBody) } }
             : {}),
         },
       },

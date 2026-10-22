@@ -17,6 +17,12 @@ import { z } from "zod";
 import type { AppDeps } from "../app.js";
 import { deleteAccount } from "../services/accountDeletion.js";
 import { publicUser } from "../services/authService.js";
+import { makeRateLimiter } from "../services/rateLimit.js";
+import {
+  explainDecision,
+  explainDepsFor,
+  whyBody,
+} from "../services/capabilities/explainDecision.js";
 import { normalizeSource } from "../services/wallet/summary.js";
 
 const patchMeSchema = z.object({
@@ -43,6 +49,13 @@ const normalizePlate = (plate: string): string => plate.trim().toUpperCase();
 export function registerMe(app: FastifyInstance, deps: AppDeps): void {
   const issuingLive = deps.issuingLive === true;
   const now = () => deps.now?.() ?? new Date();
+  // "Why?" can be a paid model call (EXPLAIN_MODEL): 30 a minute, as the
+  // other per-person reads that cost something.
+  const limitWhy = makeRateLimiter({
+    max: 30,
+    windowMs: 60_000,
+    ...(deps.now ? { now: () => deps.now!().getTime() } : {}),
+  });
 
   const profileSelect = {
     id: true,
@@ -71,6 +84,16 @@ export function registerMe(app: FastifyInstance, deps: AppDeps): void {
       agentsMayAct: row.agentsMayAct === true,
       issuingLive,
     };
+  });
+
+  /** Why one of your decisions came out as it did (Issue M): the session
+   * timeline's "Why?". The reason as data and the sentence to show,
+   * phrased when EXPLAIN_MODEL is on; another person's is not there. */
+  app.get("/me/decisions/:decisionId/why", { preHandler: limitWhy }, async (req, reply) => {
+    const { decisionId } = req.params as { decisionId: string };
+    const out = await explainDecision(explainDepsFor(deps), req.principal!, { decisionId });
+    if (!out.ok) return reply.code(404).send({ error: "decision_not_found" });
+    return whyBody(out);
   });
 
   app.patch("/me", async (req, reply) => {

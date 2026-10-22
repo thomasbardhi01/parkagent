@@ -161,6 +161,8 @@ flowchart LR
   HAIKU[["claude-haiku-5-5<br/>EXPLAIN_MODEL (off by default)"]]
   C4 -. "phrases the reason (strict schema, grounded)" .-> HAIKU
   C4 -- "reads one row" --> DEC
+  GROK -- "GET /agent/decisions/:id/why" --> C4
+  APP -- "GET /me/decisions/:id/why" --> C4
   C3 --> GATE
   C3 -. "street: pending_arrival (consent + cap, no park)" .-> LIFE
   APP -- "/parked: the only arrival" --> LIFE

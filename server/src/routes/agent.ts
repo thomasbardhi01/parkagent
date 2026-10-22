@@ -19,6 +19,11 @@ import { z } from "zod";
 import type { AppDeps } from "../app.js";
 import type { AgentActions, AgentAnswer } from "../services/agentActions.js";
 import { agentActions } from "../services/agentActions.js";
+import {
+  explainDecision,
+  explainDepsFor,
+  whyBody,
+} from "../services/capabilities/explainDecision.js";
 import type { Scope } from "../services/principal.js";
 import type { RateBuckets } from "../services/rateLimit.js";
 import { makeRateBuckets, makeRateLimiter } from "../services/rateLimit.js";
@@ -134,8 +139,16 @@ export function registerAgent(
     return send(reply, await actions.getPark(req.principal!, parkId));
   });
 
-  /** Why a decision came out as it did: Issue M's. Until it lands, 501. */
-  app.get("/agent/decisions/:decisionId/why", { preHandler: limit }, async (_req, reply) =>
-    reply.code(501).send({ error: "not_implemented", until: "Issue M (why explanations)" }),
-  );
+  /** Why a decision came out as it did (Issue M): the person's own
+   * decisions only (an agent never has the person's admin rights), as the
+   * reason and its sentence, phrased when EXPLAIN_MODEL is on. */
+  app.get("/agent/decisions/:decisionId/why", { preHandler: limit }, async (req, reply) => {
+    if (!req.principal!.scopes.has("read")) {
+      return reply.code(403).send({ error: "scope_required", scope: "read" });
+    }
+    const { decisionId } = req.params as { decisionId: string };
+    const out = await explainDecision(explainDepsFor(deps), req.principal!, { decisionId });
+    if (!out.ok) return reply.code(404).send({ error: "decision_not_found" });
+    return whyBody(out);
+  });
 }

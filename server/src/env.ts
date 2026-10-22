@@ -828,13 +828,15 @@ export function checkEnv(source: EnvSource, options: CheckOptions = {}): EnvRepo
     googleOn = set("google_signin", "on", "");
   }
 
-  // -------- ParkWhiz and the assistant
   // -------- tracing
   const otelConsole = flag("OTEL_CONSOLE", "false");
   const otelEndpointBad = problemOf("OTEL_EXPORTER_OTLP_ENDPOINT", collectorUrlProblem);
   const otelHeadersBad = problemOf("OTEL_EXPORTER_OTLP_HEADERS", otlpHeadersProblem);
   const otelEndpointOn = has("OTEL_EXPORTER_OTLP_ENDPOINT") && !otelEndpointBad && !otelHeadersBad;
-  const otelConsoleOn = !otelConsole.problem && otelConsole.value === "true";
+  // Degraded is off for both exporters: a bad endpoint or headers never
+  // leaves the console one running behind /health's back.
+  const otelConsoleOn =
+    !otelConsole.problem && otelConsole.value === "true" && !otelEndpointBad && !otelHeadersBad;
   if (otelEndpointBad) {
     set("tracing", "degraded", `OTEL_EXPORTER_OTLP_ENDPOINT ${otelEndpointBad}`);
   } else if (otelHeadersBad) {
@@ -847,6 +849,7 @@ export function checkEnv(source: EnvSource, options: CheckOptions = {}): EnvRepo
     set("tracing", "off", "OTEL_EXPORTER_OTLP_ENDPOINT is not set: no spans are recorded");
   }
 
+  // -------- ParkWhiz and the assistant
   const parkwhiz = flag("PARKWHIZ_ENABLED", "true");
   const parkwhizOn = parkwhiz.problem
     ? set("parkwhiz", "degraded", `PARKWHIZ_ENABLED ${parkwhiz.problem}`)

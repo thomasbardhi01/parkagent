@@ -164,6 +164,16 @@ describe("optional features never refuse boot", () => {
     expect(local.degraded).toEqual([]);
   });
 
+  test.each([
+    { OTEL_EXPORTER_OTLP_ENDPOINT: "ftp://otel.example.com" },
+    { OTEL_EXPORTER_OTLP_HEADERS: "no-equals-sign" },
+  ])("tracing degraded by %j: the console exporter is off too", (patch) => {
+    const report = checkEnv({ ...everythingOn(), OTEL_CONSOLE: "true", ...patch });
+    expect(report.degraded).toEqual(["tracing"]);
+    expect(report.env.OTEL_CONSOLE).toBe("false");
+    expect(report.env.OTEL_EXPORTER_OTLP_ENDPOINT).toBeUndefined();
+  });
+
   test("every feature well-formed: all on, nothing degraded", () => {
     const report = checkEnv(everythingOn());
     expect(report.fatal).toEqual([]);

@@ -155,7 +155,7 @@ flowchart TB
     GUARD["guard plugin<br/>blocks merge · push main · fly writes<br/>secret reads · settings edits"]
   end
   GH["GitHub<br/>PRs · ruleset on main"]
-  CI["CI<br/>Linux jobs · ios only if iOS changed<br/>ui-tests by label"]
+  CI["CI<br/>Linux jobs · ios only if iOS changed<br/>ui-tests by label · server-pg races (not required)"]
   PROD["Fly: parkagent-api<br/>DRY_RUN=true"]
   FR["nightly FR suite<br/>73 tests vs prod"]
 

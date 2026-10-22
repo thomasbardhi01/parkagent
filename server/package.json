@@ -8,6 +8,7 @@
     "start": "node dist/index.js",
     "test": "vitest run",
     "test:fr": "vitest run --config vitest.fr.config.ts",
+    "test:pg": "vitest run --config test/pg/vitest.config.ts",
     "lint": "eslint src",
     "create:fr-user": "tsx src/scripts/create-fr-user.ts",
     "load:zones": "tsx src/scripts/load-zones.ts",

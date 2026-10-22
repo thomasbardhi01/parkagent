@@ -459,7 +459,7 @@ enum ParkedNotice {
     /// paid (#226): the phone was back near the car, or it is free now.
     /// iOS has already taken the notification away, so without this the
     /// tap shows nothing at all.
-    static func tapAnswerContent(_ outcome: ParkConfirmOutcome, zoneNumber: String?) -> Content? {
+    static func tapAnswerContent(_ outcome: ParkConfirmOutcome, zoneNumber: String?, paysAtWalkAway: Bool) -> Content? {
         let zone = zoneNumber.flatMap { $0.isEmpty ? nil : "Zone \($0)" }
         switch outcome {
         case .started:
@@ -467,7 +467,7 @@ enum ParkedNotice {
         case .waitingForWalkAway:
             return Content(
                 title: zone.map { "\($0): Pay kept" } ?? "Pay kept",
-                body: "Kept. ParkAgent pays when you walk away."
+                body: "Kept. \(walkAwayPromise(paysAtWalkAway: paysAtWalkAway))"
             )
         case .freePeriod(let notice):
             return Content(
@@ -475,6 +475,29 @@ enum ParkedNotice {
                 body: (notice ?? "Meters here are free right now.") + " Nothing was paid."
             )
         }
+    }
+
+    /// What happens to a Pay tapped at the car, in one sentence (Home, the
+    /// Parked sheet, the kept-tap notice). It starts on its own only on
+    /// CoreMotion's walk (`DetectionCapabilities.paysAtWalkAway`); without
+    /// motion the driver is asked again, and nothing may promise otherwise.
+    static func walkAwayPromise(paysAtWalkAway: Bool) -> String {
+        paysAtWalkAway ? "ParkAgent pays when you walk away." : "You'll be asked again when you walk away."
+    }
+
+    /// The Parked sheet's Pay button. For a park held at the car with no
+    /// motion, the button itself says the tap doesn't pay on its own.
+    static func payButtonTitle(totalUsd: Double, minutes: Int, heldAtCar: Bool, paysAtWalkAway: Bool) -> String {
+        heldAtCar && !paysAtWalkAway
+            ? "Pay \(Format.money(totalUsd)) — you'll be asked again when you walk away"
+            : "Pay \(Format.money(totalUsd)) for \(Format.minutes(minutes))"
+    }
+
+    /// The line under it for a park held at the car.
+    static func atCarNote(paysAtWalkAway: Bool) -> String {
+        paysAtWalkAway
+            ? "Nothing is paid while you're at the car. ParkAgent pays when you walk away."
+            : "Nothing is paid while you're at the car. Turn on Motion & Fitness for ParkAgent in Settings, and it pays when you walk away without asking again."
     }
 
     static let tapAnswerType = "walk_away_tap_answer"
@@ -493,7 +516,9 @@ enum ParkedNotice {
     static func expiredContent(zoneNumber: String?) -> Content {
         Content(
             title: zoneNumber.map { "Zone \($0) wasn't paid" } ?? "The meter wasn't paid",
-            body: "You tapped Pay, but ParkAgent pays when you walk away from the car, and an hour passed first. If you're still parked, pay in the app."
+            // True with motion or without it: no walk-away came within the
+            // hour, so nothing started (#226). It promises nothing.
+            body: "You tapped Pay at the car, and an hour passed before you walked away, so nothing was paid. If you're still parked, pay in the app."
         )
     }
 

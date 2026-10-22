@@ -574,4 +574,71 @@ struct ParkDetectorTests {
         audio.forget()
         #expect(audio.routes.isEmpty)
     }
+
+    // MARK: - Review of #231 (#226)
+
+    /// Only the route that played while the car drove is learned as the
+    /// car's. AirPods put in their case at the end of a drive they didn't
+    /// play in are not, so their next connect isn't "back in the car".
+    @Test func onlyTheRouteThatPlayedThroughTheDriveIsLearnedAsTheCar() async {
+        let motion = FakeMotion()
+        let detector = makeDetector(store: tempStore(), motion: motion)
+        var route: String? = nil
+        detector.currentBluetoothRoute = { route }
+        var backInTheCar: [ParkFusionEngine.AudioPort] = []
+        detector.onCarAudioConnected = { backInTheCar.append($0) }
+        detector.arm(capabilities: DetectionCapabilities())
+        await settle()
+
+        // A drive with no Bluetooth playing; headphones go away after it.
+        motion.handler?(MotionSample(at: .now, automotive: true))
+        await settle()
+        detector.carAudioDisconnected(.bluetooth, uid: "pods")
+        #expect(!detector.carAudio.isCar(.bluetooth, uid: "pods"))
+        detector.carAudioConnected(.bluetooth, uid: "pods")
+        #expect(backInTheCar.isEmpty)
+
+        // A drive with the car's stereo playing: learned as it goes away.
+        route = "stereo"
+        motion.handler?(MotionSample(at: .now.addingTimeInterval(1), automotive: true, stationary: true))
+        await settle()
+        detector.carAudioDisconnected(.bluetooth, uid: "stereo")
+        #expect(detector.carAudio.isCar(.bluetooth, uid: "stereo"))
+        detector.carAudioConnected(.bluetooth, uid: "stereo")
+        #expect(backInTheCar == [.bluetooth])
+    }
+
+    /// A route that connects mid-drive is the one playing through it.
+    @Test func aRouteThatConnectsMidDriveIsTheOnePlayingThroughIt() async {
+        let motion = FakeMotion()
+        let detector = makeDetector(store: tempStore(), motion: motion)
+        detector.currentBluetoothRoute = { nil }
+        detector.arm(capabilities: DetectionCapabilities())
+        await settle()
+        motion.handler?(MotionSample(at: .now, automotive: true))
+        await settle()
+        detector.carAudioConnected(.bluetooth, uid: "stereo")
+        detector.carAudioDisconnected(.bluetooth, uid: "stereo")
+        #expect(detector.carAudio.isCar(.bluetooth, uid: "stereo"))
+    }
+
+    /// Every wake used to tell the same walk again; and a walk told on the
+    /// car's audio coming back is the driver in the car.
+    @Test func aWalkIsToldOnceAndNeverOnTheCarsAudio() async {
+        let motion = FakeMotion()
+        let detector = makeDetector(store: tempStore(), motion: motion)
+        var walks: [Date] = []
+        detector.onWalking = { walks.append($0) }
+        detector.arm(capabilities: DetectionCapabilities())
+        await settle()
+        let t = Date.now
+        motion.historyAnswer = [MotionSample(at: t.addingTimeInterval(-60), walking: true)]
+        await detector.wake(.significantChange)
+        await detector.wake(.foreground)
+        #expect(walks == [t.addingTimeInterval(-60)], "The same walk told twice")
+
+        motion.historyAnswer = [MotionSample(at: t.addingTimeInterval(-20), walking: true)]
+        await detector.wake(.carAudioConnected)
+        #expect(walks.count == 1, "A walk told as the car's audio came back")
+    }
 }

@@ -63,6 +63,12 @@ struct DetectionCapabilities: Equatable, Sendable {
         return location == .always ? .full : .whileOpen
     }
 
+    /// A Pay tapped at the car starts on its own when the driver walks
+    /// away: that walk is CoreMotion's (#226), never distance. Without
+    /// motion (denied, restricted, not asked, or no coprocessor) the
+    /// driver is asked again at the walk-away instead.
+    var paysAtWalkAway: Bool { motion == .authorized }
+
     /// True when nothing is missing or reduced. Low Power Mode isn't a
     /// grant, so it doesn't count against this.
     var fullyGranted: Bool {
@@ -191,9 +197,9 @@ enum CapabilityIssue: String, CaseIterable, Sendable, Identifiable {
         case .preciseOff:
             "iOS blurs your location by a few kilometers, so ParkAgent can't tell which block you parked on."
         case .motionNotAsked, .motionDenied:
-            "ParkAgent can't tell driving from walking, so it only notices parks when your car's Bluetooth or CarPlay disconnects."
+            "ParkAgent can't tell driving from walking, so it only notices parks when your car's Bluetooth or CarPlay disconnects, and a Pay tapped at the car is asked again when you walk away."
         case .motionRestricted:
-            "A Screen Time or device setting blocks motion, so parks are only noticed when your car's Bluetooth or CarPlay disconnects."
+            "A Screen Time or device setting blocks motion, so parks are only noticed when your car's Bluetooth or CarPlay disconnects, and a Pay tapped at the car is asked again when you walk away."
         case .notificationsNotAsked, .notificationsDenied:
             "A park is noticed, but you won't hear about it until you open ParkAgent."
         case .backgroundRefreshOff:

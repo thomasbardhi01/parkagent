@@ -363,6 +363,71 @@ struct LocationReporterTests {
         reporter.stop()
     }
 
+    // MARK: - Review of #231 (#226)
+
+    /// A drive's start reaches the app a minute or two late, and the fix
+    /// from around then can be older than the server reads. That return
+    /// went once and was gone; it's said again with the next fix the
+    /// server can read.
+    @Test func aReturnSentWithAFixTooOldToReadIsSaidAgain() async {
+        let clock = Clock()
+        let server = Server()
+        server.reply = LocationResponse(sessionId: "s1")
+        let reporter = LocationReporter(now: { clock.now }, usesSystemLocation: false)
+        reporter.start(send: { try await server.receive($0) }, carCoordinate: nil)
+        let atCar = clock.now
+        await reporter.handle(fix(4, at: atCar))
+        // Six minutes on, CoreMotion's drive (dated from its start) arrives.
+        clock.now += 6 * 60
+        await reporter.note(.returnedToCar, at: atCar)
+        #expect(server.reports.last?.event == "returned_to_car")
+        #expect(server.reports.last?.measuredAt == atCar)
+
+        clock.now += 20
+        await reporter.handle(fix(60, at: clock.now, speed: 9))
+        #expect(server.reports.last?.event == "returned_to_car", "A return the server couldn't read was dropped")
+        #expect(server.reports.last?.measuredAt == clock.now)
+
+        // Read this time (a readable fix the server judged): done.
+        clock.now += 61
+        await reporter.heartbeatDue()
+        #expect(server.reports.last?.event == nil)
+        reporter.stop()
+    }
+
+    /// …but not once the answer ended the session.
+    @Test func aReturnTheServerEndedOnIsNotSaidAgain() async {
+        let clock = Clock()
+        let server = Server()
+        server.reply = LocationResponse(sessionId: "s1", ended: .init(reason: "returned", stopped: true))
+        let reporter = LocationReporter(now: { clock.now }, usesSystemLocation: false)
+        reporter.start(send: { try await server.receive($0) }, carCoordinate: nil)
+        await reporter.handle(fix(4, at: clock.now, accuracy: 120))
+        clock.now += 3
+        await reporter.note(.returnedToCar)
+        clock.now += 20
+        await reporter.handle(fix(40, at: clock.now))
+        #expect(server.reports.filter { $0.event == "returned_to_car" }.count == 1)
+        reporter.stop()
+    }
+
+    /// CarPlay connects with a report in flight, and a wake tells an old
+    /// walk: the walk used to replace the return, and go out on the fix at
+    /// the car, where it can start a confirmed park as the car pulls away.
+    @Test func aWalkToldMeanwhileDoesNotReplaceAReturnNotYetSaid() async {
+        let clock = Clock()
+        let server = Server()
+        let reporter = LocationReporter(now: { clock.now }, usesSystemLocation: false)
+        reporter.start(send: { try await server.receive($0) }, carCoordinate: nil, waiting: waitingPark(parkedAt: clock.now))
+        // No fix yet: the return waits for one.
+        await reporter.note(.returnedToCar)
+        await reporter.note(.leftCar)
+        clock.now += 1
+        await reporter.handle(fix(3, at: clock.now))
+        #expect(server.reports.map(\.event) == ["returned_to_car"])
+        reporter.stop()
+    }
+
     @Test func aWaitingParkIsKeptOnDiskAndDroppedWhenReportingStops() {
         let clock = Clock()
         let reporter = LocationReporter(now: { clock.now }, usesSystemLocation: false)

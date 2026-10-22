@@ -518,7 +518,10 @@ struct HomeView: View {
     private func waitingParkLine(_ parked: ParkedResponse, waiting: ParkedNotice.Waiting) -> String {
         let quote = parked.quote ?? parked.candidates.first?.quote
         let price = quote.map { "\(Format.money($0.totalUsd)) for \(Format.minutes($0.stayMinutes)). " } ?? ""
-        if waiting.confirmed { return "\(price)Confirmed. ParkAgent pays when you walk away." }
+        if waiting.confirmed {
+            let promise = ParkedNotice.walkAwayPromise(paysAtWalkAway: model.permissions.capabilities.paysAtWalkAway)
+            return "\(price)Confirmed. \(promise)"
+        }
         return waiting.shown != nil
             ? "\(price)Not paid yet. Review to pay."
             : "\(price)Nothing is paid at the car. ParkAgent will ask when you walk away."

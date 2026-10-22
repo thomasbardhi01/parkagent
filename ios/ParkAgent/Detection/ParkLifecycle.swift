@@ -36,9 +36,12 @@ extension AppModel {
         startLifecycleReporting(waiting: waiting)
         // Already on foot when the park was detected (walking away is one
         // of the ways a park is confirmed): CoreMotion won't say so again.
-        // Only the newest confident reading counts: a walk to the trunk
-        // and back into the car is not a walk-away (#226).
-        if let walk = detector.lastConfidentMotion, walk.isWalkingAway {
+        // Only the newest confident reading counts, and only one since the
+        // car stopped: a walk to the trunk and back into the car, or a walk
+        // from before the drive, is not a walk-away (#226).
+        if let walk = WalkAway.since(
+            stop: detector.lastParkStopAt, parkedAt: request.ts, newest: detector.lastConfidentMotion
+        ) {
             await reporter.note(.leftCar, at: walk.at)
         }
     }
@@ -68,9 +71,10 @@ extension AppModel {
         detector.onWalking = { [weak self] walkedAt in
             Task { await self?.phoneLeftCar(at: walkedAt) }
         }
-        detector.onCarAudioConnected = { [weak self] in
-            Task { await self?.phoneReturnedToCar() }
-        }
+        // The car's audio coming back sends nothing by itself (#226): it
+        // wakes the detector, and the drive CoreMotion then sees is the
+        // return (`drivingResumed`).
+        detector.onCarAudioConnected = nil
         PushManager.shared.onWalkAwayAction = { [weak self] tap in
             await self?.handleWalkAwayTap(tap)
         }
@@ -88,7 +92,11 @@ extension AppModel {
     /// a stop near the car is not read as the car driving off.
     func phoneLeftCar(at walkedAt: Date? = nil) async {
         guard reporter.isRunning, reporter.waiting != nil || activeSession != nil else { return }
-        await reporter.note(.leftCar, at: walkedAt)
+        if await !reporter.note(.leftCar, at: walkedAt) {
+            // Turned down while a return was still to be said: told again
+            // at the next wake, if the driver is still on that walk.
+            detector.forgetToldWalk()
+        }
     }
 
     /// Driving again (since `seenAt`, when CoreMotion dates the drive), or
@@ -134,6 +142,10 @@ extension AppModel {
         case "prompted":
             guard let prompt = response.prompt, prompt != waiting.shown else { return }
             waiting.shown = prompt
+            // Asked again (a Pay kept at the car that left by distance):
+            // that Pay no longer stands, and an hour with no answer is not
+            // "an hour before you walked away".
+            waiting.confirmed = false
             reporter.setWaiting(waiting)
             await present(prompt, for: waiting)
         default:
@@ -294,7 +306,7 @@ extension AppModel {
             case .waitingForWalkAway:
                 // Nothing is paid at the car. The sheet closes; the park
                 // keeps waiting, and Home says what will happen.
-                keepTappedPark(parked.parkedEventId)
+                await keepTappedPark(parked.parkedEventId)
                 pendingParked = nil
                 Haptics.success()
             case .freePeriod(let notice):
@@ -347,14 +359,26 @@ extension AppModel {
 
     /// A Pay the server kept for the walk-away: remembered with the park
     /// (in the reporter, or on disk when the tap relaunched the app without
-    /// it), so an hour with no walk-away is said, not forgotten.
-    func keepTappedPark(_ parkedEventId: String) {
+    /// it), so an hour with no walk-away is said, not forgotten. A driver
+    /// already walking when it's kept gets no new walking reading
+    /// (CoreMotion reports changes): the walk they're on is told now, or the
+    /// Pay would wait for a walk that already began (#226).
+    func keepTappedPark(_ parkedEventId: String) async {
+        let parkedAt: Date?
         if var waiting = reporter.waiting, waiting.response.parkedEventId == parkedEventId {
             waiting.confirmed = true
             reporter.setWaiting(waiting)
+            parkedAt = waiting.parkedAt
         } else if var stored = ParkedNotice.restoreWaiting(), stored.response.parkedEventId == parkedEventId {
             stored.confirmed = true
             ParkedNotice.storeWaiting(stored)
+            return
+        } else {
+            return
+        }
+        let walk = WalkAway.since(stop: detector.lastParkStopAt, parkedAt: parkedAt, newest: detector.lastConfidentMotion)
+        if let walk = WalkAway.stillOn(walk, nearCarAt: reporter.lastNearCarAt, tappedAt: AppClock.now) {
+            await reporter.note(.leftCar, at: walk.at)
         }
     }
 
@@ -363,8 +387,10 @@ extension AppModel {
     /// free now. Nothing was paid and nothing failed, but iOS has already
     /// taken the notification away: say what happened.
     func notificationTapAnswered(_ outcome: ParkConfirmOutcome, tap: PushManager.WalkAwayTap) async {
-        if case .waitingForWalkAway = outcome { keepTappedPark(tap.parkedEventId) }
-        guard let content = ParkedNotice.tapAnswerContent(outcome, zoneNumber: tap.zoneNumber) else { return }
+        if case .waitingForWalkAway = outcome { await keepTappedPark(tap.parkedEventId) }
+        guard let content = ParkedNotice.tapAnswerContent(
+            outcome, zoneNumber: tap.zoneNumber, paysAtWalkAway: permissions.capabilities.paysAtWalkAway
+        ) else { return }
         await ParkedNotice.postTapAnswer(content, parkedEventId: tap.parkedEventId)
     }
 
@@ -477,5 +503,44 @@ enum LostStart {
             maxStayReached: false,
             paymentSource: item.paymentSource == PaymentSource.parkagentCard.rawValue ? .parkagentCard : .providerCard
         )
+    }
+}
+
+/// Which walk is a walk away from a park (#226): the newest confident
+/// reading, on foot out of the car, begun since that park's car stopped.
+/// A walk to the trunk before getting back in, or one from before the
+/// drive, would otherwise ride the first fresh fix at the car, and a Pay
+/// tapped from the seat would start at once.
+enum WalkAway {
+    /// Without the detector's own stop (a park delivered later from the
+    /// outbox, a relaunch): the car stopped no earlier than this before
+    /// the park's time.
+    static let stopSlack: TimeInterval = 60
+    /// A stop the detector saw longer than this before the park's time was
+    /// another park's.
+    static let stopReach: TimeInterval = 15 * 60
+
+    static func since(stop: Date?, parkedAt: Date?, newest: MotionSample?) -> MotionSample? {
+        guard let walk = newest, walk.isWalkingAway else { return nil }
+        guard let parkedAt else { return walk }
+        let seen = stop.flatMap { stop in
+            stop <= parkedAt.addingTimeInterval(stopSlack) && parkedAt.timeIntervalSince(stop) <= stopReach ? stop : nil
+        }
+        let stoppedAt = seen ?? parkedAt.addingTimeInterval(-stopSlack)
+        return walk.at >= stoppedAt ? walk : nil
+    }
+
+    /// A kept tap only seeds the walk the driver is still on: one begun
+    /// after the last fix that had the phone at the car, and lately. A walk
+    /// to the trunk and back into the seat leaves the trunk walk as the
+    /// newest confident reading (a phone in hand in a seat reads low or
+    /// unknown), and a `left_car` sent on the seat's fix would start the
+    /// session there: a fix at the car never pays (#226).
+    static let keptWalkReach: TimeInterval = 2 * 60
+
+    static func stillOn(_ walk: MotionSample?, nearCarAt: Date?, tappedAt: Date) -> MotionSample? {
+        guard let walk, walk.at >= tappedAt.addingTimeInterval(-keptWalkReach) else { return nil }
+        if let nearCarAt, nearCarAt >= walk.at { return nil }
+        return walk
     }
 }

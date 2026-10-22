@@ -1,3 +1,4 @@
+import CoreMotion
 import Foundation
 
 /// The app's whole view of the server. `MockAPI` serves fixtures for the
@@ -388,7 +389,10 @@ enum APIError: Error, LocalizedError {
         case "quote_changed": "The price changed since you were asked, so nothing was paid. Check the new amount and tap Pay again."
         case "confirm_in_progress": "That payment is already going through."
         case "side_required", "zone_not_offered": "Pick the side of the street you're on first."
-        case "park_awaits_walk_away": "ParkAgent pays this one when you walk away from the car."
+        case "park_awaits_walk_away":
+            // Read here, not from PermissionsManager (main actor): the
+            // promise holds only with Motion & Fitness allowed (#226).
+            "Nothing is paid at the car. \(ParkedNotice.walkAwayPromise(paysAtWalkAway: CMMotionActivityManager.isActivityAvailable() && CMMotionActivityManager.authorizationStatus() == .authorized))"
         default: fallbackRefusal(code)
         }
     }

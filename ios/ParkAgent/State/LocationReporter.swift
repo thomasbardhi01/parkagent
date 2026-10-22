@@ -45,6 +45,9 @@ final class LocationReporter: NSObject, CLLocationManagerDelegate {
     static let returnFixWindow: TimeInterval = 60
     /// Fixes kept for that choice.
     static let recentFixesKept: TimeInterval = 5 * 60
+    /// The server reads no fix measured longer ago than five minutes
+    /// (LIFECYCLE_FIX_MAX_AGE_MS); this leaves a minute for the trip.
+    static let readableFixMaxAge: TimeInterval = 4 * 60
 
     /// Fresh distance to the car, meters.
     @ObservationIgnored var onDistance: ((Double) -> Void)?
@@ -86,6 +89,10 @@ final class LocationReporter: NSObject, CLLocationManagerDelegate {
     @ObservationIgnored private var pendingEventTried = false
     /// The last few minutes of fixes, oldest first.
     @ObservationIgnored private var recentFixes: [ParkFix] = []
+    /// When a usable fix last had the phone within reach of the car (the
+    /// server's AT_CAR_RADIUS_M): a walk older than it is over.
+    @ObservationIgnored private(set) var lastNearCarAt: Date?
+    static let nearCarM: Double = 30
     @ObservationIgnored private var capabilities = DetectionCapabilities()
     @ObservationIgnored private let now: () -> Date
     @ObservationIgnored private let usesSystemLocation: Bool
@@ -150,6 +157,7 @@ final class LocationReporter: NSObject, CLLocationManagerDelegate {
         lastFix = nil
         lastReport = nil
         recentFixes = []
+        lastNearCarAt = nil
         clearPendingEvent()
         setWaiting(nil)
         isRunning = false
@@ -172,13 +180,22 @@ final class LocationReporter: NSObject, CLLocationManagerDelegate {
     /// (now when nil). Sent at once with a fix that can carry it, or with
     /// the next one; the server decides what it means from where that fix
     /// is.
-    func note(_ event: PhoneEvent, at seenAt: Date? = nil) async {
-        guard isRunning else { return }
+    /// False when the event wasn't taken up (not reporting, or a walk that
+    /// arrived while a return is still to be said): whoever told it tells
+    /// it again later.
+    @discardableResult
+    func note(_ event: PhoneEvent, at seenAt: Date? = nil) async -> Bool {
+        guard isRunning else { return false }
+        // Back in the car, not yet said: a walk told meanwhile (a wake, a
+        // stale reading) must not replace it. Sent with the fix at the
+        // car, it could start a confirmed park as the car pulls away.
+        if event == .leftCar, pendingEvent == .returnedToCar, !pendingEventTried { return false }
         pendingEvent = event
         pendingEventAt = seenAt ?? now()
         pendingEventTried = false
-        guard let fix = lastFix, canCarry(event, fix) else { return }
+        guard let fix = lastFix, canCarry(event, fix) else { return true }
         await report(fix)
+        return true
     }
 
     private func clearPendingEvent() {
@@ -194,7 +211,9 @@ final class LocationReporter: NSObject, CLLocationManagerDelegate {
     private func canCarry(_ event: PhoneEvent, _ fix: ParkFix) -> Bool {
         switch event {
         case .returnedToCar:
-            return true
+            // The first try goes with the best fix there is; a try again
+            // (the first fix couldn't be read) only with one that can be.
+            return !pendingEventTried || readable(fix)
         case .leftCar:
             if let parkedAt = waiting?.parkedAt, fix.at < parkedAt { return false }
             return (fix.speed ?? 0) <= Self.walkingPaceMaxMps
@@ -204,11 +223,33 @@ final class LocationReporter: NSObject, CLLocationManagerDelegate {
     /// Whether the server's answer shows it took the event. A `left_car`
     /// the park still waits at the car after (refused at the car's door)
     /// is said again with the next fix.
-    private func taken(_ event: PhoneEvent, by response: LocationResponse) -> Bool {
-        guard event == .leftCar, let waiting,
-              let park = response.park, park.parkedEventId == waiting.response.parkedEventId
-        else { return true }
-        return park.status != "at_car" && park.status != "confirmed"
+    ///
+    /// A `returned_to_car` whose fix the server couldn't read (measured too
+    /// long ago: a drive's start reaches the app a minute or two late, and
+    /// the fix is from around then; or too blurry) is said again with the
+    /// next fix that can be, unless the answer already ended the session
+    /// or closed the park. A readable fix the server judged (far from the
+    /// car, say) is its answer.
+    private func taken(_ event: PhoneEvent, by response: LocationResponse, sent: ParkFix) -> Bool {
+        let ours = waiting.flatMap { waiting in
+            response.park.flatMap { $0.parkedEventId == waiting.response.parkedEventId ? $0 : nil }
+        }
+        switch event {
+        case .leftCar:
+            guard let park = ours else { return true }
+            return park.status != "at_car" && park.status != "confirmed"
+        case .returnedToCar:
+            if response.ended != nil { return true }
+            if let park = ours, !Self.openParkStatuses.contains(park.status) { return true }
+            return readable(sent)
+        }
+    }
+
+    private static let openParkStatuses: Set<String> = ["at_car", "prompted", "confirmed", "starting"]
+
+    /// Measured recently enough, and sharp enough, for the server to read.
+    private func readable(_ fix: ParkFix) -> Bool {
+        now().timeIntervalSince(fix.at) <= Self.readableFixMaxAge && fix.accuracy <= Self.usableAccuracyM
     }
 
     /// The fix that best shows where the phone was when it got back in the
@@ -226,6 +267,10 @@ final class LocationReporter: NSObject, CLLocationManagerDelegate {
 
     private func remember(_ fix: ParkFix) {
         lastFix = fix
+        if let car = carCoordinate, fix.accuracy <= Self.usableAccuracyM,
+           fix.distance(to: ParkFix(coordinate: car, accuracy: 0, at: fix.at)) <= Self.nearCarM {
+            lastNearCarAt = max(lastNearCarAt ?? fix.at, fix.at)
+        }
         recentFixes.append(fix)
         let since = fix.at.addingTimeInterval(-Self.recentFixesKept)
         recentFixes.removeAll { $0.at < since }
@@ -293,7 +338,7 @@ final class LocationReporter: NSObject, CLLocationManagerDelegate {
             clearPendingEvent()
         }
         var sent = fix
-        if pendingEvent == .returnedToCar {
+        if pendingEvent == .returnedToCar, !pendingEventTried {
             sent = returnFix(near: pendingEventAt ?? at, latest: fix)
         }
         let event = pendingEvent.flatMap { canCarry($0, sent) ? $0 : nil }
@@ -309,7 +354,7 @@ final class LocationReporter: NSObject, CLLocationManagerDelegate {
             if let event, pendingEvent == event {
                 // Delivered, unless the answer says otherwise; one seen
                 // meanwhile waits for the next report.
-                if taken(event, by: response) { clearPendingEvent() } else { pendingEventTried = true }
+                if taken(event, by: response, sent: sent) { clearPendingEvent() } else { pendingEventTried = true }
             }
             await onResponse?(response)
         } catch APIError.refused(code: "no_active_session") {

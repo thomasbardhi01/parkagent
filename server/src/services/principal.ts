@@ -36,17 +36,42 @@ export function jobPrincipal(userId: string): Principal {
   return { userId, actor: "job", scopes: ALL_SCOPES };
 }
 
-const store = new AsyncLocalStorage<Principal>();
+/** What a request or job pass runs as: who, and the W3C trace it carried
+ * (`traceparent`'s trace-id, 32 hex digits), so a decisions row can be
+ * joined to the caller's own trace. */
+interface RunContext {
+  principal: Principal;
+  traceId: string | null;
+}
 
-/** Run `fn` with `principal` as the current one for everything it awaits. */
-export function runAs<T>(principal: Principal, fn: () => T): T {
-  return store.run(principal, fn);
+const store = new AsyncLocalStorage<RunContext>();
+
+/** Run `fn` as `principal` for everything it awaits, under `traceId`
+ * when the request carried one. */
+export function runAs<T>(principal: Principal, fn: () => T, traceId: string | null = null): T {
+  return store.run({ principal, traceId }, fn);
 }
 
 /** The principal the current request or job pass runs as, or null outside
  * one (a script, a test calling a service directly). */
 export function currentPrincipal(): Principal | null {
-  return store.getStore() ?? null;
+  return store.getStore()?.principal ?? null;
+}
+
+/** The current request's trace id, or null (a job, a request without one). */
+export function currentTraceId(): string | null {
+  return store.getStore()?.traceId ?? null;
+}
+
+const TRACEPARENT = /^[0-9a-f]{2}-([0-9a-f]{32})-[0-9a-f]{16}-[0-9a-f]{2}$/i;
+
+/** The trace id in a `traceparent` header (W3C Trace Context), or null
+ * for a missing or malformed one — never a string of the caller's choosing. */
+export function traceIdFrom(traceparent: unknown): string | null {
+  if (typeof traceparent !== "string") return null;
+  const match = TRACEPARENT.exec(traceparent.trim());
+  const id = match?.[1]?.toLowerCase();
+  return id && id !== "0".repeat(32) ? id : null;
 }
 
 /** The principal acting for `userId` here: the request's or job pass's

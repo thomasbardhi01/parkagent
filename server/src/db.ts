@@ -1179,6 +1179,7 @@ export interface AppDb {
          * caller sets them only to record an actor it knows better. */
         actor?: string;
         agentKeyId?: string | null;
+        traceId?: string | null;
       };
     }): Promise<{ id: string }>;
     /** explain_decision's read: one row by id (ownership checked above). */

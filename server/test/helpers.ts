@@ -267,6 +267,7 @@ export interface FakeDbState {
     /** Stamped by withDecisionLogging (makeTestApp wraps the fake in it). */
     actor?: string;
     agentKeyId?: string | null;
+    traceId?: string | null;
     createdAt?: Date;
   }[];
   snapshots: { hash: string; policy: unknown; source: string }[];

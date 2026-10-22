@@ -15,6 +15,7 @@ import {
   jobPrincipal,
   principalFor,
   runAs,
+  traceIdFrom,
   userPrincipal,
 } from "../src/services/principal.js";
 import {
@@ -110,11 +111,40 @@ describe("through the app", () => {
       });
     expect((await put(API_KEY)).statusCode).toBe(200);
     expect((await put(NONADMIN_API_KEY)).statusCode).toBe(200);
-    const actors = t.state.decisions.map((d) => [d.userId, d.actor]);
+    const actors = t.state.decisions.map((d) => [d.userId, d.actor, d.traceId]);
     expect(actors).toEqual([
-      ["u1", "admin"],
-      ["u2", "user"],
+      ["u1", "admin", null],
+      ["u2", "user", null],
     ]);
+  });
+
+  test("a request's decisions carry its traceparent's trace id, never a made-up one", async () => {
+    const t = makeTestApp({});
+    const put = (traceparent: string) =>
+      t.app.inject({
+        method: "PUT",
+        url: "/me/limits",
+        headers: { "x-api-key": NONADMIN_API_KEY, traceparent },
+        payload: { sessionCapUsd: 5 },
+      });
+    expect((await put("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")).statusCode).toBe(
+      200,
+    );
+    expect((await put("not-a-trace")).statusCode).toBe(200);
+    expect(t.state.decisions.map((d) => d.traceId)).toEqual([
+      "4bf92f3577b34da6a3ce929d0e0e4736",
+      null,
+    ]);
+  });
+
+  test("traceIdFrom reads only a well-formed W3C header", () => {
+    expect(traceIdFrom("00-4BF92F3577B34DA6A3CE929D0E0E4736-00f067aa0ba902b7-01")).toBe(
+      "4bf92f3577b34da6a3ce929d0e0e4736",
+    );
+    expect(traceIdFrom("00-00000000000000000000000000000000-00f067aa0ba902b7-01")).toBeNull();
+    expect(traceIdFrom("4bf92f3577b34da6a3ce929d0e0e4736")).toBeNull();
+    expect(traceIdFrom(["00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"])).toBeNull();
+    expect(traceIdFrom(undefined)).toBeNull();
   });
 
   test("the extension worker's decisions say a job acted for the session's owner", async () => {

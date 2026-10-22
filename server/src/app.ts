@@ -13,7 +13,7 @@ import { registerAuth } from "./routes/auth.js";
 import { hashApiKey } from "./services/apiKeys.js";
 import { verifyAccessToken } from "./services/authTokens.js";
 import type { Principal } from "./services/principal.js";
-import { runAs, userPrincipal } from "./services/principal.js";
+import { runAs, traceIdFrom, userPrincipal } from "./services/principal.js";
 import type { EmailSender } from "./services/emailer.js";
 import type { IdTokenResult } from "./services/idToken.js";
 import { registerCard } from "./routes/card.js";
@@ -296,7 +296,7 @@ export function buildApp(deps?: AppDeps, app: FastifyInstance = createFastify())
     // would leave it outside.
     app.addHook("onRequest", (req, _reply, done) => {
       if (!req.principal) return done();
-      runAs(req.principal, () => done());
+      runAs(req.principal, () => done(), traceIdFrom(req.headers["traceparent"]));
     });
   }
 

@@ -5,6 +5,9 @@
 -- AlterTable
 ALTER TABLE "decisions" ADD COLUMN "actor" TEXT NOT NULL DEFAULT 'user';
 ALTER TABLE "decisions" ADD COLUMN "agent_key_id" TEXT;
+-- The W3C trace the request carried (`traceparent`), so a row can be
+-- joined to the caller's own trace; null when it carried none.
+ALTER TABLE "decisions" ADD COLUMN "trace_id" TEXT;
 
 -- Consent for an external agent to act on the account; off until the
 -- person turns it on. Checked only when the actor is an external agent.

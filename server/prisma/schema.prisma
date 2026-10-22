@@ -755,6 +755,8 @@ model Decision {
   actor         String   @default("user")
   // The agent key an external agent held, when one did (WS-4).
   agentKeyId    String?  @map("agent_key_id")
+  // The request's W3C trace id (`traceparent`), when it carried one.
+  traceId       String?  @map("trace_id")
   userId        String?  @map("user_id")
   parkedEventId String?  @map("parked_event_id")
   sessionId     String?  @map("session_id")

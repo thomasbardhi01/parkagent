@@ -2,7 +2,8 @@
  * The one decision writer. Wraps AppDb.decision.create once, in index.ts,
  * so no call site can forget two things: the row says who acted (`actor`
  * and `agentKeyId`, from the principal the request or job pass runs as,
- * services/principal.ts), and one structured log line goes out per row,
+ * and `traceId` from the request's `traceparent`, services/principal.ts),
+ * and one structured log line goes out per row,
  * whoever writes it (routes, extension worker, card janitor). Logs
  * identifiers and the rule — never inputs or outcome, which can carry
  * ui_changed screenshots. A script writing through bare Prisma gets the
@@ -10,7 +11,7 @@
  */
 
 import type { AppDb } from "../db.js";
-import { currentPrincipal } from "./principal.js";
+import { currentPrincipal, currentTraceId } from "./principal.js";
 
 export interface DecisionLogger {
   info(payload: Record<string, unknown>, message: string): void;
@@ -29,6 +30,7 @@ export function withDecisionLogging(db: AppDb, log: DecisionLogger): AppDb {
           ...(args.data.agentKeyId === undefined && principal?.agentKeyId !== undefined
             ? { agentKeyId: principal.agentKeyId }
             : {}),
+          ...(args.data.traceId === undefined ? { traceId: currentTraceId() } : {}),
         };
         const row = await db.decision.create({ ...args, data });
         log.info(

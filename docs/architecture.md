@@ -82,7 +82,7 @@ stateDiagram-v2
   starting --> started: provider confirmed
   starting --> start_failed: failed, or stale with no live session
   starting --> prompted: refused before provider
-  started --> ended: return dwell · returned_to_car · drove_off
+  started --> ended: return dwell · returned_to_car (CoreMotion's drive) · drove_off
   at_car --> declined: Not now
   prompted --> declined: Not now
   at_car --> cancelled: drove off before paying

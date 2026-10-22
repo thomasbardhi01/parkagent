@@ -17,8 +17,10 @@ vi.mock("@anthropic-ai/sdk", () => {
   class Anthropic {
     static APIError = APIError;
     messages = {
-      stream(params: unknown) {
-        sdk.requests.push(params);
+      // Both arguments: a header or option added only while tracing is on
+      // would show up here too.
+      stream(params: unknown, options?: unknown) {
+        sdk.requests.push({ params, options: options ?? null });
         return {
           on() {},
           finalMessage: async () => ({
@@ -128,7 +130,8 @@ const SITES: Record<string, { model: string; run: () => Promise<unknown> }> = {
   },
 };
 
-/** The site's requests to the SDK, as sent, and what it came out as. */
+/** The site's requests to the SDK (body and options), as sent, and what
+ * it came out as. */
 async function capture(name: string) {
   sdk.requests = [];
   const outcome = await SITES[name]!.run();
@@ -151,7 +154,11 @@ test("off, each site asks the model once, with what the site sets", () => {
   expect(off.explain_decision!.outcome).toMatchObject({ ok: true, phrased: true });
   expect(off.audit_summary!.outcome).toMatchObject({ source: "model" });
   expect(off.sign_reader!.outcome).toMatchObject({ reading: null, fallback: "off_schema" });
-  const request = (name: string) => JSON.parse(off[name]!.requests)[0] as Record<string, unknown>;
+  const sent = (name: string) =>
+    JSON.parse(off[name]!.requests)[0] as { params: Record<string, unknown>; options: unknown };
+  const request = (name: string) => sent(name).params;
+  // The client passes no request options today, off or on.
+  for (const name of Object.keys(SITES)) expect(sent(name).options).toBeNull();
   expect(request("explain_decision")).toMatchObject({
     output_config: { effort: "low", format: { type: "json_schema" } },
   });

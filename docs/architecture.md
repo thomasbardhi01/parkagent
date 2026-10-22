@@ -5,7 +5,7 @@ Four views of how the system fits together. Mermaid renders on GitHub.
 
 ## Runtime today
 
-The phone senses, the server decides, providers execute. Every request authenticates through one function, but money passes through three different gates depending on whether it's a start, an extension or a stop.
+The phone senses, the server decides, providers execute. Every request authenticates through one function, and money passes through one gate, `moneyGate`, whoever asks.
 
 ```mermaid
 flowchart LR
@@ -16,19 +16,18 @@ flowchart LR
   end
 
   subgraph API["Fastify server (Fly, one machine)"]
-    AUTH["makeAuthenticate<br/>JWT or x-api-key → authedUser"]
+    AUTH["makeAuthenticate<br/>JWT or x-api-key → Principal<br/>actor · scopes · trace"]
     R1["/parked · /location<br/>/parked/:id/confirm"]
     R2["/session/start · extend · stop"]
     R3["/assistant/message · confirm"]
     PS["pendingSession<br/>advanceWalk · settlePark · startParkSession"]
-    G1["runStart gate<br/>caps · dry run · zone · link"]
-    G2["applyExtension<br/>own cap check · advisory lock"]
-    G3["stop<br/>executor directly"]
+    GATE["moneyGate<br/>caps · max stay · dry run · link · as shown<br/>consent · phone away (under lock)"]
+    EXT["applyExtension<br/>advisory lock · asks the gate again"]
     AT["AssistantTools + loop<br/>2,586 lines · ToolContext"]
     POL["policyFor · spentToday"]
     EX["executorFor<br/>DryRunExecutor when dry run"]
     JOBS["Jobs<br/>extendTick · settle · janitors"]
-    DEC[("decisions<br/>audit of every money step")]
+    DEC[("decisions<br/>actor · agent_key_id · trace_id")]
   end
 
   subgraph Out["Outside services"]
@@ -46,22 +45,24 @@ flowchart LR
   AV --> AUTH
   AUTH --> R1 & R2 & R3
   R1 --> PS
-  PS --> G1
-  R2 --> G1 & G2 & G3
+  PS --> GATE
+  R2 --> GATE
   R3 --> AT
   AT --> AN & AM & SH
+  AT --> GATE
   AT -. "street: start_via_app" .-> PL
-  JOBS --> G2
-  G1 & G2 --> POL
-  G1 & G2 & G3 --> EX
+  JOBS -- "as job for the owner" --> GATE
+  GATE --> EXT
+  GATE --> POL
+  GATE & EXT --> EX
   EX --> PB
-  G1 --> ST
-  PS & G1 & G2 & G3 & AT --> DEC
+  GATE --> ST
+  PS & GATE & AT & JOBS --> DEC
   PS & POL & JOBS --> DB
 
   classDef money stroke:#b42318,stroke-width:2.5px
   classDef ext stroke:#b7791f,stroke-width:2px
-  class G1,G2,G3,EX money
+  class GATE,EXT,EX money
   class PB,SH,ST,AN,AM ext
 ```
 
@@ -136,7 +137,7 @@ flowchart LR
   classDef money stroke:#b42318,stroke-width:2.5px
   classDef planned stroke:#1d5fa8,stroke-width:2px,stroke-dasharray:5 4
   class GATE,EXE money
-  class P,C1,C2,C3,GROK,CL,SIRI planned
+  class C1,C2,C3,GROK,CL,SIRI planned
 ```
 
 ## How it gets built

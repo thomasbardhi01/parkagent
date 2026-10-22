@@ -718,6 +718,31 @@ describe("reading a plan or a park needs the read scope (F4)", () => {
     expect(parks).not.toHaveBeenCalled();
   });
 
+  test("an id that couldn't be one is a 400, after the scope, with nothing read", async () => {
+    const { t, call } = await setup({ scopes: ["read"] });
+    const plans = vi.spyOn(t.deps.db.assistantPlan, "findUnique");
+    const parks = vi.spyOn(t.deps.db.pendingPark, "findUnique");
+    for (const url of [
+      "/agent/plans/a%00b",
+      "/agent/plans/a%20b",
+      `/agent/plans/${"a".repeat(65)}`,
+      "/agent/parks/a%00b",
+      "/agent/parks/d1%3B",
+    ]) {
+      const res = await call("GET", url);
+      expect(res.statusCode, url).toBe(400);
+      expect(res.json().error, url).toBeDefined();
+    }
+    expect(plans).not.toHaveBeenCalled();
+    expect(parks).not.toHaveBeenCalled();
+    // A key without the scope is refused as such, whatever it sent.
+    const confirmOnly = await setup({ scopes: ["confirm"] });
+    expect((await confirmOnly.call("GET", "/agent/plans/a%00b")).json()).toEqual({
+      error: "scope_required",
+      scope: "read",
+    });
+  });
+
   test("a key with read still reads its person's plan", async () => {
     const { call } = await setup({ scopes: ["read"] });
     const proposed = await propose(call);

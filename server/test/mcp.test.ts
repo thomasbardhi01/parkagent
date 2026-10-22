@@ -773,6 +773,30 @@ describe("resources", () => {
     }
   });
 
+  test("a resource URI whose id isn't one: invalid params, nothing read", async () => {
+    const { t, rpc, post } = await setup();
+    const plans = vi.spyOn(t.deps.db.assistantPlan, "findUnique");
+    const parks = vi.spyOn(t.deps.db.pendingPark, "findUnique");
+    // A URI's id arrives as written: "a%00b" is those five characters, no
+    // NUL (it reached the database as a plain miss before this check), and
+    // now it's refused before any read.
+    for (const uri of [
+      "parkagent://plans/a%00b",
+      "parkagent://plans/a%20b",
+      "parkagent://parks/a%00b",
+      "parkagent://parks/d1%3B",
+    ]) {
+      const out = await rpc("resources/read", { uri }, uri);
+      expect(out.error, uri).toMatchObject({ code: -32602, message: "invalid_params" });
+    }
+    // A raw NUL can't ride the Mcp-Name header the read needs, so the
+    // transport refuses the request before any resource is read.
+    const raw = await post("resources/read", { uri: "parkagent://plans/a\u0000b" });
+    expect(raw.json().error).toBeDefined();
+    expect(plans).not.toHaveBeenCalled();
+    expect(parks).not.toHaveBeenCalled();
+  });
+
   test("a key without the read scope is refused as such, before anything is read (F4)", async () => {
     const reader = await setup();
     const proposed = await proposeOver(reader.tool);

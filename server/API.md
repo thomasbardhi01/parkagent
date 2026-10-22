@@ -4050,8 +4050,9 @@ OpenAI-style functions are `examples/grok-tool.json` (regenerate with
 - `GET /agent/plans/:planId` (`read` scope) → `{planId, kind, plan,
   confirmedAt, confirmedOptionId}`; `GET /agent/parks/:parkId` (`read`
   scope) → a park's `{status, zoneId, parkedAt, sessionId}`. A key
-  without `read` is `403 scope_required` before anything is read.
-  Another person's is `404`.
+  without `read` is `403 scope_required` before anything is read; then an
+  id that couldn't be one (a NUL, a space, over 64) is `400`, before the
+  database. Another person's is `404`.
 - `GET /agent/decisions/:decisionId/why` (`read` scope) → why one of the
   person's decisions came out as it did: `{decisionId, kind, rule, reason:
   {subject, what, because: [{name, label, value}], youCan}, text, phrased}`
@@ -4109,7 +4110,9 @@ the MCP TypeScript SDK v2 (`createMcpHandler`, mounted with
   the key's budget is error `-32029` with `{error: "rate_limited",
   retryAfterS}` as its data, never "not found". A key without the `read`
   scope is error `-32003` with `{error: "scope_required", scope: "read"}`,
-  before anything is read.
+  before anything is read; a URI whose id couldn't be one is `-32602
+  invalid_params`, before any read. A URI's id is taken as written
+  (`a%00b` is five characters, never a NUL).
 - **Tracing:** a `traceparent` in a request's `_meta` (else the HTTP
   header) is the trace id on the decisions that call writes.
 - **The confirm card (`MCP_APPS`, off by default):** with `MCP_APPS=true`,

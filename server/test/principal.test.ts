@@ -74,7 +74,14 @@ describe("the current principal", () => {
 describe("the decision writer", () => {
   const write = (db: ReturnType<typeof withDecisionLogging>, extra: Record<string, unknown> = {}) =>
     db.decision.create({
-      data: { kind: "t", inputs: {}, rule: "r", outcome: {}, userId: "u2", ...extra },
+      data: {
+        kind: "agent_confirm",
+        inputs: {},
+        rule: "pending_arrival",
+        outcome: {},
+        userId: "u2",
+        ...extra,
+      },
     });
 
   test("stamps the current principal's actor and key", async () => {
@@ -91,7 +98,9 @@ describe("the decision writer", () => {
       ["job", null],
       ["user", null],
     ]);
-    expect(logged[1]).toMatchObject({ decision: { actor: "external_agent", rule: "r" } });
+    expect(logged[1]).toMatchObject({
+      decision: { actor: "external_agent", rule: "pending_arrival" },
+    });
   });
 
   test("a caller that names its actor is believed", async () => {

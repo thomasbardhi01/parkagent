@@ -2725,9 +2725,34 @@ each stop at its own point and time, and is offered only for a request
 that starts later ("Intents" below); `propose_plan(plan)` ends the turn
 with the structured plan; `book_garage(option_id, confirmation_token)`
 and `start_session(zone, duration, confirmation_token)` are REFUSED
-without a live token; `get_history(days)`; `explain_decision(id)` (a
-plain-language rendering of a decisions row via
-`services/explanations.ts`).
+without a live token; `get_history(days)`; `explain_decision(id)` (the
+decision's reason, below).
+
+### Why a decision came out as it did
+
+Every automated decision is a `decisions` row, and every rule the server
+writes on one has a **reason** (`services/reasons.ts`, Issue M). A reason
+has three parts:
+- **what happened**;
+- **the evidence**: named facts with the values the row holds, such as "the
+  per-stop cap was $5.00" or "the distance from the car was 140 m";
+- **what you can do**, when there's anything.
+
+It reads only the row: a fact the row doesn't carry is left out, never
+filled in. A new rule without a reason fails CI three ways:
+`test/reasonsCoverage.test.ts` reads `server/src` for rule literals and
+for the vocabularies rules are drawn from, and the fake DB fails any test
+file that writes a rule with no reason (`test/setup/reasonsGate.ts`).
+
+The reason's **template** (`services/explanations.ts`) is the
+deterministic sentence `explainDecision`
+(`services/capabilities/explainDecision.ts`, owner or admin only) answers
+with.
+
+The eval: 30 golden decisions across every rule family
+(`src/eval/explainGolden.ts`), each with the facts its answer must state.
+A fact is an invariant named with its value in one sentence, never a bare
+number. CI holds the template to them (`test/explainEval.test.ts`).
 
 **The street search** (`services/assistant/streetOptions.ts`) covers
 **every metered zone within a walking radius** of the place (400 m, about

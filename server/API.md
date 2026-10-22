@@ -1071,6 +1071,24 @@ One measurement sent twice (the app's heartbeat re-sends its last fix) is
 one measurement. A park nobody walked away from within an hour is
 `expired` and never asked about.
 
+**An agent's confirmed spot (WS-4).** An external agent's confirm of a
+street plan (`POST /agent/plans/:id/confirm` → `pending_arrival`) is the
+person's tap given ahead, for one spot, for the mandate's ten minutes; it
+creates no park. The phone's next `/parked` that would be held for its
+walk-away, for that person, with the plan's zone among its candidates
+within `SAME_SPOT_M` (100 m) of the phone's fix, inside the mandate's
+window, is held `confirmed` from the start instead of `at_car`: the
+phone's own fix is the car, the zone is the plan's, and the shown cap is
+the lower of the plan's amount and this park's quote. It then runs as any
+Pay tapped at the car: it starts only on the app's `left_car`, and a
+walk-away by distance alone asks again. A plan binds one park, once (a
+compare-and-set on `assistant_plans.bound_parked_event_id`); the plan reads
+`status: "bound"` on `GET /agent/plans/:id`. Expired, elsewhere, another
+person's, or an app tap's plan: the ordinary `at_car` hold. The
+`street_confirmed` decision (`rule: agent_plan_bound`) names the plan, the
+mandate and the agent key (`routes/parked.ts`, `agentBindingFor` in
+`services/pendingSession.ts`).
+
 **A Pay tapped at the car starts only on the app's `left_car`.** Two
 fixes at nearly the same distance read like a walk, and so does a car
 stopped at a light a block away. So a walk-away by distance alone moves a
@@ -3638,12 +3656,18 @@ OpenAI-style functions are `examples/grok-tool.json` (regenerate with
     here (a provider failing after the claim is `409 garage_book_failed`,
     the mandate spent);
   - a street spot → `{status: "pending_arrival", zoneId,
-    durationMinutes, priceUsd, dryRun, expiresAt}`. **An agent's confirm
-    is consent and a cap for a spot, never a park here.** No
-    `pending_parks` row is written and nothing pays: arrival comes only
-    from the phone's `/parked`, and the park lifecycle
-    (`services/pendingSession.ts`) is the code that enforces it. Binding
-    the next `/parked` at that spot to this consent is the next PR (E3).
+    durationMinutes, priceUsd, dryRun, expiresAt}`. No `pending_parks` row
+    is written and nothing pays here: arrival comes only from the phone's
+    `/parked`, and the park lifecycle (`services/pendingSession.ts`) is
+    the code that enforces it. **But the confirm is the person's tap,
+    given ahead.** When the phone's next `/parked` is at that spot (the
+    zone `/parked` itself would pay), inside the mandate's window, under
+    the same dry run, that park is held `confirmed` from the start. It
+    then **pays on the app's `left_car` with no tap and no prompt at the
+    curb**, for the plan's stay and no more than the plan's price (see
+    "Session lifecycle" → "An agent's confirmed spot"). Anywhere else,
+    later, or under another dry run, the phone's own prompt asks the
+    driver as it does without an agent.
   Each answer writes an `agent_confirm` decision.
 - `GET /agent/plans/:planId` → `{planId, kind, plan, confirmedAt,
   confirmedOptionId}`; `GET /agent/parks/:parkId` → a park's `{status,

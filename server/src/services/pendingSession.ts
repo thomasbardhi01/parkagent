@@ -114,6 +114,77 @@ export const START_DEADLINE_MS = 3 * 60_000;
 /** Two car fixes this close are the same spot; farther, the car moved. */
 export const SAME_SPOT_M = 100;
 
+/** An agent's confirmed street plan the park the phone just reported may
+ * be held for (WS-4 E3): its consent, its zone, and the cap. */
+export interface AgentBinding {
+  planId: string;
+  /** The mandate's id (its token's hash). */
+  mandateId: string;
+  agentKeyId: string;
+  zoneId: string;
+  /** What the plan said this spot costs: the shown cap is the lower of
+   * this and the park's own quote. */
+  planPriceUsd: number;
+}
+
+/**
+ * Whether the park the phone just reported is at a spot an agent of this
+ * person confirmed (`POST /agent/plans/:id/confirm` answered
+ * `pending_arrival`), inside that mandate's window. The phone is the only
+ * source of arrival: the binding reads the phone's fix (as the park's
+ * candidates measured it) against the plan's zone, and binds nothing the
+ * phone didn't report. Within SAME_SPOT_M of the plan's zone; a plan not
+ * yet bound; its mandate an agent's, consumed, and not expired. The
+ * newest such plan wins. Pure read: the caller binds (once, by CAS).
+ */
+export async function agentBindingFor(
+  db: Pick<AppDb, "assistantPlan" | "mandate">,
+  userId: string,
+  candidates: readonly { zoneId: string; distanceM: number }[],
+  at: Date,
+): Promise<AgentBinding | null> {
+  const plans = (await db.assistantPlan.findMany({ where: { userId, confirmedAt: { not: null } } }))
+    .filter(
+      (p) =>
+        p.kind === "single_spot" &&
+        p.conversationId.startsWith("agent:") &&
+        (p.boundParkedEventId ?? null) === null,
+    )
+    .sort((a, b) => (b.confirmedAt?.getTime() ?? 0) - (a.confirmedAt?.getTime() ?? 0));
+  for (const plan of plans) {
+    const options = (plan.plan as { options?: unknown }).options;
+    const option = Array.isArray(options)
+      ? (options as { id: string; type: string; zoneId?: string; priceUsd: number }[]).find(
+          (o) => o.id === plan.confirmedOptionId,
+        )
+      : undefined;
+    if (!option || option.type !== "street" || !option.zoneId) continue;
+    const here = candidates.find((c) => c.zoneId === option.zoneId);
+    if (!here || here.distanceM > SAME_SPOT_M) continue;
+    const mandate = await db.mandate.findFirst({
+      where: { planId: plan.id },
+      orderBy: { createdAt: "desc" },
+    });
+    if (
+      !mandate ||
+      mandate.userId !== userId ||
+      mandate.agentKeyId === null ||
+      mandate.consumedAt === null ||
+      mandate.expiresAt.getTime() <= at.getTime()
+    ) {
+      continue;
+    }
+    return {
+      planId: plan.id,
+      mandateId: mandate.token,
+      agentKeyId: mandate.agentKeyId,
+      zoneId: option.zoneId,
+      planPriceUsd: option.priceUsd,
+    };
+  }
+  return null;
+}
+
 /** What the app itself saw: on foot after the park, or the car's audio
  * reconnecting / driving again. */
 export type PhoneEvent = "left_car" | "returned_to_car";

@@ -29,6 +29,7 @@ import {
   settlePark,
   startParkSession,
   supersedeParks,
+  agentBindingFor,
 } from "../services/pendingSession.js";
 import { moneyGate } from "../services/moneyGate.js";
 import { principalFor } from "../services/principal.js";
@@ -359,7 +360,67 @@ export function registerParked(app: FastifyInstance, deps: AppDeps, sessions: Se
       located &&
       (answer.action === "pay" || answer.action === "confirm") &&
       candidates.some((c) => c.quote.totalUsd > 0);
-    if (awaitsWalkAway) {
+    // A spot an agent of this person confirmed, inside its mandate's
+    // window (WS-4 E3): the park is held `confirmed` from the start — the
+    // agent's confirm was the tap — with the phone's own fix as the car
+    // and the lower of the plan's amount and this quote as the shown cap.
+    // The start still waits for the walk-away like any confirmed park.
+    // A plan binds once (CAS on the plan, keyed by this park).
+    const binding = awaitsWalkAway
+      ? await agentBindingFor(deps.db, user.id, candidates, serverNow)
+      : null;
+    const boundQuote = binding
+      ? candidates.find((c) => c.zoneId === binding.zoneId)?.quote
+      : undefined;
+    const bound =
+      binding && boundQuote
+        ? (
+            await deps.db.assistantPlan.updateMany({
+              where: { id: binding.planId, boundParkedEventId: null },
+              data: { boundParkedEventId: parkedEvent.id, boundAt: serverNow },
+            })
+          ).count === 1
+        : false;
+    if (awaitsWalkAway && bound && binding && boundQuote) {
+      const shown = {
+        ...boundQuote,
+        totalUsd: Math.min(boundQuote.totalUsd, binding.planPriceUsd),
+      };
+      await deps.db.pendingPark.create({
+        data: {
+          userId: user.id,
+          parkedEventId: parkedEvent.id,
+          status: "confirmed",
+          candidates,
+          quote: shown,
+          zoneId: binding.zoneId,
+          confirmedAt: serverNow,
+          shownDryRun: dryRun,
+          carLat: body.lat,
+          carLng: body.lng,
+          parkedAt: at,
+        },
+      });
+      await deps.db.decision.create({
+        data: {
+          kind: "street_confirmed",
+          inputs: {
+            mode: "agent_plan",
+            planId: binding.planId,
+            mandateId: binding.mandateId,
+            agentKeyId: binding.agentKeyId,
+            car: { lat: body.lat, lng: body.lng, accuracyM: body.accuracy },
+            shown,
+            planPriceUsd: binding.planPriceUsd,
+            dryRun,
+          },
+          rule: "agent_plan_bound",
+          outcome: { status: "confirmed", startsAt: "walk_away", zoneId: binding.zoneId },
+          userId: user.id,
+          parkedEventId: parkedEvent.id,
+        },
+      });
+    } else if (awaitsWalkAway) {
       await deps.db.pendingPark.create({
         data: {
           userId: user.id,

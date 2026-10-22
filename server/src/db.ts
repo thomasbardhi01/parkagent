@@ -637,6 +637,9 @@ export interface AssistantPlanRow {
   createdAt: Date;
   confirmedAt: Date | null;
   confirmedOptionId: string | null;
+  /** An agent's street plan, bound to the park the phone reported (E3). */
+  boundParkedEventId?: string | null;
+  boundAt?: Date | null;
 }
 
 export interface AppDb {
@@ -928,6 +931,11 @@ export interface AppDb {
       where: { id: string };
       data: { confirmedAt: Date; confirmedOptionId: string | null };
     }): Promise<unknown>;
+    /** The bind, once: matches only a plan no park is bound to yet. */
+    updateMany(args: {
+      where: { id: string; boundParkedEventId: null };
+      data: { boundParkedEventId: string; boundAt: Date };
+    }): Promise<{ count: number }>;
   };
   mandate: {
     create(args: {
@@ -945,6 +953,11 @@ export interface AppDb {
       };
     }): Promise<unknown>;
     findUnique(args: { where: { token: string } }): Promise<MandateRow | null>;
+    /** A plan's mandate (one per plan from the agent surface). */
+    findFirst(args: {
+      where: { planId: string };
+      orderBy: { createdAt: "desc" };
+    }): Promise<MandateRow | null>;
     /** The single-use claim: matches only an unconsumed, unexpired
      * mandate, so of two concurrent claims exactly one sees count 1. */
     updateMany(args: {

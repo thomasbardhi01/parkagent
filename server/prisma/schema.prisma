@@ -639,6 +639,10 @@ model AssistantPlan {
   // The user's tap: when, and which option (null for an itinerary).
   confirmedAt       DateTime? @map("confirmed_at") @db.Timestamptz(6)
   confirmedOptionId String?   @map("confirmed_option_id")
+  // An agent's confirmed street plan, bound (once) to the park the phone
+  // reported at its spot inside the mandate's window (WS-4 E3).
+  boundParkedEventId String?  @unique @map("bound_parked_event_id")
+  boundAt           DateTime? @map("bound_at") @db.Timestamptz(6)
 
   @@index([userId, createdAt])
   @@index([conversationId])

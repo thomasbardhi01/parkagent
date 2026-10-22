@@ -395,9 +395,13 @@ export function registerAgent(app: FastifyInstance, deps: AppDeps): void {
     return {
       planId: row.id,
       kind: row.kind,
+      // proposed → confirmed (the agent's confirm) → bound (the phone
+      // reported the car at its spot, inside the mandate's window: E3).
+      status: row.boundParkedEventId ? "bound" : row.confirmedAt ? "confirmed" : "proposed",
       plan: row.plan,
       confirmedAt: row.confirmedAt?.toISOString() ?? null,
       confirmedOptionId: row.confirmedOptionId ?? null,
+      boundAt: row.boundAt?.toISOString() ?? null,
     };
   });
 

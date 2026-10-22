@@ -12,6 +12,7 @@ import { afterEach, expect, test, vi } from "vitest";
 
 import type { PendingParkRow, ZoneTermsRow } from "../src/db.js";
 import { makeExtender } from "../src/jobs/extendTick.js";
+import { confirmedStartedWithoutLeftCar, loadAuditData } from "../src/services/audit/invariants.js";
 import type { Executor, ExecutorResult } from "../src/services/executor.js";
 import { DryRunExecutor } from "../src/services/executor.js";
 import type { ParkStarter } from "../src/services/pendingSession.js";
@@ -36,6 +37,7 @@ import {
   parkedBody,
   seedProviderAccount,
   seedSession,
+  setFakeRowClock,
 } from "./helpers.js";
 
 const HEADERS = { "x-api-key": API_KEY };
@@ -137,6 +139,8 @@ function shownFor(state: FakeDbState): ShownAtStart {
 // Every start, in every test here: the provider is asked for the zone
 // number, the minutes and the amount the driver was shown, and through the
 // dry-run executor exactly when the driver was told it is a dry run.
+afterEach(() => setFakeRowClock(() => new Date(MONDAY_2PM)));
+
 afterEach(() => {
   for (const t of apps.splice(0)) {
     const starts = t.executorCalls.filter((c) => c.op === "start");
@@ -337,8 +341,10 @@ test("the app's own left_car report is a walk-away too, unless its fix is at the
   const door = await post(t.app, "/location", fix(t, 2, { accuracy: 5, event: "left_car" }));
   expect(door.json()).toMatchObject({ park: { status: "at_car" } });
   t.tick(20);
-  // On foot into the shop the car is parked in front of.
-  const left = await post(t.app, "/location", fix(t, 18, { event: "left_car" }));
+  // On foot into the shop the car is parked in front of. (22 m with 8 m of
+  // error clears the door; 18 m, as this once read, reaches within 10 m of
+  // the car, refused now: #264.)
+  const left = await post(t.app, "/location", fix(t, 22, { event: "left_car" }));
   expect(left.json()).toMatchObject({ park: { status: "prompted" } });
   expect((left.json()["prompt"] as { kind: string }).kind).toBe("confirm");
   expect(t.state.decisions.find((d) => d.kind === "street_prompt")!.rule).toBe("left_car_event");
@@ -371,6 +377,118 @@ test("a left_car on a blurry seat fix never starts a Pay tapped at the car; the 
   expect(t.calls.start).toBe(1);
 });
 
+test("a short walk in an urban canyon starts a Pay tapped at the car: the walk said at the door is taken by the next fix off it (#264 review, R5)", async () => {
+  const t = makeApp();
+  // Decisions are stamped when they're made, as Postgres stamps them.
+  setFakeRowClock(() => t.clock.now);
+  const parked = await park(t.app);
+  await post(t.app, `/parked/${parked.parkedEventId}/confirm`, {});
+  // Walking 40 m to a door on the same block, every fix 40 m blurry: the
+  // app's left_car rides each, and each may have the phone at the door.
+  for (const d of [15, 30, 45]) {
+    t.tick(15);
+    await post(t.app, "/location", fix(t, d, { accuracy: 40, event: "left_car", speedMps: 1.3 }));
+  }
+  expect(t.state.pendingParks[0]).toMatchObject({ status: "confirmed", leftCarAt: null });
+  expect(t.state.pendingParks[0]!.walkSaidAt).not.toBeNull();
+  expect(t.calls.start).toBe(0);
+  // Each is on the park's trace with why it didn't count.
+  expect(t.state.parkFixes.map((f) => f.rejected)).toEqual([
+    "may_be_at_door",
+    "may_be_at_door",
+    "may_be_at_door",
+  ]);
+  // Indoors and seated: motion still, so the app says no more; Wi-Fi fixes
+  // 40 m ± 15 m, which no error reaches the door from.
+  t.tick(60);
+  const inside = await post(t.app, "/location", fix(t, 40, { accuracy: 15 }));
+  expect(inside.json()).toMatchObject({ park: { status: "started" } });
+  expect(t.calls.start).toBe(1);
+  expect(t.state.pendingParks[0]!.walkSaidAt).toBeNull();
+  // The nightly audit sees the left_car the start came from.
+  const window = {
+    from: new Date(t.clock.now.getTime() - 3_600_000),
+    to: new Date(t.clock.now.getTime() + 60_000),
+    now: t.clock.now,
+  };
+  expect(confirmedStartedWithoutLeftCar(await loadAuditData(t.deps.db, window))).toEqual([]);
+});
+
+test("a walk said at the door is forgotten back within reach of the car, or at driving speed", async () => {
+  for (const [label, after] of [
+    ["near", { distance: 20, accuracy: 8 }],
+    ["driving", { distance: 60, accuracy: 10, speedMps: 9 }],
+  ] as const) {
+    const t = makeApp();
+    const parked = await park(t.app);
+    await post(t.app, `/parked/${parked.parkedEventId}/confirm`, {});
+    t.tick(30);
+    await post(t.app, "/location", fix(t, 35, { accuracy: 35, event: "left_car" }));
+    expect(t.state.pendingParks[0]!.walkSaidAt, label).not.toBeNull();
+    t.tick(30);
+    const { distance, ...rest } = after;
+    await post(t.app, "/location", fix(t, distance, rest));
+    expect(t.state.pendingParks[0]!.walkSaidAt, label).toBeNull();
+    // A fix off the car with no word from the app now starts nothing.
+    t.tick(30);
+    await post(t.app, "/location", fix(t, 80, { accuracy: 15 }));
+    expect(t.state.pendingParks[0]!.status, label).toBe("confirmed");
+    expect(t.calls.start, label).toBe(0);
+  }
+});
+
+test("a walk whose every fix is worse than 65 m never starts the Pay: no fix can show it (#264 review, R6, kept)", async () => {
+  // The residual: a fix too blurry to read can't show the phone has left,
+  // and a seat that pays is worse than a walk that waits. It starts once a
+  // readable fix comes; until then the park stays confirmed.
+  const t = makeApp();
+  const parked = await park(t.app);
+  await post(t.app, `/parked/${parked.parkedEventId}/confirm`, {});
+  for (const d of [40, 120, 250, 400]) {
+    t.tick(20);
+    await post(t.app, "/location", fix(t, d, { accuracy: 80, event: "left_car", speedMps: 1.3 }));
+  }
+  expect(t.state.pendingParks[0]!.status).toBe("confirmed");
+  expect(t.calls.start).toBe(0);
+  t.tick(20);
+  await post(t.app, "/location", fix(t, 420, { accuracy: 30 }));
+  expect(t.calls.start).toBe(1);
+});
+
+test("after the walk-away, a left_car on a seat fix doesn't release the hold: a tap from the seat waits (#264 review, R1)", async () => {
+  const t = makeApp();
+  const parked = await park(t.app);
+  await walkAway(t);
+  expect(t.state.pendingParks[0]!.status).toBe("prompted");
+  // Back in the seat on sharp fixes: the hold is armed.
+  t.tick(120);
+  await post(t.app, "/location", fix(t, 5));
+  t.tick(20);
+  await post(t.app, "/location", fix(t, 4));
+  expect(t.state.pendingParks[0]!.backAt).not.toBeNull();
+  // In the car, GPS degrades, and a late walking reading sends left_car on
+  // a 35 m ± 35 m seat fix: it may have the phone at the door.
+  t.tick(30);
+  await post(t.app, "/location", fix(t, 35, { accuracy: 35, event: "left_car" }));
+  expect(t.state.pendingParks[0]!.backAt).not.toBeNull();
+  t.tick(5);
+  const tap = await post(t.app, `/parked/${parked.parkedEventId}/confirm`, {});
+  expect(tap.json()).toMatchObject({ status: "confirmed", startsAt: "walk_away" });
+  expect(t.calls.start).toBe(0);
+});
+
+test("no accuracy cliff at the door: 25 m ± 20 m and 25 m ± 21 m are both refused (#264 review, R3)", async () => {
+  for (const accuracy of [20, 21]) {
+    const t = makeApp();
+    const parked = await park(t.app);
+    await post(t.app, `/parked/${parked.parkedEventId}/confirm`, {});
+    t.tick(30);
+    const r = await post(t.app, "/location", fix(t, 25, { accuracy, event: "left_car" }));
+    expect(r.json(), `±${accuracy}`).toMatchObject({ park: { status: "confirmed" } });
+    expect(t.calls.start, `±${accuracy}`).toBe(0);
+  }
+});
+
 test("a left_car on a blurry fix within reach of the car asks nothing; one clear of the door asks", async () => {
   const t = makeApp();
   await park(t.app);
@@ -385,12 +503,17 @@ test("a left_car on a blurry fix within reach of the car asks nothing; one clear
 });
 
 test.each([
-  // [distance, accuracy, may be at the door]
-  [10, 5, true], // sharp, at the door
-  [11, 20, false], // sharp, just past it
+  // [distance, accuracy, may be at the door]: its error reaches within
+  // 10 m of the car, sharp or blurry alike, or it is too blurry to read.
+  [10, 0, true],
+  [11, 0, false],
+  [30, 20, true], // the old sharp exception: refused now, as 30 m ± 21 m
+  [31, 21, true],
+  [32, 21, false],
   [35, 35, true], // the urban seat fix of #264
-  [46, 35, false], // its error stops 11 m short of the car: past the door
-  [45, 35, true], // …10 m short: the door
+  [46, 35, false],
+  [75, 65, true],
+  [76, 65, false],
   [300, 66, true], // too blurry to read: never shows the phone has left
 ])("mayBeAtTheDoor(%i m, ±%i m) is %s", (distanceM, accuracyM, expected) => {
   expect(mayBeAtTheDoor({ distanceM, accuracyM })).toBe(expected);

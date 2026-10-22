@@ -112,7 +112,9 @@ export function confirmedStartedWithoutLeftCar(data: AuditData): string[] {
         return !kept.some(
           (f) =>
             f.event === "left_car" &&
-            f.rejected === null &&
+            // Read, or said at the car's door and taken by a later fix off
+            // the car (pendingSession `walkSaidAt`, #264).
+            (f.rejected === null || f.rejected === "may_be_at_door") &&
             f.receivedAt.getTime() <= d.createdAt.getTime(),
         );
       })

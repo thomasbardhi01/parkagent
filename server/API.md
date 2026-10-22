@@ -1239,14 +1239,18 @@ the car. The record is one `pending_parks` row per held park
 (`distance − accuracy > 30 m`) and no more than 3 m/s apart (a car pulling
 away covers the same ground, faster, and is not a walk-away), or when the
 app reports `left_car` (motion has the driver on foot) on a fix that
-can't have the phone at the car's door: a sharp one (accuracy ≤ 20 m) more
-than 10 m from the car, or a blurrier usable one whose whole error is (more
-than 10 m from the car after subtracting its accuracy). An urban seat fix
-reads 30–50 m off and 30–50 m blurry, and the driver is still in the car
-(#264). One too blurry to read (worse than 65 m) can't show the phone has
-left either. A `left_car` refused this way is no walk-away: the park waits,
-and the app says it again with its next fix while the driver is still on
-foot. A fix whose `speedMps` is
+can't have the phone at the car's door: more than 10 m from the car after
+subtracting its accuracy, sharp or blurry alike (an urban seat fix reads
+30–50 m off and 30–50 m blurry, with the driver still in the car, #264).
+One too blurry to read (worse than 65 m) can't show the phone has left
+either. A `left_car` refused this way is no walk-away, but it is kept
+(`walk_said_at`): the next fix measured after it that can't be at the door
+and isn't at driving speed is the walk-away it said (`left_car_event`,
+which starts a Pay tapped at the car), even once the app has stopped saying
+it. A fix within 30 m of the car, a driving-speed fix, or `returned_to_car`
+forgets it. Its trace row says why it didn't count (`rejected:
+"may_be_at_door"`). After the walk-away, the app's `left_car` clears
+`back_at` only on a fix that can't be at the door. A fix whose `speedMps` is
 over 3 m/s is a moving car: it never counts toward leaving (its
 `left_car` included) and starts the pair over. A fix with accuracy worse
 than 65 m, reported more than 5 minutes off the server's clock, measured
@@ -1406,8 +1410,9 @@ The pair's first fix is kept when the next comes under 10 s after it
 walking pace, the second fix starts a new pair (the gap may be a subway
 ride). A usable fix that isn't clear of the car breaks the pair (one
 within 30 m, sharp or blurry, also reads `back_at` anew); an unusable one
-(accuracy worse than 65 m) is skipped, except that the app's `left_car`
-on it still counts.
+(accuracy worse than 65 m) is skipped, and so is the app's `left_car` on
+it: `left_car` clears `back_at` only on a fix that can't be at the car's
+door (#264).
 
 A drive-off is a return (`why: "drove_off"`) even inside the minute, and
 it cancels a park not yet paid, however it was read: a tap after it would

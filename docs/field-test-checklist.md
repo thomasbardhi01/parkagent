@@ -68,9 +68,11 @@ and you pay the meter by hand as usual.
    - The quoted zone number vs the number **posted on the meter/sign**.
    - The quoted rate and max stay vs the sign.
    - Park once **right in front of where you're going** (under 30 m from
-     the door). The prompt must still come: the phone reports that you
-     are on foot. If it doesn't within three minutes, note the time and
-     the block.
+     the door). The prompt must still come once a fix shows you more than
+     10 m from the car, GPS error included: the phone reports that you are
+     on foot, and the server waits for a fix that can't be the driver's
+     seat. If it doesn't within three minutes, note the time, the block,
+     how far the door is from the car, and whether you were indoors.
    - Once, long-press the notification with the phone **locked** and tap
      Pay: it must ask for Face ID or the passcode first.
    - Once, tap **Pay in the app while still in the car** (Park tab →

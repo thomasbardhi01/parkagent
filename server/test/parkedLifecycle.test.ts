@@ -1885,3 +1885,37 @@ test("…and so does a start outside the lifecycle", async () => {
   expect(t.state.decisions.at(-1)).toMatchObject({ rule: "daily_cap_exceeded" });
   expect(t.calls.start).toBe(0);
 });
+
+test("a spend the gate can't sum (a garbled ledger row): no Pay offered, the tap and a start are refused", async () => {
+  const t = makeApp();
+  // Today's sum is NaN, and NaN passes every `>` cap: the gate refuses it.
+  seedSession(t.state, {
+    userId: "u1",
+    status: "stopped",
+    dryRun: true,
+    amountUsd: Number.NaN,
+    createdAt: new Date(PARKED_AT.getTime() - 3 * 60 * 60_000),
+  });
+  const parked = await park(t.app);
+  const left = await walkAway(t);
+  expect(left.json()["prompt"]).toMatchObject({
+    kind: "attention",
+    reason: "amount_invalid",
+    body: expect.stringContaining("won't pay it"),
+  });
+  const res = await tap(t, parked.parkedEventId);
+  expect(res.statusCode).toBe(409);
+  expect(res.json()).toMatchObject({ error: "policy_violation", rule: "amount_invalid" });
+
+  const other = await park(t.app, { outcomes: ["garage", "nopay"] });
+  expect(other).toMatchObject({ action: "confirm", rule: "amount_invalid" });
+  const started = await post(t.app, "/session/start", {
+    parkedEventId: other.parkedEventId,
+    zoneId: "nyc-417371",
+  });
+  expect(started.statusCode).toBe(409);
+  expect(started.json()).toMatchObject({ rule: "amount_invalid" });
+  expect(t.state.decisions.at(-1)).toMatchObject({ rule: "amount_invalid" });
+  expect(t.calls.start).toBe(0);
+  expect(t.state.sessions.filter((s) => s.status !== "stopped")).toEqual([]);
+});

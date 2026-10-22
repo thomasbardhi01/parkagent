@@ -193,12 +193,12 @@ export function registerCard(app: FastifyInstance, deps: AppDeps): void {
         data: {
           kind: "card_topup_intent",
           inputs: decisionInputs,
-          rule: "amount_over_daily_cap",
+          rule: gate.rule,
           outcome: { allowed: false },
           userId: user.id,
         },
       });
-      return reply.code(409).send({ error: "amount_over_daily_cap", decisionId: decision.id });
+      return reply.code(409).send({ error: gate.rule, decisionId: decision.id });
     }
     if (dryRun) {
       // No PaymentIntent exists and nothing can ever charge: the fake

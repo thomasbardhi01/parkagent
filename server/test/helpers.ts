@@ -66,6 +66,7 @@ import type { GarageFootprint, GarageStore } from "../src/services/garageLookup.
 import { compareIds, describeFootprint } from "../src/services/garageLookup.js";
 import type { Candidate, NearbyZone } from "../src/services/zoneLookup.js";
 import { hasReason } from "../src/services/reasons.js";
+import { unexplainedRules } from "./setup/unexplainedRules.js";
 
 export const API_KEY = "test-key";
 /** A second, non-admin user's key — for authorization (403) tests. */
@@ -78,10 +79,6 @@ export const TEST_JWT_SECRET = "test-jwt-secret-32-chars-minimum-ok";
 // Monday 2026-01-05, 14:00 EST — mid-afternoon, meters running.
 export const MONDAY_2PM = "2026-01-05T14:00:00-05:00";
 
-/** `kind:rule` of every decision this test file wrote with a rule that
- * has no reason (services/reasons.ts); test/setup/reasonsGate.ts fails
- * the file if any. */
-export const unexplainedRules = new Set<string>();
 // Monday 20:00 EST — after the posted 19:00 end of enforcement.
 export const MONDAY_8PM = "2026-01-05T20:00:00-05:00";
 

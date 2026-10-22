@@ -50,6 +50,9 @@ const LITERAL = /"([a-z][a-z0-9_]*)"/g;
 const NOT_RULES = new Set([
   // `rule: reply.body["rule"]` (pendingSession.ts) reads a field, not a rule.
   "rule",
+  // `rule: typeof rule === "string" ? …` (agentActions.ts refusalAnswer)
+  // tests a type.
+  "string",
   // Union members of *Reason/*Code types that are push copy or breaker
   // state, never a decision's rule.
   "budget",

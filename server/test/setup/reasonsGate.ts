@@ -6,7 +6,7 @@
 
 import { afterAll } from "vitest";
 
-import { unexplainedRules } from "../helpers.js";
+import { unexplainedRules } from "./unexplainedRules.js";
 
 afterAll(() => {
   if (unexplainedRules.size > 0) {

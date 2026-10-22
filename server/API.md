@@ -1191,6 +1191,11 @@ for its walk-away is bound when all of these hold:
   zone's number is paid;
 - it is inside the mandate's window (the mandate an agent's, consumed,
   unexpired);
+- the plan is one for parking now: its card's request intent is
+  `park_now`. A plan for later (`park_later`) was priced and consented to
+  for a window that hasn't begun, and its 10-minute mandate expires before
+  a later window (more than 15 minutes out) opens, so it never binds, and
+  neither does a plan whose card says no intent;
 - dry run is what it was when the mandate was minted;
 - the plan's own stay (`durationMinutes`), priced here now, is within the
   zone's max stay and the plan's price, and passes `/parked`'s own

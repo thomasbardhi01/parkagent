@@ -228,7 +228,10 @@ const MODEL_SITES: Record<string, () => Promise<{ out: unknown; rows: unknown; a
     const t = makeTestApp({ now: () => NOW });
     const out = await summarize(
       { db: t.deps.db, model: client, capUsd: 1, now: NOW },
-      { window: { from: "2026-01-04T14:00:00.000Z", to: "2026-01-05T14:00:00.000Z" }, findings: [] },
+      {
+        window: { from: "2026-01-04T14:00:00.000Z", to: "2026-01-05T14:00:00.000Z" },
+        findings: [],
+      },
     );
     return { out, rows: rowsOf(t), asked: asked.count };
   },

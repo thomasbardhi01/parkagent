@@ -35,10 +35,7 @@ vi.mock("@anthropic-ai/sdk", () => {
 });
 
 import { makeAnthropicModelClient } from "../src/services/assistant/anthropicClient.js";
-import {
-  DEFAULT_EXPLAIN_MODEL,
-  SIGN_READER_MODEL,
-} from "../src/services/assistant/modelClient.js";
+import { DEFAULT_EXPLAIN_MODEL, SIGN_READER_MODEL } from "../src/services/assistant/modelClient.js";
 import { AUDIT_MODEL, summarize } from "../src/services/audit/summary.js";
 import { explainDecision } from "../src/services/capabilities/explainDecision.js";
 import { interpretSigns } from "../src/services/capabilities/readSigns.js";
@@ -111,7 +108,10 @@ const SITES: Record<string, { model: string; run: () => Promise<unknown> }> = {
           capUsd: 1,
           now: NOW,
         },
-        { window: { from: "2026-01-04T14:00:00.000Z", to: "2026-01-05T14:00:00.000Z" }, findings: [] },
+        {
+          window: { from: "2026-01-04T14:00:00.000Z", to: "2026-01-05T14:00:00.000Z" },
+          findings: [],
+        },
       );
     },
   },

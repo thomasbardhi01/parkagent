@@ -1245,10 +1245,14 @@ subtracting its accuracy, sharp or blurry alike (an urban seat fix reads
 One too blurry to read (worse than 65 m) can't show the phone has left
 either. A `left_car` refused this way is no walk-away, but it is kept
 (`walk_said_at`): the next fix measured after it that can't be at the door
-and isn't at driving speed is the walk-away it said (`left_car_event`,
-which starts a Pay tapped at the car), even once the app has stopped saying
-it. A fix within 30 m of the car, a driving-speed fix, or `returned_to_car`
-forgets it. Its trace row says why it didn't count (`rejected:
+and isn't at driving speed is a walk-away, but one read like a walk-away by
+distance (`fix_away`), never the app's word. So a Pay tapped at the car is
+asked again (`prompted`), and only that second tap pays: a false walking
+reading in the seat followed by one blurry seat fix must never start it.
+A fix within 30 m of the car, a driving-speed fix, a fix that moved faster
+than anyone walks since the walk was said (`(distance − accuracy − 10 m) /
+seconds since > 3 m/s`, whatever the fix's own speed says), or
+`returned_to_car` forgets it. Its trace row says why it didn't count (`rejected:
 "may_be_at_door"`). After the walk-away, the app's `left_car` clears
 `back_at` only on a fix that can't be at the door. A fix whose `speedMps` is
 over 3 m/s is a moving car: it never counts toward leaving (its

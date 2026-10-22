@@ -144,7 +144,7 @@ extension AppModel {
             waiting.shown = prompt
             // Asked again (a Pay kept at the car that left by distance):
             // that Pay no longer stands, and an hour with no answer is not
-            // "an hour before you walked away".
+            // said as a walk-away that never came.
             waiting.confirmed = false
             reporter.setWaiting(waiting)
             await present(prompt, for: waiting)

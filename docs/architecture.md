@@ -110,8 +110,8 @@ stateDiagram-v2
   at_car --> confirmed: Pay tapped at the car
   prompted --> confirmed: Pay tapped, back at car
   prompted --> starting: Pay tapped while away
-  confirmed --> starting: left_car (on foot) on a fix clear of the door, or the next fix clear of it
-  confirmed --> prompted: pace only (red light can't pay)
+  confirmed --> starting: left_car (on foot) on a fix clear of the door
+  confirmed --> prompted: pace only (red light can't pay), or a fix clear of the door after a left_car refused at it
   starting --> started: provider confirmed
   starting --> start_failed: failed, or stale with no live session
   starting --> prompted: refused before provider

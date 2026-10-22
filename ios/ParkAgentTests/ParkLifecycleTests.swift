@@ -169,7 +169,7 @@ struct ParkLifecycleTests {
 
     /// A Pay kept at the car whose park is asked about again (it left by
     /// distance, not CoreMotion's walk): the kept Pay no longer stands, so
-    /// an hour with no answer isn't said as "an hour before you walked away".
+    /// an hour with no answer isn't said as a walk-away that never came.
     @Test func aParkAskedAgainForgetsTheKeptPay() async {
         let model = modelWaiting(waitingPark(confirmed: true))
         defer { tearDown(model) }

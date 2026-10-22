@@ -50,9 +50,9 @@ export function agentPrincipal(key: {
 
 /** Where an agent key may go, and the only place one may go: each
  * surface is one principal kind. A user's session or the admin key is
- * refused here, and an agent key is refused everywhere else. F adds
- * `/mcp`. */
-export const AGENT_SURFACES: readonly string[] = ["/agent/"];
+ * refused here, and an agent key is refused everywhere else: the REST
+ * surface and the MCP endpoint (routes/mcp.ts). */
+export const AGENT_SURFACES: readonly string[] = ["/agent/", "/mcp/"];
 
 export function isAgentSurface(path: string): boolean {
   return AGENT_SURFACES.some((prefix) => path === prefix.slice(0, -1) || path.startsWith(prefix));

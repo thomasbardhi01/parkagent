@@ -36,38 +36,68 @@ export function clientIp(req: FastifyRequest, trustFlyClientIp: boolean): string
   return req.ip;
 }
 
-export function makeRateLimiter(options: RateLimitOptions): preHandlerHookHandler {
+/** The sliding windows themselves, keyed by caller. `take` counts one call
+ * and answers null, or the seconds until one is allowed again. A limiter
+ * and anything else that must share its budget (the MCP surface takes from
+ * the agent REST surface's) hold the same buckets. */
+export interface RateBuckets {
+  take(key: string): number | null;
+}
+
+export function makeRateBuckets(
+  options: Pick<RateLimitOptions, "max" | "windowMs" | "now">,
+): RateBuckets {
   const { max, windowMs } = options;
   const now = options.now ?? Date.now;
-  const trustFly = options.trustFlyClientIp ?? Boolean(process.env["FLY_APP_NAME"]);
   const hits = new Map<string, number[]>();
 
   // Bound the map: prune dead keys occasionally so a long-lived process
   // doesn't accumulate one entry per key forever.
   let pruneAt = 0;
 
-  return async (req: FastifyRequest, reply: FastifyReply) => {
-    const at = now();
-    if (at > pruneAt) {
-      pruneAt = at + windowMs;
-      for (const [key, times] of hits) {
-        if (times.every((t) => at - t >= windowMs)) hits.delete(key);
+  return {
+    take(key) {
+      const at = now();
+      if (at > pruneAt) {
+        pruneAt = at + windowMs;
+        for (const [k, times] of hits) {
+          if (times.every((t) => at - t >= windowMs)) hits.delete(k);
+        }
       }
-    }
+      const times = (hits.get(key) ?? []).filter((t) => at - t < windowMs);
+      if (times.length >= max) {
+        return Math.max(1, Math.ceil((windowMs - (at - times[0]!)) / 1000));
+      }
+      times.push(at);
+      hits.set(key, times);
+      return null;
+    },
+  };
+}
+
+/** The bucket an agent key's calls count against, on every agent surface. */
+export const agentKeyBucket = (agentKeyId: string) => `key:${agentKeyId}`;
+
+export function makeRateLimiter(
+  options: RateLimitOptions,
+  buckets: RateBuckets = makeRateBuckets(options),
+): preHandlerHookHandler {
+  const trustFly = options.trustFlyClientIp ?? Boolean(process.env["FLY_APP_NAME"]);
+
+  return async (req: FastifyRequest, reply: FastifyReply) => {
     // Per agent key, per user, else per address.
     const key =
-      (req.principal?.agentKeyId !== undefined ? `key:${req.principal.agentKeyId}` : undefined) ??
+      (req.principal?.agentKeyId !== undefined
+        ? agentKeyBucket(req.principal.agentKeyId)
+        : undefined) ??
       req.authedUser?.id ??
       `ip:${clientIp(req, trustFly)}`;
-    const times = (hits.get(key) ?? []).filter((t) => at - t < windowMs);
-    if (times.length >= max) {
-      const retryAfterS = Math.ceil((windowMs - (at - times[0]!)) / 1000);
+    const retryAfterS = buckets.take(key);
+    if (retryAfterS !== null) {
       return reply
         .code(429)
-        .header("Retry-After", String(Math.max(1, retryAfterS)))
+        .header("Retry-After", String(retryAfterS))
         .send({ error: "rate_limited" });
     }
-    times.push(at);
-    hits.set(key, times);
   };
 }

@@ -155,6 +155,9 @@ export interface Env {
   // test cards, nothing charges.
   LINK_TEST_MODE: Flag | undefined;
 
+  // The MCP Apps confirm card on /mcp (`ui://`): off unless "true".
+  MCP_APPS: Flag;
+
   PORT: number;
 }
 
@@ -203,6 +206,7 @@ export const ENV_NAMES = [
   "LINK_PUBLISHABLE_KEY",
   "LINK_REDIRECT_URI",
   "LINK_TEST_MODE",
+  "MCP_APPS",
   "PORT",
 ] as const satisfies readonly (keyof Env)[];
 
@@ -231,6 +235,7 @@ export const WATCHED_PREFIXES = [
   "EMAIL_",
   "PROVIDER_",
   "AUTH_",
+  "MCP_",
 ];
 
 /** The optional features, and what each needs. Feature ids are what
@@ -281,6 +286,7 @@ export const FEATURES = {
     vars: ["AUDIT_SUMMARY", "ANTHROPIC_API_KEY"],
     what: "the nightly audit's model summary",
   },
+  mcp_apps: { vars: ["MCP_APPS"], what: "the MCP Apps confirm card on /mcp" },
 } as const satisfies Record<string, { vars: readonly (keyof Env)[]; what: string }>;
 
 export type FeatureId = keyof typeof FEATURES;
@@ -803,6 +809,12 @@ export function checkEnv(source: EnvSource, options: CheckOptions = {}): EnvRepo
           )
         : set("audit_summary", "on", "");
 
+  // -------- the MCP Apps card (off by default: an optional UI surface)
+  const mcpApps = flag("MCP_APPS", "false");
+  const mcpAppsOn = mcpApps.problem
+    ? set("mcp_apps", "degraded", `MCP_APPS ${mcpApps.problem}`)
+    : set("mcp_apps", mcpApps.value === "true" ? "on" : "off", "MCP_APPS is false");
+
   // -------- the same key or secret under two names
   const p8s = P8_SLOTS.filter((s) => has(s.key) && !unchecked.has(s.key)).flatMap((slot) => {
     const inspected = inspectP8(raw(slot.key)!);
@@ -907,6 +919,7 @@ export function checkEnv(source: EnvSource, options: CheckOptions = {}): EnvRepo
     LINK_PUBLISHABLE_KEY: linkOn ? text("LINK_PUBLISHABLE_KEY") : undefined,
     LINK_REDIRECT_URI: linkOn ? text("LINK_REDIRECT_URI") : undefined,
     LINK_TEST_MODE: linkOn && has("LINK_TEST_MODE") ? linkTest.value : undefined,
+    MCP_APPS: mcpAppsOn ? "true" : "false",
     PORT: port,
   };
 

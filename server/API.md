@@ -3702,8 +3702,8 @@ mint, list or revoke keys, or change consent: those routes refuse a key.
 **One surface per principal kind.** `Authorization: Bearer pak_…` is
 resolved in the one auth hook (`makeAuthenticate`) to an external-agent
 principal with the key's scopes and the person's id — never their admin
-rights. A key reaches the agent surfaces (`/agent/*`; `/mcp` once it
-exists) and nothing else: anywhere else is `403 agent_key_not_allowed_here`.
+rights. A key reaches the agent surfaces (`/agent/*` and `/mcp`) and nothing
+else: anywhere else is `403 agent_key_not_allowed_here`.
 The agent surfaces take nothing else: a session or the admin key there is
 `403 agent_surface_needs_agent_key`, and so is a call with no credentials
 at all. Only a `pak_` key that is unknown or revoked is `401`.
@@ -3711,8 +3711,10 @@ Every agent call is logged with the key's prefix and route, and every
 decision it causes carries `actor: "external_agent"` and the key's id.
 
 **Rate limit.** 60 calls a minute per key (`429 rate_limited` with
-`Retry-After`), through the same limiter as the rest of the API. It's
-in-memory, per machine: on one Fly machine that's the whole limit.
+`Retry-After`), through the same limiter as the rest of the API, and one
+budget across both agent surfaces: a REST call and an MCP `tools/call` or
+`resources/read` take from the same bucket. It's in-memory, per machine:
+on one Fly machine that's the whole limit.
 
 ### The mandate
 
@@ -3801,6 +3803,63 @@ OpenAI-style functions are `examples/grok-tool.json` (regenerate with
   confirmedOptionId}`; `GET /agent/parks/:parkId` → a park's `{status,
   zoneId, parkedAt, sessionId}`. Another person's is `404`.
 - `GET /agent/decisions/:decisionId/why` → `501` until Issue M.
+
+### MCP
+
+`POST /mcp` (and `GET`/`DELETE`, which a 2025-era client may send) is the
+same six calls as MCP tools, protocol revision **2026-07-28**, served by
+the MCP TypeScript SDK v2 (`createMcpHandler`, mounted with
+`toNodeHandler`, `routes/mcp.ts`). Configs: `examples/mcp-config.json`
+(Claude Code / Claude Desktop) and `examples/mcp-config.generic.json`.
+
+- **Who:** `Authorization: Bearer pak_…` only, resolved in
+  `makeAuthenticate` as on `/agent/*`; no key, a session or the admin key
+  is `403 agent_surface_needs_agent_key`, an unknown or revoked key `401`,
+  before the SDK sees the request. The SDK is handed that principal
+  (`authInfo`), never a header to re-read.
+- **Eras:** `server/discover` answers `supportedVersions: ["2026-07-28"]`
+  and capabilities `tools` and `resources` only (no roots, sampling or
+  logging). A 2025-era client (`initialize`, no per-request envelope) is
+  served statelessly from the same tools (`legacy: "stateless"`). The
+  `Mcp-Method`/`Mcp-Name` headers must agree with the body (`-32020`).
+  `subscriptions/listen` is `-32601`: the lists never change while the
+  server runs, so no change stream is held open.
+- **Ceiling:** every request to `/mcp` (initialize, discover, lists,
+  ping, GET) counts against a per-key ceiling of its own, 600 a minute
+  (`429 rate_limited`), apart from the per-call budget the tools share
+  with REST.
+- **Tools:** `geocode_place`, `quote_street`, `search_garages`,
+  `build_itinerary`, `propose_plan`, `confirm_plan`, always in that order
+  (`examples/grok-tool.json`'s), and `tools/list` is cacheable
+  `{ttlMs: 300000, cacheScope: "private"}`. Each takes the REST route's
+  body as its arguments; `confirm_plan` takes `{planId, confirmToken}`.
+  Each answers the REST body as `structuredContent` (and as JSON text). A
+  refusal is a tool error (`isError: true`) whose body carries the REST
+  code in `error`: `agents_not_allowed`, `scope_required`,
+  `mandate_not_found`, `mandate_used`, `mandate_expired`,
+  `plan_hash_mismatch`, `nothing_to_confirm`, `dry_run_changed
+  {shownDryRun, dryRun}`, `policy_violation {rule}`,
+  `garage_option_expired`, `garage_book_failed`, `rate_limited
+  {retryAfterS}`, and the rest as REST. `confirm_plan` runs the one
+  confirm sequence REST and the app's tap run (`consumeConfirmation`):
+  a refusal before the claim leaves the mandate unspent. `propose_plan`
+  hands back the mandate (`confirmToken`) as an ordinary result field;
+  nothing pays, and a street confirm answers `pending_arrival` exactly as
+  REST.
+- **Resources:** `parkagent://plans/{id}` and `parkagent://parks/{id}`,
+  the person's own only (`GET /agent/plans/:id`'s and
+  `/agent/parks/:id`'s bodies); anyone else's is not found. A read over
+  the key's budget is error `-32029` with `{error: "rate_limited",
+  retryAfterS}` as its data, never "not found".
+- **Tracing:** a `traceparent` in a request's `_meta` (else the HTTP
+  header) is the trace id on the decisions that call writes.
+- **The confirm card (`MCP_APPS`, off by default):** with `MCP_APPS=true`,
+  `propose_plan` carries `_meta.ui.resourceUri: "ui://parkagent/confirm-card"`
+  (on the tool and on a result with a token, with the person's caps under
+  `_meta["io.parkagent/caps"]`), and that resource is a static MCP Apps
+  page (`text/html;profile=mcp-app`) showing the spot, price, caps and the
+  arrival rule, whose one Confirm button calls `confirm_plan` through the
+  host. A host without UI confirms with the token the same way.
 
 ## Link wallet for agents
 

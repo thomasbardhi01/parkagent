@@ -36,6 +36,8 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.134.0",
     "@fastify/cors": "^11.3.1",
+    "@modelcontextprotocol/node": "2.1.1",
+    "@modelcontextprotocol/server": "2.3.1",
     "@prisma/adapter-pg": "^7.10.0",
     "@prisma/client": "^7.10.0",
     "dotenv": "^18.0.8",

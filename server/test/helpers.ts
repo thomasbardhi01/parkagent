@@ -2298,6 +2298,8 @@ export function makeTestApp(options: {
   issuingLive?: boolean;
   /** A test-mode Stripe key: a Debug build's sandbox choice is honored. */
   issuingSandbox?: boolean;
+  /** MCP_APPS: /mcp offers its ui:// confirm card (default off). */
+  mcpApps?: boolean;
   /** LINK_TEST_MODE: spend requests are test requests (allowed in dry run). */
   linkTestMode?: boolean;
   /** Reporting APNs delivery for the admin push-test endpoint; absent →
@@ -2397,6 +2399,7 @@ export function makeTestApp(options: {
     linkWallet,
     ...(options.issuingLive !== undefined ? { issuingLive: options.issuingLive } : {}),
     ...(options.issuingSandbox !== undefined ? { issuingSandbox: options.issuingSandbox } : {}),
+    ...(options.mcpApps !== undefined ? { mcpApps: options.mcpApps } : {}),
     ...(options.apnsDelivery ? { apnsDelivery: options.apnsDelivery } : {}),
     ...(options.appleTokens ? { appleTokens: options.appleTokens } : {}),
     now,

@@ -44,6 +44,8 @@ struct ParkingDetectedSheet: View {
     @State private var askingInstead = false
     /// An answer is on its way to the server.
     @State private var answering = false
+    /// "Check the signs" is open for this park (Issue N).
+    @State private var signCheck: SignCheckModel?
     /// The answer didn't reach the server: nothing was recorded.
     @State private var answerFailed = false
 
@@ -108,6 +110,12 @@ struct ParkingDetectedSheet: View {
                 linkedInSheet = true
             }
         }
+        .sheet(
+            isPresented: Binding(get: { signCheck != nil }, set: { if !$0 { signCheck = nil } })
+        ) {
+            if let signCheck { SignCheckSheet(model: signCheck) }
+        }
+        .task { await model.loadSignReaderIfNeeded() }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("parkedSheet.view")
     }
@@ -569,6 +577,16 @@ struct ParkingDetectedSheet: View {
                     .foregroundStyle(Color.textSecondary)
                     .accessibilityIdentifier("parkedSheet.paysAtWalkAwayNote")
             }
+        }
+        if model.signReaderOn == true {
+            // Advice about the signs at this spot: it can only warn, or
+            // offer a shorter stay the driver chooses to take.
+            Button(SignCopy.checkButton) {
+                signCheck = model.signCheckModel(for: parked.parkedEventId)
+            }
+            .buttonStyle(.secondary)
+            .disabled(model.isPaying)
+            .accessibilityIdentifier("parkedSheet.checkSignsButton")
         }
         dismissButton
     }

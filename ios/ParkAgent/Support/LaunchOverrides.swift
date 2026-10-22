@@ -20,6 +20,7 @@ import Foundation
 ///                          user setting; UI tests on slow runners widen it)
 ///   -paymentSource <raw>   preset the payment source (provider_card|link_wallet|parkagent_card)
 ///   -issuingLive YES       the mock reports the ParkAgent card as live
+///   -signReader YES        the mock reports the parking-sign reader on
 ///   -parkAgentSandbox YES  preset Diagnostics' ParkAgent-card sandbox toggle
 ///   -policyReadOnly YES    the mock policy isn't editable by this user
 ///   -authScenario <name>   preset the mock sign-in (returning|newUser|badCode|appleFails)
@@ -73,6 +74,7 @@ enum LaunchOverrides {
     private static let mockDefaultsKeys = [
         "useMockAPI",
         "issuingLive",
+        MockAPI.signReaderKey,
         MockScenario.defaultsKey,
         WalletMockScenario.defaultsKey,
         ProviderMockScenario.defaultsKey,
@@ -114,6 +116,8 @@ enum LaunchOverrides {
         let paymentSource = argued[PaymentSource.defaultsKey] != nil
             ? defaults.string(forKey: PaymentSource.defaultsKey) : nil
         let issuingLive = argued["issuingLive"] != nil ? defaults.bool(forKey: "issuingLive") : nil
+        let signReader = argued[MockAPI.signReaderKey] != nil
+            && defaults.bool(forKey: MockAPI.signReaderKey)
         let policyReadOnly = argued[MockAPI.policyReadOnlyKey] != nil
             && defaults.bool(forKey: MockAPI.policyReadOnlyKey)
         let parkAgentSandbox = argued[FeatureFlags.parkAgentSandboxKey] != nil
@@ -183,6 +187,7 @@ enum LaunchOverrides {
         if let dictationPause { defaults.set(dictationPause, forKey: SpeechRecognizer.pauseToleranceKey) }
         if let paymentSource { defaults.set(paymentSource, forKey: PaymentSource.defaultsKey) }
         if let issuingLive { defaults.set(issuingLive, forKey: "issuingLive") }
+        if signReader { defaults.set(true, forKey: MockAPI.signReaderKey) }
         if let parkAgentSandbox { defaults.set(parkAgentSandbox, forKey: FeatureFlags.parkAgentSandboxKey) }
         if policyReadOnly { defaults.set(true, forKey: MockAPI.policyReadOnlyKey) }
         if let onboardingStep { defaults.set(onboardingStep, forKey: OnboardingStep.defaultsKey) }

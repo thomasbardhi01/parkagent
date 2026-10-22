@@ -254,6 +254,14 @@ struct LiveAPI: APIClient {
         )
     }
 
+    func checkSigns(parkedEventId: String, request: SignCheckRequest) async throws -> SignCheckResponse {
+        try await send("parked/\(parkedEventId)/signs", method: "POST", body: request)
+    }
+
+    func acceptSignStay(parkedEventId: String, checkId: String) async throws -> SignAcceptResponse {
+        try await send("parked/\(parkedEventId)/signs/\(checkId)/accept", method: "POST")
+    }
+
     func reportZoneNumber(zoneId: String, number: String) async throws -> ZoneNumberReportResponse {
         let escaped = zoneId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? zoneId
         return try await send(

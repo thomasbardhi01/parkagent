@@ -176,6 +176,8 @@ private extension ParkedRequest {
 /// only: a launch opts in with `-useMockAPI YES` and nothing persists it.
 struct MockAPI: APIClient {
     static let policyReadOnlyKey = "policyReadOnly"
+    /// `-signReader YES`: the mock reports the parking-sign reader on.
+    static let signReaderKey = "signReader"
 
     private let store = MockSessionStore()
     private let providerStore = MockProviderStore()
@@ -301,7 +303,8 @@ struct MockAPI: APIClient {
             user: await profileStore.user(),
             // The same fact GET /wallet reports — Account and Wallet agree.
             paymentSource: await MockWalletStore.shared.activeSource(),
-            issuingLive: UserDefaults.standard.bool(forKey: "issuingLive")
+            issuingLive: UserDefaults.standard.bool(forKey: "issuingLive"),
+            signReader: UserDefaults.standard.bool(forKey: MockAPI.signReaderKey)
         )
     }
 
@@ -405,6 +408,50 @@ struct MockAPI: APIClient {
             ok: true, parkedEventId: parkedEventId, placeClass: placeClass, name: name, changed: true,
             decisionId: "mock-decision-\(UUID().uuidString.prefix(8))"
         )
+    }
+
+    /// The sign reader, scripted on the recognized text so a UI test that
+    /// shows the camera a sign gets the verdict that sign earns: a
+    /// one-hour limit is stricter than the fixtures' two-hour zone, a
+    /// prohibition conflicts, no text is unreadable, anything else agrees.
+    func checkSigns(parkedEventId: String, request: SignCheckRequest) async throws -> SignCheckResponse {
+        try await pause()
+        let text = request.text.uppercased()
+        let id = "mock-sign-\(UUID().uuidString.prefix(8))"
+        func rule(_ kind: String, limit: Int? = nil) -> SignRule {
+            SignRule(kind: kind, days: [], start: "08:00", end: "18:00", limitMinutes: limit,
+                     permitZone: nil, exceptions: [])
+        }
+        let verdict: SignVerdict
+        var rules: [SignRule] = []
+        var reasons: [String] = []
+        var offer: SignOffer?
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            verdict = .unreadable
+        } else if text.contains("NO PARKING") || text.contains("TOW") {
+            verdict = .conflicts
+            rules = [rule("no_parking")]
+            reasons = ["no_parking"]
+        } else if text.contains("1 HOUR") || text.contains("1 HR") {
+            verdict = .stricter
+            rules = [rule("time_limit", limit: 60)]
+            reasons = ["time_limit_shorter"]
+            offer = SignOffer(maxStayMinutes: 60)
+        } else {
+            verdict = .agrees
+            rules = [rule("time_limit", limit: 120)]
+        }
+        return SignCheckResponse(
+            checkId: id, verdict: verdict, rules: rules, confidence: verdict == .unreadable ? 0 : 0.9,
+            reasons: reasons, offer: offer, zone: SignZone(zoneId: "mock-zone", maxStayMinutes: 120),
+            photoKept: request.photo != nil && request.storePhoto == true, advisory: true,
+            decisionId: "mock-decision-\(UUID().uuidString.prefix(8))"
+        )
+    }
+
+    func acceptSignStay(parkedEventId: String, checkId: String) async throws -> SignAcceptResponse {
+        try await pause()
+        return SignAcceptResponse(accepted: true, maxStayMinutes: 60, sessionId: nil)
     }
 
     func reportZoneNumber(zoneId: String, number: String) async throws -> ZoneNumberReportResponse {

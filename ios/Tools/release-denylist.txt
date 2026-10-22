@@ -28,6 +28,8 @@ MockAssistant
 MockScenario
 MockProviderLoginView
 MockZoneNumberStore
+SignFixtureImage
+signCheck.debugFixtureSignButton
 MockParkStore
 MockConversationStore
 useMockAPI

@@ -182,6 +182,48 @@ final class LiveAPIRequestTests: XCTestCase {
         XCTAssertEqual(query(request), ["jobId": "job 1&2"])
     }
 
+    // MARK: - The parking-sign reader (server/API.md "POST /parked/:id/signs")
+
+    /// The server's answer, shaped as routes/signs.ts sends it.
+    private static let signCheckBody = #"""
+    {"checkId": "c1", "verdict": "stricter", "rules": [{"kind": "time_limit", "days": ["mon"], "start": "08:00", "end": "18:00", "limitMinutes": 60, "permitZone": null, "exceptions": []}], "confidence": 0.92, "reasons": ["time_limit_shorter"], "offer": {"maxStayMinutes": 60}, "zone": {"zoneId": "bos-x", "maxStayMinutes": 120}, "photoKept": false, "advisory": true, "decisionId": "d1"}
+    """#
+
+    func testASignCheckPostsTheTextAndDecodesTheVerdict() async throws {
+        StubURLProtocol.respond(json: Self.signCheckBody)
+        let check = try await api.checkSigns(
+            parkedEventId: "pe1",
+            request: SignCheckRequest(text: "1 HOUR PARKING", fix: SignFix(lat: 42.35, lng: -71.08, accuracy: 6))
+        )
+
+        let request = try sentRequest()
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.url?.path(), "/parked/pe1/signs")
+        XCTAssertEqual(bearer(request), "Bearer access-1")
+        XCTAssertNotNil(request.value(forHTTPHeaderField: "Idempotency-Key"), "an unsafe call carries a key")
+        let sent = try body(request)
+        XCTAssertEqual(sent["text"] as? String, "1 HOUR PARKING")
+        XCTAssertEqual((sent["fix"] as? [String: Any])?["accuracy"] as? Double, 6)
+        XCTAssertNil(sent["photo"], "no photo key when none is sent (the route is strict)")
+        XCTAssertNil(sent["storePhoto"])
+
+        XCTAssertEqual(check.verdict, .stricter)
+        XCTAssertEqual(check.offer?.maxStayMinutes, 60)
+        XCTAssertEqual(check.rules.first?.limitMinutes, 60)
+    }
+
+    func testAcceptingASignStayPostsToTheCheck() async throws {
+        StubURLProtocol.respond(json: #"{"accepted": true, "maxStayMinutes": 60, "sessionId": null}"#)
+        let accepted = try await api.acceptSignStay(parkedEventId: "pe1", checkId: "c1")
+
+        let request = try sentRequest()
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.url?.path(), "/parked/pe1/signs/c1/accept")
+        XCTAssertNil(request.httpBody, "the accept carries no number: the server's offer is the stay")
+        XCTAssertNil(request.httpBodyStream)
+        XCTAssertEqual(accepted.maxStayMinutes, 60)
+    }
+
     // MARK: - Timeouts, retries, idempotency keys
 
     private static let extendBody = #"{"sessionId": "s1", "expiresAt": "2026-09-26T16:00:00.000Z", "amountUsd": 1.65}"#

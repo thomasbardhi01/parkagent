@@ -40,6 +40,12 @@ class HangingAPI: APIClient, @unchecked Sendable {
     func answerPlace(parkedEventId: String, placeClass: String, name: String?) async throws -> PlaceAnswerResponse {
         try await hang()
     }
+    func checkSigns(parkedEventId: String, request: SignCheckRequest) async throws -> SignCheckResponse {
+        try await hang()
+    }
+    func acceptSignStay(parkedEventId: String, checkId: String) async throws -> SignAcceptResponse {
+        try await hang()
+    }
     func reportZoneNumber(zoneId: String, number: String) async throws -> ZoneNumberReportResponse {
         try await hang()
     }

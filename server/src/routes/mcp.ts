@@ -38,11 +38,13 @@ import { z } from "zod";
 import type { AppDeps } from "../app.js";
 import type { AgentActions, AgentAnswer } from "../services/agentActions.js";
 import { policyFor } from "../services/limits.js";
+import { isBadInputSqlState, sqlStateOf } from "../services/pgErrors.js";
 import type { Principal } from "../services/principal.js";
 import { currentTraceId, runAs, traceIdFrom } from "../services/principal.js";
 import { agentKeyBucket, makeRateLimiter } from "../services/rateLimit.js";
 import type { AgentLimit } from "./agent.js";
 import { AGENT_TOOLS, confirmSchema, explainSchema } from "./agentSchemas.js";
+import { recordId } from "./ids.js";
 import { CONFIRM_CARD_HTML, CONFIRM_CARD_MIME, CONFIRM_CARD_URI } from "./mcpConfirmCard.js";
 
 export const MCP_SERVER_INFO = { name: "parkagent", version: "1.0.0" } as const;
@@ -69,7 +71,7 @@ const RULES =
 
 /** confirm_plan over MCP: the plan id travels as an argument, not a path. */
 const mcpConfirmSchema = z.strictObject({
-  planId: z.string().min(1).max(64).describe("From propose_plan"),
+  planId: recordId.describe("From propose_plan"),
   confirmToken: confirmSchema.shape.confirmToken,
 });
 
@@ -177,6 +179,11 @@ export function buildMcpServer(
    * REST's 500. The SDK would hand the agent the error's own text, which
    * names the query and the build's paths, and log nothing. */
   const failed = (err: unknown, what: string): AgentAnswer => {
+    // A NUL byte that reached a query: the call's fault, as REST answers it.
+    if (isBadInputSqlState(err)) {
+      log.warn({ sqlState: sqlStateOf(err), mcp: what }, "mcp: input the database refused");
+      return { status: 400, body: { error: "bad_request" } };
+    }
     log.error({ err, mcp: what }, "mcp: call failed");
     return { status: 500, body: { error: "internal" } };
   };

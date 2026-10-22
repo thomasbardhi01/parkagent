@@ -31,6 +31,7 @@ import {
   searchSchema,
 } from "./agentSchemas.js";
 import { agentOpenApi } from "./agentOpenApi.js";
+import { pathIds, recordId } from "./ids.js";
 
 export const AGENT_RATE_PER_MINUTE = 60;
 
@@ -117,34 +118,39 @@ export function registerAgent(
     return body ? send(reply, await actions.plan(req.principal!, body)) : reply;
   });
 
+  // Each id as MCP's tools take it (routes/ids.ts): anything else (a NUL
+  // is a Postgres error) is a 400 before the database, never a 500.
+
   app.post("/agent/plans/:planId/confirm", { preHandler: limit }, async (req, reply) => {
     const body = take(confirmSchema, req, reply, "confirm");
     if (!body) return reply;
-    const { planId } = req.params as { planId: string };
-    return send(reply, await actions.confirm(req.principal!, planId, body.confirmToken));
+    const ids = pathIds(req, reply, { planId: recordId });
+    if (!ids) return reply;
+    return send(reply, await actions.confirm(req.principal!, ids.planId, body.confirmToken));
   });
 
   app.get("/agent/plans/:planId", { preHandler: limit }, async (req, reply) => {
-    const { planId } = req.params as { planId: string };
-    return send(reply, await actions.getPlan(req.principal!, planId));
+    const ids = pathIds(req, reply, { planId: recordId });
+    if (!ids) return reply;
+    return send(reply, await actions.getPlan(req.principal!, ids.planId));
   });
 
   /** A park the phone reported, by id: its status only. */
   app.get("/agent/parks/:parkId", { preHandler: limit }, async (req, reply) => {
-    const { parkId } = req.params as { parkId: string };
-    return send(reply, await actions.getPark(req.principal!, parkId));
+    const ids = pathIds(req, reply, { parkId: recordId });
+    if (!ids) return reply;
+    return send(reply, await actions.getPark(req.principal!, ids.parkId));
   });
 
   /** Why one of the person's decisions came out as it did (Issue M). */
   app.get("/agent/decisions/:decisionId/why", { preHandler: limit }, async (req, reply) => {
-    const { decisionId } = req.params as { decisionId: string };
-    // The scope first (actions.why refuses a key without it, whatever it
-    // sent), then the id as MCP's explain_decision takes it: anything else
-    // (a NUL is a Postgres error) is a 400, never a 500.
-    const parsed = explainSchema.shape.decisionId.safeParse(decisionId);
-    if (req.principal!.scopes.has("read") && !parsed.success) {
-      return reply.code(400).send({ error: z.treeifyError(parsed.error) });
+    // The scope first: actions.why refuses a key without it, whatever it
+    // sent.
+    if (req.principal!.scopes.has("read")) {
+      const ids = pathIds(req, reply, { decisionId: explainSchema.shape.decisionId });
+      if (!ids) return reply;
     }
+    const { decisionId } = req.params as { decisionId: string };
     return send(reply, await actions.why(req.principal!, decisionId));
   });
 }

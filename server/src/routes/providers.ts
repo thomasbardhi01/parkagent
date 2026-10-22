@@ -32,6 +32,7 @@ import {
 import type { ProviderStorageState } from "../services/providerOps.js";
 import { normalizeSource } from "../services/wallet/summary.js";
 import { moneyGate } from "../services/moneyGate.js";
+import { recordId } from "./ids.js";
 
 const cookieSchema = z.object({
   name: z.string().min(1).max(256),
@@ -55,7 +56,8 @@ const topupSchema = z.object({
 });
 
 const linkStatusSchema = z.object({
-  jobId: z.string().min(1),
+  // A job id, as the path ids are parsed (routes/ids.ts): never a NUL.
+  jobId: recordId,
 });
 
 export function registerProviders(app: FastifyInstance, deps: AppDeps): void {

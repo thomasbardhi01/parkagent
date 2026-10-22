@@ -381,6 +381,36 @@ describe("the tools, under dry run", () => {
     ]);
     expect(read).not.toHaveBeenCalled();
   });
+
+  test("a planId that isn't an id is refused before the database, as REST's path is (#281)", async () => {
+    const { t, tool } = await setup();
+    const read = vi.spyOn(t.deps.db.assistantPlan, "findUnique");
+    const decisions = t.state.decisions.length;
+    for (const planId of ["a\u0000b", "a b", "a".repeat(65)]) {
+      const out = await tool("confirm_plan", { planId, confirmToken: "t".repeat(20) });
+      expect(out.isError, planId).toBe(true);
+      expect(JSON.stringify(out["content"]), planId).toContain("planId");
+    }
+    expect(read).not.toHaveBeenCalled();
+    expect(t.state.decisions.length).toBe(decisions);
+  });
+
+  test("Postgres refusing a NUL that reached a query is bad_request, a warning, not internal", async () => {
+    const { t, tool } = await setup();
+    const mine = seedDecision(t, "u2");
+    vi.spyOn(t.deps.db.decision, "findUnique").mockRejectedValue(
+      Object.assign(new Error("Database error. Code: `22021`. Message: `invalid byte sequence`"), {
+        code: "P2039",
+        meta: { driverAdapterError: { cause: { kind: "postgres", originalCode: "22021" } } },
+      }),
+    );
+    const errors = vi.spyOn(t.app.log, "error");
+    const out = await tool("explain_decision", { decisionId: mine });
+    expect(out.isError).toBe(true);
+    expect(out.structuredContent).toEqual({ error: "bad_request" });
+    expect(JSON.stringify(out)).not.toMatch(/22021|byte sequence/);
+    expect(errors).not.toHaveBeenCalled();
+  });
 });
 
 describe("refusals are tool errors with REST's codes", () => {

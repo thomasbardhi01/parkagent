@@ -7,6 +7,10 @@
  */
 
 import { AGENT_TOOLS, jsonSchemaOf } from "./agentSchemas.js";
+import { recordId } from "./ids.js";
+
+/** A path id as the routes parse it (routes/ids.ts). */
+const idSchema = jsonSchemaOf(recordId);
 
 const errorBody = {
   type: "object",
@@ -42,7 +46,7 @@ export function agentOpenApi(): Record<string, unknown> {
   const paths: Record<string, unknown> = {};
   for (const tool of AGENT_TOOLS) {
     const param = tool.route.includes("{planId}")
-      ? [{ name: "planId", in: "path", required: true, schema: { type: "string" } }]
+      ? [{ name: "planId", in: "path", required: true, schema: idSchema }]
       : [];
     paths[tool.route] = {
       post: {
@@ -77,9 +81,7 @@ export function agentOpenApi(): Record<string, unknown> {
         summary: read.summary,
         ...(read.param
           ? {
-              parameters: [
-                { name: read.param, in: "path", required: true, schema: { type: "string" } },
-              ],
+              parameters: [{ name: read.param, in: "path", required: true, schema: idSchema }],
             }
           : {}),
         responses: {

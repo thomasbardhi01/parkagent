@@ -961,6 +961,8 @@ export interface AppDb {
       data: { id: string; userId: string; conversationId: string; kind: string; plan: unknown };
     }): Promise<{ id: string }>;
     findUnique(args: { where: { id: string } }): Promise<AssistantPlanRow | null>;
+    /** The plan a park is bound to (E3; at most one, a unique column). */
+    findFirst(args: { where: { boundParkedEventId: string } }): Promise<AssistantPlanRow | null>;
     /** A conversation's plans (history), a user's confirmed ones
      * (Activity), or those confirmed since a moment and not yet bound to
      * a park (an agent's spot meeting the phone, E3). */

@@ -1199,6 +1199,12 @@ tap's plan: the ordinary `at_car` hold, and the phone's own prompt. The
 mandate and the agent key, and carries the key on its `agent_key_id`
 column; its actor is the phone's (arrival is the phone's act)
 (`routes/parked.ts`, `agentBindingFor` in `services/pendingSession.ts`).
+So does every decision the bound park's start writes: its
+`session_start` row, paid or refused, and its `session_start_walkaway`
+rows carry the key on `agent_key_id` (`boundAgentKeyId`, read from the
+plan bound to the park and its mandate), so a per-key ledger query finds
+the money an agent's confirm moved. A park no plan is bound to carries
+none.
 
 **A Pay tapped at the car starts only on the app's `left_car`.** Two
 fixes at nearly the same distance read like a walk, and so does a car

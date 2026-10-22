@@ -202,6 +202,26 @@ export async function agentBindingFor(
   return null;
 }
 
+/**
+ * The agent key whose confirmed plan this park is bound to (E3), or null.
+ * The bound park's start is the phone's act, so the principal is the
+ * person's; the consent was the key's, and every start decision for the
+ * park names it, so a per-key ledger query finds the money it moved.
+ */
+export async function boundAgentKeyId(
+  db: Pick<AppDb, "assistantPlan" | "mandate">,
+  userId: string,
+  parkedEventId: string,
+): Promise<string | null> {
+  const plan = await db.assistantPlan.findFirst({ where: { boundParkedEventId: parkedEventId } });
+  if (!plan || plan.userId !== userId) return null;
+  const mandate = await db.mandate.findFirst({
+    where: { planId: plan.id },
+    orderBy: { createdAt: "desc" },
+  });
+  return mandate && mandate.userId === userId ? mandate.agentKeyId : null;
+}
+
 /** What the app itself saw: on foot after the park, or the car's audio
  * reconnecting / driving again. */
 export type PhoneEvent = "left_car" | "returned_to_car";
@@ -1209,10 +1229,13 @@ export async function startParkSession(
   const parkedEventId = park.parkedEventId as string;
   const settle = (data: PendingParkWrite) =>
     deps.db.pendingPark.updateMany({ where: { id: park.id, status: "starting" }, data });
+  // An agent-bound park's start rows name the key that consented (E3).
+  const agentKeyId = await boundAgentKeyId(deps.db, park.userId, parkedEventId);
   const record = (rule: string, outcome: Record<string, unknown>, sessionId?: string) =>
     deps.db.decision.create({
       data: {
         kind: "session_start_walkaway",
+        ...(agentKeyId ? { agentKeyId } : {}),
         inputs: {
           parkedEventId,
           zoneId: park.zoneId,

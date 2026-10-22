@@ -297,3 +297,68 @@ describe("binding the phone's park to an agent's confirmed spot", () => {
     expect(Number(session.amountUsd) + Number(session.feeUsd)).toBeCloseTo(STEINWAY_HOUR_USD, 2);
   });
 });
+
+describe("the start of a bound park names the agent key on its decisions", () => {
+  const leftCar = async (t: ReturnType<typeof makeApp>) => {
+    const post = (body: object) =>
+      t.app.inject({ method: "POST", url: "/location", headers: U1, payload: body });
+    t.tick(40);
+    await post(fix(t, 60));
+    t.tick(20);
+    return post(fix(t, 90, { event: "left_car" }));
+  };
+  const startRows = (t: ReturnType<typeof makeApp>) =>
+    t.state.decisions.filter(
+      (d) => d.kind === "session_start" || d.kind === "session_start_walkaway",
+    );
+
+  test("paid: the start's row and the walk-away's row carry the key that consented", async () => {
+    const t = makeApp();
+    seedAgentPlan(t.state, { priceUsd: STEINWAY_HOUR_USD });
+    await park(t);
+    expect((await leftCar(t)).statusCode).toBe(200);
+    expect(t.state.sessions).toHaveLength(1);
+    const rows = startRows(t);
+    expect(rows.map((d) => [d.kind, d.rule])).toEqual([
+      ["session_start", "start_ok"],
+      ["session_start_walkaway", "started"],
+    ]);
+    for (const row of rows)
+      expect(row, `${row.kind}:${row.rule}`).toMatchObject({ agentKeyId: "ak1" });
+  });
+
+  test("refused at the start (the per-stop cap lowered after the bind): the refusal carries it too", async () => {
+    const t = makeApp();
+    seedAgentPlan(t.state, { priceUsd: STEINWAY_HOUR_USD });
+    await park(t);
+    t.deps.policy.update({ ...t.deps.policy.get(), session_cap_usd: 1 });
+    await leftCar(t);
+    expect(t.state.sessions).toHaveLength(0);
+    const rows = startRows(t);
+    expect(rows.find((d) => d.kind === "session_start")).toMatchObject({
+      rule: "session_cap_exceeded",
+      agentKeyId: "ak1",
+    });
+    for (const row of rows)
+      expect(row, `${row.kind}:${row.rule}`).toMatchObject({ agentKeyId: "ak1" });
+  });
+
+  test("a park no plan is bound to: the person's tap, no key on any start row", async () => {
+    const t = makeApp();
+    // The plan is there, but for a zone next door: it never binds.
+    seedAgentPlan(t.state, { zoneId: "nyc-425957" });
+    const held = await park(t);
+    expect(held.status).toBe("at_car");
+    await leftCar(t);
+    const tap = await t.app.inject({
+      method: "POST",
+      url: `/parked/${held.parkedEventId}/confirm`,
+      headers: U1,
+      payload: {},
+    });
+    expect(tap.statusCode, tap.body).toBe(200);
+    const rows = startRows(t);
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) expect(row.agentKeyId ?? null, `${row.kind}:${row.rule}`).toBeNull();
+  });
+});

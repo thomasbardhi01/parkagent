@@ -307,6 +307,10 @@ const REASONS: Record<string, Spec> = {
     RAISE_STOP,
   ],
   hold_daily_cap: ["more time would pass the daily cap", ["extendCost", "spentToday"], RAISE_DAY],
+  hold_gate_refused: [
+    "the spending check refused more time (an amount it couldn't read), so it didn't extend",
+    ["extendCost", "spentToday"],
+  ],
   hold_max_extensions: ["the limit on automatic extensions was already used up", ["extensions"]],
   hold_auto_extend_disabled: ["auto-extend is switched off", NONE],
   hysteresis_hold: ["a decision a moment ago was still settling, so it held steady", NONE],
@@ -334,6 +338,10 @@ const REASONS: Record<string, Spec> = {
     "the amount would pass the daily cap",
     ["price", "spentToday"],
     RAISE_DAY,
+  ],
+  amount_invalid: [
+    "an amount it had to check against your limits wasn't one it could read, so it refused rather than guess",
+    ["price", "spentToday"],
   ],
   policy_violation: ["it was over your limits", ["price"], "Check your limits."],
 

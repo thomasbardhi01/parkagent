@@ -69,7 +69,7 @@ import {
   resolveTappedCandidate,
 } from "./requestState.js";
 import { lastSearchIn, relaxationTapped } from "./search.js";
-import { GEN_AI, inChatSpan, inSpan } from "../telemetry.js";
+import { GEN_AI, allInputTokens, inChatSpan, inSpan } from "../telemetry.js";
 import type { SpanAttributes } from "../telemetry.js";
 
 const MAX_LOOP_ITERATIONS = 8;
@@ -426,6 +426,8 @@ async function assistantTurn(args: RunArgs, span: SpanAttributes): Promise<Assis
   const startedMs = Date.now();
   let inputTokens = 0;
   let outputTokens = 0;
+  /** The span's input count: cached tokens included (telemetry.ts). */
+  let spanInputTokens = 0;
   let modelId = "unknown";
   let modelCalls = 0;
   /** The safeguard category when the model declined the turn. */
@@ -452,6 +454,7 @@ async function assistantTurn(args: RunArgs, span: SpanAttributes): Promise<Assis
       modelCalls += 1;
       if (response.model) modelId = response.model;
       inputTokens += response.usage?.inputTokens ?? 0;
+      if (response.usage) spanInputTokens += allInputTokens(response.usage);
       outputTokens += response.usage?.outputTokens ?? 0;
       // Read before the content: a declined turn carries no answer, and
       // nothing from it reaches the user or the next call.
@@ -573,7 +576,7 @@ async function assistantTurn(args: RunArgs, span: SpanAttributes): Promise<Assis
       });
     } finally {
       span.setAttributes({
-        [GEN_AI.inputTokens]: inputTokens,
+        [GEN_AI.inputTokens]: spanInputTokens,
         [GEN_AI.outputTokens]: outputTokens,
         // "unknown" until a response says which model answered.
         ...(modelId !== "unknown" ? { [GEN_AI.responseModel]: modelId } : {}),

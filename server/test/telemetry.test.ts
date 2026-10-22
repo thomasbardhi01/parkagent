@@ -131,14 +131,20 @@ test("an assistant turn is invoke_agent → chat and execute_tool, with tokens a
   expect(agent!.attributes).toMatchObject({
     [GEN_AI.operation]: "invoke_agent",
     [GEN_AI.agentName]: "parkagent",
-    [GEN_AI.inputTokens]: 2000,
+    // Every input token, cached ones included (semconv 1.43.0): the first
+    // call's 900 + 700 cache reads + 50 cache writes, and the second's 1100.
+    [GEN_AI.inputTokens]: 2750,
     [GEN_AI.outputTokens]: 300,
     [GEN_AI.responseModel]: "claude-sonnet-5",
     "parkagent.model_calls": 2,
   });
   expect(agent!.attributes[GEN_AI.conversationId]).toEqual(expect.any(String));
-  // What the turn cost, from the price table: 2000 in, 300 out at $2/$10.
+  // What the turn cost, from the price table on the provider's own counts
+  // (2000 in, 300 out at $2/$10): the cache adds no double count.
   expect(agent!.attributes["parkagent.cost_usd"]).toBeCloseTo(0.007);
+  // The row the daily cap reads keeps the provider's counts too.
+  const turn = t.state.decisions.find((d) => d.kind === "assistant_turn");
+  expect(turn!.outcome).toMatchObject({ inputTokens: 2000, outputTokens: 300 });
 
   const chats = named(all, "chat ");
   expect(chats.map((s) => s.name)).toEqual(["chat claude-sonnet-5", "chat claude-sonnet-5"]);
@@ -147,11 +153,12 @@ test("an assistant turn is invoke_agent → chat and execute_tool, with tokens a
     [GEN_AI.operation]: "chat",
     [GEN_AI.provider]: "anthropic",
     [GEN_AI.requestModel]: "claude-sonnet-5",
-    [GEN_AI.inputTokens]: 900,
+    [GEN_AI.inputTokens]: 1650,
     [GEN_AI.outputTokens]: 100,
     [GEN_AI.cacheReadTokens]: 700,
     [GEN_AI.cacheCreationTokens]: 50,
   });
+  expect(chats[1]!.attributes[GEN_AI.inputTokens]).toBe(1100);
   expect(chats[1]!.attributes[GEN_AI.cacheReadTokens]).toBeUndefined();
 
   const tools = named(all, "execute_tool ");

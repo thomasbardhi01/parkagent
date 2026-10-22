@@ -210,13 +210,21 @@ export function inChatSpan(
   );
 }
 
+/** `gen_ai.usage.input_tokens` counts every input token, cached ones
+ * included (semantic conventions 1.43.0); Anthropic's `input_tokens`
+ * leaves out the cache reads and writes, so they are added back here.
+ * Cost reads the provider's own counts, never this one. */
+export function allInputTokens(usage: NonNullable<ModelResponse["usage"]>): number {
+  return usage.inputTokens + (usage.cacheReadTokens ?? 0) + (usage.cacheCreationTokens ?? 0);
+}
+
 function usageAttributes(response: ModelResponse): Attributes {
   const usage = response.usage;
   return {
     ...(response.model ? { [GEN_AI.responseModel]: response.model } : {}),
     ...(usage
       ? {
-          [GEN_AI.inputTokens]: usage.inputTokens,
+          [GEN_AI.inputTokens]: allInputTokens(usage),
           [GEN_AI.outputTokens]: usage.outputTokens,
           ...(usage.cacheReadTokens !== undefined
             ? { [GEN_AI.cacheReadTokens]: usage.cacheReadTokens }

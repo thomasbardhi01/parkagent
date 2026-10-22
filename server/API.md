@@ -2371,10 +2371,13 @@ by `gen_ai.conversation.id`). It's priced from token counts with the
 assistant's own price table, the same estimate the `assistant_turn`
 decision records.
 
-Per the conventions, `gen_ai.usage.input_tokens` excludes the cache
-tokens, which have their own two attributes. (Anthropic's own spans count
-them in.) The cost attribute, like the `assistant_turn` decision, prices
-input and output tokens and ignores cache pricing. Background jobs (the
+Per the conventions (1.43.0), `gen_ai.usage.input_tokens` counts every
+input token, cached ones included: Anthropic's `input_tokens` plus its
+cache reads and cache writes, on the `chat` spans and summed on
+`invoke_agent`. The cache counts also keep their own two attributes. The
+cost attribute, like the `assistant_turn` decision (whose token counts
+are Anthropic's own), prices input and output tokens from the provider's
+counts and ignores cache pricing, so nothing is counted twice. Background jobs (the
 extension worker) run with no request and no trace id, so their
 `money_gate` spans start traces of their own. Every span's scope carries
 the server's version and the conventions' schema URL.

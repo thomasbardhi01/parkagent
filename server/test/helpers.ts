@@ -1053,12 +1053,26 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
             r.userId === where.userId &&
             (!where.conversationId || where.conversationId.in.includes(r.conversationId)) &&
             // Loose: older tests push plan rows without the column.
-            (!where.confirmedAt || r.confirmedAt != null),
+            (!where.confirmedAt || r.confirmedAt != null) &&
+            (!where.confirmedAt?.gte ||
+              (r.confirmedAt != null &&
+                r.confirmedAt.getTime() >= where.confirmedAt.gte.getTime())) &&
+            (!("boundParkedEventId" in where) || (r.boundParkedEventId ?? null) === null),
         ),
       update: async ({ where, data }) => {
         const row = state.assistantPlans.find((r) => r.id === where.id);
         if (row) Object.assign(row, data);
         return {};
+      },
+      updateMany: async ({ where, data }) => {
+        // Compare-and-set, like UPDATE … WHERE bound_parked_event_id = $2
+        // (or IS NULL).
+        const row = state.assistantPlans.find(
+          (r) => r.id === where.id && (r.boundParkedEventId ?? null) === where.boundParkedEventId,
+        );
+        if (!row) return { count: 0 };
+        Object.assign(row, data);
+        return { count: 1 };
       },
     },
     mandate: {
@@ -1068,6 +1082,12 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
       },
       findUnique: async ({ where }) => {
         const row = state.mandates.find((r) => r.token === where.token);
+        return row ? { ...row } : null;
+      },
+      findFirst: async ({ where }) => {
+        const row = state.mandates
+          .filter((r) => r.planId === where.planId)
+          .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
         return row ? { ...row } : null;
       },
       updateMany: async ({ where, data }) => {

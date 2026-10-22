@@ -220,6 +220,25 @@ describe("discovery", () => {
     expect(tools.find((t) => t.name === "propose_plan")!._meta).toBeUndefined();
   });
 
+  test("tools/list: each tool says whether it only reads (#280)", async () => {
+    const { rpc } = await setup();
+    const { result } = await rpc("tools/list");
+    const tools = result!["tools"] as { name: string; annotations?: Record<string, unknown> }[];
+    // Written out, not read from the table it checks.
+    expect(Object.fromEntries(tools.map((t) => [t.name, t.annotations]))).toEqual({
+      geocode_place: { readOnlyHint: true },
+      quote_street: { readOnlyHint: true },
+      search_garages: { readOnlyHint: true },
+      build_itinerary: { readOnlyHint: true },
+      // Writes a plan and (a confirm key) mints a mandate; moves no money.
+      propose_plan: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+      // Spends the mandate, once: no destructiveHint, so the spec's
+      // default (true) stands.
+      confirm_plan: { readOnlyHint: false, idempotentHint: false },
+      explain_decision: { readOnlyHint: true },
+    });
+  });
+
   test("an Idempotency-Key is not kept for /mcp: the same key twice is two answers, never stuck", async () => {
     const { post } = await setup();
     const headers = { "idempotency-key": "mcp-retry-0001" };

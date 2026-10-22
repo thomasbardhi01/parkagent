@@ -28,7 +28,12 @@ flowchart LR
     walletR["/wallet · /card · /link"]
     providersR["POST /providers/:provider/link"]
     webhook["POST /webhooks/stripe"]
+    agentR["/agent/* (REST, Bearer pak_)"]
+    mcpR["/mcp (MCP 2026-07-28, Bearer pak_)"]
+    mcpCard["ui://parkagent/confirm-card<br/>(MCP_APPS, off by default)"]
   end
+
+  agents(["External agents<br/>Grok · Claude · any MCP client"])
 
   subgraph services["Services and jobs (server/src)"]
     zoneLookup["zoneLookup + quote + placeClassification"]
@@ -43,6 +48,7 @@ flowchart LR
     healthTick["jobs/providerHealthTick"]
     ledger[("decisions ledger")]
     execGate["ExecutorGate + CircuitBreaker<br/>DRY_RUN → DryRunExecutor"]
+    agentActions["agentActions + mandates<br/>one call, two surfaces · one budget per key"]
   end
 
   subgraph providers["Providers"]
@@ -94,6 +100,15 @@ flowchart LR
   gate --> ledger
   applyExt --> ledger
   pending --> ledger
+
+  agents --> agentR
+  agents --> mcpR
+  mcpR -. "propose_plan _meta.ui" .-> mcpCard
+  agentR --> agentActions
+  mcpR --> agentActions
+  agentActions -- "confirm: consent · mandate · caps" --> gate
+  agentActions -. "street: pending_arrival, pays nothing; arrival only from the phone" .-> lifecycle
+  agentActions --> ledger
 
   subgraph pp["pending_parks state machine (server/src/services/pendingSession.ts)"]
     direction TB

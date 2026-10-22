@@ -1,0 +1,9 @@
+{
+  "name": "parkagent",
+  "transport": "streamable-http",
+  "url": "https://parkagent-api.fly.dev/mcp",
+  "protocolVersion": "2026-07-28",
+  "headers": {
+    "Authorization": "Bearer pak_XXXXXXXX_your-key-from-POST-me-agent-keys"
+  }
+}

@@ -54,6 +54,7 @@ function everythingOn() {
     GOOGLE_CLIENT_ID: "123-abc.apps.googleusercontent.com",
     ANTHROPIC_API_KEY: "sk-ant-abc123",
     PARKWHIZ_ENABLED: "true",
+    MCP_APPS: "true",
     LINK_CLIENT_ID: "link_client",
     LINK_CLIENT_SECRET: "link_secret",
     LINK_PUBLISHABLE_KEY: "pk_test_abc123",
@@ -130,6 +131,13 @@ describe("optional features never refuse boot", () => {
     expect(report.env.APPLE_MAPS_TEAM_ID).toBeUndefined();
   });
 
+  test("the MCP Apps card is off unless MCP_APPS is true", () => {
+    const report = checkEnv({ ...everythingOn(), MCP_APPS: undefined });
+    expect(report.features.find((f) => f.id === "mcp_apps")?.state).toBe("off");
+    expect(report.env.MCP_APPS).toBe("false");
+    expect(report.degraded).toEqual([]);
+  });
+
   test("every feature well-formed: all on, nothing degraded", () => {
     const report = checkEnv(everythingOn());
     expect(report.fatal).toEqual([]);
@@ -174,6 +182,7 @@ describe("optional features never refuse boot", () => {
     ["google_signin", { GOOGLE_CLIENT_ID: "12345" }, /^GOOGLE_CLIENT_ID doesn't look like/],
     ["parkwhiz", { PARKWHIZ_ENABLED: "off" }, /^PARKWHIZ_ENABLED is "off"/],
     ["assistant", { ANTHROPIC_API_KEY: "sk-proj-abc" }, /^ANTHROPIC_API_KEY doesn't look like/],
+    ["mcp_apps", { MCP_APPS: "on" }, /^MCP_APPS is "on"/],
   ])("%s: %j → degraded, named, and off", (id, patch, detail) => {
     const report = checkEnv({ ...everythingOn(), ...patch });
     expect(report.fatal).toEqual([]);

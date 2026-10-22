@@ -344,6 +344,7 @@ buildApp(
     // A test-mode Stripe key can't move real money, so a Debug build may
     // choose the ParkAgent card against it before ISSUING_LIVE.
     issuingSandbox: isTestModeKey(env.STRIPE_SECRET_KEY),
+    mcpApps: env.MCP_APPS === "true",
     health: { dryRun: env.DRY_RUN === "true", degraded },
   },
   app,

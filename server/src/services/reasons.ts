@@ -654,6 +654,28 @@ const REASONS: Record<string, Spec> = {
   report_ok: ["your zone number report was recorded", NONE],
   verified_precedence: ["a verified zone number already stands, so it was kept", NONE],
   import_precedence: ["the imported zone number stands until a report is verified", NONE],
+  // ---- the parking-sign reader (Issue N): advisory, it never pays
+  "sign_check:agrees": ["the signs agree with the zone's data", NONE],
+  "sign_check:stricter": [
+    "the signs are stricter than the zone's data, so it offered a shorter stay",
+    NONE,
+    "Accept the shorter stay if the signs are right.",
+  ],
+  "sign_check:conflicts": [
+    "the signs restrict parking here now or within minutes",
+    NONE,
+    "Check the signs before leaving the car.",
+  ],
+  "sign_check:unreadable": [
+    "the signs couldn't be read",
+    NONE,
+    "Try another photo, closer and straight on.",
+  ],
+  accepted_shorter_stay: ["you accepted the shorter stay the signs set", ["maxStay"]],
+  "sign_check:retention_purge": [
+    "an old sign check's text and kept photo were cleared after 30 days",
+    NONE,
+  ],
 };
 
 /** What kind of decision a row is. */
@@ -707,6 +729,7 @@ const KIND_TEXT: Record<string, string> = {
   auth_identity: "Sign-in",
   circuit_breaker: "The provider",
   audit_summary: "Nightly audit summary",
+  sign_check: "The parking signs",
 };
 
 /** Whether `rule` (on `kind`, when a kind-specific entry exists) has a

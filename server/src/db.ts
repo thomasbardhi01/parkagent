@@ -1522,6 +1522,7 @@ export interface AppDb {
         parkedEventId: string;
         verdict: string;
         result: unknown;
+        createdAt: Date;
         ocrText: string | null;
         textExpiresAt: Date;
         photo?: Uint8Array | null;

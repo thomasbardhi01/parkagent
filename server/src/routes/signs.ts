@@ -147,6 +147,8 @@ export function registerSigns(app: FastifyInstance, deps: AppDeps): void {
             dropped: outcome.dropped,
             decisionId: outcome.decisionId,
           },
+          // On the request's clock: the review queue pages by createdAt.
+          createdAt: at,
           ocrText: body.text,
           textExpiresAt: new Date(at.getTime() + SIGN_CHECK_RETENTION_DAYS * DAY_MS),
           ...(keepPhoto

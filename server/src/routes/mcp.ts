@@ -59,6 +59,11 @@ export const MCP_REQUESTS_PER_MINUTE = 600;
  * `{error: "rate_limited", retryAfterS}` as its data. */
 export const RATE_LIMITED_CODE = -32029;
 
+/** A server-range code for "the key lacks the scope", with
+ * `{error: "scope_required", scope}` as its data: a resource read by a key
+ * without `read` is refused as such, not as a missing resource. */
+export const SCOPE_REQUIRED_CODE = -32003;
+
 /** JSON-RPC's own "internal error": a resource read that threw. */
 const INTERNAL_ERROR_CODE = -32603;
 
@@ -242,6 +247,9 @@ export function buildMcpServer(
         if (answer.status === 429) {
           // Over the key's budget: said as such, not as a missing resource.
           throw new ProtocolError(RATE_LIMITED_CODE, "rate_limited", answer.body);
+        }
+        if (answer.status === 403) {
+          throw new ProtocolError(SCOPE_REQUIRED_CODE, "scope_required", answer.body);
         }
         if (answer.status !== 200) throw new ResourceNotFoundError(uri.href);
         return {

@@ -62,7 +62,7 @@ export function agentOpenApi(): Record<string, unknown> {
                 "404": { description: "No such plan or mandate", content: json(errorBody) },
                 "409": {
                   description:
-                    "mandate_used, plan_hash_mismatch, nothing_to_confirm, dry_run_changed, a cap (policy_violation), garage_option_expired, or garage_book_failed",
+                    "mandate_used, plan_hash_mismatch, nothing_to_confirm, dry_run_changed, a cap (policy_violation), garage_option_expired, or garage_book_failed (the mandate spent; reason option_expired or provider_error, never the provider's own text)",
                   content: json(errorBody),
                 },
                 "410": {

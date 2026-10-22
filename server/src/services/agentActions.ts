@@ -36,6 +36,7 @@ import { proposePlan } from "./capabilities/proposePlan.js";
 import { quoteStreet, searchGarages } from "./capabilities/search.js";
 import type { CapabilityDeps, TurnState } from "./capabilities/turn.js";
 import { policyFor } from "./limits.js";
+import { GarageBookError } from "./garage/garageProvider.js";
 import type { MandateRefusal } from "./mandates.js";
 import { mintMandate, planHashOf } from "./mandates.js";
 import type { Principal, Scope } from "./principal.js";
@@ -351,14 +352,20 @@ export function agentActions(deps: AppDeps) {
       const { option, dryRun } = confirmed;
       if (option.type === "garage") {
         // Bookable a moment ago (the sequence checked); a provider that
-        // still fails here leaves the mandate spent, and says so.
+        // still fails here leaves the mandate spent, and says so, in our
+        // own code: the provider's words (a URL, a status, an id) stay on
+        // the decision row and never reach the agent.
         let booking: Awaited<ReturnType<typeof g.deps.garage.book>>;
         try {
           booking = await g.deps.garage.book(option.garageOptionId ?? option.id);
         } catch (err) {
+          const reason =
+            err instanceof GarageBookError && err.code === "option_expired"
+              ? "option_expired"
+              : "provider_error";
           const detail = err instanceof Error ? (err.message.split("\n")[0] ?? "") : String(err);
-          const decision = await decide("garage_book_failed", { allowed: true, detail });
-          return no(409, { error: "garage_book_failed", detail, decisionId: decision.id });
+          const decision = await decide("garage_book_failed", { allowed: true, reason, detail });
+          return no(409, { error: "garage_book_failed", reason, decisionId: decision.id });
         }
         await markConfirmed(option.id);
         const decision = await decide("garage_handoff", {
@@ -399,8 +406,10 @@ export function agentActions(deps: AppDeps) {
       });
     },
 
-    /** A plan the key's person was proposed, by id. */
+    /** A plan the key's person was proposed, by id. A read: a key without
+     * the read scope is refused before anything is read. */
     async getPlan(principal: Principal, planId: string): Promise<AgentAnswer> {
+      if (!principal.scopes.has("read")) return no(403, { error: "scope_required", scope: "read" });
       const row = await deps.db.assistantPlan.findUnique({ where: { id: planId } });
       if (!row || row.userId !== principal.userId) return no(404, { error: "plan_not_found" });
       return ok({
@@ -428,8 +437,10 @@ export function agentActions(deps: AppDeps) {
       return ok(whyBody(out));
     },
 
-    /** A park the phone reported, by id: its status only. */
+    /** A park the phone reported, by id: its status only. A read, as
+     * getPlan is. */
     async getPark(principal: Principal, parkId: string): Promise<AgentAnswer> {
+      if (!principal.scopes.has("read")) return no(403, { error: "scope_required", scope: "read" });
       const row = await deps.db.pendingPark.findUnique({ where: { id: parkId } });
       if (!row || row.userId !== principal.userId) return no(404, { error: "park_not_found" });
       return ok({

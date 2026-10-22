@@ -4027,8 +4027,11 @@ OpenAI-style functions are `examples/grok-tool.json` (regenerate with
   unspent. Only then is it claimed. Then:
   - a garage → `{status: "garage_handoff", deepLink, priceUsd, dryRun}`:
     the option's own checkout, as in the app; nothing is booked or paid
-    here (a provider failing after the claim is `409 garage_book_failed`,
-    the mandate spent);
+    here (a provider failing after the claim is `409 garage_book_failed
+    {reason, decisionId}`, the mandate spent: `reason` is
+    `option_expired` or `provider_error`, our own code. The provider's
+    words, which can carry a URL, a token or its own ids, stay on the
+    decision row and never reach the agent);
   - a street spot → `{status: "pending_arrival", zoneId,
     durationMinutes, priceUsd, dryRun, expiresAt}`. No `pending_parks` row
     is written and nothing pays here: arrival comes only from the phone's
@@ -4044,9 +4047,11 @@ OpenAI-style functions are `examples/grok-tool.json` (regenerate with
     later, or under another dry run, the phone's own prompt asks the
     driver as it does without an agent.
   Each answer writes an `agent_confirm` decision.
-- `GET /agent/plans/:planId` → `{planId, kind, plan, confirmedAt,
-  confirmedOptionId}`; `GET /agent/parks/:parkId` → a park's `{status,
-  zoneId, parkedAt, sessionId}`. Another person's is `404`.
+- `GET /agent/plans/:planId` (`read` scope) → `{planId, kind, plan,
+  confirmedAt, confirmedOptionId}`; `GET /agent/parks/:parkId` (`read`
+  scope) → a park's `{status, zoneId, parkedAt, sessionId}`. A key
+  without `read` is `403 scope_required` before anything is read.
+  Another person's is `404`.
 - `GET /agent/decisions/:decisionId/why` (`read` scope) → why one of the
   person's decisions came out as it did: `{decisionId, kind, rule, reason:
   {subject, what, because: [{name, label, value}], youCan}, text, phrased}`
@@ -4102,7 +4107,9 @@ the MCP TypeScript SDK v2 (`createMcpHandler`, mounted with
   the person's own only (`GET /agent/plans/:id`'s and
   `/agent/parks/:id`'s bodies); anyone else's is not found. A read over
   the key's budget is error `-32029` with `{error: "rate_limited",
-  retryAfterS}` as its data, never "not found".
+  retryAfterS}` as its data, never "not found". A key without the `read`
+  scope is error `-32003` with `{error: "scope_required", scope: "read"}`,
+  before anything is read.
 - **Tracing:** a `traceparent` in a request's `_meta` (else the HTTP
   header) is the trace id on the decisions that call writes.
 - **The confirm card (`MCP_APPS`, off by default):** with `MCP_APPS=true`,

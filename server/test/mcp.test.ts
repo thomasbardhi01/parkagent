@@ -578,6 +578,45 @@ describe("refusals are tool errors with REST's codes", () => {
     expect(s.t.state.assistantPlans.find((p) => p.id === proposed.planId)!.confirmedAt).toBeNull();
   });
 
+  test("a booking the provider fails after the confirm: our code and reason, never its text (F3)", async () => {
+    const GARAGE = {
+      id: "g1",
+      provider: "spothero",
+      name: "Deck",
+      address: "1 Test St",
+      priceUsd: 18,
+      distanceM: 240,
+      walkMinutes: 3,
+      entryType: "self" as const,
+      deepLink: "https://spothero.com/search?latitude=42.35",
+      lat: NEWBURY.lat,
+      lng: NEWBURY.lng,
+    };
+    const s = await setup({
+      garage: {
+        id: "spothero",
+        canReserve: false,
+        search: async () => ({ ok: true, options: [GARAGE], fromCache: false }),
+        optionById: (id) => (id === "g1" ? GARAGE : null),
+        book: async () => {
+          throw new Error(
+            "POST https://api.spothero.com/v2/reservations?token=sk_live_0123abcd failed: 502",
+          );
+        },
+      },
+    });
+    const proposed = (await s.tool("propose_plan", { request: { ...REQUEST, kinds: ["garage"] } }))
+      .structuredContent as { planId: string; confirmToken: string };
+    const result = await confirmOnce(s, proposed);
+    expect(errorOf(result)).toBe("garage_book_failed");
+    expect(result.structuredContent).toEqual({
+      error: "garage_book_failed",
+      reason: "provider_error",
+      decisionId: expect.any(String),
+    });
+    expect(JSON.stringify(result)).not.toMatch(/spothero\.com|sk_live|502/);
+  });
+
   test("a rate-limited resource read says so, with when to retry", async () => {
     const s = await setup();
     const proposed = await proposeOver(s.tool);
@@ -732,6 +771,23 @@ describe("resources", () => {
       const out = await rpc("resources/read", { uri: missing }, missing);
       expect(out.error, missing).toBeDefined();
     }
+  });
+
+  test("a key without the read scope is refused as such, before anything is read (F4)", async () => {
+    const reader = await setup();
+    const proposed = await proposeOver(reader.tool);
+    const { t, rpc } = await setup({ scopes: ["confirm"] });
+    const plans = vi.spyOn(t.deps.db.assistantPlan, "findUnique");
+    const parks = vi.spyOn(t.deps.db.pendingPark, "findUnique");
+    for (const uri of [`parkagent://plans/${proposed.planId}`, "parkagent://parks/pp1"]) {
+      const out = await rpc("resources/read", { uri }, uri);
+      expect(out.error, uri).toMatchObject({
+        code: -32003,
+        data: { error: "scope_required", scope: "read" },
+      });
+    }
+    expect(plans).not.toHaveBeenCalled();
+    expect(parks).not.toHaveBeenCalled();
   });
 });
 

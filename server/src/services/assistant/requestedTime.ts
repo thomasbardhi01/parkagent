@@ -20,7 +20,7 @@
  */
 
 import { easternIso, nycStartOfDay, parseEasternTime } from "../hours.js";
-import type { Suggestion } from "./tools.js";
+import type { Suggestion } from "../capabilities/turn.js";
 
 /** A clock time the user asked for, with no day named. */
 export interface RequestedClockTime {

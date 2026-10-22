@@ -35,8 +35,30 @@ import {
 } from "./history.js";
 import { suggestionsForPlan } from "./plans.js";
 import type { AssistantPlanBody } from "./plans.js";
+import {
+  DEFAULT_ASSISTANT_MODEL,
+  DEFAULT_EXPLAIN_MODEL,
+  type ModelClient,
+  type ModelContentBlock,
+  type ModelResponse,
+  type ModelTurn,
+  type ModelUsage,
+  resolveAssistantModels,
+} from "./modelClient.js";
+import {
+  AMOUNT_PATTERN,
+  currentTimeLine,
+  joinReplySegments,
+  scrubUngroundedAmounts,
+  scrubVerbalConfirm,
+  sentencesOf,
+} from "./replyText.js";
 import { TOOL_DEFINITIONS } from "./tools.js";
 import type { Ask, AssistantTools, Suggestion, ToolContext } from "./tools.js";
+
+export { DEFAULT_ASSISTANT_MODEL, DEFAULT_EXPLAIN_MODEL, resolveAssistantModels };
+export type { ModelClient, ModelContentBlock, ModelResponse, ModelTurn, ModelUsage };
+export { currentTimeLine, joinReplySegments, scrubUngroundedAmounts, scrubVerbalConfirm };
 import { requestedTimeChoices, requestedTimeIn, requestedTimeLine } from "./requestedTime.js";
 import { intentOf, toolsForIntent } from "./intentRouter.js";
 import {
@@ -49,10 +71,6 @@ import {
 import type { RequestState } from "./requestState.js";
 import { lastSearchIn, relaxationTapped } from "./search.js";
 
-/** Overridden by ASSISTANT_MODEL (legacy fallback: ANTHROPIC_MODEL). */
-export const DEFAULT_ASSISTANT_MODEL = "claude-sonnet-5";
-/** The cheap model that phrases explain_decision output (EXPLAIN_MODEL). */
-export const DEFAULT_EXPLAIN_MODEL = "claude-haiku-4-5-20251001";
 const MAX_LOOP_ITERATIONS = 8;
 const MAX_STORED_TURNS = 20;
 const MAX_TOKENS = 1024;
@@ -98,52 +116,6 @@ const PROPOSE_PLAN_REMINDER =
   'plan of option ids from the latest search, or {kind: "none_meets"} if nothing met the request. Do not ' +
   "ask the user to say or type anything — they act by tapping the card.";
 
-/** Phrasing that invites a verbal confirm — scrubbed if it ever appears. */
-const VERBAL_CONFIRM_PATTERN =
-  /[^.!?]*(?:say|type|reply|tell me|text me|answer)[^.!?]{0,40}(?:['"“”]?confirm['"“”]?|yes)[^.!?]*[.!?]?/gi;
-
-/** One content block of an assistant message, Messages-API shaped. */
-export type ModelContentBlock =
-  { type: "text"; text: string } | { type: "tool_use"; id: string; name: string; input: unknown };
-
-export interface ModelTurn {
-  role: "user" | "assistant";
-  content:
-    string | (ModelContentBlock | { type: "tool_result"; tool_use_id: string; content: string })[];
-}
-
-export interface ModelResponse {
-  content: ModelContentBlock[];
-  stopReason: string;
-  /** Which model actually answered and what it billed — logged per turn
-   * on the assistant_turn decision row. Fakes may omit it. */
-  model?: string;
-  usage?: { inputTokens: number; outputTokens: number };
-}
-
-/**
- * Which model runs where. The loop takes ASSISTANT_MODEL, falling back to
- * the legacy ANTHROPIC_MODEL, then claude-sonnet-5; explanations always
- * run on the cheap EXPLAIN_MODEL.
- */
-export function resolveAssistantModels(env: {
-  ASSISTANT_MODEL?: string | undefined;
-  ANTHROPIC_MODEL?: string | undefined;
-  EXPLAIN_MODEL?: string | undefined;
-}): { assistant: string; explain: string } {
-  return {
-    assistant: env.ASSISTANT_MODEL ?? env.ANTHROPIC_MODEL ?? DEFAULT_ASSISTANT_MODEL,
-    explain: env.EXPLAIN_MODEL ?? DEFAULT_EXPLAIN_MODEL,
-  };
-}
-
-/** One model call's bill — what the turn's accounting row sums. */
-export interface ModelUsage {
-  model: string;
-  inputTokens: number;
-  outputTokens: number;
-}
-
 /** Anthropic list prices per million tokens (checked 2026-09-24), most
  * specific first: a generation can reprice a family (Sonnet 5 is $2/$10,
  * Sonnet 4.x $3/$15). Unknown models estimate at the priciest tier so the
@@ -181,21 +153,6 @@ export async function assistantSpendTodayUsd(db: AppDb, userId: string, at: Date
     }, 0);
 }
 
-/** The transport seam: the real one wraps @anthropic-ai/sdk streaming;
- * tests inject a scripted fake. onText receives streamed text deltas. */
-export interface ModelClient {
-  create(
-    args: {
-      system: string;
-      messages: ModelTurn[];
-      /** Omitted for plain phrasing calls (explain_decision). */
-      tools?: typeof TOOL_DEFINITIONS;
-      maxTokens: number;
-    },
-    onText?: (delta: string) => void,
-  ): Promise<ModelResponse>;
-}
-
 export interface AssistantResult {
   conversationId: string;
   reply: string;
@@ -219,121 +176,6 @@ export interface RunArgs {
    * SSE route forwards it as its own event so the card renders early. */
   onPlan?: ((plan: { planId: string; plan: AssistantPlanBody }) => void) | undefined;
   now?: (() => Date) | undefined;
-}
-
-/** Eastern time, both cities: the bracket every user message carries so
- * the model never has to guess what "tonight" means. */
-export function currentTimeLine(at: Date): string {
-  const eastern = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/New_York",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    weekday: "short",
-    hour12: false,
-  }).formatToParts(at);
-  const get = (type: string) => eastern.find((p) => p.type === type)?.value ?? "";
-  return `[current time: ${get("weekday")} ${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")} ET]`;
-}
-
-/**
- * Join per-iteration text segments, dropping repeats: models restate
- * their opener after tool results ("Let me check… Let me check… it's
- * $4.10"), and the user reads it twice. A later segment that repeats an
- * earlier one (whole or as its prefix) loses the repeated part.
- */
-export function joinReplySegments(segments: string[]): string {
-  const kept: string[] = [];
-  for (const raw of segments) {
-    let segment = raw.trim();
-    if (segment.length === 0) continue;
-    for (const prior of kept) {
-      if (segment === prior) {
-        segment = "";
-        break;
-      }
-      if (segment.startsWith(prior)) {
-        segment = segment.slice(prior.length).trimStart();
-      }
-    }
-    if (segment.length > 0) kept.push(segment);
-  }
-  return kept.join(" ").trim();
-}
-
-/** Strip any sentence that invites a verbal confirm; the card is the
- * only way to authorize, and the reply must say so instead. */
-export function scrubVerbalConfirm(reply: string, hasPlan: boolean): string {
-  if (!VERBAL_CONFIRM_PATTERN.test(reply)) return reply;
-  VERBAL_CONFIRM_PATTERN.lastIndex = 0;
-  const scrubbed = reply
-    .replace(VERBAL_CONFIRM_PATTERN, "")
-    .replace(/\s{2,}/g, " ")
-    .trim();
-  const pointer = hasPlan ? "Tap Confirm on a card to go ahead." : "";
-  return [scrubbed, pointer]
-    .filter((s) => s.length > 0)
-    .join(" ")
-    .trim();
-}
-
-/** A dollar amount in prose: "$4.50", "$20", "$1,000.00". */
-const AMOUNT_PATTERN = /\$\s?(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{1,2}))?/g;
-
-/** A reply cut into sentences, each keeping its own spacing. A sentence
- * ends at . ! or ? followed by whitespace (so "$4.50" is not two), or at
- * a line break. */
-function sentencesOf(text: string): string[] {
-  const out: string[] = [];
-  let start = 0;
-  for (let i = 0; i < text.length; i += 1) {
-    const ch = text[i]!;
-    const next = text[i + 1];
-    const ends =
-      ch === "\n" ||
-      ((ch === "." || ch === "!" || ch === "?") && (next === undefined || /\s/.test(next)));
-    if (ends) {
-      out.push(text.slice(start, i + 1));
-      start = i + 1;
-    }
-  }
-  if (start < text.length) out.push(text.slice(start));
-  return out;
-}
-
-/**
- * V6 (FR-43): drop every sentence that states a dollar amount the server
- * doesn't stand behind. `groundedCents` holds the amounts it does, in
- * cents — "$20" and "$20.00" are the same amount. Returns the reply and
- * the amounts dropped (dollars, in order, each once). A reply with nothing
- * to drop comes back untouched.
- */
-export function scrubUngroundedAmounts(
-  reply: string,
-  groundedCents: ReadonlySet<number>,
-): { text: string; dropped: number[] } {
-  const dropped: number[] = [];
-  const kept = sentencesOf(reply).filter((sentence) => {
-    const ungrounded = [...sentence.matchAll(AMOUNT_PATTERN)]
-      .map((m) =>
-        Math.round(Number(`${m[1]!.replace(/,/g, "")}.${(m[2] ?? "").padEnd(2, "0")}`) * 100),
-      )
-      .filter((cents) => !groundedCents.has(cents));
-    for (const cents of ungrounded) {
-      if (!dropped.includes(cents / 100)) dropped.push(cents / 100);
-    }
-    return ungrounded.length === 0;
-  });
-  if (dropped.length === 0) return { text: reply, dropped };
-  return {
-    text: kept
-      .join("")
-      .replace(/\s{2,}/g, " ")
-      .trim(),
-    dropped,
-  };
 }
 
 /** The tools whose results are the server's own numbers a reply may say:

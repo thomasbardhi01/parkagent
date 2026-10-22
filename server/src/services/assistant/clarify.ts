@@ -19,7 +19,7 @@ import { coveredCities } from "../../providers/registry.js";
 import { parseEasternTime } from "../hours.js";
 import type { AssistantPlanBody } from "./plans.js";
 import { assumedDay, type TimeRequest } from "./requestedTime.js";
-import type { Suggestion } from "./tools.js";
+import type { Suggestion } from "../capabilities/turn.js";
 
 /** Whether a question asks how long the user will park. "How long a walk
  * is OK?" and "how far?" ask about the walk, not the stay, and "how long

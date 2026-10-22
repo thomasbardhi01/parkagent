@@ -2318,6 +2318,75 @@ to start on an invalid file.
 
 ---
 
+## Tracing (OpenTelemetry)
+
+Off by default. These variables turn it on and shape it, each optional
+(`/health` lists `tracing` as degraded when one is malformed, and then
+nothing is traced):
+
+- `OTEL_EXPORTER_OTLP_ENDPOINT`: a collector's base URL: https, or plain
+  http to localhost or to a Fly-private `*.internal` host. Spans are
+  batched to `<endpoint>/v1/traces` over OTLP/HTTP.
+- `OTEL_EXPORTER_OTLP_HEADERS`: headers for the collector, as
+  `name=value` pairs separated by commas (e.g. a hosted collector's
+  `authorization=Bearer …`). The exporter reads it from the environment
+  itself; it's checked here, and `check-secrets` treats it as a secret.
+- `OTEL_CONSOLE=true`: spans print to stdout (development).
+
+With neither the endpoint nor the console set, **the tracing SDK isn't
+loaded or started**: it's imported only when tracing is on. Every span
+is then the API's no-op. An SDK that fails to start switches tracing off
+(`tracing` in `degraded`), never the server. On, every trace is recorded
+(an always-on sampler), including a caller's unsampled one (`traceparent`
+ending `-00`).
+
+**Tracing never fails the work it watches.** Every call into a span goes
+through one guard (`quietly` in `services/telemetry.ts`). A span that
+throws loses that attribute, a tracer that can't start a span runs the
+work without one (exactly once), and a request whose span can't be made
+is served without it. An assistant turn writes its `assistant_turn` row
+(what the daily cap reads) before it sets its span's totals.
+
+A decision's `trace_id`: with tracing on, the request span's trace. That
+is the caller's when the propagator accepted its `traceparent` (the
+request span is its child), or a new one, so a row and its spans never
+disagree. Off, it is the inbound `traceparent`'s trace id, or null: no id
+is made up without the SDK.
+
+Spans (`services/telemetry.ts`):
+
+| Span | Where | Attributes |
+|---|---|---|
+| `{METHOD} {route}` (server) | every request (`app.ts`) | `http.request.method`, `http.route`, `http.response.status_code` |
+| `invoke_agent parkagent` | an assistant turn | `gen_ai.operation.name`, `gen_ai.agent.name`, `gen_ai.provider.name`, `gen_ai.conversation.id`, the turn's summed `gen_ai.usage.input_tokens` / `output_tokens`, `gen_ai.response.model`, `parkagent.model_calls`, `parkagent.cost_usd` |
+| `chat {model}` (client) | each model call: the assistant loop's, explain_decision's phrasing (`capabilities/explainDecision.ts`), the nightly audit's summary (`audit/summary.ts`), and the sign reader (`capabilities/readSigns.ts`); the request it wraps is the same with tracing off or on | `gen_ai.operation.name`, `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.usage.input_tokens`, `output_tokens`, and `gen_ai.usage.cache_read.input_tokens` / `cache_creation.input_tokens` when the response reports them |
+| `execute_tool {name}` | each assistant tool call | `gen_ai.operation.name`, `gen_ai.tool.name` (`unknown` for a name that isn't one of the tools: a model can call anything) |
+| `money_gate` | every `moneyGate` call | `parkagent.gate.intent`, `.actor`, `.amount_usd`, `.ok`, `.rule` (`allowed` when it allowed), `.dry_run` |
+
+**No span or attribute carries what a person wrote or what a model said:**
+no prompts, no completions, no tool inputs or results, no error
+messages (a throw records only `error.type`). What a conversation cost
+is the sum of `parkagent.cost_usd` over its `invoke_agent` spans (group
+by `gen_ai.conversation.id`). It's priced from token counts with the
+assistant's own price table, the same estimate the `assistant_turn`
+decision records.
+
+Per the conventions, `gen_ai.usage.input_tokens` excludes the cache
+tokens, which have their own two attributes. (Anthropic's own spans count
+them in.) The cost attribute, like the `assistant_turn` decision, prices
+input and output tokens and ignores cache pricing. Background jobs (the
+extension worker) run with no request and no trace id, so their
+`money_gate` spans start traces of their own. Every span's scope carries
+the server's version and the conventions' schema URL.
+
+The `gen_ai.*` names are from the OpenTelemetry semantic conventions
+**1.43.0**, where the GenAI conventions are still **Development**
+status. They are pinned as written there (not read from the package's
+unstable `incubating` entry), and `gen_ai.provider.name` replaces the
+deprecated `gen_ai.system`. Moving to a newer conventions release is
+its own change. The HTTP names are the stable ones from
+`@opentelemetry/semantic-conventions`.
+
 ## GET /health · GET /health/ready
 
 No auth. `/health` is liveness plus build identity: `{ok, dryRun, commit,
@@ -2443,7 +2512,10 @@ either.
   1. stop the job timers;
   2. close the server (new requests get 503; requests in flight finish);
   3. wait for job passes in flight (an extension, a link);
-  4. then close the browser and the database, and exit 0.
+  4. then close the browser;
+  5. flush the queued spans, when tracing is on, for at most 2 s (a
+     collector that's down drops them rather than hold up the exit);
+  6. then disconnect the database, and exit 0.
 
   All of this runs within 25 s, or the server exits 1 with a log line
   naming the step it was on. `scripts/boot-check.sh` sends SIGTERM and

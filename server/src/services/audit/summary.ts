@@ -14,6 +14,7 @@ import type { AppDb } from "../../db.js";
 import type { ModelClient } from "../assistant/loop.js";
 import { estimateCostUsd, scrubUngroundedAmounts } from "../assistant/loop.js";
 import { nycStartOfDay } from "../hours.js";
+import { inChatSpan } from "../telemetry.js";
 import type { Finding } from "./invariants.js";
 
 /** The model the summary is asked of (index.ts builds its client). */
@@ -157,7 +158,8 @@ export async function summarize(
     outputTokens: number;
     estimatedCostUsd: number;
   } | null = null;
-  if (deps.model) {
+  const client = deps.model;
+  if (client) {
     const spent = await spentTodayUsd(deps.db, deps.now);
     if (spent >= deps.capUsd) {
       summary = { lines: template, source: "template", reason: "over_budget" };
@@ -168,12 +170,14 @@ export async function summarize(
           timer = setTimeout(() => reject(new Error("deadline")), AUDIT_DEADLINE_MS);
         });
         const reply = await Promise.race([
-          deps.model.create({
-            system: SYSTEM,
-            messages: [{ role: "user", content: JSON.stringify(report) }],
-            maxTokens: AUDIT_MAX_TOKENS,
-            outputSchema: SUMMARY_SCHEMA,
-          }),
+          inChatSpan(client.model, () =>
+            client.create({
+              system: SYSTEM,
+              messages: [{ role: "user", content: JSON.stringify(report) }],
+              maxTokens: AUDIT_MAX_TOKENS,
+              outputSchema: SUMMARY_SCHEMA,
+            }),
+          ),
           deadline,
         ]).finally(() => clearTimeout(timer));
         if (reply.usage) {

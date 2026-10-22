@@ -18,6 +18,7 @@ import { explainDecision as templateFor } from "../explanations.js";
 import type { Principal } from "../principal.js";
 import type { Reason } from "../reasons.js";
 import { reasonOf } from "../reasons.js";
+import { inChatSpan } from "../telemetry.js";
 import type { CapabilityDeps } from "./turn.js";
 
 export interface ExplainDeps extends Pick<CapabilityDeps, "db" | "now"> {
@@ -137,7 +138,8 @@ async function phrase(
   reason: Reason,
   onModelUsage: ((usage: ModelUsage) => void) | undefined,
 ): Promise<string | null> {
-  if (!deps.explainModel || !reason.known) return null;
+  const model = deps.explainModel;
+  if (!model || !reason.known) return null;
   const now = deps.now?.() ?? new Date();
   if (deps.assistantDailySpendCapUsd !== undefined) {
     const spent = await assistantSpendTodayUsd(deps.db, principal.userId, now);
@@ -152,15 +154,17 @@ async function phrase(
   const sent = JSON.stringify(facts);
   let answer: string | null;
   try {
-    const response = await deps.explainModel.create({
-      system: EXPLAIN_SYSTEM,
-      messages: [{ role: "user", content: sent }],
-      maxTokens: EXPLAIN_MAX_TOKENS,
-      outputSchema: EXPLAIN_SCHEMA,
-      // Three sentences of rewording: thinking counts against max_tokens,
-      // and low keeps it from crowding the answer out.
-      effort: "low",
-    });
+    const response = await inChatSpan(model.model, () =>
+      model.create({
+        system: EXPLAIN_SYSTEM,
+        messages: [{ role: "user", content: sent }],
+        maxTokens: EXPLAIN_MAX_TOKENS,
+        outputSchema: EXPLAIN_SCHEMA,
+        // Three sentences of rewording: thinking counts against max_tokens,
+        // and low keeps it from crowding the answer out.
+        effort: "low",
+      }),
+    );
     const usage: ModelUsage = {
       model: response.model ?? "unknown",
       inputTokens: response.usage?.inputTokens ?? 0,

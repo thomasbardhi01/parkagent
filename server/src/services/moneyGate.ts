@@ -23,6 +23,7 @@ import { LINK_COMMITTED_STATUSES, linkSpentSince } from "./link/linkSpend.js";
 import type { Policy, PolicyService } from "./policy.js";
 import type { Principal } from "./principal.js";
 import type { StayPrice } from "./quote.js";
+import { inSpan } from "./telemetry.js";
 
 export interface GateDeps {
   db: AppDb;
@@ -191,7 +192,56 @@ function intentAmounts(intent: GateIntent): unknown[] {
   }
 }
 
-export async function moneyGate(
+/** What the intent would spend, for its span: amounts are fine on a
+ * span, what anyone wrote never is. Read before the gate has judged it,
+ * so it may be missing or garbled: the span then goes without it, and
+ * the gate refuses as it would (validAmount). */
+function amountOf(intent: GateIntent): unknown {
+  switch (intent.kind) {
+    case "start":
+    case "extend":
+      return intent.price?.totalUsd;
+    case "quote":
+    case "prompt":
+    case "plan":
+      return intent.totalUsd;
+    case "funding":
+      return intent.amountUsd;
+    case "stop":
+    case "confirm":
+      return 0;
+  }
+}
+
+/** The one money gate, as a `money_gate` span with its intent, who asked,
+ * and how it ruled (services/telemetry.ts). */
+export function moneyGate(
+  deps: GateDeps,
+  principal: Principal,
+  intent: GateIntent,
+  at: Date,
+): Promise<GateResult> {
+  const amount = amountOf(intent);
+  return inSpan(
+    "money_gate",
+    {
+      "parkagent.gate.intent": intent.kind,
+      "parkagent.gate.actor": principal.actor,
+      ...(validAmount(amount) ? { "parkagent.gate.amount_usd": amount as number } : {}),
+    },
+    async (span) => {
+      const result = await decide(deps, principal, intent, at);
+      span.setAttributes({
+        "parkagent.gate.ok": result.ok,
+        "parkagent.gate.rule": result.rule ?? "allowed",
+        ...("dryRun" in result ? { "parkagent.gate.dry_run": result.dryRun } : {}),
+      });
+      return result;
+    },
+  );
+}
+
+async function decide(
   deps: GateDeps,
   principal: Principal,
   intent: GateIntent,

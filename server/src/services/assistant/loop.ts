@@ -69,6 +69,8 @@ import {
   resolveTappedCandidate,
 } from "./requestState.js";
 import { lastSearchIn, relaxationTapped } from "./search.js";
+import { GEN_AI, inChatSpan, inSpan } from "../telemetry.js";
+import type { SpanAttributes } from "../telemetry.js";
 
 const MAX_LOOP_ITERATIONS = 8;
 const MAX_STORED_TURNS = 20;
@@ -305,7 +307,23 @@ function amountFreeStream(
   };
 }
 
-export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> {
+/** One assistant turn, as an `invoke_agent` span (services/telemetry.ts):
+ * its tokens and cost are on it when it ends, never its words. Summed by
+ * `gen_ai.conversation.id`, they are what a conversation cost. */
+export function runAssistantTurn(args: RunArgs): Promise<AssistantResult> {
+  return inSpan(
+    "invoke_agent parkagent",
+    {
+      [GEN_AI.operation]: "invoke_agent",
+      [GEN_AI.agentName]: "parkagent",
+      [GEN_AI.provider]: "anthropic",
+      [GEN_AI.conversationId]: args.conversationId,
+    },
+    (span) => assistantTurn(args, span),
+  );
+}
+
+async function assistantTurn(args: RunArgs, span: SpanAttributes): Promise<AssistantResult> {
   const stored = await args.db.conversation.findUnique({ where: { id: args.conversationId } });
   const history: ModelTurn[] =
     stored && stored.userId === args.userId ? (stored.turns as ModelTurn[]) : [];
@@ -424,9 +442,11 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
   try {
     for (let iteration = 0; iteration < MAX_LOOP_ITERATIONS; iteration += 1) {
       // The same system prompt and tools on every call (append-only, above).
-      const response = await args.model.create(
-        { system: SYSTEM_PROMPT, messages, tools: TOOL_DEFINITIONS, maxTokens: MAX_TOKENS },
-        stream?.push,
+      const response = await inChatSpan(args.model.model, () =>
+        args.model.create(
+          { system: SYSTEM_PROMPT, messages, tools: TOOL_DEFINITIONS, maxTokens: MAX_TOKENS },
+          stream?.push,
+        ),
       );
       stream?.flush();
       modelCalls += 1;
@@ -522,32 +542,45 @@ export async function runAssistantTurn(args: RunArgs): Promise<AssistantResult> 
           )) *
           10_000,
       ) / 10_000;
-    await args.db.decision.create({
-      data: {
-        kind: "assistant_turn",
-        inputs: { conversationId: args.conversationId },
-        rule: "turn_complete",
-        outcome: {
-          model: modelId,
-          modelCalls,
-          inputTokens,
-          outputTokens,
-          ...(sideCalls.length > 0 ? { otherModelCalls: sideCalls } : {}),
-          latencyMs: Date.now() - startedMs,
-          estimatedCostUsd,
-          ...(refused !== null ? { refused } : {}),
-          // A call cut off at max_tokens (thinking included) is a turn
-          // that ended early, told apart from one that finished.
-          ...(cutOff ? { cutOffAtMaxTokens: true } : {}),
-          proposedPlan: plan !== null,
-          ...(plan ? { planKind: plan.plan.kind } : {}),
-          stateEdits: ctx.requestEdits ?? 0,
-          requestVersion: (ctx.requestState ?? requestState).version,
-          intent: intentOf(ctx.requestState ?? requestState),
+    // The row first: it is what the daily cap reads. The span gets the same
+    // numbers after it, whether or not the write went through.
+    try {
+      await args.db.decision.create({
+        data: {
+          kind: "assistant_turn",
+          inputs: { conversationId: args.conversationId },
+          rule: "turn_complete",
+          outcome: {
+            model: modelId,
+            modelCalls,
+            inputTokens,
+            outputTokens,
+            ...(sideCalls.length > 0 ? { otherModelCalls: sideCalls } : {}),
+            latencyMs: Date.now() - startedMs,
+            estimatedCostUsd,
+            ...(refused !== null ? { refused } : {}),
+            // A call cut off at max_tokens (thinking included) is a turn
+            // that ended early, told apart from one that finished.
+            ...(cutOff ? { cutOffAtMaxTokens: true } : {}),
+            proposedPlan: plan !== null,
+            ...(plan ? { planKind: plan.plan.kind } : {}),
+            stateEdits: ctx.requestEdits ?? 0,
+            requestVersion: (ctx.requestState ?? requestState).version,
+            intent: intentOf(ctx.requestState ?? requestState),
+          },
+          userId: args.userId,
         },
-        userId: args.userId,
-      },
-    });
+      });
+    } finally {
+      span.setAttributes({
+        [GEN_AI.inputTokens]: inputTokens,
+        [GEN_AI.outputTokens]: outputTokens,
+        // "unknown" until a response says which model answered.
+        ...(modelId !== "unknown" ? { [GEN_AI.responseModel]: modelId } : {}),
+        "parkagent.model_calls": modelCalls,
+        "parkagent.cost_usd": estimatedCostUsd,
+      });
+    }
   }
 
   const body = plan?.plan;

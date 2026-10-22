@@ -25,6 +25,7 @@ import { makeApnsDelivery, makeApnsSender } from "./services/apns.js";
 import { makeAppleTokenClient } from "./services/appleTokens.js";
 import { makeStateCrypto } from "./services/crypto.js";
 import { withDecisionLogging } from "./services/decisionLog.js";
+import { startTelemetry } from "./services/telemetry.js";
 import { CircuitBreaker } from "./services/circuitBreaker.js";
 import { DryRunExecutor } from "./services/executor.js";
 import { ExecutorGate } from "./services/executorGate.js";
@@ -86,6 +87,20 @@ const policy = new PolicyService(
   env.DRY_RUN === "true",
 );
 const degraded: string[] = [...envReport.degraded];
+
+// Tracing before anything makes a span; nothing is loaded or started when
+// neither OTEL_EXPORTER_OTLP_ENDPOINT nor OTEL_CONSOLE turns it on. A
+// tracing SDK that can't start switches tracing off, never the server.
+let telemetry: Awaited<ReturnType<typeof startTelemetry>> = null;
+try {
+  telemetry = await startTelemetry({
+    endpoint: env.OTEL_EXPORTER_OTLP_ENDPOINT,
+    console: env.OTEL_CONSOLE === "true",
+  });
+} catch (err) {
+  degraded.push("tracing");
+  app.log.warn(`config: tracing is off — the SDK didn't start: ${String(err).split("\n")[0]}`);
+}
 const policyWrite = policy.writable();
 if (!policyWrite.ok) {
   degraded.push("policy_edit");
@@ -440,6 +455,11 @@ const shutdown = makeShutdown({
   closeServer: () => app.close(),
   drains: [() => extender.drain(), () => linkWorker.drain()],
   closeBrowser: () => closeExecutorBrowser(),
+  // After the jobs (a processor shut down early drops the spans they end
+  // later) and after the browser; at most 2 s (telemetry.ts).
+  flushSpans: async () => {
+    await telemetry?.shutdown();
+  },
   disconnectDb: () => prisma.$disconnect(),
   log: { info: (msg) => app.log.info(msg), warn: (msg) => app.log.warn(msg) },
   exit: (code) => process.exit(code),

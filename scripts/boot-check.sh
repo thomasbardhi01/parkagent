@@ -75,6 +75,7 @@ OPTIONAL_VARS=(
   ASSISTANT_CONVERSATION_RETENTION_DAYS
   PARKWHIZ_ENABLED AUDIT_SUMMARY
   SIGN_READER
+  OTEL_EXPORTER_OTLP_ENDPOINT OTEL_EXPORTER_OTLP_HEADERS OTEL_CONSOLE
   LINK_CLIENT_ID LINK_CLIENT_SECRET LINK_PUBLISHABLE_KEY LINK_REDIRECT_URI LINK_TEST_MODE
   MCP_APPS
 )
@@ -131,13 +132,15 @@ elif [[ "$MODE" == "broken" ]]; then
   export GOOGLE_SIGNIN_ENABLED=true
   export GOOGLE_CLIENT_ID="12345"                           # not a client id
   export PARKWHIZ_ENABLED="nope"
+  export OTEL_EXPORTER_OTLP_ENDPOINT="ftp://collector.example"  # not an http(s) URL
+  export OTEL_EXPORTER_OTLP_HEADERS="no-equals-sign"            # not name=value pairs
   export ANTHROPIC_API_KEY="sk-proj-bootcheck0000"          # not an Anthropic key
   export AUDIT_SUMMARY="maybe"                              # not true or false
   export MCP_APPS="on"                                      # not true or false
   export EXPLAIN_MODEL="gpt-4o"                             # not a Claude model id
   export SIGN_READER="yes"                                  # not true or false
   EXPECTED_METHODS='{"apple":true,"email":false,"google":false}'
-  EXPECTED_DEGRADED='["live_payments","push","stripe","issuing","link_wallet","apple_signin_revoke","apple_maps","email_signin","google_signin","parkwhiz","assistant","audit_summary","mcp_apps","explanations","sign_reader"]'
+  EXPECTED_DEGRADED='["live_payments","push","stripe","issuing","link_wallet","apple_signin_revoke","apple_maps","email_signin","google_signin","tracing","parkwhiz","assistant","audit_summary","mcp_apps","explanations","sign_reader"]'
 else
   # Live mode against an empty database: no users, sessions, or linked
   # accounts, and keys no real service accepts, so nothing can pay.
@@ -183,6 +186,10 @@ else
   export PARKWHIZ_ENABLED=true
   export AUDIT_SUMMARY=true
   export SIGN_READER=true
+  # A collector nobody runs: spans are batched and their export fails
+  # quietly, which must never stop the server.
+  export OTEL_EXPORTER_OTLP_ENDPOINT="http://127.0.0.1:4318"
+  export OTEL_EXPORTER_OTLP_HEADERS="authorization=Bearer bootcheck"
   export LINK_CLIENT_ID="link_bootcheck"
   export LINK_CLIENT_SECRET="link_bootcheck_secret"
   export LINK_PUBLISHABLE_KEY="pk_test_bootcheck0000000000000000"

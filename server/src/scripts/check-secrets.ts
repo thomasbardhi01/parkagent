@@ -66,6 +66,8 @@ const SECRET = new Set([
   "APPLE_SIGNIN_KEY",
   "APPLE_MAPS_KEY",
   "SOCRATA_APP_TOKEN",
+  // A hosted collector's API key rides in it.
+  "OTEL_EXPORTER_OTLP_HEADERS",
 ]);
 /** Each .p8 slot and the key id that must name it. */
 const KEY_ID_OF: Record<string, string> = {

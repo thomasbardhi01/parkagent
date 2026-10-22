@@ -21,6 +21,14 @@ import {
   traceIdFrom,
   userPrincipal,
 } from "./services/principal.js";
+import type { Context, Span } from "@opentelemetry/api";
+import { SpanStatusCode, context, propagation, trace } from "@opentelemetry/api";
+import {
+  ATTR_HTTP_REQUEST_METHOD,
+  ATTR_HTTP_RESPONSE_STATUS_CODE,
+  ATTR_HTTP_ROUTE,
+} from "@opentelemetry/semantic-conventions";
+import { activeTraceId, quietly, startRequestSpan } from "./services/telemetry.js";
 import type { EmailSender } from "./services/emailer.js";
 import type { IdTokenResult } from "./services/idToken.js";
 import { registerCard } from "./routes/card.js";
@@ -319,6 +327,58 @@ export function createFastify(): FastifyInstance {
  * Build the Fastify app. Without deps only /health exists — enough for the
  * health tests; index.ts always passes deps, and its early-made instance.
  */
+/**
+ * One span per request (services/telemetry.ts), continuing the caller's
+ * `traceparent` when it sent one. The rest of the request runs inside it:
+ * a callback hook, so the handler's continuation starts in the span's
+ * context. With tracing off the span is the API's no-op.
+ */
+function registerRequestSpans(app: FastifyInstance): void {
+  const spans = new WeakMap<FastifyRequest, Span>();
+  // No tracing call here can fail a request (telemetry.ts `quietly`): a
+  // request whose span can't be made runs without one.
+  app.addHook("onRequest", (req, _reply, done) => {
+    let traced: Context;
+    try {
+      const route = req.routeOptions.url ?? "unmatched";
+      const parent = propagation.extract(context.active(), req.headers);
+      const span = startRequestSpan(
+        `${req.method} ${route}`,
+        {
+          [ATTR_HTTP_REQUEST_METHOD]: req.method,
+          [ATTR_HTTP_ROUTE]: route,
+        },
+        parent,
+      );
+      spans.set(req, span);
+      traced = trace.setSpan(parent, span);
+    } catch {
+      return done();
+    }
+    context.with(traced, done);
+  });
+  app.addHook("onResponse", (req, reply, done) => {
+    const span = spans.get(req);
+    if (span) {
+      quietly(() => span.setAttribute(ATTR_HTTP_RESPONSE_STATUS_CODE, reply.statusCode));
+      if (reply.statusCode >= 500) quietly(() => span.setStatus({ code: SpanStatusCode.ERROR }));
+      quietly(() => span.end());
+      spans.delete(req);
+    }
+    done();
+  });
+  // A caller that hangs up never gets a response: its span ends here.
+  app.addHook("onRequestAbort", (req, done) => {
+    const span = spans.get(req);
+    if (span) {
+      quietly(() => span.setAttribute("parkagent.request.aborted", true));
+      quietly(() => span.end());
+      spans.delete(req);
+    }
+    done();
+  });
+}
+
 export function buildApp(deps?: AppDeps, app: FastifyInstance = createFastify()): FastifyInstance {
   // Unhandled errors must not echo their message to the caller — Stripe,
   // Prisma, and Playwright errors carry request ids, DB topology, and page
@@ -332,6 +392,8 @@ export function buildApp(deps?: AppDeps, app: FastifyInstance = createFastify())
     req.log.error({ err }, "unhandled error");
     return reply.code(500).send({ error: "internal" });
   });
+
+  registerRequestSpans(app);
 
   // Auth is default-on: a new route that forgets about auth is private,
   // not silently public. Runs for unknown paths too — probing 401s.
@@ -353,7 +415,11 @@ export function buildApp(deps?: AppDeps, app: FastifyInstance = createFastify())
     // would leave it outside.
     app.addHook("onRequest", (req, _reply, done) => {
       if (!req.principal) return done();
-      runAs(req.principal, () => done(), traceIdFrom(req.headers["traceparent"]));
+      // With tracing on, the request span's trace: the caller's when the
+      // propagator accepted its traceparent, else one of its own, so the
+      // rows and the spans never disagree. Off, the caller's (as before).
+      const traceId = activeTraceId() ?? traceIdFrom(req.headers["traceparent"]);
+      runAs(req.principal, () => done(), traceId);
     });
   }
 

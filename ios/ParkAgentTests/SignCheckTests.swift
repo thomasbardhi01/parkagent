@@ -39,6 +39,13 @@ final class SignCheckTests: XCTestCase {
         XCTAssertEqual(text, "1 HOUR PARKING\n8AM - 6PM")
     }
 
+    func testTheTextIsCutToTheRoutesLimit() {
+        let long = String(repeating: "NO PARKING ANY TIME ", count: 400)
+        let text = SignPhotoRule.combinedText([reading(long, 0.9), reading("é" + long, 0.9)])
+        XCTAssertLessThanOrEqual(text.utf16.count, SignPhotoRule.maxTextUTF16)
+        XCTAssertTrue(text.hasPrefix("NO PARKING ANY TIME"))
+    }
+
     func testConfidenceIsWeightedByLength() {
         let r = SignTextReader.reading(of: [("2 HOUR PARKING", 0.9), ("x", 0.1), ("  ", 0)])
         XCTAssertEqual(r.text, "2 HOUR PARKING\nx")
@@ -112,9 +119,46 @@ final class SignCheckTests: XCTestCase {
         }
     }
 
-    func testAStricterCheckSaysTheOfferedStay() {
-        XCTAssertTrue(SignCopy.detail(response(.stricter, offer: 35)).contains("35 min"))
+    /// The offer is the posted limit for the park, counted from the
+    /// session's start, so the words never count it from now.
+    func testAStricterCheckSaysTheOfferedStayForThisPark() {
+        let detail = SignCopy.detail(response(.stricter, offer: 35))
+        XCTAssertTrue(detail.contains("35 min for this park"), detail)
+        XCTAssertFalse(detail.contains("from now"), detail)
         XCTAssertEqual(SignCopy.accept(60), "Hold this park to 1 hr")
+    }
+
+    /// The sheet says what the camera permission says about what leaves
+    /// the phone: the same sentence, read from the app's own Info.plist.
+    func testTheSheetSaysWhatTheCameraPermissionSays() throws {
+        let usage = try XCTUnwrap(Bundle.main.object(forInfoDictionaryKey: "NSCameraUsageDescription") as? String)
+        XCTAssertTrue(usage.contains(SignCopy.privacy), "usage string: \"\(usage)\"")
+        XCTAssertTrue(SignCopy.privacy.contains("one photo is sent"), "the copy must say a photo can go")
+    }
+
+    func testAConflictShowsParkAgentsSide() {
+        XCTAssertEqual(SignCopy.ourSide(SignZone(zoneId: "z", maxStayMinutes: 120)),
+                       "ParkAgent's data for this block: 2 hr max.")
+        XCTAssertEqual(SignCopy.ourSide(SignZone(zoneId: "z", maxStayMinutes: nil)),
+                       "ParkAgent's data for this block: no time limit.")
+        XCTAssertTrue(SignCopy.detail(response(.conflicts)).hasPrefix("Which is right?"))
+    }
+
+    // MARK: - Where the phone is
+
+    private func parkFix(accuracy: Double, ageSeconds: Double, now: Date) -> ParkFix {
+        ParkFix(latitude: 42.35, longitude: -71.08, accuracy: accuracy, at: now.addingTimeInterval(-ageSeconds))
+    }
+
+    func testOnlyARecentCloseFixIsSent() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        XCTAssertEqual(SignCheckModel.usableFix(parkFix(accuracy: 12, ageSeconds: 30, now: now), now: now),
+                       SignFix(lat: 42.35, lng: -71.08, accuracy: 12))
+        XCTAssertNil(SignCheckModel.usableFix(parkFix(accuracy: 65, ageSeconds: 30, now: now), now: now),
+                     "a 65 m fix can name the wrong block")
+        XCTAssertNil(SignCheckModel.usableFix(parkFix(accuracy: 12, ageSeconds: 180, now: now), now: now))
+        XCTAssertNil(SignCheckModel.usableFix(parkFix(accuracy: -1, ageSeconds: 5, now: now), now: now))
+        XCTAssertNil(SignCheckModel.usableFix(nil, now: now))
     }
 
     func testARuleReadsAsOneShortLine() {
@@ -227,6 +271,23 @@ final class SignCheckTests: XCTestCase {
         await other.check()
         await other.accept()
         XCTAssertEqual(agreeing.accepts, [], "nothing to accept from a check without an offer")
+
+        // An offer on any verdict but stricter is never taken either.
+        let odd = SignAPI(.success(response(.conflicts, offer: 30)))
+        let conflicting = model(odd, readings: [reading("NO PARKING 4PM-6PM", 0.95)])
+        conflicting.add(photo)
+        await conflicting.check()
+        await conflicting.accept()
+        XCTAssertEqual(odd.accepts, [])
+    }
+
+    func testTheKeepOptInIsPerCheck() async {
+        let m = model(SignAPI(.success(response(.unreadable))), readings: [reading("", 0)])
+        m.add(photo)
+        m.storePhoto = true
+        await m.check()
+        m.startOver()
+        XCTAssertFalse(m.storePhoto, "a new check starts with the photo not kept")
     }
 
     func testAFailedCheckSaysWhyAndCanStartOver() async {

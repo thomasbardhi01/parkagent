@@ -330,9 +330,7 @@ final class AppModel {
     /// reported.
     func signCheckModel(for parkedEventId: String) -> SignCheckModel {
         SignCheckModel(parkedEventId: parkedEventId, api: api) { [detector] in
-            guard let fix = detector.lastFix, fix.accuracy >= 0,
-                  AppClock.now.timeIntervalSince(fix.at) < 120 else { return nil }
-            return SignFix(lat: fix.latitude, lng: fix.longitude, accuracy: fix.accuracy)
+            SignCheckModel.usableFix(detector.lastFix, now: AppClock.now)
         }
     }
 

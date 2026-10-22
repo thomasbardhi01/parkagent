@@ -63,8 +63,13 @@ final class SignCheckModel {
         phase = .reading
         let readings = await reader(photos)
         var photo: SignPhoto?
-        if let index = SignPhotoRule.photoToSend(readings), let jpeg = SignTextReader.uploadJPEG(photos[index]) {
-            photo = SignPhoto(mediaType: "image/jpeg", data: jpeg.base64EncodedString())
+        if let index = SignPhotoRule.photoToSend(readings) {
+            let image = photos[index]
+            // A 12 MP render and up to four encodes: not on the main actor.
+            let encoded = await Task.detached(priority: .userInitiated) {
+                SignTextReader.uploadJPEG(image)?.base64EncodedString()
+            }.value
+            if let encoded { photo = SignPhoto(mediaType: "image/jpeg", data: encoded) }
         }
         let request = SignCheckRequest(
             text: SignPhotoRule.combinedText(readings),
@@ -83,7 +88,8 @@ final class SignCheckModel {
     /// Take a stricter check's shorter stay. Once; the server only ever
     /// tightens, so a second tap could change nothing anyway.
     func accept() async {
-        guard case .done(let check) = phase, check.offer != nil, accepted == nil, !accepting else { return }
+        guard case .done(let check) = phase, check.verdict == .stricter, check.offer != nil,
+              accepted == nil, !accepting else { return }
         accepting = true
         acceptError = nil
         defer { accepting = false }
@@ -94,9 +100,19 @@ final class SignCheckModel {
         }
     }
 
+    /// Where the phone is, for the check: a fix under 2 minutes old and
+    /// within 50 m, else nil and the server uses where the park was
+    /// reported.
+    nonisolated static func usableFix(_ fix: ParkFix?, now: Date) -> SignFix? {
+        guard let fix, fix.accuracy >= 0, fix.accuracy <= 50,
+              now.timeIntervalSince(fix.at) < 120 else { return nil }
+        return SignFix(lat: fix.latitude, lng: fix.longitude, accuracy: fix.accuracy)
+    }
+
     func startOver() {
         photos = []
         phase = .capturing
+        storePhoto = false
         accepted = nil
         acceptError = nil
     }

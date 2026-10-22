@@ -77,6 +77,10 @@ struct SignCheckSheet: View {
         Text(SignCopy.intro)
             .font(.secondaryText)
             .foregroundStyle(Color.textSecondary)
+        Text(SignCopy.privacy)
+            .font(.captionText)
+            .foregroundStyle(Color.textSecondary)
+            .accessibilityIdentifier("signCheck.privacyNote")
         if !model.photos.isEmpty {
             HStack(spacing: Spacing.half) {
                 ForEach(Array(model.photos.enumerated()), id: \.offset) { index, photo in
@@ -152,6 +156,13 @@ struct SignCheckSheet: View {
             .font(.bodyText)
             .foregroundStyle(Color.textPrimary)
             .accessibilityIdentifier("signCheck.verdict.\(check.verdict.rawValue)")
+        if check.verdict == .conflicts || check.verdict == .stricter, let zone = check.zone {
+            // Both sides: what ParkAgent has, next to what the signs say.
+            Text(SignCopy.ourSide(zone))
+                .font(.secondaryText)
+                .foregroundStyle(Color.textPrimary)
+                .accessibilityIdentifier("signCheck.ourSide")
+        }
         Text(SignCopy.detail(check))
             .font(.secondaryText)
             .foregroundStyle(Color.textSecondary)

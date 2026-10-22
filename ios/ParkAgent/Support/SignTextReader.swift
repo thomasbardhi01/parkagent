@@ -59,7 +59,7 @@ enum SignTextReader {
     /// The photo as the server takes it: a JPEG no longer than 1600 px on
     /// its long side and under `maxBytes` (the route's limit is 1.5 MB of
     /// base64, about 1.1 MB of JPEG). Nil if it can't get that small.
-    static func uploadJPEG(_ image: UIImage, maxBytes: Int = 1_000_000) -> Data? {
+    nonisolated static func uploadJPEG(_ image: UIImage, maxBytes: Int = 1_000_000) -> Data? {
         let longSide = max(image.size.width * image.scale, image.size.height * image.scale)
         let scale = longSide > 1600 ? 1600 / longSide : 1
         let size = CGSize(
@@ -99,9 +99,15 @@ enum SignPhotoRule {
         return unsure.min { readings[$0].confidence < readings[$1].confidence }
     }
 
-    /// Every photo's text, in order, blank readings left out.
+    /// The route's limit on the text, in UTF-16 units (a JS string's length).
+    static let maxTextUTF16 = 4000
+
+    /// Every photo's text, in order, blank readings left out, cut to the
+    /// route's limit (a longer body is a 400 and no check at all).
     static func combinedText(_ readings: [SignTextReading]) -> String {
-        readings.map(\.text).filter { !$0.isEmpty }.joined(separator: "\n")
+        var text = readings.map(\.text).filter { !$0.isEmpty }.joined(separator: "\n")
+        while text.utf16.count > maxTextUTF16 { text.removeLast() }
+        return text
     }
 }
 

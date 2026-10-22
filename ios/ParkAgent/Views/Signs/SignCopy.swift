@@ -8,6 +8,9 @@ enum SignCopy {
     static let checkButton = "Check the signs"
     static let title = "Check the signs"
     static let intro = "Take a photo of each sign at your spot, up to three. ParkAgent reads them on your phone and compares them with what it knows about this block."
+    /// The same sentence as the camera permission (project.yml
+    /// NSCameraUsageDescription): what leaves the phone, and when.
+    static let privacy = "If a reading is unclear, one photo is sent with the text; it is kept only if you choose."
     static let takePhoto = "Take a photo"
     static let choosePhoto = "Choose a photo"
     static let cameraOff = "Camera access is off. Choose a photo you've taken instead, or turn the camera on in Settings."
@@ -33,15 +36,21 @@ enum SignCopy {
             "Nothing changes."
         case .stricter:
             if let minutes = check.offer?.maxStayMinutes {
-                "They allow \(Format.minutes(minutes)) from now. ParkAgent can hold this park to that, so it never buys time past it."
+                "They allow \(Format.minutes(minutes)) for this park. ParkAgent can hold this park to that, so it never buys time past it."
             } else {
                 "Go by the posted signs."
             }
         case .conflicts:
-            "ParkAgent's data may be wrong for this spot. Go by the posted signs, and move the car if they say you can't stay."
+            "Which is right? Go by the posted signs, and move the car if they say you can't stay."
         case .unreadable:
             "Try a closer, straight-on photo of each sign, in good light."
         }
+    }
+
+    /// ParkAgent's side, shown next to what the signs say.
+    static func ourSide(_ zone: SignZone) -> String {
+        if let max = zone.maxStayMinutes { return "ParkAgent's data for this block: \(Format.minutes(max)) max." }
+        return "ParkAgent's data for this block: no time limit."
     }
 
     static func accept(_ minutes: Int) -> String { "Hold this park to \(Format.minutes(minutes))" }

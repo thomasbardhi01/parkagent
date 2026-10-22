@@ -219,6 +219,8 @@ final class LiveAPIRequestTests: XCTestCase {
         let request = try sentRequest()
         XCTAssertEqual(request.httpMethod, "POST")
         XCTAssertEqual(request.url?.path(), "/parked/pe1/signs/c1/accept")
+        XCTAssertNil(request.httpBody, "the accept carries no number: the server's offer is the stay")
+        XCTAssertNil(request.httpBodyStream)
         XCTAssertEqual(accepted.maxStayMinutes, 60)
     }
 

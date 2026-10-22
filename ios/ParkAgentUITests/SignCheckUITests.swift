@@ -14,6 +14,7 @@ final class SignCheckUITests: ParkAgentUITestCase {
         check.tap()
         XCTAssertTrue(element(app, "signCheck.view").waitForExistence(timeout: 5), "Sign check sheet did not open")
         XCTAssertTrue(element(app, "signCheck.choosePhotoButton").exists, "The photo fallback is missing")
+        XCTAssertTrue(element(app, "signCheck.privacyNote").exists, "What leaves the phone isn't said")
 
         let read = element(app, "signCheck.readButton")
         XCTAssertFalse(read.isEnabled, "Nothing to read before a photo")
@@ -24,6 +25,7 @@ final class SignCheckUITests: ParkAgentUITestCase {
         let stricter = element(app, "signCheck.verdict.stricter")
         XCTAssertTrue(stricter.waitForExistence(timeout: 20), "The rendered one-hour sign did not read as stricter")
         XCTAssertTrue(element(app, "signCheck.advisoryNote").exists, "The advisory note is missing")
+        XCTAssertEqual(element(app, "signCheck.ourSide").label, "ParkAgent's data for this block: 2 hr max.")
 
         let accept = element(app, "signCheck.acceptButton")
         XCTAssertTrue(accept.exists, "No shorter stay offered")

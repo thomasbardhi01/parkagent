@@ -3,7 +3,7 @@
  * (test/fixtures/signs-golden.json) through the real model (Claude Sonnet
  * 5.5, structured output), grounds and compares each reading exactly as
  * POST /parked/:id/signs does, and prints one line per sample against the
- * expected verdict. CI runs the same grounding and comparison on recorded
+ * expected verdict. CI runs the same grounding and comparison on hand-written
  * outputs (test/signReader.test.ts); this is the manual check that the
  * model still answers that way. Exits 1 on any miss.
  *

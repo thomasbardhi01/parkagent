@@ -133,7 +133,17 @@ export async function readSigns(
     ? { zoneId: nearest.zoneId, maxStayMinutes: nearest.maxStayMinutes, hours: nearest.hours }
     : null;
 
-  const read = await interpretSigns(deps.model, input.text, input.photo);
+  // No recognized text: nothing a reading says could be grounded (a number
+  // only the photo carries can't be checked), so no call is made and the
+  // check is unreadable. The phone always sends its OCR text with a photo.
+  const read = input.text.trim()
+    ? await interpretSigns(deps.model, input.text, input.photo)
+    : {
+        reading: null,
+        fallback: "no_text",
+        usage: { inputTokens: 0, outputTokens: 0 },
+        model: SIGN_READER_MODEL,
+      };
   const { usage, model } = read;
   let fallback = read.fallback;
   const reading = read.reading;
@@ -215,6 +225,10 @@ export async function interpretSigns(
       ],
       maxTokens: 1500,
       outputSchema: SIGN_RULES_JSON_SCHEMA,
+      // Transcribing a sign into rules is extraction, not reasoning:
+      // Sonnet 5.5's default (high) thinks into the 1,500-token budget and
+      // comes back cut off, which reads as unreadable.
+      effort: "low",
     });
     usage = response.usage ?? usage;
     model = response.model ?? model;

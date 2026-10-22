@@ -917,9 +917,14 @@ export interface AppDb {
         signals: string[];
       };
     }): Promise<{ id: string }>;
-    findUnique(args: {
-      where: { id: string };
-    }): Promise<{ id: string; userId: string; lat: number; lng: number; ts: Date } | null>;
+    findUnique(args: { where: { id: string } }): Promise<{
+      id: string;
+      userId: string;
+      lat: number;
+      lng: number;
+      accuracyM: number;
+      ts: Date;
+    } | null>;
     /** The /admin/summary read: today's parks and their detector signals. */
     findMany(args: {
       where: { ts: { gte: Date } };
@@ -1529,7 +1534,8 @@ export interface AppDb {
     /** A park's checks, or the review queue's (a photo kept). */
     findMany(args: {
       where:
-        { parkedEventId: string; acceptedAt?: { not: null } } | { photoExpiresAt: { not: null } };
+        | { parkedEventId: string; acceptedAt?: { not: null } }
+        | { photoExpiresAt: { not: null }; createdAt?: { lt: Date } };
       orderBy?: { createdAt: "desc" };
       take?: number;
     }): Promise<SignCheckRow[]>;

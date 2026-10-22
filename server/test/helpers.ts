@@ -1683,7 +1683,8 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
             "parkedEventId" in where
               ? c.parkedEventId === where.parkedEventId &&
                 (where.acceptedAt === undefined || c.acceptedAt !== null)
-              : c.photoExpiresAt !== null,
+              : c.photoExpiresAt !== null &&
+                (where.createdAt === undefined || c.createdAt < where.createdAt.lt),
           )
           .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
         return rows.slice(0, take ?? rows.length).map((r) => ({ ...r }));

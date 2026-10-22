@@ -1,7 +1,7 @@
 # The parking-sign reader's live eval (Issue N): the golden set's sign
 # texts through the real model, grounded and compared as the route does.
 # Manual only: it spends a few cents of model time per run. CI's server
-# job runs the same set on recorded model outputs (test/signReader.test.ts).
+# job runs the same set on hand-written model outputs (test/signReader.test.ts).
 name: sign-reader-eval
 
 on:

@@ -625,32 +625,51 @@ Behind `SIGN_READER` (off by default; needs the assistant's
 a reading can warn, or offer a shorter max stay for this park; it never
 loosens a limit, changes a price, or starts, stops or extends anything.
 
-`{text, fix: {lat, lng, accuracy}, photo?: {mediaType: "image/jpeg" |
+`{text, fix?: {lat, lng, accuracy}, photo?: {mediaType: "image/jpeg" |
 "image/png", data: <base64>}, storePhoto?}`. `text` is what the phone
-recognized on the signs (on-device OCR, up to 4,000 characters); a photo
-(downscaled, under ~1.1 MB) is sent only when that recognition was unsure,
-and goes to the model only then. `:id` is the caller's parkedEventId
-(`404 parked_event_not_found` for someone else's). Six a minute per user.
+recognized on the signs (on-device OCR, up to 4,000 characters), always
+sent, with a photo too; a photo (downscaled, under ~1.1 MB) is sent only
+when that recognition was unsure, and goes to the model only then. `fix`
+is where the phone is; without it, where the park was reported. `:id` is
+the caller's parkedEventId (`404 parked_event_not_found` for someone
+else's); a park that's over is `409 park_closed`: one with no running
+session whose walk-away hold (FR-55) closed (declined, superseded,
+expired…), or, for a park the server never held, one reported more than
+the park TTL (60 min) ago. Six a minute per user.
 
-One call to Claude Sonnet 5.5 (`SIGN_READER_MODEL`), its answer held to a
-strict JSON schema (`output_config.format`, `SIGN_RULES_JSON_SCHEMA` in
+One call to Claude Sonnet 5.5 (`SIGN_READER_MODEL`) at `effort: "low"`
+(transcription, not reasoning: the default `high` thinks into the
+1,500-token budget and comes back cut off), its answer held to a strict
+JSON schema (`output_config.format`, `SIGN_RULES_JSON_SCHEMA` in
 `services/signs/signRules.ts`): `SignRules {rules: [{kind, days, start,
 end, limitMinutes, permitZone, exceptions}], confidence, unreadable}`, with
 `kind` one of `time_limit`, `meter`, `no_parking`, `no_stopping`,
 `street_cleaning`, `permit_only`, `tow_zone`. Then:
 
-- **Grounded:** a rule whose time limit or clock hour appears neither in
-  `text` nor in the zone data is dropped; a permit zone the text doesn't
-  show is cleared; an exception naming a dollar amount the text doesn't
-  show is scrubbed (`scrubUngroundedAmounts`).
+- **Grounded:** a rule whose time limit appears neither in `text` nor as
+  the zone's own max stay is dropped, and so is one whose start or end
+  isn't a clock time the text shows ("8AM", "6:30 PM", "14:00", noon,
+  midnight; a bare number such as the 2 of "2 HOUR" is never a time) or
+  one of the zone's own hours; a permit zone the text doesn't show is
+  cleared; an exception naming a dollar amount the text doesn't show is
+  scrubbed (`scrubUngroundedAmounts`). A limit equal to the zone's max
+  stay is kept even when the sign doesn't show it: it can only agree.
 - **Compared** with the zone data at the fix, over the stay from now:
-  `conflicts` (a rule forbids leaving the car then, a posted limit is
-  longer than the zone's, or a meter runs where the data says free),
-  `stricter` (a shorter posted limit: `offer.maxStayMinutes`), `agrees`,
-  or `unreadable`. A failed call, a refusal, an answer off the schema, a
-  confidence under 0.4, or no rule left after grounding is `unreadable`.
+  `conflicts` (a prohibition in force now, or starting within 5 minutes; a
+  posted limit longer than the zone's; a meter running where the data says
+  free), `stricter` (a shorter posted limit, or a prohibition that starts
+  later in the stay: `offer.maxStayMinutes` is the minutes until it starts
+  less 5, so an accepted offer keeps every extension out of the window;
+  the shortest offer wins), `agrees`, or `unreadable`. A failed call, a
+  refusal, an answer off the schema, a confidence under 0.4, no rule left
+  after grounding, or no recognized text at all is `unreadable`.
 - **Counted** against `ASSISTANT_DAILY_SPEND_CAP_USD` with the assistant's
   own turns (`429 assistant_budget_exhausted`, before any call).
+
+**Known limit:** a reading comes only from the recognized text and the
+zone data. A photo helps the model read what OCR garbled, but a number
+only the photo carries can't be checked, so a photo with no text is
+`unreadable` (no call is made, `fallback: "no_text"`).
 
 → `{checkId, verdict, rules, confidence, reasons, offer: {maxStayMinutes} |
 null, zone: {zoneId, maxStayMinutes} | null, photoKept, advisory: true,
@@ -664,18 +683,26 @@ account on `DELETE /me`.
 ### POST /parked/:id/signs/:checkId/accept
 
 The driver takes a `stricter` check's shorter max stay for this park
-(`409 nothing_to_accept` for any other verdict). It only ever tightens: a
-running session for this park drops its `maxStayMinutes` to it now, so
-the money gate holds every extension (manual or automatic) to it, and a
-session started for this park later starts under it (the start path and
-the walk-away prompt read the shortest accepted stay). Accepting again is
-a no-op. → `{accepted: true, maxStayMinutes, sessionId}`; a
-`sign_check` decision (`accepted_shorter_stay`).
+(`409 nothing_to_accept` for any other verdict, `409 park_closed` as
+above). It only ever tightens: a running session for this park drops its
+`maxStayMinutes` to it now, so the money gate holds every extension
+(manual or automatic) to it, and a session started for this park later
+starts under it (the start path and the walk-away prompt read the
+shortest accepted stay). Accepting again is a no-op. → `{accepted: true,
+maxStayMinutes, sessionId}`; a `sign_check` decision
+(`accepted_shorter_stay`).
 
 ### GET /admin/sign-checks
 
-Admin only. The zone-data review queue: the newest 50 checks whose driver
-kept a photo, with the reading, the OCR text and the photo as a data URL.
+Admin only. The zone-data review queue: checks whose driver kept a photo,
+newest first, `?limit=` (1–20, default 10) at a time; `?before=` the last
+page's `next` (null on the last page). Each row has the reading and the
+OCR text, and a `photoUrl` rather than the photo.
+
+### GET /admin/sign-checks/:checkId/photo
+
+Admin only. That check's kept photo, as its own media type
+(`Cache-Control: no-store`); `404 photo_not_found` once purged.
 
 ## GET /city
 

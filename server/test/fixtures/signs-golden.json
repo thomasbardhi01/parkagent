@@ -1,7 +1,11 @@
 {
-  "about": "Issue N golden set: ten Boston curb sign texts written from the City of Boston's posted-sign patterns (time limits, meters, tow zones, street cleaning, resident permit parking), each with the zone data at the car, the moment it is read, a recorded model output (SignRules), and the expected grounded verdict. CI runs grounding and the comparison on the recorded outputs (test/signReader.test.ts); scripts/sign-eval.ts runs the live model over the same texts.",
+  "about": "Issue N golden set: ten Boston curb sign texts written from the City of Boston's posted-sign patterns (time limits, meters, tow zones, street cleaning, resident permit parking), each with the zone data at the car, the moment it is read, a model output (SignRules) WRITTEN BY HAND as the answer the model should give, and the expected grounded verdict. CI (test/signReader.test.ts) therefore tests the parser, grounding and comparison against these expectations, not the model; the model check is scripts/sign-eval.ts (the manual sign-reader-eval workflow), which runs the live model over the same texts.",
   "zoneHours": [
-    { "days": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"], "start": "08:00", "end": "20:00" }
+    {
+      "days": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
+      "start": "08:00",
+      "end": "20:00"
+    }
   ],
   "samples": [
     {
@@ -24,7 +28,11 @@
         "confidence": 0.95,
         "unreadable": false
       },
-      "expected": { "verdict": "agrees", "offerMaxStayMinutes": null, "kinds": ["time_limit"] }
+      "expected": {
+        "verdict": "agrees",
+        "offerMaxStayMinutes": null,
+        "kinds": ["time_limit"]
+      }
     },
     {
       "name": "one-hour limit, stricter than the zone",
@@ -46,7 +54,11 @@
         "confidence": 0.92,
         "unreadable": false
       },
-      "expected": { "verdict": "stricter", "offerMaxStayMinutes": 60, "kinds": ["time_limit"] }
+      "expected": {
+        "verdict": "stricter",
+        "offerMaxStayMinutes": 60,
+        "kinds": ["time_limit"]
+      }
     },
     {
       "name": "rush-hour tow zone during the stay",
@@ -68,7 +80,11 @@
         "confidence": 0.9,
         "unreadable": false
       },
-      "expected": { "verdict": "conflicts", "offerMaxStayMinutes": null, "kinds": ["tow_zone"] }
+      "expected": {
+        "verdict": "conflicts",
+        "offerMaxStayMinutes": null,
+        "kinds": ["tow_zone"]
+      }
     },
     {
       "name": "street cleaning window now",
@@ -116,7 +132,11 @@
         "confidence": 0.9,
         "unreadable": false
       },
-      "expected": { "verdict": "conflicts", "offerMaxStayMinutes": null, "kinds": ["permit_only"] }
+      "expected": {
+        "verdict": "conflicts",
+        "offerMaxStayMinutes": null,
+        "kinds": ["permit_only"]
+      }
     },
     {
       "name": "meter with the zone's own limit",
@@ -138,7 +158,11 @@
         "confidence": 0.93,
         "unreadable": false
       },
-      "expected": { "verdict": "agrees", "offerMaxStayMinutes": null, "kinds": ["meter"] }
+      "expected": {
+        "verdict": "agrees",
+        "offerMaxStayMinutes": null,
+        "kinds": ["meter"]
+      }
     },
     {
       "name": "a longer posted limit never loosens the zone's",
@@ -160,7 +184,11 @@
         "confidence": 0.9,
         "unreadable": false
       },
-      "expected": { "verdict": "conflicts", "offerMaxStayMinutes": null, "kinds": ["time_limit"] }
+      "expected": {
+        "verdict": "conflicts",
+        "offerMaxStayMinutes": null,
+        "kinds": ["time_limit"]
+      }
     },
     {
       "name": "a morning no-parking window outside the stay",
@@ -182,15 +210,27 @@
         "confidence": 0.94,
         "unreadable": false
       },
-      "expected": { "verdict": "agrees", "offerMaxStayMinutes": null, "kinds": ["no_parking"] }
+      "expected": {
+        "verdict": "agrees",
+        "offerMaxStayMinutes": null,
+        "kinds": ["no_parking"]
+      }
     },
     {
       "name": "signs too blurred to read",
       "text": "P RK NG  H  R",
       "zoneMaxStayMinutes": 120,
       "at": "2026-01-05T14:00:00-05:00",
-      "modelOutput": { "rules": [], "confidence": 0.1, "unreadable": true },
-      "expected": { "verdict": "unreadable", "offerMaxStayMinutes": null, "kinds": [] }
+      "modelOutput": {
+        "rules": [],
+        "confidence": 0.1,
+        "unreadable": true
+      },
+      "expected": {
+        "verdict": "unreadable",
+        "offerMaxStayMinutes": null,
+        "kinds": []
+      }
     },
     {
       "name": "a limit the model made up is dropped",

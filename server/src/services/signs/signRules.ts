@@ -131,23 +131,55 @@ function durationsIn(text: string): Set<number> {
   return out;
 }
 
-/** The clock hours the text shows, folded to 1-12 ("8AM", "8:00", "8-6"). */
-function hoursIn(text: string): Set<number> {
-  const out = new Set<number>();
-  // Not `\b` at the end: "8AM" has no word boundary between 8 and A.
-  for (const m of text.matchAll(/\b(\d{1,2})(?::(\d{2}))?(?!\d)/g)) {
-    const h = Number(m[1]);
-    if (h <= 24) out.add(h % 12 === 0 ? 12 : h % 12);
-  }
-  if (/\bnoon\b/i.test(text)) out.add(12);
-  if (/\bmidnight\b/i.test(text)) out.add(12);
-  return out;
+const hhmm = (h: number, m: number) =>
+  `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+
+/** A 12-hour clock with its meridiem as 24-hour "HH:MM". */
+function clock24(h: number, m: number, meridiem: string): string | null {
+  if (h < 1 || h > 12 || m > 59) return null;
+  const pm = meridiem.toLowerCase().startsWith("p");
+  return hhmm((h % 12) + (pm ? 12 : 0), m);
 }
 
-const fold = (clock: string) => {
-  const h = Number(clock.slice(0, 2));
-  return h % 12 === 0 ? 12 : h % 12;
-};
+/**
+ * The clock times the text shows, as exact 24-hour "HH:MM". Only tokens
+ * that read as times count: "8AM", "6:30 PM", "14:00", "8:00" (either
+ * half of the day), noon and midnight, and the bare first half of a range
+ * whose second half carries the meridiem ("8 - 6PM": 8 either way). A
+ * bare number is a duration or a day, never a time: the "2" of "2 HOUR
+ * PARKING" grounds nothing.
+ */
+function clocksIn(text: string): Set<string> {
+  const out = new Set<string>();
+  const MERIDIEM = String.raw`([AP])\.?\s?M\b\.?`;
+  for (const m of text.matchAll(
+    new RegExp(String.raw`\b(\d{1,2})(?::(\d{2}))?\s*` + MERIDIEM, "gi"),
+  )) {
+    const c = clock24(Number(m[1]), Number(m[2] ?? 0), m[3]!);
+    if (c) out.add(c);
+  }
+  for (const m of text.matchAll(
+    new RegExp(
+      String.raw`\b(\d{1,2})(?::(\d{2}))?\s*(?:-|–|TO)\s*\d{1,2}(?::\d{2})?\s*` + MERIDIEM,
+      "gi",
+    ),
+  )) {
+    for (const half of ["a", "p"]) {
+      const c = clock24(Number(m[1]), Number(m[2] ?? 0), half);
+      if (c) out.add(c);
+    }
+  }
+  for (const m of text.matchAll(/\b(\d{1,2}):(\d{2})\b(?!\s*[AP]\.?\s?M)/gi)) {
+    const h = Number(m[1]);
+    const min = Number(m[2]);
+    if (h > 23 || min > 59) continue;
+    out.add(hhmm(h, min));
+    if (h >= 1 && h <= 12) out.add(hhmm((h % 12) + 12, min));
+  }
+  if (/\bnoon\b/i.test(text)) out.add("12:00");
+  if (/\bmidnight\b/i.test(text)) out.add("00:00");
+  return out;
+}
 
 /** Dollar amounts the text shows, in cents. */
 function centsIn(text: string): Set<number> {
@@ -166,9 +198,9 @@ function centsIn(text: string): Set<number> {
  */
 export function groundRules(rules: SignRule[], source: GroundingSource): Grounded {
   const durations = durationsIn(source.text);
-  const textHours = hoursIn(source.text);
-  const zoneHours = new Set(
-    source.zoneHours.flatMap((i) => [i.start, i.end]).map((c) => fold(c.padStart(5, "0"))),
+  const textClocks = clocksIn(source.text);
+  const zoneClocks = new Set(
+    source.zoneHours.flatMap((i) => [i.start, i.end]).map((c) => c.padStart(5, "0")),
   );
   const cents = centsIn(source.text);
   const words = source.text.toLowerCase().replace(/[^a-z0-9]+/g, " ");
@@ -185,10 +217,7 @@ export function groundRules(rules: SignRule[], source: GroundingSource): Grounde
     }
     for (const clock of [rule.start, rule.end]) {
       if (clock === null) continue;
-      const minutes = clock.slice(3);
-      const hourShown = textHours.has(fold(clock)) || zoneHours.has(fold(clock));
-      const minutesShown = minutes === "00" || source.text.includes(`:${minutes}`);
-      if (!hourShown || !minutesShown) {
+      if (!textClocks.has(clock) && !zoneClocks.has(clock)) {
         dropped.push({ index, why: "time_not_on_sign" });
         return;
       }
@@ -242,33 +271,41 @@ const WEEKDAY: Record<string, (typeof DAYS)[number]> = {
 
 const toMinute = (clock: string) => Number(clock.slice(0, 2)) * 60 + Number(clock.slice(3));
 
-/** Does the rule apply at any minute of [at, at + stay)? Sampled every 15
- * minutes, in Eastern time (both cities' signs are). */
-function appliesDuring(rule: SignRule, at: Date, stayMinutes: number): boolean {
-  for (let offset = 0; offset < Math.max(stayMinutes, 1); offset += 15) {
+/** How long before a time-boxed prohibition starts to leave the car. */
+export const PROHIBITION_MARGIN_MINUTES = 5;
+
+/** The first minute of [at, at + stay) the rule applies, as minutes from
+ * `at`, or null when it never does. Minute by minute, in Eastern time
+ * (both cities' signs are). */
+function firstMinuteApplying(rule: SignRule, at: Date, stayMinutes: number): number | null {
+  for (let offset = 0; offset < Math.max(stayMinutes, 1); offset++) {
     const { weekday, minute } = nycWeekdayAndMinute(new Date(at.getTime() + offset * 60_000));
     const day = WEEKDAY[weekday];
     if (rule.days.length > 0 && (!day || !rule.days.includes(day))) continue;
-    if (rule.start === null || rule.end === null) return true;
+    if (rule.start === null || rule.end === null) return offset;
     const start = toMinute(rule.start);
     const end = toMinute(rule.end);
     const inside = start <= end ? minute >= start && minute < end : minute >= start || minute < end;
-    if (inside) return true;
+    if (inside) return offset;
   }
-  return false;
+  return null;
 }
 
 /**
- * The signs against the zone data, for a stay of `stayMinutes` from `at`:
+ * The signs against the zone data, for a stay of `stayMinutes` from `at`
+ * (the check, right after parking):
  * - a rule that forbids leaving the car (no parking, tow zone, street
- *   cleaning, permit only) during the stay → conflicts;
+ *   cleaning, permit only) already in force at `at` → conflicts;
+ * - one that starts later in the stay → stricter, offering the minutes
+ *   until it starts less a 5-minute margin (none left → conflicts), so an
+ *   accepted offer keeps every extension out of the window;
  * - a posted limit longer than the zone's → conflicts (the shorter one
  *   stands; the reading never loosens a limit);
  * - a meter running where the zone data says free → conflicts;
  * - a posted limit shorter than the zone's (or the zone has none) →
  *   stricter, with that limit offered as this park's max stay;
  * - otherwise agrees. An unreadable reading, or no rule left after
- *   grounding, is unreadable.
+ *   grounding, is unreadable. The shortest offer wins.
  */
 export function compareWithZone(
   reading: { rules: SignRule[]; unreadable: boolean },
@@ -282,11 +319,21 @@ export function compareWithZone(
   const reasons: string[] = [];
   let conflicts = false;
   let offer: number | null = null;
+  const offerAtMost = (minutes: number) => {
+    offer = offer === null ? minutes : Math.min(offer, minutes);
+  };
   for (const rule of reading.rules) {
-    if (!appliesDuring(rule, at, stayMinutes)) continue;
+    const first = firstMinuteApplying(rule, at, stayMinutes);
+    if (first === null) continue;
     if (PROHIBITIVE.has(rule.kind)) {
-      conflicts = true;
-      reasons.push(rule.kind);
+      const leaveBy = first - PROHIBITION_MARGIN_MINUTES;
+      if (first === 0 || leaveBy <= 0) {
+        conflicts = true;
+        reasons.push(rule.kind);
+      } else {
+        offerAtMost(leaveBy);
+        reasons.push(`${rule.kind}_later`);
+      }
       continue;
     }
     if (rule.kind === "meter" && zone && !isEnforcedAt(zone.hours, at)) {
@@ -299,7 +346,7 @@ export function compareWithZone(
       conflicts = true;
       reasons.push("time_limit_longer");
     } else if (zoneMax === null || rule.limitMinutes < zoneMax) {
-      offer = offer === null ? rule.limitMinutes : Math.min(offer, rule.limitMinutes);
+      offerAtMost(rule.limitMinutes);
       reasons.push("time_limit_shorter");
     }
   }

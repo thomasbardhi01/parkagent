@@ -2,7 +2,8 @@
  * The parking-sign reader (Issue N), behind SIGN_READER:
  *
  * - POST /parked/:id/signs: the driver asks what the signs at this park
- *   say. The phone sends the text it recognized on them, its fix, and one
+ *   say. The phone sends the text it recognized on them, its fix (else the
+ *   park's own), and one
  *   photo only when that recognition was unsure; the answer is agrees,
  *   stricter (with a shorter max stay offered), conflicts, or unreadable.
  * - POST /parked/:id/signs/:checkId/accept: the driver takes a stricter
@@ -23,6 +24,7 @@ import { z } from "zod";
 import type { AppDeps } from "../app.js";
 import { requireAdmin } from "../app.js";
 import { readSigns } from "../services/capabilities/readSigns.js";
+import { PARK_OPEN, PARK_TTL_MS } from "../services/pendingSession.js";
 import { principalFor } from "../services/principal.js";
 import { makeRateLimiter } from "../services/rateLimit.js";
 import { tightenedMaxStay } from "../services/signs/signRules.js";
@@ -46,14 +48,20 @@ const bodySchema = z.strictObject({
         .regex(/^[A-Za-z0-9+/]+=*$/),
     })
     .optional(),
-  fix: z.strictObject({
-    lat: z.number().gte(-90).lte(90),
-    lng: z.number().gte(-180).lte(180),
-    accuracy: z.number().nonnegative().lte(10_000),
-  }),
+  /** Where the phone is now; absent → where the park was reported. */
+  fix: z
+    .strictObject({
+      lat: z.number().gte(-90).lte(90),
+      lng: z.number().gte(-180).lte(180),
+      accuracy: z.number().nonnegative().lte(10_000),
+    })
+    .optional(),
   /** Keep this photo for the zone-data review queue (30 days). */
   storePhoto: z.boolean().optional(),
 });
+
+/** The most checks one admin page lists. */
+const ADMIN_PAGE_MAX = 20;
 
 export function registerSigns(app: FastifyInstance, deps: AppDeps): void {
   const now = () => deps.now?.() ?? new Date();
@@ -70,6 +78,21 @@ export function registerSigns(app: FastifyInstance, deps: AppDeps): void {
     return park && park.userId === userId ? park : null;
   };
 
+  /** Is this park still the car's, for a check or an accept? A session
+   * running for it, or its walk-away hold still open (FR-55), or (a park
+   * the server never held) one reported within the park TTL. A park the
+   * driver drove away from, declined, or that a newer park replaced is
+   * over: reading its signs could only tighten a stay nobody is in. */
+  const parkOpen = async (park: { id: string; userId: string; ts: Date }, at: Date) => {
+    const running = await deps.db.session.findFirst({
+      where: { userId: park.userId, status: "active", parkedEventId: park.id },
+    });
+    if (running) return true;
+    const held = await deps.db.pendingPark.findUnique({ where: { parkedEventId: park.id } });
+    if (held) return PARK_OPEN.includes(held.status);
+    return at.getTime() - park.ts.getTime() <= PARK_TTL_MS;
+  };
+
   app.post(
     "/parked/:id/signs",
     { preHandler: limit, bodyLimit: 2 * 1024 * 1024 },
@@ -81,10 +104,12 @@ export function registerSigns(app: FastifyInstance, deps: AppDeps): void {
       const body = parsed.data;
       const userId = req.authedUser!.id;
       const { id } = req.params as { id: string };
-      if (!(await ownPark(userId, id))) {
+      const park = await ownPark(userId, id);
+      if (!park) {
         return reply.code(404).send({ error: "parked_event_not_found" });
       }
       const at = now();
+      if (!(await parkOpen(park, at))) return reply.code(409).send({ error: "park_closed" });
       const principal = req.principal ?? principalFor(userId);
       const outcome = await readSigns(
         {
@@ -100,7 +125,7 @@ export function registerSigns(app: FastifyInstance, deps: AppDeps): void {
         {
           text: body.text,
           ...(body.photo ? { photo: body.photo } : {}),
-          fix: body.fix,
+          fix: body.fix ?? { lat: park.lat, lng: park.lng, accuracy: park.accuracyM },
           parkedEventId: id,
         },
       );
@@ -165,6 +190,10 @@ export function registerSigns(app: FastifyInstance, deps: AppDeps): void {
     const offer = check.offerMaxStayMinutes;
     if (offer === null) return reply.code(409).send({ error: "nothing_to_accept" });
     const at = now();
+    const park = await ownPark(userId, id);
+    if (!park || !(await parkOpen(park, at))) {
+      return reply.code(409).send({ error: "park_closed" });
+    }
     const won = await deps.db.signCheck.updateMany({
       where: { id: checkId, acceptedAt: null },
       data: { acceptedAt: at },
@@ -200,13 +229,25 @@ export function registerSigns(app: FastifyInstance, deps: AppDeps): void {
     return { accepted: true, maxStayMinutes: offer, sessionId: session?.id ?? null };
   });
 
-  /** The zone-data review queue: checks whose driver kept a photo. */
+  /** The zone-data review queue: checks whose driver kept a photo, a
+   * page at a time (newest first; `before` is the last page's `next`). A
+   * photo is up to ~1 MB, so the list carries none: each is its own GET. */
+  const pageSchema = z.strictObject({
+    limit: z.coerce.number().int().min(1).max(ADMIN_PAGE_MAX).default(10),
+    before: z.iso.datetime({ offset: true }).optional(),
+  });
   app.get("/admin/sign-checks", async (req, reply) => {
     if (!requireAdmin(req, reply)) return reply;
+    const page = pageSchema.safeParse(req.query ?? {});
+    if (!page.success) return reply.code(400).send({ error: z.treeifyError(page.error) });
+    const { limit: take, before } = page.data;
     const rows = await deps.db.signCheck.findMany({
-      where: { photoExpiresAt: { not: null } },
+      where: {
+        photoExpiresAt: { not: null },
+        ...(before ? { createdAt: { lt: new Date(before) } } : {}),
+      },
       orderBy: { createdAt: "desc" },
-      take: 50,
+      take,
     });
     return {
       checks: rows.map((r) => ({
@@ -216,12 +257,23 @@ export function registerSigns(app: FastifyInstance, deps: AppDeps): void {
         verdict: r.verdict,
         result: r.result,
         ocrText: r.ocrText,
-        photo:
-          r.photo && r.photoMediaType
-            ? `data:${r.photoMediaType};base64,${Buffer.from(r.photo).toString("base64")}`
-            : null,
+        photoUrl: r.photo ? `/admin/sign-checks/${r.id}/photo` : null,
         photoExpiresAt: r.photoExpiresAt?.toISOString() ?? null,
       })),
+      next: rows.length === take ? rows.at(-1)!.createdAt.toISOString() : null,
     };
+  });
+
+  app.get("/admin/sign-checks/:checkId/photo", async (req, reply) => {
+    if (!requireAdmin(req, reply)) return reply;
+    const { checkId } = req.params as { checkId: string };
+    const row = await deps.db.signCheck.findUnique({ where: { id: checkId } });
+    if (!row?.photo || !row.photoMediaType) {
+      return reply.code(404).send({ error: "photo_not_found" });
+    }
+    return reply
+      .header("content-type", row.photoMediaType)
+      .header("cache-control", "no-store")
+      .send(Buffer.from(row.photo));
   });
 }

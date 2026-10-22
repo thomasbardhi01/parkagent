@@ -1,6 +1,6 @@
 /**
  * The parking-sign reader (Issue N): advisory only. The golden set runs
- * grounding and the comparison over recorded model outputs; the route
+ * grounding and the comparison over hand-written model outputs (the live model is the manual sign:eval); the route
  * runs with a scripted model. A reading can warn, or offer a shorter max
  * stay that applies only on the driver's accept and only ever tightens;
  * it never changes a price, starts, stops or extends anything.
@@ -18,7 +18,7 @@ import type {
   ModelResponse,
   ModelTurn,
 } from "../src/services/assistant/modelClient.js";
-import type { SignRules } from "../src/services/signs/signRules.js";
+import type { SignRule, SignRules } from "../src/services/signs/signRules.js";
 import {
   compareWithZone,
   groundRules,
@@ -32,6 +32,7 @@ import {
   NONADMIN_API_KEY,
   makeTestApp,
   seedProviderAccount,
+  seedSession,
 } from "./helpers.js";
 
 const NOW = new Date(MONDAY_2PM);
@@ -57,7 +58,7 @@ const golden = JSON.parse(
   }[];
 };
 
-describe("the golden set (recorded model outputs)", () => {
+describe("the golden set (hand-written model outputs)", () => {
   test.each(golden.samples.map((s) => [s.name, s] as const))("%s", (_name, sample) => {
     const reading = signRulesSchema.parse(sample.modelOutput);
     const zone = {
@@ -129,6 +130,84 @@ describe("the rules", () => {
     expect(shown.rules[0]!.permitZone).toBeNull();
   });
 
+  const rule = (over: Partial<SignRule>): SignRule => ({
+    kind: "no_parking",
+    days: [],
+    start: null,
+    end: null,
+    limitMinutes: null,
+    permitZone: null,
+    exceptions: [],
+    ...over,
+  });
+  const ground = (rules: SignRule[], text: string) =>
+    groundRules(rules, { text, zoneMaxStayMinutes: 120, zoneHours: [] });
+
+  test("a bare number is never a clock time: the 2 of 2 HOUR grounds no 14:00", () => {
+    const made = rule({ start: "14:00", end: "20:00" });
+    const grounded = ground([made], "2 HOUR PARKING 8AM - 8PM");
+    expect(grounded.dropped).toEqual([{ index: 0, why: "time_not_on_sign" }]);
+    const zone = { zoneId: "z", maxStayMinutes: 120, hours: [] };
+    const at = new Date("2026-01-05T14:00:00-05:00");
+    expect(
+      compareWithZone({ rules: grounded.rules, unreadable: false }, zone, at, 120).verdict,
+    ).toBe("unreadable");
+  });
+
+  test.each([
+    ["8AM-6PM", ["08:00", "18:00"]],
+    ["4PM - 6:30 P.M.", ["16:00", "18:30"]],
+    ["8 - 6PM", ["08:00", "18:00"]],
+    ["12PM - 4PM", ["12:00", "16:00"]],
+    ["14:00 TO 16:00", ["14:00", "16:00"]],
+    ["NOON TO MIDNIGHT", ["12:00", "00:00"]],
+  ])("times read as times: %s", (text, [start, end]) => {
+    expect(ground([rule({ start: start!, end: end! })], text).rules).toHaveLength(1);
+  });
+
+  test("the meridiem must match: 8AM grounds 08:00, not 20:00", () => {
+    expect(ground([rule({ start: "20:00", end: "22:00" })], "NO PARKING 8AM-10AM").rules).toEqual(
+      [],
+    );
+  });
+
+  describe("a prohibition later in the stay", () => {
+    const zone = { zoneId: "z", maxStayMinutes: 120, hours: [] };
+    const cleaning = rule({ kind: "street_cleaning", start: "15:00", end: "17:00" });
+    const compare = (at: string) =>
+      compareWithZone({ rules: [cleaning], unreadable: false }, zone, new Date(at), 120);
+
+    test("street cleaning in 40 minutes: stricter, leave 5 minutes before it starts", () => {
+      expect(compare("2026-01-05T14:20:00-05:00")).toMatchObject({
+        verdict: "stricter",
+        offerMaxStayMinutes: 35,
+        reasons: ["street_cleaning_later"],
+      });
+    });
+
+    test("already in force when the check is made: conflicts, nothing offered", () => {
+      expect(compare("2026-01-05T15:10:00-05:00")).toMatchObject({
+        verdict: "conflicts",
+        offerMaxStayMinutes: null,
+      });
+    });
+
+    test("starting in under the margin: conflicts, nothing offered", () => {
+      expect(compare("2026-01-05T14:57:00-05:00")).toMatchObject({
+        verdict: "conflicts",
+        offerMaxStayMinutes: null,
+      });
+    });
+
+    test("the shorter of a posted limit and the window wins", () => {
+      const limit = rule({ kind: "time_limit", limitMinutes: 60 });
+      const at = new Date("2026-01-05T14:20:00-05:00");
+      expect(
+        compareWithZone({ rules: [cleaning, limit], unreadable: false }, zone, at, 120),
+      ).toMatchObject({ verdict: "stricter", offerMaxStayMinutes: 35 });
+    });
+  });
+
   test("an accepted stay only ever tightens", () => {
     expect(tightenedMaxStay(120, 60)).toBe(60);
     expect(tightenedMaxStay(60, 120)).toBe(60);
@@ -166,10 +245,10 @@ const FIX = { lat: 42.3495, lng: -71.0798, accuracy: 8 };
 
 /** A sign model that answers each call in turn, and records what it saw. */
 function scripted(answers: (Partial<ModelResponse> | Error)[]) {
-  const seen: { messages: ModelTurn[]; outputSchema: unknown }[] = [];
+  const seen: { messages: ModelTurn[]; outputSchema: unknown; effort: unknown }[] = [];
   const model: ModelClient = {
     async create(args) {
-      seen.push({ messages: args.messages, outputSchema: args.outputSchema });
+      seen.push({ messages: args.messages, outputSchema: args.outputSchema, effort: args.effort });
       const next = answers.shift();
       if (!next) throw new Error("no scripted answer left");
       if (next instanceof Error) throw next;
@@ -248,6 +327,7 @@ describe("POST /parked/:id/signs", () => {
     // One call, held to the schema, no prefill, no photo when none was sent.
     expect(seen).toHaveLength(1);
     expect(seen[0]!.outputSchema).toEqual(SIGN_RULES_JSON_SCHEMA);
+    expect(seen[0]!.effort).toBe("low");
     expect(seen[0]!.messages.at(-1)!.role).toBe("user");
     expect(JSON.stringify(seen[0]!.messages)).not.toContain('"image"');
     // On the record, with its cost against the daily budget.
@@ -290,9 +370,95 @@ describe("POST /parked/:id/signs", () => {
     const queue = await t.app.inject({ method: "GET", url: "/admin/sign-checks", headers: U1 });
     expect(queue.statusCode).toBe(200);
     expect(queue.json().checks).toHaveLength(1);
-    expect(queue.json().checks[0].photo).toMatch(/^data:image\/jpeg;base64,/);
-    const notAdmin = await t.app.inject({ method: "GET", url: "/admin/sign-checks", headers: U2 });
-    expect(notAdmin.statusCode).toBe(403);
+    // The list carries no photo bytes; each photo is its own GET.
+    expect(queue.body).not.toContain(photo.data);
+    const photoUrl = queue.json().checks[0].photoUrl as string;
+    const served = await t.app.inject({ method: "GET", url: photoUrl, headers: U1 });
+    expect(served.statusCode).toBe(200);
+    expect(served.headers["content-type"]).toBe("image/jpeg");
+    expect(served.rawPayload.toString("base64")).toBe(photo.data);
+    for (const url of ["/admin/sign-checks", photoUrl]) {
+      const notAdmin = await t.app.inject({ method: "GET", url, headers: U2 });
+      expect(notAdmin.statusCode).toBe(403);
+    }
+  });
+
+  test("the review queue pages: at most 20 a page, `next` to go on", async () => {
+    const photo = { mediaType: "image/png", data: Buffer.from("png").toString("base64") };
+    const { model } = scripted(Array.from({ length: 3 }, () => answer(ONE_HOUR.modelOutput)));
+    let at = NOW;
+    const t = makeTestApp({
+      candidates: [CANDIDATE],
+      zones: [ZONE],
+      now: () => at,
+      seedLinkedProvider: false,
+      signReaderModel: model,
+    });
+    t.state.parkedEvents.push({
+      id: "pe1",
+      userId: "u1",
+      lat: FIX.lat,
+      lng: FIX.lng,
+      accuracyM: 8,
+      ts: NOW,
+      signals: ["motion_stop"],
+    });
+    for (let i = 0; i < 3; i++) {
+      at = new Date(NOW.getTime() + i * 60_000);
+      const res = await t.app.inject({
+        method: "POST",
+        url: "/parked/pe1/signs",
+        headers: U1,
+        payload: { text: ONE_HOUR.text, photo, storePhoto: true },
+      });
+      expect(res.statusCode).toBe(200);
+    }
+    const get = (q: string) =>
+      t.app.inject({ method: "GET", url: `/admin/sign-checks${q}`, headers: U1 });
+    const first = (await get("?limit=2")).json();
+    expect(first.checks).toHaveLength(2);
+    expect(first.next).toBe(first.checks[1].createdAt);
+    const second = (await get(`?limit=2&before=${encodeURIComponent(first.next)}`)).json();
+    expect(second.checks).toHaveLength(1);
+    expect(second.next).toBeNull();
+    expect((await get("?limit=50")).statusCode).toBe(400);
+  });
+
+  test.each([
+    ["older than the park TTL, no session", { ageMs: 61 * 60_000 }],
+    ["declined", { held: "declined" }],
+    ["replaced by a newer park", { held: "superseded" }],
+  ] as const)("a closed park: %s → 409 park_closed, no model call", async (_why, how) => {
+    const { model, seen } = scripted([answer(ONE_HOUR.modelOutput)]);
+    const { t, check } = setup(model);
+    if ("ageMs" in how) t.state.parkedEvents[0]!.ts = new Date(NOW.getTime() - how.ageMs);
+    if ("held" in how) {
+      await t.deps.db.pendingPark.create({
+        data: {
+          userId: "u1",
+          parkedEventId: "pe1",
+          status: how.held,
+          carLat: FIX.lat,
+          carLng: FIX.lng,
+          candidates: [],
+          quote: null,
+          shownDryRun: true,
+          parkedAt: NOW,
+        },
+      });
+    }
+    const res = await check({ text: ONE_HOUR.text, fix: FIX });
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toEqual({ error: "park_closed" });
+    expect(seen).toHaveLength(0);
+  });
+
+  test("a park past the TTL with its session still running stays open", async () => {
+    const { model } = scripted([answer(ONE_HOUR.modelOutput)]);
+    const { t, check } = setup(model);
+    t.state.parkedEvents[0]!.ts = new Date(NOW.getTime() - 3 * 60 * 60_000);
+    seedSession(t.state, { status: "active", parkedEventId: "pe1", zoneId: ZONE.zoneId });
+    expect((await check({ text: ONE_HOUR.text, fix: FIX })).statusCode).toBe(200);
   });
 
   test.each([
@@ -311,6 +477,17 @@ describe("POST /parked/:id/signs", () => {
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ verdict: "unreadable", offer: null, rules: [] });
     expect(t.state.decisions.at(-1)).toMatchObject({ rule: "unreadable", outcome: { fallback } });
+  });
+
+  test("a photo with no recognized text: no call, unreadable (nothing to ground it on)", async () => {
+    const { model, seen } = scripted([answer(golden.samples[2]!.modelOutput)]);
+    const { t, check } = setup(model);
+    const photo = { mediaType: "image/jpeg", data: Buffer.from("jpeg").toString("base64") };
+    const res = await check({ text: "  ", fix: FIX, photo });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ verdict: "unreadable", offer: null, rules: [] });
+    expect(seen).toHaveLength(0);
+    expect(t.state.decisions.at(-1)).toMatchObject({ outcome: { fallback: "no_text" } });
   });
 
   test("over the daily model budget (shared with the assistant): 429 before any call", async () => {
@@ -384,6 +561,65 @@ describe("accepting a shorter stay: only ever tighter", () => {
     expect(agrees.json().verdict).toBe("agrees");
     expect((await accept(s, agrees.json().checkId)).statusCode).toBe(409);
     expect((await accept(s, s.checkId, U2)).statusCode).toBe(404);
+  });
+});
+
+describe("the walk-away prompt quotes the accepted stay", () => {
+  // A park held for the walk-away (FR-55): the prompt is quoted when the
+  // phone leaves the car, from the terms the start path would read then.
+  test.each([
+    ["accepted", true, 60],
+    ["not accepted (control): the default stay", false, 90],
+  ])("%s", async (_case, accepting, minutes) => {
+    const { model } = scripted([answer(ONE_HOUR.modelOutput)]);
+    const t = makeTestApp({
+      candidates: [CANDIDATE],
+      zones: [ZONE],
+      now: () => NOW,
+      seedLinkedProvider: false,
+      signReaderModel: model,
+    });
+    seedProviderAccount(t.state, { provider: "passport" });
+    const post = (url: string, payload?: object) =>
+      t.app.inject({ method: "POST", url, headers: U1, ...(payload ? { payload } : {}) });
+    const parked = await post("/parked", {
+      lat: FIX.lat,
+      lng: FIX.lng,
+      accuracy: 8,
+      ts: new Date(NOW.getTime() - 4 * 60_000).toISOString(),
+      signals: ["motion_stop"],
+      outcomes: ["garage", "nopay", "walk_away"],
+    });
+    expect(parked.json()).toMatchObject({ action: "pay", awaitsWalkAway: true });
+    const id = parked.json().parkedEventId as string;
+    const check = await post(`/parked/${id}/signs`, { text: ONE_HOUR.text });
+    expect(check.json().verdict).toBe("stricter");
+    if (accepting) {
+      expect((await post(`/parked/${id}/signs/${check.json().checkId}/accept`)).statusCode).toBe(
+        200,
+      );
+    }
+    // Two fixes well clear of the car, a minute apart at a walking pace:
+    // the phone has left it.
+    let answered;
+    for (const [back, north] of [
+      [60_000, 0.002],
+      [0, 0.0022],
+    ] as const) {
+      answered = await post("/location", {
+        lat: FIX.lat + north,
+        lng: FIX.lng,
+        accuracy: 5,
+        ts: new Date(NOW.getTime() - back).toISOString(),
+      });
+      expect(answered.statusCode).toBe(200);
+    }
+    const prompt = answered!.json().prompt;
+    expect(prompt).toMatchObject({ kind: "confirm", minutes });
+    // $3.75/hr flat plus the city fee, for the stay quoted.
+    const meter = Math.round(3.75 * (minutes / 60) * 100) / 100;
+    expect(prompt.amountUsd).toBeCloseTo(meter + prompt.quote.feeUsd, 2);
+    expect(prompt.quote.stayMinutes).toBe(minutes);
   });
 });
 

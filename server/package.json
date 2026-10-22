@@ -12,6 +12,7 @@
     "lint": "eslint src",
     "create:fr-user": "tsx src/scripts/create-fr-user.ts",
     "load:zones": "tsx src/scripts/load-zones.ts",
+    "agent:tools": "tsx src/scripts/agent-tools.ts",
     "load:garages": "tsx src/scripts/load-garages.ts",
     "create:user": "tsx src/scripts/create-user.ts",
     "decisions:recent": "tsx src/scripts/recent-decisions.ts",

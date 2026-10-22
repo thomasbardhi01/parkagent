@@ -1,0 +1,273 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "geocode_place",
+      "description": "Look up a named place in the cities ParkAgent covers. (POST /agent/geocode)",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "A named place in the user's words"
+          },
+          "city": {
+            "description": "Bias toward this city",
+            "type": "string",
+            "enum": ["nyc", "bos"]
+          }
+        },
+        "required": ["query"],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "quote_street",
+      "description": "Metered street parking for a request, each block priced for its window. Read-only; pays nothing. (POST /agent/quote-street)",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "request": {
+            "type": "object",
+            "properties": {
+              "place": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "description": "A named place in the user's words, e.g. 'Fenway Park' or 'Lola 42 Seaport'"
+              },
+              "startsAt": {
+                "description": "ISO 8601 with the UTC offset, e.g. 2026-10-22T19:00:00-04:00; absent means now",
+                "type": "string",
+                "maxLength": 40
+              },
+              "durationMinutes": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 720,
+                "description": "How long, 1 to 720 minutes"
+              },
+              "maxPriceUsd": {
+                "description": "Most the user will pay",
+                "type": "number",
+                "minimum": 0,
+                "maximum": 500
+              },
+              "maxWalkMinutes": {
+                "description": "Longest walk",
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 60
+              },
+              "kinds": {
+                "description": "street, garage, or both (default)",
+                "minItems": 1,
+                "maxItems": 2,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": ["street", "garage"]
+                }
+              }
+            },
+            "required": ["place", "durationMinutes"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["request"],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "search_garages",
+      "description": "Garages for a request, merged across sources. Read-only; books nothing. (POST /agent/garages/search)",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "request": {
+            "type": "object",
+            "properties": {
+              "place": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "description": "A named place in the user's words, e.g. 'Fenway Park' or 'Lola 42 Seaport'"
+              },
+              "startsAt": {
+                "description": "ISO 8601 with the UTC offset, e.g. 2026-10-22T19:00:00-04:00; absent means now",
+                "type": "string",
+                "maxLength": 40
+              },
+              "durationMinutes": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 720,
+                "description": "How long, 1 to 720 minutes"
+              },
+              "maxPriceUsd": {
+                "description": "Most the user will pay",
+                "type": "number",
+                "minimum": 0,
+                "maximum": 500
+              },
+              "maxWalkMinutes": {
+                "description": "Longest walk",
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 60
+              },
+              "kinds": {
+                "description": "street, garage, or both (default)",
+                "minItems": 1,
+                "maxItems": 2,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": ["street", "garage"]
+                }
+              }
+            },
+            "required": ["place", "durationMinutes"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["request"],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "build_itinerary",
+      "description": "Price a multi-stop day: street and the best garage per stop, against the user's daily cap. (POST /agent/itinerary)",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "stops": {
+            "minItems": 1,
+            "maxItems": 12,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "place": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "label": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 80
+                },
+                "arrival": {
+                  "type": "string",
+                  "maxLength": 40,
+                  "description": "ISO 8601 with the UTC offset"
+                },
+                "durationMinutes": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 720
+                }
+              },
+              "required": ["place", "arrival", "durationMinutes"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["stops"],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "propose_plan",
+      "description": "Search a request and propose a plan. Returns the plan and, for a key with the confirm scope, a one-time confirmToken (10 minutes). (POST /agent/plans)",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "request": {
+            "type": "object",
+            "properties": {
+              "place": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "description": "A named place in the user's words, e.g. 'Fenway Park' or 'Lola 42 Seaport'"
+              },
+              "startsAt": {
+                "description": "ISO 8601 with the UTC offset, e.g. 2026-10-22T19:00:00-04:00; absent means now",
+                "type": "string",
+                "maxLength": 40
+              },
+              "durationMinutes": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 720,
+                "description": "How long, 1 to 720 minutes"
+              },
+              "maxPriceUsd": {
+                "description": "Most the user will pay",
+                "type": "number",
+                "minimum": 0,
+                "maximum": 500
+              },
+              "maxWalkMinutes": {
+                "description": "Longest walk",
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 60
+              },
+              "kinds": {
+                "description": "street, garage, or both (default)",
+                "minItems": 1,
+                "maxItems": 2,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": ["street", "garage"]
+                }
+              }
+            },
+            "required": ["place", "durationMinutes"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["request"],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "confirm_plan",
+      "description": "Confirm a proposed plan with its confirmToken, once. A garage answers with its checkout link; a street spot answers pending_arrival: nothing is paid until the user's phone reports the car parked there. Needs the confirm scope and the user's consent for agents. (POST /agent/plans/{planId}/confirm)",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "confirmToken": {
+            "type": "string",
+            "minLength": 16,
+            "maxLength": 200,
+            "description": "From POST /agent/plans, used once"
+          }
+        },
+        "required": ["confirmToken"],
+        "additionalProperties": false
+      }
+    }
+  }
+]

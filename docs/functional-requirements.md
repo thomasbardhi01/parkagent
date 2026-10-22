@@ -104,6 +104,7 @@ started at 11:55 ET). "—" means the FR has no live test.
 | FR-57 | Ticket capture (V2) | pending | — | #181 |
 | FR-58 | Garage stays and estimates (V2) | pending | — | #182 |
 | FR-59 | Stay budget on the Issuing webhook (V2) | pending | — | #183 |
+| FR-60 | External agents act for a person through the same gate, never as the source of arrival | nightly + unit | — (first run after WS-4 PR 2b deploys) | `server/fr/65-agents.fr.test.ts`, `server/test/agentKeys.test.ts`, `server/test/agentRoutes.test.ts` |
 
 ---
 
@@ -1708,6 +1709,17 @@ daily cap binds every path. Unit and nightly.
 Ticket capture and parsing; garage stays with rate cards, estimates, and
 a Live Activity; the stay budget on the Issuing webhook with the assisted
 handoff. Deferred by the V1 scope decisions.
+
+### FR-60 — External agents (WS-4)
+**Accepted when** a person can mint a scoped `pak_` key (shown once,
+revocable) and turn consent on; the key reaches the agent surface and
+nothing else, and the surface takes nothing else; an agent searches and
+plans through the same capabilities as the app, by named places only; a
+confirm needs the `confirm` scope, the person's consent, and a live,
+unused mandate for the plan as proposed, and pays nothing — a street spot
+answers `pending_arrival` (arrival comes only from the phone), a garage
+its own checkout link; caps and dry run apply as they do to the person.
+Unit and nightly (Boston).
 
 ---
 

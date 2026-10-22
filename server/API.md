@@ -3691,11 +3691,50 @@ before the token is read. Mandates minted before this table was renamed
 from `assistant_confirmations` were stored in plain text and can't be
 consumed; they expired within ten minutes of the deploy.
 
-### GET /agent/me
+### The routes
 
-`{userId, agentKeyId, scopes, agentsMayAct}`: who the key acts for, what
-it may do, and whether the person has said agents may act. The routes
-that search, plan and confirm come with PR 2b.
+All take `Bearer pak_…` and the `read` scope unless noted, and answer as
+the capabilities do for the app (the same shapes the assistant's tools
+return). Places are **named**, never coordinates: a request is
+`{place, startsAt?, durationMinutes, maxPriceUsd?, maxWalkMinutes?,
+kinds?}` and the server looks the place up; a body with any other field
+is `400`. The full description is `GET /agent/openapi.json` (public,
+OpenAPI 3.1, generated from the routes' own zod schemas); the six tools as
+OpenAI-style functions are `examples/grok-tool.json` (regenerate with
+`pnpm -C server agent:tools`).
+
+- `GET /agent/me` → `{userId, agentKeyId, scopes, agentsMayAct}`.
+- `POST /agent/geocode {query, city?}` → a place lookup.
+- `POST /agent/quote-street {request}`, `POST /agent/garages/search
+  {request}` → a search: `{verdict, satisfying, nearMisses, …}`.
+- `POST /agent/itinerary {stops: [{place, label?, arrival,
+  durationMinutes}]}` (1–12) → each stop's street quote and best garage
+  against the daily cap; `422 place_not_found {stop}` when a place can't
+  be resolved to one spot.
+- `POST /agent/plans {request}` → searches (street then garages, as the
+  request's `kinds` allow) and proposes: `{planId, plan}`, the plan an
+  `assistant_plans` row like the app's. For a key with `confirm`, a
+  single-spot plan also carries `{confirmToken, optionId, expiresAt}`: the
+  mandate for the recommended option, ten minutes, used once.
+- `POST /agent/plans/:planId/confirm {confirmToken}` (`confirm` scope) →
+  consent first (`403 agents_not_allowed`, before the mandate is read),
+  then the mandate (`404 mandate_not_found`, `409 mandate_used`, `410
+  mandate_expired`, `409 plan_hash_mismatch`), then the caps now (`409
+  policy_violation {rule}`, the mandate left unspent). Then:
+  - a garage → `{status: "garage_handoff", deepLink, priceUsd}`: the
+    option's own checkout, as in the app; nothing is booked or paid here;
+  - a street spot → `{status: "pending_arrival", zoneId,
+    durationMinutes, priceUsd, expiresAt}`. **An agent's confirm is
+    consent and a cap for a spot, never a park.** No `pending_parks` row
+    is written and nothing pays: arrival comes only from the phone, and
+    the phone's own prompt still asks the driver ("Pay $X for zone N?"),
+    as it does without an agent. Binding the next `/parked` at that spot
+    to this consent is the next PR (E3).
+  Each answer writes an `agent_confirm` decision.
+- `GET /agent/plans/:planId` → `{planId, kind, plan, confirmedAt,
+  confirmedOptionId}`; `GET /agent/parks/:parkId` → a park's `{status,
+  zoneId, parkedAt, sessionId}`. Another person's is `404`.
+- `GET /agent/decisions/:decisionId/why` → `501` until Issue M.
 
 ## Link wallet for agents
 

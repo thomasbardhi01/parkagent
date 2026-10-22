@@ -257,6 +257,8 @@ const PUBLIC_PATHS = new Set([
   "/auth/email/verify",
   "/auth/refresh",
   "/auth/logout",
+  // The agent API's own description: no data in it (routes/agentOpenApi.ts).
+  "/agent/openapi.json",
 ]);
 
 /** 403 unless the authenticated user is an admin. Guards mutations of the

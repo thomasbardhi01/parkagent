@@ -432,6 +432,8 @@ final class LiveAPIRequestTests: XCTestCase {
         XCTAssertEqual(request.httpMethod, "DELETE")
         XCTAssertEqual(request.url?.path(), "/device")
         XCTAssertEqual(try body(request)["token"] as? String, "abc123")
+        // Tried once, best effort: no key, so no retry budget at sign-out.
+        XCTAssertNil(request.value(forHTTPHeaderField: "Idempotency-Key"))
     }
 
     /// FR-54: the app says which place outcomes it can show, and reads the

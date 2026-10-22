@@ -1638,6 +1638,7 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
               ? row.status === where.status
               : where.status.in.includes(row.status);
           if (!statusHit || row.id !== where.id) continue;
+          if ("carMovedAt" in where && row.carMovedAt !== null) continue;
           Object.assign(row, data);
           count += 1;
         }

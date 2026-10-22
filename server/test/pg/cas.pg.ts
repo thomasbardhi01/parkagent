@@ -189,6 +189,10 @@ test("a newer park against a tap on the old one: the old park is superseded or s
       expect(paid.statusCode).toBe(200);
       expect(t.calls.start).toBe(1);
       expect(sessions).toEqual([expect.objectContaining({ id: old.sessionId })]);
+      // The newer park says the car is 556 m away: whether it landed mid-
+      // start or after, the session the tap started is one whose car moved,
+      // and the worker extends it no more (#246).
+      expect(old.carMovedAt).not.toBeNull();
     } else {
       expect(paid.statusCode).toBe(409);
       expect(t.calls.start).toBe(0);

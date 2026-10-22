@@ -986,6 +986,80 @@ test("…nor does the next fix: a park mid-start is never superseded by a newer 
   });
 });
 
+/** A walk-away park whose tap is mid-start: the provider call waits on
+ * `release`. */
+async function midStart() {
+  let release = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
+  const t = makeApp();
+  const dryStart = t.deps.executorFor({ userId: "u1", city: "nyc", dryRun: true });
+  t.deps.executorFor = () => ({
+    startSession: async (args) => {
+      await held;
+      return dryStart.startSession(args);
+    },
+    extendSession: (args) => dryStart.extendSession(args),
+    stopSession: (args) => dryStart.stopSession(args),
+  });
+  const parked = await post(t.app, "/parked", parkedBody({ outcomes: OUTCOMES }));
+  const id = parked.json()["parkedEventId"] as string;
+  t.tick(40);
+  await post(t.app, "/location", fix(t, 60));
+  t.tick(20);
+  await post(t.app, "/location", fix(t, 90));
+  const paying = post(t.app, `/parked/${id}/confirm`, {});
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(t.state.pendingParks[0]!.status).toBe("starting");
+  return { t, id, paying, release };
+}
+
+test("a newer park elsewhere while the old one is mid-start: the session it starts is one whose car moved, and is extended no more (#246)", async () => {
+  const { t, id, paying, release } = await midStart();
+  const extender = makeExtender({ ...t.deps, log: { info() {}, warn() {} } });
+  const newer = await post(
+    t.app,
+    "/parked",
+    parkedBody({ outcomes: OUTCOMES, lat: ELSEWHERE.lat, ts: t.clock.now.toISOString() }),
+  );
+  expect(newer.statusCode).toBe(200);
+  // Written on the park mid-start, from its own car fix: no session yet.
+  const old = t.state.pendingParks.find((p) => p.parkedEventId === id)!;
+  expect(old).toMatchObject({ status: "starting", carMovedAt: t.clock.now });
+  const moved = t.state.decisions.filter((d) => d.kind === "session_car_moved");
+  expect(moved).toHaveLength(1);
+  expect(moved[0]).toMatchObject({
+    rule: "newer_park_elsewhere",
+    parkedEventId: newer.json()["parkedEventId"],
+    inputs: expect.objectContaining({ startingParkedEventId: id, parkStatus: "starting" }),
+  });
+
+  // The start settles: the park takes its session and keeps the move.
+  release();
+  expect((await paying).statusCode).toBe(200);
+  const session = t.state.sessions[0]!;
+  expect(old).toMatchObject({ status: "started", sessionId: session.id });
+  expect(old.carMovedAt).not.toBeNull();
+
+  // Near expiry, the worker reads the car as moved and buys nothing.
+  t.clock.now = new Date(session.expiresAt!.getTime() - 8 * 60_000);
+  await extender.tick();
+  const tick = t.state.decisions.filter((d) => d.kind === "extend_tick").at(-1)!;
+  expect(tick).toMatchObject({ rule: "hold_car_moved", inputs: { position: "moved" } });
+  expect(t.calls.extend).toBe(0);
+  // Once: a second newer park elsewhere writes no second row.
+  expect(t.state.decisions.filter((d) => d.kind === "session_car_moved")).toHaveLength(1);
+});
+
+test("a newer park at the same spot while the old one is mid-start: the car hasn't moved, and nothing is written", async () => {
+  const { t, paying, release } = await midStart();
+  await post(t.app, "/parked", parkedBody({ outcomes: OUTCOMES, ts: t.clock.now.toISOString() }));
+  expect(t.state.pendingParks[0]!.carMovedAt ?? null).toBeNull();
+  expect(t.state.decisions.filter((d) => d.kind === "session_car_moved")).toEqual([]);
+  release();
+  expect((await paying).statusCode).toBe(200);
+  expect(t.state.pendingParks[0]!.carMovedAt ?? null).toBeNull();
+});
+
 test("the phone back at the car while the worker is buying time: the extension is refused, and nothing is bought", async () => {
   // A return that lands in time ends the session; the phone merely back
   // within reach of the car (a tap would wait, a drive-off is armed) is no

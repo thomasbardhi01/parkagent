@@ -1489,9 +1489,10 @@ export interface AppDb {
     }): Promise<PendingParkRow[]>;
     update(args: { where: { id: string }; data: PendingParkWrite }): Promise<PendingParkRow>;
     /** Compare-and-set: the status in `where` is what makes a transition
-     * happen once however many requests race for it. */
+     * happen once however many requests race for it; `carMovedAt: null`
+     * makes a move recorded once, too. */
     updateMany(args: {
-      where: { id: string; status: string | { in: string[] } };
+      where: { id: string; status: string | { in: string[] }; carMovedAt?: null };
       data: PendingParkWrite;
     }): Promise<{ count: number }>;
   };

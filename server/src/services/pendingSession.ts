@@ -1160,6 +1160,7 @@ export async function noteCarMoved(
   at: Date,
   parkedEventId: string,
 ): Promise<void> {
+  await noteStartingParksMoved(deps, userId, point, at, parkedEventId);
   const session = await deps.db.session.findFirst({ where: { userId, status: "active" } });
   if (!session || session.carLat === null || session.carLng === null) return;
   const distanceM = metersBetween(point.lat, point.lng, session.carLat, session.carLng);
@@ -1185,6 +1186,58 @@ export async function noteCarMoved(
       parkedEventId,
     },
   });
+}
+
+/**
+ * The same, for a park mid-start (#246). A `starting` park is never
+ * superseded (its start may be paying), and until the start settles it
+ * has no session the step above can find, or one its park can't be
+ * linked to yet. So the move is written on the park itself, measured from
+ * the park's own car fix, from the state it was read in; the start's
+ * settle writes the status and the session, never `carMovedAt`, so the
+ * session it starts is one whose car has moved, and the worker buys it
+ * nothing more.
+ */
+async function noteStartingParksMoved(
+  deps: LifecycleDeps,
+  userId: string,
+  point: { lat: number; lng: number },
+  at: Date,
+  parkedEventId: string,
+): Promise<void> {
+  const starting = await deps.db.pendingPark.findMany({
+    where: { userId, status: { in: ["starting"] } },
+  });
+  for (const park of starting) {
+    if (park.parkedEventId === parkedEventId || park.carMovedAt !== null) continue;
+    const distanceM = metersBetween(point.lat, point.lng, park.carLat, park.carLng);
+    if (distanceM <= SAME_SPOT_M) continue;
+    const moved = await deps.db.pendingPark.updateMany({
+      where: { id: park.id, status: "starting", carMovedAt: null },
+      data: { carMovedAt: at },
+    });
+    if (moved.count !== 1) continue;
+    await deps.db.decision.create({
+      data: {
+        kind: "session_car_moved",
+        inputs: {
+          car: { lat: park.carLat, lng: park.carLng },
+          newPark: point,
+          distanceM: Math.round(distanceM),
+          newParkedEventId: parkedEventId,
+          // Mid-start: no session yet to name; the park's own event.
+          startingParkedEventId: park.parkedEventId,
+          parkStatus: "starting",
+          dryRun: deps.policy.effectiveDryRun(),
+          policyHash: deps.policy.hash(),
+        },
+        rule: "newer_park_elsewhere",
+        outcome: { autoExtend: false, stopped: false },
+        userId,
+        parkedEventId,
+      },
+    });
+  }
 }
 
 /** The start path, as the lifecycle calls it (routes/session.ts SessionOps). */

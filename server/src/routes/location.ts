@@ -186,6 +186,7 @@ export function registerLocation(app: FastifyInstance, deps: AppDeps, sessions: 
         lng: body.lng,
         accuracyM: body.accuracy,
         ts: new Date(body.ts),
+        measuredAt: body.measuredAt ? new Date(body.measuredAt) : new Date(body.ts),
       },
     });
     const answer = { sessionId: session.id };

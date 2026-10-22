@@ -16,6 +16,7 @@ import type { Executor, ExecutorResult } from "../src/services/executor.js";
 import type { Candidate } from "../src/services/zoneLookup.js";
 import {
   API_KEY,
+  seedAwayPark,
   BOYLSTON_BOS,
   HOURS_MON_SAT,
   MONDAY_2PM,
@@ -345,6 +346,8 @@ describe("extension worker degraded location", () => {
   test("phone 5 km away with fresh fixes: extend", async () => {
     const { state, extender } = tickApp();
     const session = tickSession(state);
+    // The park its walk-away left: "away" is the lifecycle's (phonePosition).
+    seedAwayPark(state, session);
     addFix(state, session.id, 4800, 2 * 60_000);
     addFix(state, session.id, 4900, 60_000);
     addFix(state, session.id, 5000, 10_000);

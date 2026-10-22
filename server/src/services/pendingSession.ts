@@ -8,7 +8,7 @@
 
 import { acceptedSignStay } from "./signs/acceptedStay.js";
 import { tightenedMaxStay } from "./signs/signRules.js";
-import type { AppDb, PendingParkRow, PendingParkWrite, SessionRow } from "../db.js";
+import type { AppDb, LocationFixRow, PendingParkRow, PendingParkWrite, SessionRow } from "../db.js";
 import { cityForZone, providerForCity } from "../providers/registry.js";
 import type { HoursInterval } from "./hours.js";
 import { easternWallClock } from "./hours.js";
@@ -593,6 +593,112 @@ export function metersBetween(aLat: number, aLng: number, bLat: number, bLng: nu
     Math.sin(rad(bLat - aLat) / 2) ** 2 +
     Math.cos(rad(aLat)) * Math.cos(rad(bLat)) * Math.sin(rad(bLng - aLng) / 2) ** 2;
   return 2 * R * Math.asin(Math.sqrt(s));
+}
+
+// ------------------------------------------------------------ where the phone is, for a running session
+
+/** Where the phone is, as far as buying more time goes. `moved`: a later
+ * park put the car somewhere else. `back`: it left, then was back at the
+ * car, and nothing since says it left on foot again (FR-55). */
+export type PhonePosition = "away" | "at_car" | "back" | "returned" | "moved" | "unknown";
+
+/** A fix a running session stored (POST /location), as the readers below
+ * take it. */
+export type StoredFix = Pick<LocationFixRow, "lat" | "lng" | "accuracyM" | "ts" | "measuredAt">;
+
+/** When the phone measured a stored fix: older rows carry only `ts`. */
+const measuredAtOf = (fix: StoredFix) => fix.measuredAt ?? fix.ts;
+
+/** Whether a stored fix says where the phone is now: the lifecycle's own
+ * test (fixCountsFor), on the phone's measurement clock. */
+export function storedFixCounts(since: Date, fix: StoredFix, at: Date): boolean {
+  return fixCountsFor(since, measuredAtOf(fix), fix.ts, at);
+}
+
+/**
+ * Where the phone is relative to a running session's car: the one reader
+ * of "away" for the extension worker and for the gate under the extension
+ * lock. The walk rules (advanceWalk) keep the park row; this reads it, and
+ * the newest fix the session stored for "still reporting".
+ *
+ * No park row (a session the lifecycle never saw): `unknown`, and nothing
+ * is bought. A park that never saw the phone leave (`leftCarAt` null) is
+ * `at_car`: nothing extends at the car. Left, and back since: `back`.
+ * Left, and nothing since says it came back: `away` only while the newest
+ * fix is usable and counts (fixCountsFor: measured within
+ * LIFECYCLE_FIX_MAX_AGE_MS). A phone that has gone quiet may be back in
+ * the car or driving off, so it is `unknown`.
+ */
+export function phonePosition(
+  park: PendingParkRow | null,
+  newest: StoredFix | null,
+  at: Date,
+): PhonePosition {
+  if (park === null) return "unknown";
+  if (park.status === "ended") return "returned";
+  if (park.carMovedAt !== null) return "moved";
+  if (park.status !== "started") return "unknown";
+  if (park.leftCarAt === null) return "at_car";
+  if (park.backAt !== null) return "back";
+  const reporting =
+    newest !== null &&
+    newest.accuracyM <= FIX_USABLE_ACCURACY_M &&
+    storedFixCounts(park.parkedAt, newest, at);
+  return reporting ? "away" : "unknown";
+}
+
+/** Trend of distance-to-car over the last fixes. */
+export type Heading = "toward" | "away" | "still" | "unknown";
+
+const WALK_SPEED_M_PER_MIN = 80; // ~4.8 km/h
+const ROUTE_FACTOR = 1.3; // straight-line → street grid
+const HEADING_NOISE_M = 15; // GPS jitter floor over the 3-fix window
+
+/** Chronological distances to the car → which way the phone is going. */
+export function headingFromDistances(distancesM: number[]): Heading {
+  if (distancesM.length < 2) return "unknown";
+  const delta = distancesM[distancesM.length - 1]! - distancesM[0]!;
+  if (Math.abs(delta) < HEADING_NOISE_M) return "still";
+  return delta < 0 ? "toward" : "away";
+}
+
+/** What the worker's cost model reads from the fixes: how far, which way,
+ * and how long a walk back. Never whether the phone is away
+ * (phonePosition says that). */
+export interface WalkTrend {
+  /** From the newest counting fix; null with none, or no car fix. */
+  distanceM: number | null;
+  heading: Heading;
+  walkEtaMin: number | null;
+  /** Of `fixes`, how many count (storedFixCounts), and how many don't. */
+  fixCount: number;
+  staleFixCount: number;
+}
+
+/**
+ * The trend over a session's newest fixes (newest first, as stored), read
+ * only from fixes that count: `since` is when the park was made (or the
+ * session started, with no park), on the same clock as the walk rules.
+ */
+export function walkTrend(
+  car: { lat: number; lng: number } | null,
+  fixes: StoredFix[],
+  since: Date,
+  at: Date,
+): WalkTrend {
+  const counting = fixes.filter((f) => storedFixCounts(since, f, at));
+  const distances =
+    car === null
+      ? []
+      : [...counting].reverse().map((f) => metersBetween(f.lat, f.lng, car.lat, car.lng));
+  const distanceM = distances.at(-1) ?? null;
+  return {
+    distanceM,
+    heading: headingFromDistances(distances),
+    walkEtaMin: distanceM === null ? null : (distanceM * ROUTE_FACTOR) / WALK_SPEED_M_PER_MIN,
+    fixCount: counting.length,
+    staleFixCount: fixes.length - counting.length,
+  };
 }
 
 // ------------------------------------------------------------ the prompt

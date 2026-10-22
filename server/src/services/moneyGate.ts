@@ -20,7 +20,7 @@ import { cityForZone, providerForCity, providerStatusUsable } from "../providers
 import { nycStartOfDay } from "./hours.js";
 import { policyFor } from "./limits.js";
 import { LINK_COMMITTED_STATUSES, linkSpentSince } from "./link/linkSpend.js";
-import { checkNewerPark } from "./pendingSession.js";
+import { checkNewerPark, phonePosition } from "./pendingSession.js";
 import type { Policy, PolicyService } from "./policy.js";
 import type { Principal } from "./principal.js";
 import type { StayPrice } from "./quote.js";
@@ -391,16 +391,17 @@ async function decide(
       }
       if (intent.underLock && intent.source === "auto") {
         // The worker buys time only for a phone known to be away (FR-55),
-        // and read that before it took the lock: a phone back within reach
-        // of the car since, or a car that parked somewhere else, buys
-        // nothing.
+        // and read that before it took the lock: asked again here, of the
+        // same reader (phonePosition), a phone back within reach of the car
+        // since, a car that parked somewhere else, or a phone gone quiet
+        // buys nothing.
         const park = await deps.db.pendingPark.findUnique({ where: { sessionId: session.id } });
-        if (
-          park &&
-          (park.status !== "started" || park.backAt !== null || park.carMovedAt !== null)
-        ) {
-          return refuse("phone_not_away");
-        }
+        const [newest] = await deps.db.locationFix.findMany({
+          where: { sessionId: session.id },
+          orderBy: { ts: "desc" },
+          take: 1,
+        });
+        if (phonePosition(park, newest ?? null, at) !== "away") return refuse("phone_not_away");
         // The belt (#246): the newest park since this one, read again.
         if (park && (await checkNewerPark(deps, park, at, "extension_gate"))) {
           return refuse("phone_not_away");

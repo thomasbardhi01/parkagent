@@ -20,11 +20,12 @@ import type { SessionRow } from "../db.js";
 import type { ExpiringReason, Push } from "../services/apns.js";
 import { reconnectToExtendPush, sessionExpiringPush } from "../services/apns.js";
 import { cityForZone, providerForCity } from "../providers/registry.js";
+import type { Heading, PhonePosition } from "../services/pendingSession.js";
 import {
-  AT_CAR_RADIUS_M,
-  FIX_USABLE_ACCURACY_M,
   checkNewerPark,
   clockLabel,
+  phonePosition,
+  walkTrend,
 } from "../services/pendingSession.js";
 import { cityPolicy } from "../services/policy.js";
 import type { SessionDeps } from "../services/sessions.js";
@@ -37,20 +38,13 @@ import { policyFor } from "../services/limits.js";
 const DECISION_WINDOW_MIN = 12; // only act when expiry is this close
 const MAX_STAY_WARN_MIN = 15; // "move your car" comes this long before the stay runs out
 const HYSTERESIS_MS = 5 * 60_000; // don't flip a fresh decision
-const WALK_SPEED_M_PER_MIN = 80; // ~4.8 km/h
-const ROUTE_FACTOR = 1.3; // straight-line → street grid
-const HEADING_NOISE_M = 15; // GPS jitter floor over the 3-fix window
 const MIN_EXTEND_MINUTES = 15;
 const TICKET_COST_MARGIN = 1.2; // extend only when ticket risk clearly wins
-const FIX_MAX_AGE_MS = 10 * 60_000; // older fixes say nothing about "now"
 const AT_CAR_ETA_MIN = 2; // within ~2 walking minutes = standing at the car
 
-export type Heading = "toward" | "away" | "still" | "unknown";
-
-/** Where the phone is, as far as buying more time goes. `moved`: a later
- * park put the car somewhere else. `back`: it left, then was back at the
- * car, and nothing since says it left on foot again (FR-55). */
-export type PhonePosition = "away" | "at_car" | "back" | "returned" | "moved" | "unknown";
+// Where the phone is, and the trend the cost model reads, are the
+// lifecycle's (services/pendingSession.ts: phonePosition, walkTrend).
+export type { Heading, PhonePosition };
 
 /** The max stay can't be bought past: say when the car has to move. */
 function moveYourCarPush(zoneNumber: string, paidUntil: Date): Push {
@@ -94,27 +88,6 @@ function backAtCarPush(zoneNumber: string, minutesLeft: number): Push {
     body: `Zone ${zoneNumber} expires in ${minutesLeft} min. Your phone was back at the car since you paid, so ParkAgent won't add time on its own. Extend in the app if the car is still there.`,
     extra: { reason: "back_at_car" },
   };
-}
-
-export function haversineM(aLat: number, aLng: number, bLat: number, bLng: number): number {
-  const R = 6_371_000;
-  const toRad = (deg: number) => (deg * Math.PI) / 180;
-  const dLat = toRad(bLat - aLat);
-  const dLng = toRad(bLng - aLng);
-  const s =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(aLat)) * Math.cos(toRad(bLat)) * Math.sin(dLng / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(s));
-}
-
-/** Trend of distance-to-car over the last fixes (chronological order). */
-export function headingFromDistances(distancesM: number[]): Heading {
-  if (distancesM.length < 2) return "unknown";
-  const first = distancesM[0]!;
-  const last = distancesM[distancesM.length - 1]!;
-  const delta = last - first;
-  if (Math.abs(delta) < HEADING_NOISE_M) return "still";
-  return delta < 0 ? "toward" : "away";
 }
 
 function quantile(sorted: number[], q: number): number {
@@ -231,38 +204,10 @@ export function makeExtender(deps: ExtenderDeps): Extender {
       return;
     }
 
-    // Where the driver is, relative to the car. A fix that's ten minutes
-    // old describes where they were, not where they are — stale fixes are
-    // dropped, and with none fresh the model falls back to dwell history
-    // (heading "unknown"), same as a phone that never reported.
-    const allFixes = await deps.db.locationFix.findMany({
-      where: { sessionId: session.id },
-      orderBy: { ts: "desc" },
-      take: 3,
-    });
-    const fixes = allFixes.filter((f) => at.getTime() - f.ts.getTime() <= FIX_MAX_AGE_MS);
-    const chronological = [...fixes].reverse();
-    const distances =
-      session.carLat !== null && session.carLng !== null
-        ? chronological.map((f) => haversineM(f.lat, f.lng, session.carLat!, session.carLng!))
-        : [];
-    const distanceM = distances.length > 0 ? distances[distances.length - 1]! : null;
-    const walkEtaMin =
-      distanceM !== null ? (distanceM * ROUTE_FACTOR) / WALK_SPEED_M_PER_MIN : null;
-    const heading = headingFromDistances(distances);
-
-    // Away from the car, at it, back at it, or unknown (FR-55). The
-    // lifecycle's own record says whether the phone ever left and whether
-    // it came back; the latest fresh fix says where it is now. Away always
-    // takes a fresh usable fix: a phone that left and has since gone quiet
-    // may be back in the car or driving off. With a lifecycle record it
-    // also takes the walk-away that record holds, and nothing since saying
-    // the phone came back to the car (`backAt`): a phone back in the seat
-    // may be driving off, slowly or in stop-and-go traffic, or sitting
-    // there with no new measurement to show for it. Only the phone's own
-    // walking speed or the app's on-foot report clears that. Without a
-    // record (an older build, a start through POST /session/start) a fresh
-    // fix clear of the car is all there is to go on.
+    // Where the driver is (FR-55), and the trend the cost model reads: both
+    // the lifecycle's, from its park row and the session's newest fixes on
+    // the phone's measurement clock (fixCountsFor). No park row is
+    // `unknown`: nothing is bought for a session the walk rules never saw.
     let park = await deps.db.pendingPark.findUnique({ where: { sessionId: session.id } });
     // The belt (#246): however this park came to hold its session, the
     // newest park since it says where the car is before anything is bought.
@@ -271,25 +216,21 @@ export function makeExtender(deps: ExtenderDeps): Extender {
         park = await deps.db.pendingPark.findUnique({ where: { sessionId: session.id } });
       }
     }
-    const latest = chronological.at(-1);
-    const sharp = latest !== undefined && latest.accuracyM <= FIX_USABLE_ACCURACY_M;
-    const away =
-      sharp &&
-      (park !== null
-        ? park.leftCarAt !== null && park.backAt === null
-        : distanceM !== null && distanceM - latest.accuracyM > AT_CAR_RADIUS_M);
-    const position: PhonePosition =
-      park?.status === "ended"
-        ? "returned"
-        : (park?.carMovedAt ?? null) !== null
-          ? "moved"
-          : sharp && distanceM !== null && distanceM <= AT_CAR_RADIUS_M
-            ? "at_car"
-            : park !== null && park.leftCarAt !== null && park.backAt !== null
-              ? "back"
-              : away
-                ? "away"
-                : "unknown";
+    const fixes = await deps.db.locationFix.findMany({
+      where: { sessionId: session.id },
+      orderBy: { ts: "desc" },
+      take: 3,
+    });
+    const position: PhonePosition = phonePosition(park, fixes[0] ?? null, at);
+    const trend = walkTrend(
+      session.carLat !== null && session.carLng !== null
+        ? { lat: session.carLat, lng: session.carLng }
+        : null,
+      fixes,
+      park?.parkedAt ?? startedAt,
+      at,
+    );
+    const { distanceM, heading, walkEtaMin } = trend;
 
     // How long they usually stay here.
     const past = await deps.db.session.findMany({
@@ -434,8 +375,8 @@ export function makeExtender(deps: ExtenderDeps): Extender {
     const inputs = {
       remainingMin: Math.round(remainingMin * 10) / 10,
       elapsedMin: Math.round(elapsedMin * 10) / 10,
-      fixCount: fixes.length,
-      staleFixCount: allFixes.length - fixes.length,
+      fixCount: trend.fixCount,
+      staleFixCount: trend.staleFixCount,
       distanceM: distanceM !== null ? Math.round(distanceM) : null,
       walkEtaMin: walkEtaMin !== null ? Math.round(walkEtaMin * 10) / 10 : null,
       heading,

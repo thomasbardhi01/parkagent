@@ -1709,8 +1709,10 @@ them missing the server logs and drops pushes instead of sending.
 
 Not an endpoint, but half the Phase 7 surface: an in-process job ticks
 every 60 s over active sessions. Per session it computes time remaining,
-straight-line×1.3 distance and walking ETA from the latest fix to the car,
-heading (toward/away/still from the last 3 fixes), P(return in time), and
+the lifecycle's walk trend (`walkTrend` in `services/pendingSession.ts`:
+straight-line×1.3 distance and walking ETA from the newest counting fix to
+the car, and heading, toward/away/still, over the last 3), P(return in
+time), and
 expected ticket cost `ticket_cost_usd × (1 − P)` vs the cost of extending
 to the P80 of predicted remaining dwell (dwell model v1: median of the
 user's past sessions at this zone, else `default_stay_minutes`).
@@ -1728,13 +1730,29 @@ all inputs; rules are `extend`, `extend_failed`, `warn_max_stay`,
 `hysteresis_hold`, and `expired` (bookkeeping when the meter ran out).
 
 It buys time only while the phone is known to be away from the car
-(FR-55). `inputs.position` is `away` (the lifecycle's record says the
-phone left, or the latest fresh fix is clear of the car), `at_car` (the
-latest fresh fix is within 30 m), `returned` (the lifecycle ended it), or
-`moved` (a later park put the car somewhere else), or `unknown`.
+(FR-55), and that is the lifecycle's to say (`phonePosition` in
+`services/pendingSession.ts`), the one reader the gate asks again under
+the extension lock. `inputs.position` is:
+- `away`: the park says the phone left (`left_car_at`) and nothing since
+  says it came back, and the newest fix is usable and counts, measured
+  within 5 minutes (`fixCountsFor`, on the fix's `measured_at`, else its
+  `ts`);
+- `at_car`: the park never saw the phone leave;
+- `back`: it left, then was back within reach of the car (`back_at`);
+- `returned`: the lifecycle ended it;
+- `moved`: a later park put the car somewhere else;
+- `unknown`: no park row (a session the walk rules never saw), a park not
+  `started`, or a phone that left and has sent no counting fix in 5
+  minutes.
+
+The trend only prices the cost rule, so a driver walking back with time
+to spare is still held (`hold_return_likely`). It never says the phone is
+away. The fixes it reads count on the same 5-minute clock.
 `hold_at_car` and `hold_returned` buy nothing and push nothing.
-`hold_position_unknown` and `hold_car_moved` buy nothing and push
-`session_expiring` once, with reason `position_unknown` or `car_moved`. Near the zone's max stay the worker warns
+`hold_position_unknown`, `hold_back_at_car` and `hold_car_moved` buy
+nothing and push `session_expiring` once, with reason `position_unknown`,
+`back_at_car` or `car_moved`. A phone that has gone quiet near expiry is
+told so (`position_unknown`), and nothing is bought for it. Near the zone's max stay the worker warns
 instead of extending: `warn_max_stay` fires 15 minutes before the paid
 stay runs out, whatever the position.
 

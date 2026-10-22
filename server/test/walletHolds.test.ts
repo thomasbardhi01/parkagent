@@ -36,6 +36,7 @@ import {
   seedFundingMethod,
   seedHold,
   seedProviderAccount,
+  seedAwayPark,
   seedSession,
   setFakeRowClock,
 } from "./helpers.js";
@@ -898,6 +899,11 @@ describe("the auto-extend worker", () => {
         ts: new Date(NOW.getTime() - (2 - i) * 60_000),
       })),
     );
+    // The park its walk-away left: "away" is the lifecycle's.
+    seedAwayPark(
+      t.state,
+      t.state.sessions.find((s) => s.id === "s-auto")!,
+    );
     const extender = makeExtender({
       db: t.deps.db,
       policy: t.deps.policy,
@@ -956,6 +962,11 @@ describe("one extension at a time per session", () => {
         accuracyM: 10,
         ts: new Date(NOW.getTime() - (2 - i) * 60_000),
       })),
+    );
+    // The park its walk-away left: "away" is the lifecycle's.
+    seedAwayPark(
+      t.state,
+      t.state.sessions.find((s) => s.id === "s-race")!,
     );
     return session;
   }

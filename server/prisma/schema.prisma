@@ -490,6 +490,9 @@ model LocationFix {
   lng       Float
   accuracyM Float    @map("accuracy_m")
   ts        DateTime @db.Timestamptz(6)
+  // When the phone measured it (its measuredAt, else ts): the lifecycle's
+  // clock. Null on rows from before it was stored; readers use ts then.
+  measuredAt DateTime? @map("measured_at") @db.Timestamptz(6)
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   session Session @relation(fields: [sessionId], references: [id])

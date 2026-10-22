@@ -16,6 +16,7 @@ import {
   HOURS_MON_SAT,
   NONADMIN_API_KEY,
   makeTestApp,
+  seedAwayPark,
   seedProviderAccount,
   seedSession,
 } from "./helpers.js";
@@ -97,6 +98,8 @@ describe("the gate under the extension lock", () => {
     const t = makeTestApp({ policy: CAPS, envDryRun: false, now: () => T("14:20") });
     const extender = makeExtender({ ...t.deps, log: { info() {}, warn() {} } });
     const session = activeSession(t.state, "u2", T("14:30"));
+    // The park its walk-away left: "away" is the lifecycle's (phonePosition).
+    seedAwayPark(t.state, session);
     // The driver is far away and walking further: the cost rule extends.
     [100, 300, 600].forEach((m, i) =>
       t.state.locationFixes.push({
@@ -106,7 +109,7 @@ describe("the gate under the extension lock", () => {
         lat: 40.7702 + m / 111_320,
         lng: -73.9077,
         accuracyM: 10,
-        ts: new Date(T("14:10").getTime() + i * 60_000),
+        ts: new Date(T("14:16").getTime() + i * 60_000),
       }),
     );
     spendUnderLock(t, "u2", 16);
@@ -159,6 +162,8 @@ describe("the gate under the extension lock", () => {
     const t = makeTestApp({ policy: CAPS, envDryRun: false, now: () => T("14:20") });
     const extender = makeExtender({ ...t.deps, log: { info() {}, warn() {} } });
     const session = activeSession(t.state, "u2", T("14:30"));
+    // The park its walk-away left: "away" is the lifecycle's (phonePosition).
+    seedAwayPark(t.state, session);
     [100, 300, 600].forEach((m, i) =>
       t.state.locationFixes.push({
         id: `f-${i}`,
@@ -167,7 +172,7 @@ describe("the gate under the extension lock", () => {
         lat: 40.7702 + m / 111_320,
         lng: -73.9077,
         accuracyM: 10,
-        ts: new Date(T("14:10").getTime() + i * 60_000),
+        ts: new Date(T("14:16").getTime() + i * 60_000),
       }),
     );
     spendUnderLock(t, "u2", Number.NaN);

@@ -359,6 +359,17 @@ export interface SignCheckRow {
   acceptedAt: Date | null;
 }
 
+/** A running session's stored fix (POST /location). */
+export interface LocationFixRow {
+  lat: number;
+  lng: number;
+  accuracyM: number;
+  /** The phone's clock when it sent the fix. */
+  ts: Date;
+  /** When the phone measured it; null on rows stored before the column. */
+  measuredAt: Date | null;
+}
+
 export interface PendingParkRow {
   id: string;
   userId: string;
@@ -1589,13 +1600,14 @@ export interface AppDb {
         lng: number;
         accuracyM: number;
         ts: Date;
+        measuredAt: Date;
       };
     }): Promise<{ id: string }>;
     findMany(args: {
       where: { sessionId: string };
       orderBy: { ts: "desc" };
       take: number;
-    }): Promise<{ lat: number; lng: number; accuracyM: number; ts: Date }[]>;
+    }): Promise<LocationFixRow[]>;
   };
   /** Every fix a park read or refused (its trace; kept 30 days). */
   parkFix: {

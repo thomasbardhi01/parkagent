@@ -23,7 +23,7 @@ import type {
   planSchema,
   searchSchema,
 } from "../routes/agentSchemas.js";
-import { explainSchema } from "../routes/agentSchemas.js";
+import { recordId } from "../routes/ids.js";
 import type { SingleSpotPlan } from "./assistant/plans.js";
 import { applyPatch, emptyState } from "./assistant/requestState.js";
 import type { RequestState } from "./assistant/requestState.js";
@@ -106,10 +106,12 @@ function refusalAnswer(refusal: ConfirmRefusal): {
 export type AgentActions = ReturnType<typeof agentActions>;
 
 /** An id the agent sent (a path's or an MCP resource URI's), parsed as
- * the why's decisionId is: anything else (a NUL is a Postgres error) is a
- * 400 before the database, never a 500. Null when it is one. */
-function notAnId(id: string): AgentAnswer | null {
-  const parsed = explainSchema.shape.decisionId.safeParse(id);
+ * every path id is (routes/ids.ts recordId), after the key's scope:
+ * anything else (a NUL is a Postgres error) is a 400 before the database,
+ * never a 500, its tree naming the param as a route's does. Null when it
+ * is one. */
+function notAnId(name: string, id: string): AgentAnswer | null {
+  const parsed = z.object({ [name]: recordId }).safeParse({ [name]: id });
   return parsed.success ? null : no(400, { error: z.treeifyError(parsed.error) });
 }
 
@@ -334,7 +336,7 @@ export function agentActions(deps: AppDeps) {
       // The id before anything, the ledger included: a refusal's row
       // carries the plan id, and a NUL there (Postgres won't store one in
       // JSON) lost the row and answered 500.
-      const bad = notAnId(planId);
+      const bad = notAnId("planId", planId);
       if (bad) return bad;
       const at = now();
       const decide = (rule: string, outcome: Record<string, unknown>) =>
@@ -424,7 +426,7 @@ export function agentActions(deps: AppDeps) {
      * the read scope is refused before anything is read. */
     async getPlan(principal: Principal, planId: string): Promise<AgentAnswer> {
       if (!principal.scopes.has("read")) return no(403, { error: "scope_required", scope: "read" });
-      const bad = notAnId(planId);
+      const bad = notAnId("planId", planId);
       if (bad) return bad;
       const row = await deps.db.assistantPlan.findUnique({ where: { id: planId } });
       if (!row || row.userId !== principal.userId) return no(404, { error: "plan_not_found" });
@@ -457,7 +459,7 @@ export function agentActions(deps: AppDeps) {
      * getPlan is. */
     async getPark(principal: Principal, parkId: string): Promise<AgentAnswer> {
       if (!principal.scopes.has("read")) return no(403, { error: "scope_required", scope: "read" });
-      const bad = notAnId(parkId);
+      const bad = notAnId("parkId", parkId);
       if (bad) return bad;
       const row = await deps.db.pendingPark.findUnique({ where: { id: parkId } });
       if (!row || row.userId !== principal.userId) return no(404, { error: "park_not_found" });

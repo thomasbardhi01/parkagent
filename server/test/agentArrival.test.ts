@@ -375,5 +375,31 @@ describe("the start of a bound park names the agent key on its decisions", () =>
     const rows = startRows(t);
     expect(rows.length).toBeGreaterThan(0);
     for (const row of rows) expect(row.agentKeyId ?? null, `${row.kind}:${row.rule}`).toBeNull();
+describe("an agent-bound park and a walk said at the car's door (#264)", () => {
+  test("a left_car at the door, then one fix off it: asked, never paid without a tap", async () => {
+    const t = makeApp();
+    seedAgentPlan(t.state, { priceUsd: STEINWAY_HOUR_USD });
+    const held = await park(t);
+    const post = (body: object) =>
+      t.app.inject({ method: "POST", url: "/location", headers: U1, payload: body });
+    t.tick(30);
+    await post(fix(t, 8, { accuracy: 10, event: "left_car", speedMps: 0 }));
+    t.tick(60);
+    await post(fix(t, 35, { accuracy: 20, speedMps: 0 }));
+    expect(t.state.pendingParks.find((p) => p.id === held.id)!.status).toBe("prompted");
+    expect(t.state.sessions).toHaveLength(0);
+  });
+
+  test("a left_car at the door, then the app's left_car again from a car pulling away (no speed): nothing pays (A2)", async () => {
+    const t = makeApp();
+    seedAgentPlan(t.state, { priceUsd: STEINWAY_HOUR_USD });
+    await park(t);
+    const post = (body: object) =>
+      t.app.inject({ method: "POST", url: "/location", headers: U1, payload: body });
+    t.tick(30);
+    await post(fix(t, 6, { accuracy: 5, event: "left_car" }));
+    t.tick(25);
+    await post(fix(t, 150, { accuracy: 20, event: "left_car" }));
+    expect(t.state.sessions).toHaveLength(0);
   });
 });

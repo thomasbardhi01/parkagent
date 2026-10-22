@@ -1249,10 +1249,18 @@ and isn't at driving speed is a walk-away, but one read like a walk-away by
 distance (`fix_away`), never the app's word. So a Pay tapped at the car is
 asked again (`prompted`), and only that second tap pays: a false walking
 reading in the seat followed by one blurry seat fix must never start it.
-A fix within 30 m of the car, a driving-speed fix, a fix that moved faster
-than anyone walks since the walk was said (`(distance − accuracy − 10 m) /
-seconds since > 3 m/s`, whatever the fix's own speed says), or
-`returned_to_car` forgets it. Its trace row says why it didn't count (`rejected:
+A fix within 30 m of the car measured since the walk was said, a
+driving-speed fix, a usable fix that moved faster than anyone walks since
+the walk was said on a usable fix (`(distance − accuracy − 10 m) / seconds
+since > 3 m/s`, whatever the fix's own speed says), or `returned_to_car`
+forgets it. A fix too blurry to read never does. The app's `left_car`
+again, off the door but at that pace (a car pulling away while CoreMotion's
+newest confident reading is still the walk), isn't taken either: the walk
+stays kept, and the next fix forgets it. The pace is measured from the
+door fix's measurement, and the app's `left_car` rides its last fix, which
+can be minutes old, so a drive-off with no speed can still read as a
+walk-away by distance after one. That only asks again: a tap is what
+pays. Its trace row says why it didn't count (`rejected:
 "may_be_at_door"`). After the walk-away, the app's `left_car` clears
 `back_at` only on a fix that can't be at the door. A fix whose `speedMps` is
 over 3 m/s is a moving car: it never counts toward leaving (its
@@ -2752,7 +2760,7 @@ to five example park (`parkedEventId`) or session ids:
 | Invariant | Severity | Fires when |
 |---|---|---|
 | `extended_at_car` | high | an `extend_tick` row extended with `position` other than `away` |
-| `confirmed_started_without_left_car` | high | a walk-away start of a Pay tapped at the car had no `left_car`, on its fix or on any fix the park kept before it |
+| `confirmed_started_without_left_car` | high | a walk-away start of a Pay tapped at the car had no `left_car` that counts: on its own fix one whose error doesn't reach the car's door, or a readable one the park kept before it |
 | `dry_run_mismatch` | high | a walk-away start's dry run differs from the prompt's (`shownDryRun`) |
 | `starting_too_long` | medium | a start timed out, was swept (`start_stale`), was adopted late, or is still `starting` past 3 minutes |
 | `transition_skipped` | medium | a paid, held park's decisions lack `street_pending`, `street_confirmed`, or its start |

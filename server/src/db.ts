@@ -388,6 +388,7 @@ export interface PendingParkRow {
   driveDistanceM: number | null;
   driveSpeedMps: number | null;
   walkSaidAt: Date | null;
+  walkSaidUsable: boolean | null;
   promptedAt: Date | null;
   confirmedAt: Date | null;
   startingAt: Date | null;
@@ -415,6 +416,7 @@ export interface PendingParkWrite {
   driveDistanceM?: number | null;
   driveSpeedMps?: number | null;
   walkSaidAt?: Date | null;
+  walkSaidUsable?: boolean | null;
   carMovedAt?: Date | null;
   promptedAt?: Date | null;
   confirmedAt?: Date | null;

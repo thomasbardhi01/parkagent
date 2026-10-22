@@ -24,6 +24,7 @@ import {
   whyBody,
 } from "../services/capabilities/explainDecision.js";
 import { normalizeSource } from "../services/wallet/summary.js";
+import { explainSchema } from "./agentSchemas.js";
 
 const patchMeSchema = z.object({
   name: z.string().min(1).max(100).optional(),
@@ -94,8 +95,15 @@ export function registerMe(app: FastifyInstance, deps: AppDeps): void {
    * timeline's "Why?". The reason as data and the sentence to show,
    * phrased when EXPLAIN_MODEL is on; another person's is not there. */
   app.get("/me/decisions/:decisionId/why", { preHandler: limitWhy }, async (req, reply) => {
-    const { decisionId } = req.params as { decisionId: string };
-    const out = await explainDecision(explainDepsFor(deps), req.principal!, { decisionId });
+    // The id as every "why" takes it (the agent's and MCP's too): anything
+    // else (a NUL is a Postgres error) is a 400, never a 500.
+    const parsed = explainSchema.shape.decisionId.safeParse(
+      (req.params as { decisionId: string }).decisionId,
+    );
+    if (!parsed.success) return reply.code(400).send({ error: z.treeifyError(parsed.error) });
+    const out = await explainDecision(explainDepsFor(deps), req.principal!, {
+      decisionId: parsed.data,
+    });
     if (!out.ok) return reply.code(404).send({ error: "decision_not_found" });
     return whyBody(out);
   });

@@ -11,6 +11,7 @@
  * (services/agentActions.ts), run as that key's principal, through the
  * same mandate and the one money gate, with the same per-key budget:
  * a refusal is a tool error (`isError`) carrying the REST code.
+ * explain_decision is the REST "why" (GET /agent/decisions/{id}/why).
  *
  * Nothing pays. propose_plan hands back the plan id and the one-time
  * confirmToken (the mandate) as ordinary result fields; confirm_plan takes
@@ -31,7 +32,7 @@ import {
   ResourceNotFoundError,
   ResourceTemplate,
 } from "@modelcontextprotocol/server";
-import type { FastifyInstance } from "fastify";
+import type { FastifyBaseLogger, FastifyInstance } from "fastify";
 import { z } from "zod";
 
 import type { AppDeps } from "../app.js";
@@ -41,7 +42,7 @@ import type { Principal } from "../services/principal.js";
 import { currentTraceId, runAs, traceIdFrom } from "../services/principal.js";
 import { agentKeyBucket, makeRateLimiter } from "../services/rateLimit.js";
 import type { AgentLimit } from "./agent.js";
-import { AGENT_TOOLS, confirmSchema } from "./agentSchemas.js";
+import { AGENT_TOOLS, confirmSchema, explainSchema } from "./agentSchemas.js";
 import { CONFIRM_CARD_HTML, CONFIRM_CARD_MIME, CONFIRM_CARD_URI } from "./mcpConfirmCard.js";
 
 export const MCP_SERVER_INFO = { name: "parkagent", version: "1.0.0" } as const;
@@ -56,6 +57,9 @@ export const MCP_REQUESTS_PER_MINUTE = 600;
  * `{error: "rate_limited", retryAfterS}` as its data. */
 export const RATE_LIMITED_CODE = -32029;
 
+/** JSON-RPC's own "internal error": a resource read that threw. */
+const INTERNAL_ERROR_CODE = -32603;
+
 /** What a host may cache tools/list for: five minutes, this key only. */
 const TOOLS_LIST_CACHE = { ttlMs: 300_000, cacheScope: "private" } as const;
 
@@ -69,15 +73,29 @@ const mcpConfirmSchema = z.strictObject({
   confirmToken: confirmSchema.shape.confirmToken,
 });
 
-type ToolName = (typeof AGENT_TOOLS)[number]["name"];
+/** The six agent tools, then explain_decision: over REST that one is
+ * GET /agent/decisions/{decisionId}/why, a read with no body, so it is not
+ * one of AGENT_TOOLS (the POST routes OpenAPI and grok-tool.json list). */
+const MCP_TOOLS = [
+  ...AGENT_TOOLS,
+  {
+    name: "explain_decision",
+    route: "/agent/decisions/{decisionId}/why",
+    description:
+      "Why a decision came out as it did, by the decisionId a confirm or a refusal answered with: the reason as data (what happened, the facts behind it, what the user can do) and a sentence to show. The user's own decisions only. Read-only.",
+    schema: explainSchema,
+  },
+] as const;
 
-/** The tools, in the declared order (AGENT_TOOLS): tools/list answers
- * them in exactly this order. */
+type ToolName = (typeof MCP_TOOLS)[number]["name"];
+
+/** The tools, in the declared order (MCP_TOOLS): tools/list answers them
+ * in exactly this order. */
 const TOOLS: {
   name: ToolName;
   schema: z.ZodType;
   run: (actions: AgentActions, principal: Principal, args: never) => Promise<AgentAnswer>;
-}[] = AGENT_TOOLS.map((tool) => ({
+}[] = MCP_TOOLS.map((tool) => ({
   name: tool.name,
   schema: tool.name === "confirm_plan" ? mcpConfirmSchema : tool.schema,
   run: (actions, principal, args) => {
@@ -96,12 +114,16 @@ const TOOLS: {
         const { planId, confirmToken } = args as z.infer<typeof mcpConfirmSchema>;
         return actions.confirm(principal, planId, confirmToken);
       }
+      case "explain_decision": {
+        const { decisionId } = args as z.infer<typeof explainSchema>;
+        return actions.why(principal, decisionId);
+      }
     }
   },
 }));
 
 const describe = (name: ToolName): string => {
-  const base = AGENT_TOOLS.find((t) => t.name === name)!.description;
+  const base = MCP_TOOLS.find((t) => t.name === name)!.description;
   return name === "propose_plan" || name === "confirm_plan" ? base + RULES : base;
 };
 
@@ -133,6 +155,7 @@ export function buildMcpServer(
   limit: AgentLimit,
   actions: AgentActions,
   principal: Principal,
+  log: FastifyBaseLogger,
 ): McpServer {
   const server = new McpServer(MCP_SERVER_INFO, {
     cacheHints: { "tools/list": TOOLS_LIST_CACHE },
@@ -150,6 +173,14 @@ export function buildMcpServer(
     return runAs(principal, work, traceOf(ctx));
   };
 
+  /** A call that threw (a Prisma error, say): logged here, answered as
+   * REST's 500. The SDK would hand the agent the error's own text, which
+   * names the query and the build's paths, and log nothing. */
+  const failed = (err: unknown, what: string): AgentAnswer => {
+    log.error({ err, mcp: what }, "mcp: call failed");
+    return { status: 500, body: { error: "internal" } };
+  };
+
   for (const tool of TOOLS) {
     const cardMeta = tool.name === "propose_plan" && deps.mcpApps;
     server.registerTool(
@@ -160,21 +191,25 @@ export function buildMcpServer(
         ...(cardMeta ? { _meta: { ui: { resourceUri: CONFIRM_CARD_URI } } } : {}),
       },
       async (args: unknown, ctx: ServerContext) => {
-        const answer = await call(ctx, () => tool.run(actions, principal, args as never));
-        const result = resultOf(answer);
-        if (!cardMeta || answer.status !== 200 || !answer.body["confirmToken"]) return result;
-        // The card shows the caps the confirm is checked against.
-        const policy = await policyFor(deps, principal.userId);
-        return {
-          ...result,
-          _meta: {
-            ui: { resourceUri: CONFIRM_CARD_URI },
-            "io.parkagent/caps": {
-              sessionCapUsd: policy.session_cap_usd,
-              dailyCapUsd: policy.daily_cap_usd,
+        try {
+          const answer = await call(ctx, () => tool.run(actions, principal, args as never));
+          const result = resultOf(answer);
+          if (!cardMeta || answer.status !== 200 || !answer.body["confirmToken"]) return result;
+          // The card shows the caps the confirm is checked against.
+          const policy = await policyFor(deps, principal.userId);
+          return {
+            ...result,
+            _meta: {
+              ui: { resourceUri: CONFIRM_CARD_URI },
+              "io.parkagent/caps": {
+                sessionCapUsd: policy.session_cap_usd,
+                dailyCapUsd: policy.daily_cap_usd,
+              },
             },
-          },
-        };
+          };
+        } catch (err) {
+          return resultOf(failed(err, tool.name));
+        }
       },
     );
   }
@@ -190,7 +225,13 @@ export function buildMcpServer(
       { mimeType: "application/json" },
       async (uri, variables, ctx) => {
         const id = String(variables["id"] ?? "");
-        const answer = await call(ctx, () => read(principal, id));
+        let answer: AgentAnswer;
+        try {
+          answer = await call(ctx, () => read(principal, id));
+        } catch (err) {
+          failed(err, name);
+          throw new ProtocolError(INTERNAL_ERROR_CODE, "internal");
+        }
         if (answer.status === 429) {
           // Over the key's budget: said as such, not as a missing resource.
           throw new ProtocolError(RATE_LIMITED_CODE, "rate_limited", answer.body);
@@ -228,7 +269,7 @@ export function registerMcp(
   actions: AgentActions,
 ): void {
   const handler = createMcpHandler(
-    ({ authInfo }) => buildMcpServer(deps, limit, actions, principalOf(authInfo?.extra)),
+    ({ authInfo }) => buildMcpServer(deps, limit, actions, principalOf(authInfo?.extra), app.log),
     {
       legacy: "stateless",
       // subscriptions/listen is refused before the SDK (below); this only

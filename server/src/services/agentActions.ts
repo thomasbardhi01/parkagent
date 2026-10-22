@@ -30,6 +30,7 @@ import type { SearchResult } from "./assistant/search.js";
 import { buildItinerary } from "./capabilities/buildItinerary.js";
 import type { ConfirmRefusal } from "./capabilities/confirmPlan.js";
 import { consumeConfirmation } from "./capabilities/confirmPlan.js";
+import { explainDecision, explainDepsFor, whyBody } from "./capabilities/explainDecision.js";
 import { geocodePlace } from "./capabilities/geocodePlace.js";
 import { proposePlan } from "./capabilities/proposePlan.js";
 import { quoteStreet, searchGarages } from "./capabilities/search.js";
@@ -413,6 +414,18 @@ export function agentActions(deps: AppDeps) {
         confirmedOptionId: row.confirmedOptionId ?? null,
         boundAt: row.boundAt?.toISOString() ?? null,
       });
+    },
+
+    /** Why one of the person's decisions came out as it did (Issue M): the
+     * reason and its sentence, phrased when EXPLAIN_MODEL is on. Another
+     * person's is not there (an agent never has the person's admin rights).
+     * It reads the ledger, not the capabilities, so it answers with the
+     * assistant off. */
+    async why(principal: Principal, decisionId: string): Promise<AgentAnswer> {
+      if (!principal.scopes.has("read")) return no(403, { error: "scope_required", scope: "read" });
+      const out = await explainDecision(explainDepsFor(deps), principal, { decisionId });
+      if (!out.ok) return no(404, { error: "decision_not_found" });
+      return ok(whyBody(out));
     },
 
     /** A park the phone reported, by id: its status only. */

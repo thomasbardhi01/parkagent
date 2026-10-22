@@ -79,6 +79,8 @@ function seedAgentPlan(
     priceUsd?: number;
     expiresInMs?: number;
     dryRun?: boolean | null;
+    /** The request's intent, as the card's summary says; null: none. */
+    intent?: "park_now" | "park_later" | "garage_or_lot" | null;
   } = {},
 ) {
   const userId = opts.userId ?? "u1";
@@ -98,6 +100,7 @@ function seedAgentPlan(
           durationMinutes: 60,
         },
       ],
+      ...(opts.intent === null ? {} : { requestSummary: { intent: opts.intent ?? "park_now" } }),
     },
     createdAt: NOW,
     confirmedAt: NOW,
@@ -235,6 +238,18 @@ describe("binding the phone's park to an agent's confirmed spot", () => {
     const t = makeApp();
     seedAgentPlan(t.state, { userId: "u2" });
     expect((await park(t)).status).toBe("at_car");
+    expect(bound(t)).toBeNull();
+  });
+
+  test.each([
+    ["for later (park_later): priced and consented for a window not yet begun", "park_later"],
+    ["for a garage or lot", "garage_or_lot"],
+    ["with no intent on its card", null],
+  ] as const)("a plan %s binds nothing: the ordinary prompt", async (_label, intent) => {
+    const t = makeApp();
+    seedAgentPlan(t.state, { intent });
+    const held = await park(t);
+    expect(held.status).toBe("at_car");
     expect(bound(t)).toBeNull();
   });
 

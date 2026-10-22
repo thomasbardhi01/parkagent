@@ -143,8 +143,12 @@ export interface AgentBinding {
  * zone must be that zone; the plan not yet bound and confirmed within the
  * mandate's window; its mandate an agent's, consumed, unexpired, and
  * minted under the dry run in force now (what the agent was shown is what
- * runs). The newest such plan wins. Pure read: the caller binds (once,
- * by CAS).
+ * runs). And the plan must be one for parking now (its request's intent
+ * `park_now`): a plan for later was priced, and consented to, for a window
+ * that hasn't begun, and its mandate (10 minutes) expires before a
+ * `park_later` window (more than 15 minutes out) opens, so a park now never
+ * binds to it. A plan that says no intent binds nothing. The newest such
+ * plan wins. Pure read: the caller binds (once, by CAS).
  */
 export async function agentBindingFor(
   db: Pick<AppDb, "assistantPlan" | "mandate">,
@@ -162,6 +166,8 @@ export async function agentBindingFor(
     .filter((p) => p.kind === "single_spot" && p.conversationId.startsWith("agent:"))
     .sort((a, b) => (b.confirmedAt?.getTime() ?? 0) - (a.confirmedAt?.getTime() ?? 0));
   for (const plan of plans) {
+    const intent = (plan.plan as { requestSummary?: { intent?: unknown } }).requestSummary?.intent;
+    if (intent !== "park_now") continue;
     const options = (plan.plan as { options?: unknown }).options;
     const option = Array.isArray(options)
       ? (

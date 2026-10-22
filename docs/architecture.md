@@ -84,7 +84,7 @@ flowchart LR
   AUD -. "reads sessions · pending_parks · park_fixes" .-> DB & PF
   AUD -. "AUDIT_SUMMARY: findings only, grounded" .-> AN
   AT -. "agent confirm: pending_arrival" .-> PLAN
-  R1 -- "/parked in the plan's zone (as /parked resolves it), in the window, same dry run: held confirmed, pays on left_car" --> PLAN
+  R1 -- "/parked in the plan's zone (as /parked resolves it), in the window, same dry run, a plan for now (park_now): held confirmed, pays on left_car" --> PLAN
   R1 & R2 & R3 -. "request spans" .-> OT
   AT -. "invoke_agent · chat · execute_tool (no words)" .-> OT
   GATE -. "money_gate span" .-> OT

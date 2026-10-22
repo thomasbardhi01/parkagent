@@ -141,7 +141,8 @@ flowchart LR
   C3 -- "consume once" --> MAND
   APP -- "Confirm tap: mint" --> MAND
   C3 --> GATE
-  GATE -- "street, start now" --> LIFE
+  C3 -. "street: pending_arrival (consent + cap, no park)" .-> LIFE
+  APP -- "/parked: the only arrival" --> LIFE
   LIFE --> GATE
   GATE --> EXE
   GATE --> DEC

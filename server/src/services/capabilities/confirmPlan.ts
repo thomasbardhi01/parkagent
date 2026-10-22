@@ -3,6 +3,9 @@
 
 import type { SingleSpotPlan } from "../assistant/plans.js";
 import type { Principal } from "../principal.js";
+import type { MandateRefusal } from "../mandates.js";
+import { claimMandate, planUnchanged, readMandate } from "../mandates.js";
+import { moneyGate } from "../moneyGate.js";
 import { num, audit } from "./turn.js";
 import type { CapabilityDeps, TurnState, ToolOutcome } from "./turn.js";
 
@@ -29,19 +32,26 @@ export async function consumeConfirmation(
       },
     };
   };
+  const now = deps.now?.() ?? new Date();
+  // Who is acting, before the token is even read: an external agent acts
+  // only for a person who said it may (the gate's consent rule).
+  const gate = await moneyGate(deps, principal, { kind: "confirm" }, now);
+  if (!gate.ok) {
+    await audit(deps, principal, turn, tool, input, gate.rule, {});
+    return { ok: false, result: { error: gate.rule } };
+  }
   if (typeof token !== "string" || token.length === 0) {
     return refusal("no confirmation_token was provided");
   }
-  const row = await deps.db.assistantConfirmation.findUnique({ where: { token } });
-  if (!row || row.userId !== principal.userId)
-    return refusal("the confirmation token is not valid");
-  if (row.usedAt !== null) return refusal("the confirmation token was already used");
-  const now = deps.now?.() ?? new Date();
-  if (row.expiresAt.getTime() <= now.getTime()) {
-    return refusal("the confirmation token expired — propose the plan again");
-  }
-  // The token authorizes the option that was tapped, not "a" booking.
+  // The mandate is read once, to learn which option it names, and
+  // claimed once the input matches that option: the token authorizes the
+  // option that was tapped, not "a" booking.
+  const mandates = { db: deps.db, pepper: deps.apiKeyPepper };
+  const read = await readMandate(mandates, principal, token, now);
+  if (!read.ok) return refusal(refusalWords(read.reason));
+  const row = read.row;
   const planRow = await deps.db.assistantPlan.findUnique({ where: { id: row.planId } });
+  if (planRow && !planUnchanged(row, planRow.plan)) return refusal(refusalWords("plan_changed"));
   const option =
     planRow?.kind === "single_spot"
       ? (planRow.plan as SingleSpotPlan).options.find((o) => o.id === row.optionId)
@@ -55,12 +65,25 @@ export async function consumeConfirmation(
         String(input["zone"]) === option.zoneId &&
         num(input["duration_minutes"]) === option.durationMinutes);
   if (!matches) return refusal("the confirmation token is for a different option");
-  const claimed = await deps.db.assistantConfirmation.updateMany({
-    where: { token, usedAt: null, expiresAt: { gt: now } },
-    data: { usedAt: now },
-  });
-  if (claimed.count !== 1) return refusal("the confirmation token was already used");
-  return { ok: true, planId: row.planId, optionId: row.optionId };
+  const claimed = await claimMandate(mandates, row, now);
+  if (!claimed.ok) return refusal(refusalWords(claimed.reason));
+  return { ok: true, planId: claimed.planId, optionId: claimed.optionId };
+}
+
+/** What the model is told when a mandate can't be consumed. */
+function refusalWords(reason: MandateRefusal): string {
+  switch (reason) {
+    case "used":
+      return "the confirmation token was already used";
+    case "expired":
+      return "the confirmation token expired — propose the plan again";
+    case "plan_changed":
+      return "the plan changed since it was confirmed — propose it again";
+    case "scope":
+      return "this key may not confirm";
+    case "not_valid":
+      return "the confirmation token is not valid";
+  }
 }
 
 export async function bookGarage(

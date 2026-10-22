@@ -415,6 +415,34 @@ export interface UserIdentityRow {
   createdAt: Date;
 }
 
+/** The one mandate (services/mandates.ts): `token` is the hash. */
+export interface MandateRow {
+  token: string;
+  userId: string;
+  planId: string;
+  optionId: string | null;
+  agentKeyId: string | null;
+  planHash: string | null;
+  scopes: string[];
+  capsSnapshot: unknown;
+  expiresAt: Date;
+  consumedAt: Date | null;
+  createdAt: Date;
+}
+
+/** A person's key for an external agent; `hash` is all that identifies it. */
+export interface AgentKeyRow {
+  id: string;
+  userId: string;
+  prefix: string;
+  hash: string;
+  scopes: string[];
+  label: string;
+  createdAt: Date;
+  lastUsedAt: Date | null;
+  revokedAt: Date | null;
+}
+
 /** A tombstoned account whose Apple token still needs revoking. */
 export interface PendingAppleRevocationRow {
   id: string;
@@ -901,30 +929,39 @@ export interface AppDb {
       data: { confirmedAt: Date; confirmedOptionId: string | null };
     }): Promise<unknown>;
   };
-  assistantConfirmation: {
+  mandate: {
     create(args: {
       data: {
+        /** The token's hash, never the token. */
         token: string;
         userId: string;
         planId: string;
         optionId: string | null;
+        agentKeyId: string | null;
+        planHash: string | null;
+        scopes: string[];
+        capsSnapshot: Record<string, unknown> | null;
         expiresAt: Date;
       };
     }): Promise<unknown>;
-    findUnique(args: { where: { token: string } }): Promise<{
-      token: string;
-      userId: string;
-      planId: string;
-      optionId: string | null;
-      expiresAt: Date;
-      usedAt: Date | null;
-    } | null>;
-    /** The single-use claim: matches only an unused, unexpired token, so
-     * of two concurrent claims exactly one sees count 1. */
+    findUnique(args: { where: { token: string } }): Promise<MandateRow | null>;
+    /** The single-use claim: matches only an unconsumed, unexpired
+     * mandate, so of two concurrent claims exactly one sees count 1. */
     updateMany(args: {
-      where: { token: string; usedAt: null; expiresAt: { gt: Date } };
-      data: { usedAt: Date };
+      where: { token: string; consumedAt: null; expiresAt: { gt: Date } };
+      data: { consumedAt: Date };
     }): Promise<{ count: number }>;
+  };
+  agentKey: {
+    create(args: {
+      data: { userId: string; prefix: string; hash: string; scopes: string[]; label: string };
+    }): Promise<AgentKeyRow>;
+    findUnique(args: { where: { hash: string } | { id: string } }): Promise<AgentKeyRow | null>;
+    findMany(args: { where: { userId: string } }): Promise<AgentKeyRow[]>;
+    update(args: {
+      where: { id: string };
+      data: { lastUsedAt?: Date; revokedAt?: Date };
+    }): Promise<AgentKeyRow>;
   };
   itinerary: {
     create(args: {

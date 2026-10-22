@@ -126,14 +126,20 @@ flowchart LR
   LIFE["Park lifecycle<br/>pending_parks · arrival from phone only"]
   EXE["Executor · providers"]
   DEC[("decisions<br/>actor · agent_key_id · trace_id")]
+  KEYS[("agent_keys<br/>pak_ hash · scopes · revoked_at")]
+  MAND[("mandates<br/>token hash · plan_hash · scopes · caps · consumed_at")]
 
   APP --> P
   LOOP --> P
-  GROK -- "Bearer pak_" --> P
+  GROK -- "Bearer pak_ (agent_keys)" --> P
   CL -- "Bearer pak_" --> P
   SIRI -.-> P
   P --> C1 & C2 & C3
   P --> C4
+  P -.- KEYS
+  C2 -- "mint" --> MAND
+  C3 -- "consume once" --> MAND
+  APP -- "Confirm tap: mint" --> MAND
   C3 --> GATE
   GATE -- "street, start now" --> LIFE
   LIFE --> GATE
@@ -144,7 +150,7 @@ flowchart LR
   classDef money stroke:#b42318,stroke-width:2.5px
   classDef planned stroke:#1d5fa8,stroke-width:2px,stroke-dasharray:5 4
   class GATE,EXE money
-  class GROK,CL,SIRI planned
+  class CL,SIRI planned
   class C4 planned
 ```
 

@@ -438,7 +438,7 @@ describe("nothing meets the request", () => {
       expect(res.statusCode).toBe(409);
       expect(res.json().error).toBe("nothing_to_confirm");
     }
-    expect(t.state.assistantConfirmations).toHaveLength(0);
+    expect(t.state.mandates).toHaveLength(0);
     expect(t.state.itineraries).toHaveLength(0);
     expect(t.state.assistantPlans[0]!.confirmedAt ?? null).toBeNull();
   });

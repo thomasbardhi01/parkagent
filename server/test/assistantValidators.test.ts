@@ -477,7 +477,7 @@ describe("V3: an option that breaks a limit is a near-miss or it isn't on the ca
     });
     expect(res.statusCode).toBe(409);
     expect(res.json().error).toBe("near_miss_not_confirmable");
-    expect(t.state.assistantConfirmations).toHaveLength(0);
+    expect(t.state.mandates).toHaveLength(0);
     // The option that meets the request confirms as before.
     const ok = await t.app.inject({
       method: "POST",

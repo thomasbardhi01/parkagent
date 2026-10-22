@@ -13,9 +13,12 @@ import { randomBytes } from "node:crypto";
 
 import { afterAll, expect, test } from "vitest";
 
-import { MOTT_A, MOTT_B, parkedBody } from "../helpers.js";
+import { hashApiKey } from "../../src/services/apiKeys.js";
+import { mintMandate, planHashOf } from "../../src/services/mandates.js";
+import { userPrincipal } from "../../src/services/principal.js";
+import { MOTT_A, MOTT_B, TEST_PEPPER, parkedBody } from "../helpers.js";
 import type { PgApp } from "./pgApp.js";
-import { ALWAYS, CAR, hold, makePgApp, pause, prisma, until } from "./pgApp.js";
+import { ALWAYS, CAR, db, hold, makePgApp, pause, prisma, until } from "./pgApp.js";
 
 afterAll(() => prisma.$disconnect());
 
@@ -288,7 +291,7 @@ test("two starts at once for one driver: one_open_session_per_user lets one reac
     expect(await sessionsOf(t)).toEqual([expect.objectContaining({ status: "active" })]);
   }));
 
-test("one assistant confirmation token used twice at once: one use is honored", () =>
+test("one mandate token used twice at once: one use is honored", () =>
   rounds(async () => {
     const t = await makePgApp();
     const planId = `plan-${randomBytes(6).toString("hex")}`;
@@ -299,38 +302,56 @@ test("one assistant confirmation token used twice at once: one use is honored", 
       durationMinutes: 60,
       hours: ALWAYS,
     };
+    const plan = { options: [option] };
     await prisma.assistantPlan.create({
       data: {
         id: planId,
         userId: t.user.id,
         conversationId: `conv-${planId}`,
         kind: "single_spot",
-        plan: { options: [option] },
+        plan,
       },
     });
-    const token = randomBytes(24).toString("base64url");
-    await prisma.assistantConfirmation.create({
-      data: {
-        token,
-        userId: t.user.id,
+    // Minted as the app's own Confirm tap mints it: the person, no agent
+    // key, the confirm scope, the plan's hash; the row keeps only the
+    // token's hash.
+    const { token } = await mintMandate(
+      { db, pepper: TEST_PEPPER },
+      userPrincipal({ id: t.user.id, isAdmin: false }),
+      {
         planId,
         optionId: option.id,
-        expiresAt: new Date(t.now().getTime() + 5 * 60_000),
+        planHash: planHashOf(plan),
+        scopes: ["confirm"],
+        capsSnapshot: null,
       },
-    });
+      t.now(),
+    );
     const ctx = { userId: t.user.id, conversationId: `conv-${planId}` };
     const input = { zone: option.zoneId, duration_minutes: 60, confirmation_token: token };
 
-    const race = hold("assistantConfirmation.updateMany", 2);
+    // Both uses read the mandate unconsumed and race for its one claim
+    // (UPDATE … WHERE consumed_at IS NULL).
+    const race = hold("mandate.updateMany", 2);
     const results = await Promise.all([
       t.assistantTools.execute(ctx, "start_session", input),
       t.assistantTools.execute(ctx, "start_session", input),
     ]);
     await race.done;
     expect(race.arrived()).toBe(2);
-    const outcomes = results.map((r) => r.result as { confirmed?: boolean; error?: string });
+    const outcomes = results.map(
+      (r) => r.result as { confirmed?: boolean; error?: string; message?: string },
+    );
     expect(outcomes.filter((o) => o.confirmed === true)).toHaveLength(1);
-    expect(outcomes.filter((o) => o.error === "needs_confirmation")).toHaveLength(1);
-    const row = await prisma.assistantConfirmation.findUnique({ where: { token } });
-    expect(row!.usedAt).not.toBeNull();
+    const refused = outcomes.filter((o) => o.error === "needs_confirmation");
+    expect(refused).toHaveLength(1);
+    expect(refused[0]!.message).toContain("already used");
+    // One row for the plan, claimed, stored under the token's hash only.
+    const rows = await prisma.mandate.findMany({ where: { planId } });
+    expect(rows).toEqual([
+      expect.objectContaining({
+        token: hashApiKey(TEST_PEPPER, token),
+        consumedAt: expect.any(Date),
+      }),
+    ]);
   }));

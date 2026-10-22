@@ -206,10 +206,11 @@ onboarding on true and goes straight Home on false.
 
 ### GET /me · PATCH /me
 
-`GET` → `{user, paymentSource, issuingLive}` — `paymentSource` is the
-Wallet's active way to pay (`provider_card` | `link_wallet` |
-`parkagent_card`; see "Wallet"), so the Account sheet and the Wallet read
-the same fact. `PATCH {name?, phone?}`
+`GET` → `{user, paymentSource, agentsMayAct, issuingLive}` —
+`paymentSource` is the Wallet's active way to pay (`provider_card` |
+`link_wallet` | `parkagent_card`; see "Wallet"), so the Account sheet and
+the Wallet read the same fact; `agentsMayAct` is whether external agents
+may act for this person (see "External agents"). `PATCH {name?, phone?}`
 edits the profile and returns `{user}`. Changing the phone clears
 `phoneVerified` (there is no SMS verification flow yet). The email is
 **not** editable here: it is the sign-in identity, and moving it needs
@@ -3339,9 +3340,10 @@ the count. `DELETE /me` deletes them all at once, as before.
 
 ### POST /assistant/confirm
 
-`{planId, optionId?, stops?}` — the tap. Mints the single-use token
-(10-minute TTL) and executes the confirmed option through the same
-token-gated tools the model faces. Two things have nothing to confirm and
+`{planId, optionId?, stops?}` — the tap. Mints the single-use mandate
+(10-minute TTL, bound to the plan's hash and the caps it was judged
+against; see "External agents" → "The mandate") and executes the
+confirmed option through the same token-gated tools the model faces. Two things have nothing to confirm and
 are refused `409` **before any token is minted**, each with its own
 decision: a `none_meets` or `no_data` card (`nothing_to_confirm` — and
 any plan kind this route doesn't know, which must never fall through to
@@ -3515,6 +3517,71 @@ adapter also carries the documented **Shared Payment Token seam**
 (`garageProvider.ts`): if a garage provider ever accepts Stripe SPTs, the
 reserved-booking path is where an SPT checkout would go — no parking
 provider accepts them today (2026-09), so it stays a comment, not code.
+
+## External agents
+
+A person can let an agent of their own — Grok, Claude over MCP, a script —
+act for them. The agent gets **no more than the person has, and less by
+default**: their caps, their dry run, their linked accounts, through the
+same capabilities and the one money gate the app uses. It never supplies a
+location or an arrival: the phone is the only source of those.
+
+**Consent is the person's.** `users.agents_may_act` is off until they turn
+it on with `PATCH /me/settings {agentsMayAct}` (signed in as themselves),
+and it's reported by `GET /me`. With it off, the money gate refuses every
+agent call with `agents_not_allowed` before it reads a cap, the dry run or
+the day's spend, so a refused agent learns nothing about the money. Every
+change writes an `agent_consent` decision.
+
+**Keys.** `POST /me/agent-keys {label, scopes}` mints one and answers
+`201 {key, id, prefix, label, scopes, createdAt, lastUsedAt, revokedAt}`.
+The key, `pak_<8-char prefix>_<secret>`, is shown **once**: only its hash
+(`API_KEY_PEPPER`, as for API keys) and the prefix are kept. `scopes` is a
+non-empty subset of `read` and `confirm`. At most 10 live keys a person.
+`GET /me/agent-keys` lists them by prefix, newest first, never the key.
+`DELETE /me/agent-keys/:id` revokes one (`404 agent_key_not_found` for
+another person's); the row stays, so the ledger's `agent_key_id` still
+resolves. Each key change writes an `agent_key` decision. An agent can't
+mint, list or revoke keys, or change consent: those routes refuse a key.
+
+**One surface per principal kind.** `Authorization: Bearer pak_…` is
+resolved in the one auth hook (`makeAuthenticate`) to an external-agent
+principal with the key's scopes and the person's id — never their admin
+rights. A key reaches the agent surfaces (`/agent/*`; `/mcp` once it
+exists) and nothing else: anywhere else is `403 agent_key_not_allowed_here`.
+The agent surfaces take nothing else: a session or the admin key there is
+`403 agent_surface_needs_agent_key`. An unknown or revoked key is `401`.
+Every agent call is logged with the key's prefix and route, and every
+decision it causes carries `actor: "external_agent"` and the key's id.
+
+**Rate limit.** 60 calls a minute per key (`429 rate_limited` with
+`Retry-After`), through the same limiter as the rest of the API. It's
+in-memory, per machine: on one Fly machine that's the whole limit.
+
+### The mandate
+
+What a Confirm tap in the app, or an agent's confirm call, authorizes is
+one **mandate** (table `mandates`): one plan option, once, within ten
+minutes. It is the one confirm-token mechanism for the app, REST and MCP
+(`services/mandates.ts`); nothing else mints or consumes a confirm token.
+The token is shown once and stored as its hash. A mandate row says who
+holds it (`agent_key_id`, null for the app's own tap), the plan it was
+minted for (`plan_hash`, SHA-256 of the plan's canonical JSON), what it may
+do (`scopes`), and the caps the plan was judged against
+(`caps_snapshot`). Consuming one is refused when it is another person's
+or another key's, already consumed (single-use: one atomic `UPDATE … WHERE
+consumed_at IS NULL`), expired, for a plan that has changed since, or
+without `confirm` on both the mandate and the caller. Before any of that,
+the money gate's consent rule runs: an agent without consent is refused
+before the token is read. Mandates minted before this table was renamed
+from `assistant_confirmations` were stored in plain text and can't be
+consumed; they expired within ten minutes of the deploy.
+
+### GET /agent/me
+
+`{userId, agentKeyId, scopes, agentsMayAct}`: who the key acts for, what
+it may do, and whether the person has said agents may act. The routes
+that search, plan and confirm come with PR 2b.
 
 ## Link wallet for agents
 

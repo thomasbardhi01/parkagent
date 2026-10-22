@@ -11,6 +11,7 @@
  * (services/agentActions.ts), run as that key's principal, through the
  * same mandate and the one money gate, with the same per-key budget:
  * a refusal is a tool error (`isError`) carrying the REST code.
+ * explain_decision is the REST "why" (GET /agent/decisions/{id}/why).
  *
  * Nothing pays. propose_plan hands back the plan id and the one-time
  * confirmToken (the mandate) as ordinary result fields; confirm_plan takes
@@ -41,7 +42,7 @@ import type { Principal } from "../services/principal.js";
 import { currentTraceId, runAs, traceIdFrom } from "../services/principal.js";
 import { agentKeyBucket, makeRateLimiter } from "../services/rateLimit.js";
 import type { AgentLimit } from "./agent.js";
-import { AGENT_TOOLS, confirmSchema } from "./agentSchemas.js";
+import { AGENT_TOOLS, confirmSchema, explainSchema } from "./agentSchemas.js";
 import { CONFIRM_CARD_HTML, CONFIRM_CARD_MIME, CONFIRM_CARD_URI } from "./mcpConfirmCard.js";
 
 export const MCP_SERVER_INFO = { name: "parkagent", version: "1.0.0" } as const;
@@ -69,15 +70,29 @@ const mcpConfirmSchema = z.strictObject({
   confirmToken: confirmSchema.shape.confirmToken,
 });
 
-type ToolName = (typeof AGENT_TOOLS)[number]["name"];
+/** The six agent tools, then explain_decision: over REST that one is
+ * GET /agent/decisions/{decisionId}/why, a read with no body, so it is not
+ * one of AGENT_TOOLS (the POST routes OpenAPI and grok-tool.json list). */
+export const MCP_TOOLS = [
+  ...AGENT_TOOLS,
+  {
+    name: "explain_decision",
+    route: "/agent/decisions/{decisionId}/why",
+    description:
+      "Why a decision came out as it did, by the decisionId a confirm or a refusal answered with: the reason as data (what happened, the facts behind it, what the user can do) and a sentence to show. The user's own decisions only. Read-only.",
+    schema: explainSchema,
+  },
+] as const;
 
-/** The tools, in the declared order (AGENT_TOOLS): tools/list answers
- * them in exactly this order. */
+type ToolName = (typeof MCP_TOOLS)[number]["name"];
+
+/** The tools, in the declared order (MCP_TOOLS): tools/list answers them
+ * in exactly this order. */
 const TOOLS: {
   name: ToolName;
   schema: z.ZodType;
   run: (actions: AgentActions, principal: Principal, args: never) => Promise<AgentAnswer>;
-}[] = AGENT_TOOLS.map((tool) => ({
+}[] = MCP_TOOLS.map((tool) => ({
   name: tool.name,
   schema: tool.name === "confirm_plan" ? mcpConfirmSchema : tool.schema,
   run: (actions, principal, args) => {
@@ -96,12 +111,16 @@ const TOOLS: {
         const { planId, confirmToken } = args as z.infer<typeof mcpConfirmSchema>;
         return actions.confirm(principal, planId, confirmToken);
       }
+      case "explain_decision": {
+        const { decisionId } = args as z.infer<typeof explainSchema>;
+        return actions.why(principal, decisionId);
+      }
     }
   },
 }));
 
 const describe = (name: ToolName): string => {
-  const base = AGENT_TOOLS.find((t) => t.name === name)!.description;
+  const base = MCP_TOOLS.find((t) => t.name === name)!.description;
   return name === "propose_plan" || name === "confirm_plan" ? base + RULES : base;
 };
 

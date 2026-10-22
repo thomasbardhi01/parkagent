@@ -58,6 +58,14 @@ export const confirmSchema = z.strictObject({
   confirmToken: z.string().min(16).max(200).describe("From POST /agent/plans, used once"),
 });
 
+export const explainSchema = z.strictObject({
+  decisionId: z
+    .string()
+    .min(1)
+    .max(64)
+    .describe("The decisionId a confirm or a refusal answered with"),
+});
+
 /** The six tools an agent calls, with the route each one is. */
 export const AGENT_TOOLS = [
   {

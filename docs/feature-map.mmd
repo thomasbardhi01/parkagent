@@ -139,6 +139,7 @@ flowchart LR
   agentActions -- "confirm: consent · mandate · caps" --> gate
   agentActions -. "street: pending_arrival, pays nothing; arrival only from the phone" .-> lifecycle
   agentActions --> ledger
+  agentActions -. "why · explain_decision" .-> explain
 
   subgraph pp["pending_parks state machine (server/src/services/pendingSession.ts)"]
     direction TB

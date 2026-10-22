@@ -175,6 +175,7 @@ flowchart LR
   C4 -. "phrases the reason (strict schema, grounded)" .-> HAIKU
   C4 -- "reads one row" --> DEC
   GROK -- "GET /agent/decisions/:id/why" --> C4
+  CL -- "explain_decision (MCP)" --> C4
   APP -- "GET /me/decisions/:id/why" --> C4
   C3 --> GATE
   C3 -. "street: pending_arrival (consent + cap, no park)" .-> LIFE

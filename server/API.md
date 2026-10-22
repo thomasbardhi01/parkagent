@@ -4054,8 +4054,9 @@ the MCP TypeScript SDK v2 (`createMcpHandler`, mounted with
   (`429 rate_limited`), apart from the per-call budget the tools share
   with REST.
 - **Tools:** `geocode_place`, `quote_street`, `search_garages`,
-  `build_itinerary`, `propose_plan`, `confirm_plan`, always in that order
-  (`examples/grok-tool.json`'s), and `tools/list` is cacheable
+  `build_itinerary`, `propose_plan`, `confirm_plan` (`examples/grok-tool.json`'s
+  six), then `explain_decision` (REST's `GET /agent/decisions/:id/why`,
+  taking `{decisionId}`), always in that order, and `tools/list` is cacheable
   `{ttlMs: 300000, cacheScope: "private"}`. Each takes the REST route's
   body as its arguments; `confirm_plan` takes `{planId, confirmToken}`.
   Each answers the REST body as `structuredContent` (and as JSON text). A

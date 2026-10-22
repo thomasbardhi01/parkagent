@@ -11,7 +11,7 @@ import { readFileSync } from "node:fs";
 
 import { describe, expect, test, vi } from "vitest";
 
-import { AGENT_TOOLS } from "../src/routes/agentSchemas.js";
+import { MCP_TOOLS } from "../src/routes/mcp.js";
 import { CONFIRM_CARD_MIME, CONFIRM_CARD_URI } from "../src/routes/mcpConfirmCard.js";
 import type { GeocoderProvider } from "../src/services/assistant/geocoder.js";
 import { signAccessToken } from "../src/services/authTokens.js";
@@ -175,11 +175,11 @@ describe("discovery", () => {
       expect(capabilities).not.toContain(absent);
   });
 
-  test("tools/list: the six tools in their declared order, cacheable for five minutes, this key only", async () => {
+  test("tools/list: the seven tools in their declared order, cacheable for five minutes, this key only", async () => {
     const { rpc } = await setup();
     const { result } = await rpc("tools/list");
     const tools = result!["tools"] as { name: string; description: string; _meta?: object }[];
-    expect(tools.map((t) => t.name)).toEqual(AGENT_TOOLS.map((t) => t.name));
+    expect(tools.map((t) => t.name)).toEqual(MCP_TOOLS.map((t) => t.name));
     expect(tools.map((t) => t.name)).toEqual([
       "geocode_place",
       "quote_street",
@@ -187,6 +187,7 @@ describe("discovery", () => {
       "build_itinerary",
       "propose_plan",
       "confirm_plan",
+      "explain_decision",
     ]);
     expect(result).toMatchObject({ ttlMs: 300_000, cacheScope: "private", resultType: "complete" });
     for (const name of ["propose_plan", "confirm_plan"]) {
@@ -205,7 +206,7 @@ describe("discovery", () => {
     for (let i = 0; i < 2; i++) {
       const res = await post("tools/list", {}, { headers });
       expect(res.statusCode, res.body).toBe(200);
-      expect(res.json().result.tools).toHaveLength(6);
+      expect(res.json().result.tools).toHaveLength(7);
     }
   });
 
@@ -291,6 +292,40 @@ describe("the tools, under dry run", () => {
       kind: "agent_confirm",
       traceId: "4bf92f3577b34da6a3ce929d0e0e4736",
     });
+  });
+
+  test("explain_decision: the person's own decision, as REST's why answers it; another's is not there", async () => {
+    const { t, key, tool } = await setup();
+    const seed = (userId: string) => {
+      t.state.decisions.push({
+        kind: "session_start",
+        rule: "session_cap_exceeded",
+        inputs: { quote: { totalUsd: 5.4 }, sessionCapUsd: 5 },
+        outcome: { allowed: false },
+        userId,
+        createdAt: NOW,
+      });
+      return `d${t.state.decisions.length}`;
+    };
+    const mine = seed("u2");
+    const theirs = seed("u1");
+    const why = await tool("explain_decision", { decisionId: mine });
+    expect(why.isError, JSON.stringify(why)).toBeFalsy();
+    expect(why.structuredContent).toMatchObject({
+      decisionId: mine,
+      rule: "session_cap_exceeded",
+      phrased: false,
+      reason: { because: [{ name: "price", value: "$5.40" }, { name: "sessionCap" }] },
+    });
+    const rest = await t.app.inject({
+      method: "GET",
+      url: `/agent/decisions/${mine}/why`,
+      headers: { authorization: `Bearer ${key}` },
+    });
+    expect(why.structuredContent).toEqual(rest.json());
+    const other = await tool("explain_decision", { decisionId: theirs });
+    expect(other.isError).toBe(true);
+    expect(other.structuredContent).toEqual({ error: "decision_not_found" });
   });
 });
 
@@ -390,6 +425,11 @@ describe("refusals are tool errors with REST's codes", () => {
       confirmToken: "x".repeat(32),
     });
     expect(errorOf(result)).toBe("scope_required");
+  });
+
+  test("a confirm-only key can't ask why: scope_required", async () => {
+    const s = await setup({ scopes: ["confirm"] });
+    expect(errorOf(await s.tool("explain_decision", { decisionId: "d1" }))).toBe("scope_required");
   });
 
   test("one budget per key across REST and MCP: rate_limited", async () => {
@@ -572,7 +612,7 @@ describe("a 2025-era client", () => {
       payload: { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} },
     });
     const tools = message(listed.body).result!["tools"] as { name: string }[];
-    expect(tools.map((x) => x.name)).toEqual(AGENT_TOOLS.map((x) => x.name));
+    expect(tools.map((x) => x.name)).toEqual(MCP_TOOLS.map((x) => x.name));
     const called = await t.app.inject({
       method: "POST",
       url: "/mcp",
@@ -597,7 +637,9 @@ describe("resources", () => {
     const contents = read.result!["contents"] as { uri: string; text: string }[];
     expect(JSON.parse(contents[0]!.text)).toMatchObject({
       planId: proposed.planId,
+      status: "proposed",
       confirmedAt: null,
+      boundAt: null,
     });
     for (const missing of ["parkagent://plans/nope", "parkagent://parks/nope"]) {
       const out = await rpc("resources/read", { uri: missing }, missing);

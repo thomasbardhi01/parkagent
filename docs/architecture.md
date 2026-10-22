@@ -134,7 +134,7 @@ flowchart LR
     C1["geocode · quoteStreet<br/>searchGarages · buildItinerary"]
     C2["proposePlan → plan + mandate token"]
     C3["confirmPlan (token bound to plan hash)"]
-    C4["explainDecision<br/>template; phrasing is M's"]
+    C4["explainDecision<br/>template; phrased only with EXPLAIN_MODEL"]
   end
 
   GATE["moneyGate<br/>caps · dry run · consent · max stay · link"]
@@ -158,6 +158,9 @@ flowchart LR
   C2 -- "mint" --> MAND
   C3 -- "consume once" --> MAND
   APP -- "Confirm tap: mint" --> MAND
+  HAIKU[["claude-haiku-5-5<br/>EXPLAIN_MODEL (off by default)"]]
+  C4 -. "phrases the reason (strict schema, grounded)" .-> HAIKU
+  C4 -- "reads one row" --> DEC
   C3 --> GATE
   C3 -. "street: pending_arrival (consent + cap, no park)" .-> LIFE
   APP -- "/parked: the only arrival" --> LIFE
@@ -170,7 +173,6 @@ flowchart LR
   classDef planned stroke:#1d5fa8,stroke-width:2px,stroke-dasharray:5 4
   class GATE,EXE money
   class SIRI planned
-  class C4 planned
 ```
 
 ## How it gets built

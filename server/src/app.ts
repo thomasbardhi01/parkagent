@@ -158,10 +158,9 @@ export interface AppDeps {
   /** MCP_APPS env: whether /mcp offers its MCP Apps `ui://` confirm card.
    * Off by default; without it the mandate confirm is the only way. */
   mcpApps?: boolean;
-  /** What GET /health reports beyond ok and the build: the DRY_RUN switch
-   * as env.ts resolved it (an unreadable value runs dry), and the features
-   * a settings problem switched off. Absent → read from process.env. */
-  health?: { dryRun: boolean; degraded: readonly string[] };
+  /** The features a settings problem switched off, for GET /health. Its
+   * dryRun is the policy service's effectiveDryRun(), not set here. */
+  health?: { degraded: readonly string[] };
   /** Injectable clock for tests; routes fall back to `new Date()`. */
   now?: () => Date;
 }
@@ -450,7 +449,10 @@ export function buildApp(deps?: AppDeps, app: FastifyInstance = createFastify())
     }
     return {
       ok: true,
-      dryRun: deps?.health?.dryRun ?? process.env["DRY_RUN"] === "true",
+      // What the money paths do: dry unless BOTH the DRY_RUN env and
+      // policy.json's dry_run are false, read now (PUT /policy can flip
+      // it). Without deps, the env alone, any value but "false" dry.
+      dryRun: deps ? deps.policy.effectiveDryRun() : process.env["DRY_RUN"] !== "false",
       // Injected at image build (Dockerfile ARG -> ENV); "dev" under tsx/vitest.
       commit: process.env["GIT_SHA"] ?? "dev",
       builtAt: process.env["BUILD_TIME"] ?? "dev",

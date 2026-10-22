@@ -192,7 +192,10 @@ Data is **not used for tracking**, and every type is **linked to the
 user** and used for **App Functionality** only:
 
 - Location → Precise Location (where you parked, to find the meter zone;
-  where you are while a session runs, to decide whether to extend)
+  where you are from parking until you walk away, to ask before paying,
+  and while a session runs, to decide whether to extend). Each fix a park
+  reads is kept with that park for 30 days, then deleted, so a park that
+  went wrong can be looked at (`docs/park-traces.md`).
 - Contact Info → Name, Email Address (from Sign in with Apple), Phone
   Number (optional, typed into the profile)
 - Identifiers → User ID, Device ID (the sign-in session's device id)

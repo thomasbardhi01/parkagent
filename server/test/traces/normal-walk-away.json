@@ -1,0 +1,86 @@
+{
+  "version": 1,
+  "name": "normal-walk-away",
+  "note": "in the seat, two fixes clear of the car at a walk, Pay: one session",
+  "parkedAt": {
+    "weekday": "Mon",
+    "time": "14:00"
+  },
+  "outcomes": ["garage", "nopay", "walk_away"],
+  "candidates": [
+    {
+      "zoneId": "nyc-417371",
+      "city": "nyc",
+      "providerZoneNumber": "417371",
+      "rateFirstHourUsd": 2.0,
+      "rateAdditionalHourUsd": 3.0,
+      "maxStayMinutes": 120,
+      "hours": [
+        {
+          "days": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
+          "start": "08:30",
+          "end": "19:00"
+        }
+      ],
+      "quote": {
+        "zoneId": "nyc-417371",
+        "providerZoneNumber": "417371",
+        "stayMinutes": 90,
+        "chargedMinutes": 90,
+        "meterUsd": 3.5,
+        "feeUsd": 0.15,
+        "totalUsd": 3.65
+      }
+    }
+  ],
+  "fixes": [
+    {
+      "receivedS": 5,
+      "measuredS": 5,
+      "reportedS": 5,
+      "northM": 4,
+      "eastM": 0,
+      "accuracyM": 8,
+      "rejected": null
+    },
+    {
+      "receivedS": 45,
+      "measuredS": 45,
+      "reportedS": 45,
+      "northM": 60,
+      "eastM": 0,
+      "accuracyM": 8,
+      "rejected": null
+    },
+    {
+      "receivedS": 65,
+      "measuredS": 65,
+      "reportedS": 65,
+      "northM": 90,
+      "eastM": 0,
+      "accuracyM": 8,
+      "rejected": null
+    },
+    {
+      "receivedS": 105,
+      "measuredS": 105,
+      "reportedS": 105,
+      "northM": 200,
+      "eastM": 0,
+      "accuracyM": 8,
+      "rejected": null
+    }
+  ],
+  "taps": [
+    {
+      "atS": 75,
+      "kind": "confirm"
+    }
+  ],
+  "expected": {
+    "statuses": ["at_car", "prompted", "started"],
+    "park": "started",
+    "session": "active",
+    "starts": 1
+  }
+}

@@ -15,6 +15,8 @@
     "load:garages": "tsx src/scripts/load-garages.ts",
     "create:user": "tsx src/scripts/create-user.ts",
     "decisions:recent": "tsx src/scripts/recent-decisions.ts",
+    "trace:export": "tsx src/scripts/trace-export.ts",
+    "trace:replay": "tsx test/traces/replay-cli.ts",
     "issuing:setup": "tsx src/scripts/issuing-setup.ts",
     "stripe:trigger": "tsx src/scripts/stripe-trigger.ts",
     "migrate:api-keys": "tsx src/scripts/migrate-api-keys.ts",

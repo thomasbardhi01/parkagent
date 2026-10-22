@@ -12,6 +12,7 @@ import type { AppDeps } from "../app.js";
 import { requireAdmin } from "../app.js";
 import { cityForZone } from "../providers/registry.js";
 import { nycStartOfDay } from "../services/hours.js";
+import { buildParkTrace } from "../services/parkTrace.js";
 import { PUSH_TEST_TYPES, samplePush } from "../services/apns.js";
 import { providerReliability } from "../services/providerMetrics.js";
 import type { PushTestType } from "../services/apns.js";
@@ -244,5 +245,17 @@ export function registerAdmin(app: FastifyInstance, deps: AppDeps): void {
       },
       jobs: { appleRevocationsPending: revokesPending },
     };
+  });
+
+  // One park's whole story as one document (services/parkTrace.ts): its
+  // parked event, every fix it read or refused, its decisions, and its
+  // session. By pending_parks id or parkedEventId. Admin only: it carries
+  // the driver's raw positions.
+  app.get("/admin/parks/:id/trace", async (req, reply) => {
+    if (!requireAdmin(req, reply)) return;
+    const { id } = req.params as { id: string };
+    const trace = await buildParkTrace(deps.db, id);
+    if (!trace) return reply.code(404).send({ error: "park_not_found" });
+    return trace;
   });
 }

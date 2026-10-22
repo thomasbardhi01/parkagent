@@ -1,0 +1,104 @@
+{
+  "version": 1,
+  "name": "heartbeat-resend",
+  "note": "one GPS jump re-sent by the heartbeat is one fix: no walk-away",
+  "parkedAt": {
+    "weekday": "Mon",
+    "time": "14:00"
+  },
+  "outcomes": ["garage", "nopay", "walk_away"],
+  "candidates": [
+    {
+      "zoneId": "nyc-417371",
+      "city": "nyc",
+      "providerZoneNumber": "417371",
+      "rateFirstHourUsd": 2.0,
+      "rateAdditionalHourUsd": 3.0,
+      "maxStayMinutes": 120,
+      "hours": [
+        {
+          "days": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
+          "start": "08:30",
+          "end": "19:00"
+        }
+      ],
+      "quote": {
+        "zoneId": "nyc-417371",
+        "providerZoneNumber": "417371",
+        "stayMinutes": 90,
+        "chargedMinutes": 90,
+        "meterUsd": 3.5,
+        "feeUsd": 0.15,
+        "totalUsd": 3.65
+      }
+    }
+  ],
+  "fixes": [
+    {
+      "receivedS": 30,
+      "measuredS": 30,
+      "reportedS": 30,
+      "northM": 120,
+      "eastM": 0,
+      "accuracyM": 8,
+      "rejected": null
+    },
+    {
+      "receivedS": 90,
+      "measuredS": 30,
+      "reportedS": 90,
+      "northM": 120,
+      "eastM": 0,
+      "accuracyM": 8,
+      "rejected": null
+    },
+    {
+      "receivedS": 150,
+      "measuredS": 30,
+      "reportedS": 150,
+      "northM": 120,
+      "eastM": 0,
+      "accuracyM": 8,
+      "rejected": null
+    },
+    {
+      "receivedS": 210,
+      "measuredS": 30,
+      "reportedS": 210,
+      "northM": 120,
+      "eastM": 0,
+      "accuracyM": 8,
+      "rejected": null
+    },
+    {
+      "receivedS": 270,
+      "measuredS": 270,
+      "reportedS": 270,
+      "northM": 120,
+      "eastM": 0,
+      "accuracyM": 8,
+      "rejected": null
+    },
+    {
+      "receivedS": 330,
+      "measuredS": 330,
+      "reportedS": 330,
+      "northM": 120,
+      "eastM": 0,
+      "accuracyM": 8,
+      "rejected": null
+    }
+  ],
+  "taps": [
+    {
+      "atS": 0,
+      "kind": "confirm"
+    }
+  ],
+  "expected": {
+    "statuses": ["at_car", "confirmed"],
+    "park": "confirmed",
+    "session": null,
+    "starts": 0
+  }
+}

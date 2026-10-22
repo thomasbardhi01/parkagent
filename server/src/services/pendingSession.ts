@@ -359,11 +359,25 @@ export function fixCountsFor(
   reportedAt: Date,
   now: Date,
 ): boolean {
-  return (
-    measuredAt.getTime() >= parkedAt.getTime() &&
-    now.getTime() - measuredAt.getTime() <= LIFECYCLE_FIX_MAX_AGE_MS &&
-    Math.abs(now.getTime() - reportedAt.getTime()) <= LIFECYCLE_FIX_MAX_AGE_MS
-  );
+  return fixRejection(parkedAt, measuredAt, reportedAt, now) === null;
+}
+
+/** Why a fix isn't read for a park (fixCountsFor), or null when it is:
+ * what the park's trace records beside the fix. */
+export type FixRejection = "before_park" | "stale_measurement" | "clock_skew";
+
+export function fixRejection(
+  parkedAt: Date,
+  measuredAt: Date,
+  reportedAt: Date,
+  now: Date,
+): FixRejection | null {
+  if (measuredAt.getTime() < parkedAt.getTime()) return "before_park";
+  if (now.getTime() - measuredAt.getTime() > LIFECYCLE_FIX_MAX_AGE_MS) return "stale_measurement";
+  if (Math.abs(now.getTime() - reportedAt.getTime()) > LIFECYCLE_FIX_MAX_AGE_MS) {
+    return "clock_skew";
+  }
+  return null;
 }
 
 /** Metres between two points (haversine). */

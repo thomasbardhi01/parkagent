@@ -33,7 +33,7 @@ import {
   advanceWalk,
   buildParkPrompt,
   endSession,
-  fixCountsFor,
+  fixRejection,
   lifecycleOf,
   metersBetween,
   settlePark,
@@ -57,6 +57,17 @@ const bodySchema = z.object({
   // What the app itself saw: on foot after the park, or back at the car
   // (its audio reconnecting, driving again).
   event: z.enum(["left_car", "returned_to_car"]).optional(),
+  // What the phone's own sensing said at the fix, for the park's trace
+  // only (nothing here decides on them yet): CoreMotion's activity and
+  // its confidence, and a car-audio (Bluetooth / CarPlay) hint.
+  motionActivity: z
+    .enum(["stationary", "walking", "running", "automotive", "cycling", "unknown"])
+    .optional(),
+  motionConfidence: z.enum(["low", "medium", "high"]).optional(),
+  btHint: z
+    .string()
+    .regex(/^[a-z_]{1,32}$/)
+    .optional(),
 });
 
 type Body = z.infer<typeof bodySchema>;
@@ -88,12 +99,42 @@ export function registerLocation(app: FastifyInstance, deps: AppDeps, sessions: 
     };
   }
 
+  /** The fix on the park's trace (park_fixes), read or refused and why.
+   * Evidence only: a failed write is logged and never stops the fix from
+   * being read. */
+  async function keep(park: PendingParkRow, body: Body, at: Date, rejected: string | null) {
+    const reportedAt = new Date(body.ts);
+    try {
+      await deps.db.parkFix.create({
+        data: {
+          pendingParkId: park.id,
+          measuredAt: body.measuredAt ? new Date(body.measuredAt) : reportedAt,
+          reportedAt,
+          receivedAt: at,
+          lat: body.lat,
+          lng: body.lng,
+          accuracyM: body.accuracy,
+          speedMps: typeof body.speedMps === "number" ? body.speedMps : null,
+          event: body.event ?? null,
+          motionActivity: body.motionActivity ?? null,
+          motionConfidence: body.motionConfidence ?? null,
+          btHint: body.btHint ?? null,
+          rejected,
+        },
+      });
+    } catch (err) {
+      app.log.warn(`park trace: fix not kept for ${park.id}: ${String(err).split("\n")[0]}`);
+    }
+  }
+
   /** The fix against a park's own car, or null when it says nothing about
    * this park (stale, or measured before the car stopped). */
-  function read(park: PendingParkRow, body: Body, at: Date) {
+  async function read(park: PendingParkRow, body: Body, at: Date) {
     const reportedAt = new Date(body.ts);
     const measuredAt = body.measuredAt ? new Date(body.measuredAt) : reportedAt;
-    if (!fixCountsFor(park.parkedAt, measuredAt, reportedAt, at)) return null;
+    const rejected = fixRejection(park.parkedAt, measuredAt, reportedAt, at);
+    await keep(park, body, at, rejected);
+    if (rejected !== null) return null;
     const fix = measure(park, body);
     const step = advanceWalk(walkStateOf(park), {
       distanceM: fix.distanceM,
@@ -140,7 +181,7 @@ export function registerLocation(app: FastifyInstance, deps: AppDeps, sessions: 
     // No car fix to measure from, or a park that already ended (a stop
     // the provider refused): the fix is stored and decides nothing.
     if (!park || park.status !== "started") return answer;
-    const seen = read(park, body, at);
+    const seen = await read(park, body, at);
     if (!seen) return answer;
     if (!seen.step.returned) {
       await remember(park, seen.step.state);
@@ -190,8 +231,12 @@ export function registerLocation(app: FastifyInstance, deps: AppDeps, sessions: 
       return answer(row?.status ?? park.status, row ? asked(row) : {});
     };
 
-    if (park.status === "starting") return answer(park.status);
-    const seen = read(park, body, at);
+    if (park.status === "starting") {
+      // Mid-start: the fix isn't read for this park until its start settles.
+      await keep(park, body, at, "park_starting");
+      return answer(park.status);
+    }
+    const seen = await read(park, body, at);
     if (!seen) return answer(park.status, asked(park));
     const { fix, step } = seen;
 

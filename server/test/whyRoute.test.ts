@@ -55,6 +55,13 @@ describe("GET /me/decisions/:decisionId/why", () => {
     expect(res.json().text).toContain("likely to be back");
   });
 
+  test("rate limited: 30 a minute, as other paid per-person reads (#268 review)", async () => {
+    const { seed, why } = setup();
+    const id = seed("u2");
+    for (let i = 0; i < 30; i++) expect((await why(id)).statusCode).toBe(200);
+    expect((await why(id)).statusCode).toBe(429);
+  });
+
   test("another person's decision, or none, is not there", async () => {
     const { seed, why } = setup();
     const theirs = seed("u1");

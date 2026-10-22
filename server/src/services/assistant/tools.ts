@@ -287,6 +287,12 @@ export class AssistantTools {
     return this.deps;
   }
 
+  /** The EXPLAIN_MODEL transport, when that switch is on: the "why"
+   * routes phrase through the same capability the tool does. */
+  get explainModel(): ModelClient | undefined {
+    return this.deps.explainModel;
+  }
+
   private now(): Date {
     return this.deps.now?.() ?? new Date();
   }

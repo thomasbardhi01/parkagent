@@ -2773,6 +2773,11 @@ all answer with the template. The call's cost counts toward that cap: inside
 an assistant turn on the turn's own row, elsewhere as an `assistant_turn`
 row of its own (`rule: explain_phrased`). It never touches the money path.
 
+The app reads it at `GET /me/decisions/:decisionId/why` (the session
+timeline's "Why?"; same answer as the agent route above, owner or admin
+only, `404 decision_not_found` otherwise); the assistant through its
+`explain_decision` tool; an agent at `GET /agent/decisions/:decisionId/why`.
+
 The eval: 30 golden decisions across every rule family
 (`src/eval/explainGolden.ts`), each with the facts its answer must state.
 A fact is an invariant named with its value in one sentence, never a bare
@@ -3854,7 +3859,11 @@ OpenAI-style functions are `examples/grok-tool.json` (regenerate with
 - `GET /agent/plans/:planId` → `{planId, kind, plan, confirmedAt,
   confirmedOptionId}`; `GET /agent/parks/:parkId` → a park's `{status,
   zoneId, parkedAt, sessionId}`. Another person's is `404`.
-- `GET /agent/decisions/:decisionId/why` → `501` until Issue M.
+- `GET /agent/decisions/:decisionId/why` (`read` scope) → why one of the
+  person's decisions came out as it did: `{decisionId, kind, rule, reason:
+  {subject, what, because: [{name, label, value}], youCan}, text, phrased}`
+  ("Why a decision came out as it did" above). Another person's, or none,
+  is `404 decision_not_found`; an agent never reads with admin rights.
 
 ### MCP
 

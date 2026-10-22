@@ -122,9 +122,41 @@ describe("reading", () => {
     expect(res.statusCode).toBe(400);
   });
 
-  test("why is 501 until Issue M", async () => {
-    const { call } = await setup();
-    expect((await call("GET", "/agent/decisions/d1/why")).statusCode).toBe(501);
+  test("why: the person's own decision as its reason; another's is not there (Issue M)", async () => {
+    const { t, call } = await setup();
+    const seed = (userId: string) => {
+      t.state.decisions.push({
+        kind: "session_start",
+        rule: "session_cap_exceeded",
+        inputs: { quote: { totalUsd: 5.4 }, sessionCapUsd: 5 },
+        outcome: { allowed: false },
+        userId,
+        createdAt: NOW,
+      });
+      return `d${t.state.decisions.length}`;
+    };
+    const mine = seed("u2");
+    const theirs = seed("u1");
+    const res = await call("GET", `/agent/decisions/${mine}/why`);
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json()).toMatchObject({
+      decisionId: mine,
+      rule: "session_cap_exceeded",
+      phrased: false,
+      reason: {
+        because: [
+          { name: "price", value: "$5.40" },
+          { name: "sessionCap", value: "$5.00" },
+        ],
+      },
+    });
+    expect(res.json().text).toContain("per-stop cap");
+    expect((await call("GET", `/agent/decisions/${theirs}/why`)).statusCode).toBe(404);
+  });
+
+  test("why needs the read scope", async () => {
+    const { call } = await setup({ scopes: ["confirm"] });
+    expect((await call("GET", "/agent/decisions/d1/why")).statusCode).toBe(403);
   });
 
   test("geocode: the place named, or the closest one said as such", async () => {

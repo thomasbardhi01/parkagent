@@ -17,6 +17,11 @@ import { z } from "zod";
 import type { AppDeps } from "../app.js";
 import { deleteAccount } from "../services/accountDeletion.js";
 import { publicUser } from "../services/authService.js";
+import {
+  explainDecision,
+  explainDepsFor,
+  whyBody,
+} from "../services/capabilities/explainDecision.js";
 import { normalizeSource } from "../services/wallet/summary.js";
 
 const patchMeSchema = z.object({
@@ -71,6 +76,16 @@ export function registerMe(app: FastifyInstance, deps: AppDeps): void {
       agentsMayAct: row.agentsMayAct === true,
       issuingLive,
     };
+  });
+
+  /** Why one of your decisions came out as it did (Issue M): the session
+   * timeline's "Why?". The reason as data and the sentence to show,
+   * phrased when EXPLAIN_MODEL is on; another person's is not there. */
+  app.get("/me/decisions/:decisionId/why", async (req, reply) => {
+    const { decisionId } = req.params as { decisionId: string };
+    const out = await explainDecision(explainDepsFor(deps), req.principal!, { decisionId });
+    if (!out.ok) return reply.code(404).send({ error: "decision_not_found" });
+    return whyBody(out);
   });
 
   app.patch("/me", async (req, reply) => {

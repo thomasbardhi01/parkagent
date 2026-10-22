@@ -611,6 +611,34 @@ test("the phone's own on-screen total binds too: less than the server would char
   expect(over.json()).toMatchObject({ status: "started", amountUsd: 3.65 });
 });
 
+test("a receipt above the amount the tap was shown is never recorded above it (the receipt bound)", async () => {
+  const dry = new DryRunExecutor(
+    () => {},
+    () => PARKED_AT,
+  );
+  // The provider reads back $3.80, $0.15 over the $3.65 prompt: within the
+  // $0.25 bound, so not set aside, but trimmed to what the driver agreed to.
+  const receipt = { meterUsd: 3.65, feeUsd: 0.15, totalUsd: 3.8 };
+  const t = makeApp({
+    executor: {
+      startSession: async (args) => ({ ...(await dry.startSession(args)), receipt }),
+      extendSession: (args) => dry.extendSession(args),
+      stopSession: (args) => dry.stopSession(args),
+    },
+  });
+  const parked = await park(t.app);
+  await walkAway(t);
+  const tap = await post(t.app, `/parked/${parked.parkedEventId}/confirm`, {});
+  expect(tap.statusCode).toBe(200);
+  expect(tap.json()).toMatchObject({ status: "started", amountUsd: 3.65 });
+  const session = t.state.sessions.at(-1)!;
+  expect(Number(session.amountUsd) + Number(session.feeUsd)).toBe(3.65);
+  expect(Number(session.feeUsd)).toBe(0.15);
+  const start = t.state.decisions.find((d) => d.kind === "session_start")!;
+  expect(start.rule).toBe("start_ok");
+  expect(start.outcome).toMatchObject({ providerReceipt: receipt, recordedTotalUsd: 3.65 });
+});
+
 test("a start that reached the provider and failed closes the park: no second attempt from it", async () => {
   const failing: Executor = {
     startSession: async (): Promise<ExecutorResult> => ({

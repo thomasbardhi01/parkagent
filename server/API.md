@@ -1003,6 +1003,18 @@ the card to the cent even when it differs from the pre-charge estimate
 (ParkBoston sells in per-zone duration increments — see the acceptance
 report, Job 2).
 
+**The receipt bound** (`services/receiptBound.ts`). A receipt is recorded
+only within **$0.25** of the price, either way, and never above the amount
+the driver was shown (the tap's amount, or the price for a start from the
+app): a receipt within the bound but above it is trimmed to it, the meter
+taking the trim. A receipt further off, or one that doesn't add up (not a
+finite amount ≥ 0, or meter + fee isn't its total), records the **price**
+instead: the decision's rule is `receipt_mismatch` (paid; not a decline),
+its outcome carries `providerReceipt`, `recordedTotalUsd` and
+`needsReview: true`, and the session's `needs_review` is set. The reply and
+the push carry what was recorded. `/admin/summary` counts those sessions
+per city (`sessionsNeedReview`) for a person to look at what was charged.
+
 **Which card pays.** The session snapshots the user's Wallet source
 (`sessions.payment_source`): `provider_card` — the card saved on the
 provider account — or `parkagent_card`. A `link_wallet` user's street
@@ -2737,6 +2749,7 @@ decisions/parked_events/sessions tables, per city. Read-only.
       "unknownZone": 1,
       "sessionsStarted": 2,        // sessions rows (non-failed)
       "sessionsFailed": 0,
+      "sessionsNeedReview": 0,     // the receipt bound set a receipt aside
       "extensionsAuto": 1,         // extend_tick rule "extend"
       "extensionsManual": 0,       // session_extend rule "extend_ok"
       "declines": { "daily_cap_exceeded": 1, "declined_wrong_mcc": 1 },

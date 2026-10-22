@@ -28,6 +28,7 @@ import type { HoursInterval } from "../services/hours.js";
 import { priceStay } from "../services/quote.js";
 import { moneyGate, refusedConsent } from "../services/moneyGate.js";
 import { principalFor } from "../services/principal.js";
+import { boundReceipt } from "../services/receiptBound.js";
 import { applyExtension, priceExtension } from "../services/sessions.js";
 import { fireShadowAuthorization } from "../services/shadow.js";
 import type { PlaceHoldResult, SettleReason, SettleResult } from "../services/wallet/holds.js";
@@ -647,9 +648,13 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
     // because ParkBoston sells in per-zone duration increments — a 15-min
     // request is billed as 12 min ($0.75). NYC/dry-run return no receipt,
     // so the estimate stands. See the acceptance report, Job 2.
-    const chargedMeterUsd = result.receipt?.meterUsd ?? price.meterUsd;
-    const chargedFeeUsd = result.receipt?.feeUsd ?? price.feeUsd;
-    const chargedTotalUsd = result.receipt?.totalUsd ?? price.totalUsd;
+    // The receipt bound (services/receiptBound.ts): a receipt within $0.25
+    // of the price is recorded, never above what the driver was shown; one
+    // further off records the price, and the session is flagged for review.
+    const recorded = boundReceipt(price, result.receipt, opts.maxTotalUsd);
+    const chargedMeterUsd = recorded.meterUsd;
+    const chargedFeeUsd = recorded.feeUsd;
+    const chargedTotalUsd = recorded.totalUsd;
     // The provider charged our card: capture exactly what it paid (the
     // Issuing authorization the webhook attached), release the rest.
     const holdOutcome = await settle("leg_paid");
@@ -664,6 +669,7 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
         purchasedMinutes: minutes,
         chargedMinutes: price.chargedMinutes,
         parknycConfirmation: result.providerSessionId,
+        ...(recorded.mismatch ? { needsReview: true } : {}),
       },
     });
     // A stay the driver accepted from the signs while this start was still
@@ -705,7 +711,8 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
         kind: "session_start",
         ...keyed,
         inputs: decisionInputs,
-        rule: "start_ok",
+        // Paid either way; receipt_mismatch says the receipt was set aside.
+        rule: recorded.mismatch ? "receipt_mismatch" : "start_ok",
         outcome: {
           allowed: true,
           ok: true,
@@ -714,8 +721,15 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
           durationMs,
           ...executorOutcome(result),
           // What the provider actually charged (ParkBoston's receipt), when
-          // it differs from `price` (the estimate) — the audit shows both.
-          ...(result.receipt ? { providerReceipt: result.receipt } : {}),
+          // it differs from `price` (the estimate) — the audit shows both,
+          // and what the session recorded under the receipt bound.
+          ...(result.receipt
+            ? {
+                providerReceipt: result.receipt,
+                recordedTotalUsd: chargedTotalUsd,
+                ...(recorded.mismatch ? { needsReview: true } : {}),
+              }
+            : {}),
           // Both sides of the map-based zone resolution, when the executor
           // ran one (authoritative for Boston, cross-check for NYC).
           ...(result.zoneResolution ? { zoneResolution: result.zoneResolution } : {}),

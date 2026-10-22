@@ -195,6 +195,10 @@ const REASONS: Record<string, Spec> = {
 
   // ---- starting, extending and stopping a session
   start_ok: ["the session was started and paid", ["price", "stay", "zone", "dryRun"]],
+  receipt_mismatch: [
+    "the session was started and paid, but the provider's receipt didn't match the price, so the price was recorded and the session was flagged for review",
+    ["price", "stay", "zone", "dryRun"],
+  ],
   started: ["it started", NONE],
   "session_start_walkaway:started": [
     "the session was started when you walked away",

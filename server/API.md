@@ -1161,7 +1161,13 @@ is the price of this extension: minutes are priced from the current expiry
 and continue the rate ladder from the charged minutes already bought (an
 extension past the first hour is all second-hour rate). Same hard cap
 rules as start, where `max_stay_exceeded` compares total purchased minutes
-against the zone's max stay. Decisions kind `session_extend`; session
+against the zone's max stay. An extension also needs the session's
+provider account to be usable, as a start does: unlinked, or `expired` (the
+health job's mark), answers `409 {"error": "provider_not_linked",
+provider, displayName}` like a start, with nothing asked of the provider;
+`expiring` still pays. The same check runs again under the extension lock
+(`409 policy_violation {rule: "provider_not_linked"}` there), and the
+worker holds as `hold_provider_not_linked`. Decisions kind `session_extend`; session
 event `extended` (details.source `"manual"` — the worker's are `"auto"`).
 When the provider answers with its "No Meter Parking" notice, the reply is
 `409 {"error": "free_period", "notice"}` — a hold, not a failure: the

@@ -22,6 +22,7 @@ import {
   STEINWAY_B,
   makeTestApp,
   parkedBody,
+  seedProviderAccount,
   seedSession,
 } from "./helpers.js";
 import type { FakeDbState } from "./helpers.js";
@@ -348,6 +349,8 @@ describe("sessions read the owner's limits", () => {
   test("the extension worker holds on the owner's cap — and only the owner's", async () => {
     const T = (hhmm: string) => new Date(`2026-01-05T${hhmm}:00-05:00`);
     const t = makeTestApp({ now: () => T("14:20") });
+    // An extension needs the owner's own linked account, as a start does.
+    seedProviderAccount(t.state, { userId: "u2" });
     const extender = makeExtender({ ...t.deps, log: { info() {}, warn() {} } });
     const session = (userId: string) =>
       seedSession(t.state, {

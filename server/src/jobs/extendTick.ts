@@ -407,6 +407,11 @@ export function makeExtender(deps: ExtenderDeps): Extender {
       } else if (violation === "receipt_needs_review") {
         rule = "hold_needs_review";
         expiringReason = "receipt_review";
+      } else if (violation === "provider_not_linked") {
+        // The parking account was unlinked or expired since the start:
+        // nothing can pay more time (the health job asks to reconnect).
+        rule = "hold_provider_not_linked";
+        expiringReason = "no_auto_extend";
       } else if (violation !== null) {
         // amount_invalid, minutes_invalid, or a rule named after this
         // ladder was written: a refusal holds, never extends.
@@ -496,7 +501,8 @@ export function makeExtender(deps: ExtenderDeps): Extender {
         result.code === "daily_cap_exceeded" ||
         result.code === "max_stay_exceeded" ||
         result.code === "amount_invalid" ||
-        result.code === "minutes_invalid"
+        result.code === "minutes_invalid" ||
+        result.code === "provider_not_linked"
       ) {
         // The gate refused the fresh row under the lock (another extension
         // landed since this one was priced): the matching cap rule, as a
@@ -511,7 +517,9 @@ export function makeExtender(deps: ExtenderDeps): Extender {
               ? "hold_daily_cap"
               : result.code === "amount_invalid" || result.code === "minutes_invalid"
                 ? "hold_gate_refused"
-                : "warn_max_stay";
+                : result.code === "provider_not_linked"
+                  ? "hold_provider_not_linked"
+                  : "warn_max_stay";
         outcome = {
           action: "hold",
           minutes,

@@ -16,7 +16,7 @@
 
 import type { AppDb, SessionRow } from "../db.js";
 import type { ProviderInfo } from "../providers/registry.js";
-import { providerStatusUsable } from "../providers/registry.js";
+import { providerForCity, providerStatusUsable } from "../providers/registry.js";
 import { nycStartOfDay } from "./hours.js";
 import { policyFor } from "./limits.js";
 import { LINK_COMMITTED_STATUSES, linkSpentSince } from "./link/linkSpend.js";
@@ -108,7 +108,7 @@ export interface GateFacts {
   /** Today's spend as the gate read it; null when it never read it (a
    * refusal before the read, or a funding move, which doesn't count it). */
   spentTodayUsd: number | null;
-  /** The linked account the start or prompt was judged on (`start`, `prompt`). */
+  /** The linked account the start, prompt or extension was judged on. */
   accountStatus: string | null;
 }
 
@@ -317,6 +317,19 @@ async function decide(
       facts.accountStatus = account?.status ?? null;
       if (!account || !providerStatusUsable(account.status)) return refuse("provider_not_linked");
       if (intent.zoneNumber === "") return refuse("needs_zone_number");
+    }
+  }
+  if (intent.kind === "extend") {
+    // The same account check, for the session's own provider (from its
+    // city): an account unlinked or expired since the start has nothing to
+    // pay more time with. `expiring` still pays (providerStatusUsable).
+    const provider = providerForCity(intent.session.city);
+    if (provider) {
+      const account = await deps.db.providerAccount.findUnique({
+        where: { userId_provider: { userId: principal.userId, provider: provider.id } },
+      });
+      facts.accountStatus = account?.status ?? null;
+      if (!account || !providerStatusUsable(account.status)) return refuse("provider_not_linked");
     }
   }
 

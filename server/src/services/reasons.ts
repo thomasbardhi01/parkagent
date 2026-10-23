@@ -325,6 +325,11 @@ const REASONS: Record<string, Spec> = {
     "the spending check refused more time (an amount it couldn't read), so it didn't extend",
     ["extendCost", "spentToday"],
   ],
+  hold_provider_not_linked: [
+    "the parking account for this city isn't connected any more, so it couldn't add time",
+    NONE,
+    "Reconnect the parking account from Account.",
+  ],
   hold_max_extensions: ["the limit on automatic extensions was already used up", ["extensions"]],
   hold_auto_extend_disabled: ["auto-extend is switched off", NONE],
   hysteresis_hold: ["a decision a moment ago was still settling, so it held steady", NONE],

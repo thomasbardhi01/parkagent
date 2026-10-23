@@ -24,7 +24,8 @@ const T = (hhmm: string) => new Date(`2026-01-05T${hhmm}:00-05:00`);
 const U2 = { "x-api-key": NONADMIN_API_KEY };
 
 function setup(account: "linked" | "expiring" | "expired" | null, expiresAt = T("15:00")) {
-  const t = makeTestApp({ envDryRun: false, policy: { dry_run: false }, now: () => T("14:20") });
+  const clock = { now: T("14:20") };
+  const t = makeTestApp({ envDryRun: false, policy: { dry_run: false }, now: () => clock.now });
   if (account) seedProviderAccount(t.state, { userId: "u2", status: account });
   const session = seedSession(t.state, {
     userId: "u2",
@@ -48,7 +49,7 @@ function setup(account: "linked" | "expiring" | "expired" | null, expiresAt = T(
     hoursJson: HOURS_MON_SAT,
     parknycConfirmation: "seed",
   });
-  return { t, session };
+  return { t, session, clock };
 }
 
 const extend = (t: ReturnType<typeof makeTestApp>, sessionId: string) =>
@@ -128,10 +129,20 @@ describe("the driver's extend", () => {
     expireUnderLock(t);
     const res = await extend(t, session.id);
     expect(res.statusCode).toBe(409);
-    expect(res.json()).toMatchObject({ error: "policy_violation", rule: "provider_not_linked" });
+    // The same answer as before the lock: to the link flow.
+    expect(res.json()).toMatchObject({
+      error: "provider_not_linked",
+      provider: "parknyc",
+      displayName: "ParkNYC",
+    });
     const row = t.state.decisions.filter((d) => d.kind === "session_extend").at(-1)!;
     expect(row.rule).toBe("provider_not_linked");
-    expect(row.inputs).toMatchObject({ underLock: true });
+    expect(row.inputs).toMatchObject({
+      underLock: true,
+      provider: "parknyc",
+      accountStatus: "expired",
+    });
+    expect(row.outcome).toMatchObject({ allowed: false, accountStatus: "expired" });
     expect(extendCalls(t)).toBe(0);
   });
 });
@@ -151,6 +162,31 @@ describe("the worker", () => {
     }
   });
 
+  test("an expired account: the row names it, and the driver is asked to reconnect, once", async () => {
+    const { t, session, clock } = setup("expired", T("14:30"));
+    walkingAway(t, session.id);
+    const extender = makeExtender({ ...t.deps, log: { info() {}, warn() {} } });
+    await extender.tick();
+    const tick = t.state.decisions.filter((d) => d.kind === "extend_tick").at(-1)!;
+    expect(tick.rule).toBe("hold_provider_not_linked");
+    expect(tick.inputs).toMatchObject({ provider: "parknyc", accountStatus: "expired" });
+    expect(t.pushes).toHaveLength(1);
+    expect(t.pushes[0]!.push).toEqual({
+      type: "provider_relink",
+      title: "Reconnect ParkNYC",
+      body: "Zone 417371 expires in 10 min. Reconnect ParkNYC to extend it.",
+      extra: {
+        provider: "parknyc",
+        zoneNumber: "417371",
+        deepLink: "parkagent://providers/link?provider=parknyc",
+      },
+    });
+    // The same hold a minute later: no second push.
+    clock.now = T("14:21");
+    await extender.tick();
+    expect(t.pushes).toHaveLength(1);
+  });
+
   test("expired as the lock is taken: booked as the hold, not an executor failure", async () => {
     const { t, session } = setup("linked", T("14:30"));
     walkingAway(t, session.id);
@@ -162,6 +198,8 @@ describe("the worker", () => {
       action: "hold",
       code: "provider_not_linked",
       underLock: true,
+      provider: "parknyc",
+      accountStatus: "expired",
     });
     expect(extendCalls(t)).toBe(0);
   });

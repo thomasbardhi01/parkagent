@@ -236,6 +236,27 @@ export function providerRelinkPush(args: { provider: string; displayName: string
   };
 }
 
+/** The worker would extend, but the session's parking account is no
+ * longer usable (unlinked, or expired): a re-link, said for this meter,
+ * with the same link-flow deep link as providerRelinkPush. */
+export function reconnectToExtendPush(args: {
+  provider: string;
+  displayName: string;
+  zoneNumber: string;
+  minutesLeft: number;
+}): Push {
+  return {
+    type: "provider_relink",
+    title: `Reconnect ${args.displayName}`,
+    body: `Zone ${args.zoneNumber} expires in ${args.minutesLeft} min. Reconnect ${args.displayName} to extend it.`,
+    extra: {
+      provider: args.provider,
+      zoneNumber: args.zoneNumber,
+      deepLink: `parkagent://providers/link?provider=${encodeURIComponent(args.provider)}`,
+    },
+  };
+}
+
 /** A link that outlasted the app's wait: the user moved on (onboarding's
  * "Continue — we'll let you know"), so the outcome arrives as a push. */
 export function providerLinkedPush(args: {

@@ -128,6 +128,9 @@ export type ExtensionOutcome =
        * it made there (the caller's ledger row says what it judged on);
        * null when it refused before reading it. */
       spentTodayUsd?: number | null;
+      /** The provider account's status as the gate read it there (null:
+       * none), on a refusal it made there. */
+      accountStatus?: string | null;
       diagnostics?: ExecutorDiagnostics;
       executor?: Record<string, unknown>;
       hold?: HoldOutcome;
@@ -241,7 +244,9 @@ export async function applyExtension(
         price,
         durationMs: 0,
         // The facts the refusal was judged on, for the caller's ledger row.
-        ...(refusedConsent(gate) ? {} : { spentTodayUsd: gate.spentTodayUsd }),
+        ...(refusedConsent(gate)
+          ? {}
+          : { spentTodayUsd: gate.spentTodayUsd, accountStatus: gate.accountStatus }),
       };
       return outcome;
     }

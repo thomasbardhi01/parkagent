@@ -1165,9 +1165,14 @@ against the zone's max stay. An extension also needs the session's
 provider account to be usable, as a start does: unlinked, or `expired` (the
 health job's mark), answers `409 {"error": "provider_not_linked",
 provider, displayName}` like a start, with nothing asked of the provider;
-`expiring` still pays. The same check runs again under the extension lock
-(`409 policy_violation {rule: "provider_not_linked"}` there), and the
-worker holds as `hold_provider_not_linked`. Decisions kind `session_extend`; session
+`expiring` still pays. The same check runs again under the extension lock,
+with the same answer (the row and its outcome carry the account's
+`accountStatus` there). The worker holds as `hold_provider_not_linked`,
+with the provider and `accountStatus` on the tick's inputs, and pushes a
+`provider_relink` once per rule change: "Zone … expires in … min.
+Reconnect … to extend it.", with the link flow's
+`parkagent://providers/link?provider=…` deep link. The provider is read
+from the session's zone, as the start's. Decisions kind `session_extend`; session
 event `extended` (details.source `"manual"` — the worker's are `"auto"`).
 When the provider answers with its "No Meter Parking" notice, the reply is
 `409 {"error": "free_period", "notice"}` — a hold, not a failure: the

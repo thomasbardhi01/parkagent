@@ -15,7 +15,7 @@ import { afterEach, expect, test, vi } from "vitest";
 
 import { makeExtender } from "../src/jobs/extendTick.js";
 import type { GateIntent, GateResult } from "../src/services/moneyGate.js";
-import { API_KEY, HOURS_MON_SAT, makeTestApp, seedSession } from "./helpers.js";
+import { API_KEY, HOURS_MON_SAT, makeTestApp, seedAwayPark, seedSession } from "./helpers.js";
 
 const asked = vi.hoisted(() => [] as { intent: GateIntent; result: GateResult }[]);
 /** A rule the gate answers with under the lock, in place of its own. */
@@ -61,6 +61,8 @@ test("a negative stay left reaches the gate as minutes_invalid, and nothing is b
     hoursJson: HOURS_MON_SAT,
     parknycConfirmation: "dry-seed",
   });
+  // Walked away from the car (FR-55): only a park row says the phone is away.
+  seedAwayPark(t.state, session);
   [100, 300, 600].forEach((distM, i) => {
     t.state.locationFixes.push({
       id: `f${i + 1}`,
@@ -87,6 +89,8 @@ test("a negative stay left reaches the gate as minutes_invalid, and nothing is b
   expect(t.executorCalls.filter((c) => c.op === "extend")).toHaveLength(0);
   const tick = t.state.decisions.filter((d) => d.kind === "extend_tick").at(-1)!;
   expect(tick.outcome).not.toMatchObject({ action: "extend" });
+  // The phone is away: the hold is the gate's, not a position hold.
+  expect(tick.inputs).toMatchObject({ position: "away" });
 });
 
 afterEach(() => {
@@ -119,6 +123,8 @@ function extendable() {
     hoursJson: HOURS_MON_SAT,
     parknycConfirmation: "dry-seed",
   });
+  // Walked away from the car (FR-55): only a park row says the phone is away.
+  seedAwayPark(t.state, session);
   [100, 300, 600].forEach((distM, i) => {
     t.state.locationFixes.push({
       id: `f${i + 1}`,

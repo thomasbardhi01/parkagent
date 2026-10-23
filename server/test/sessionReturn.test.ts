@@ -250,9 +250,11 @@ test("a session whose phone never went far isn't ended by standing near the car"
   const t = makeApp();
   const parked = await post(t.app, "/parked", parkedBody({ outcomes: OUTCOMES }));
   const parkedEventId = parked.json()["parkedEventId"] as string;
-  // On foot into the shop the car is parked in front of.
+  // On foot into the shop the car is parked in front of. (22 m with 8 m of
+  // error: its error stops past the car's door. At 18 m, as this once read,
+  // it reaches within 10 m, and that left_car is refused now: #264.)
   t.tick(40);
-  await post(t.app, "/location", fix(t, 18, { event: "left_car" }));
+  await post(t.app, "/location", fix(t, 22, { event: "left_car" }));
   await post(t.app, `/parked/${parkedEventId}/confirm`, {});
   const session = t.state.sessions.at(-1)!;
   expect(session.status).toBe("active");

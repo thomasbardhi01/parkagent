@@ -8,7 +8,7 @@
  */
 
 import type { AppDb, ParkFixRow, PendingParkRow, SessionRow } from "../../db.js";
-import { START_DEADLINE_MS } from "../pendingSession.js";
+import { START_DEADLINE_MS, mayBeAtTheDoor } from "../pendingSession.js";
 
 export type Severity = "high" | "medium" | "low";
 
@@ -106,12 +106,25 @@ export function confirmedStartedWithoutLeftCar(data: AuditData): string[] {
       .filter((d) => d.kind === "session_start_walkaway" && d.rule === "started")
       .filter((d) => rec(d.inputs)["trigger"] === "walk_away")
       .filter((d) => {
-        if (rec(rec(d.inputs)["fix"])["event"] === "left_car") return false;
+        // The start's own fix carried a left_car that counts: one whose
+        // error doesn't reach the car's door (a door one is #264 itself).
+        const startFix = rec(rec(d.inputs)["fix"]);
+        if (
+          startFix["event"] === "left_car" &&
+          typeof startFix["distanceM"] === "number" &&
+          typeof startFix["accuracyM"] === "number" &&
+          !mayBeAtTheDoor({ distanceM: startFix["distanceM"], accuracyM: startFix["accuracyM"] })
+        ) {
+          return false;
+        }
         const park = parkOf.get(d.parkedEventId);
         const kept = park ? (data.parkFixes.get(park.id) ?? []) : [];
         return !kept.some(
           (f) =>
             f.event === "left_car" &&
+            // Read: one refused at the car's door (`may_be_at_door`) starts
+            // nothing; a walk it said is taken as fix_away, asked again,
+            // and paid on that tap (trigger "confirm"), never here (#264).
             f.rejected === null &&
             f.receivedAt.getTime() <= d.createdAt.getTime(),
         );

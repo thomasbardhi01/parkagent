@@ -1238,8 +1238,31 @@ the car. The record is one `pending_parks` row per held park
 10 s apart are clear of the car even allowing for their own error
 (`distance − accuracy > 30 m`) and no more than 3 m/s apart (a car pulling
 away covers the same ground, faster, and is not a walk-away), or when the
-app reports `left_car` (motion has the driver on foot) and no sharp fix
-(accuracy ≤ 20 m) has it within 10 m of the car. A fix whose `speedMps` is
+app reports `left_car` (motion has the driver on foot) on a fix that
+can't have the phone at the car's door: more than 10 m from the car after
+subtracting its accuracy, sharp or blurry alike (an urban seat fix reads
+30–50 m off and 30–50 m blurry, with the driver still in the car, #264).
+One too blurry to read (worse than 65 m) can't show the phone has left
+either. A `left_car` refused this way is no walk-away, but it is kept
+(`walk_said_at`): the next fix measured after it that can't be at the door
+and isn't at driving speed is a walk-away, but one read like a walk-away by
+distance (`fix_away`), never the app's word. So a Pay tapped at the car is
+asked again (`prompted`), and only that second tap pays: a false walking
+reading in the seat followed by one blurry seat fix must never start it.
+A fix within 30 m of the car measured since the walk was said, a
+driving-speed fix, a usable fix that moved faster than anyone walks since
+the walk was said on a usable fix (`(distance − accuracy − 10 m) / seconds
+since > 3 m/s`, whatever the fix's own speed says), or `returned_to_car`
+forgets it. A fix too blurry to read never does. The app's `left_car`
+again, off the door but at that pace (a car pulling away while CoreMotion's
+newest confident reading is still the walk), isn't taken either: the walk
+stays kept, and the next fix forgets it. The pace is measured from the
+door fix's measurement, and the app's `left_car` rides its last fix, which
+can be minutes old, so a drive-off with no speed can still read as a
+walk-away by distance after one. That only asks again: a tap is what
+pays. Its trace row says why it didn't count (`rejected:
+"may_be_at_door"`). After the walk-away, the app's `left_car` clears
+`back_at` only on a fix that can't be at the door. A fix whose `speedMps` is
 over 3 m/s is a moving car: it never counts toward leaving (its
 `left_car` included) and starts the pair over. A fix with accuracy worse
 than 65 m, reported more than 5 minutes off the server's clock, measured
@@ -1399,8 +1422,9 @@ The pair's first fix is kept when the next comes under 10 s after it
 walking pace, the second fix starts a new pair (the gap may be a subway
 ride). A usable fix that isn't clear of the car breaks the pair (one
 within 30 m, sharp or blurry, also reads `back_at` anew); an unusable one
-(accuracy worse than 65 m) is skipped, except that the app's `left_car`
-on it still counts.
+(accuracy worse than 65 m) is skipped, and so is the app's `left_car` on
+it: `left_car` clears `back_at` only on a fix that can't be at the car's
+door (#264).
 
 A drive-off is a return (`why: "drove_off"`) even inside the minute, and
 it cancels a park not yet paid, however it was read: a tap after it would
@@ -2736,7 +2760,7 @@ to five example park (`parkedEventId`) or session ids:
 | Invariant | Severity | Fires when |
 |---|---|---|
 | `extended_at_car` | high | an `extend_tick` row extended with `position` other than `away` |
-| `confirmed_started_without_left_car` | high | a walk-away start of a Pay tapped at the car had no `left_car`, on its fix or on any fix the park kept before it |
+| `confirmed_started_without_left_car` | high | a walk-away start of a Pay tapped at the car had no `left_car` that counts: on its own fix one whose error doesn't reach the car's door, or a readable one the park kept before it |
 | `dry_run_mismatch` | high | a walk-away start's dry run differs from the prompt's (`shownDryRun`) |
 | `starting_too_long` | medium | a start timed out, was swept (`start_stale`), was adopted late, or is still `starting` past 3 minutes |
 | `transition_skipped` | medium | a paid, held park's decisions lack `street_pending`, `street_confirmed`, or its start |

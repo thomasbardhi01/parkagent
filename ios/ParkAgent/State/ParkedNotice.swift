@@ -516,9 +516,11 @@ enum ParkedNotice {
     static func expiredContent(zoneNumber: String?) -> Content {
         Content(
             title: zoneNumber.map { "Zone \($0) wasn't paid" } ?? "The meter wasn't paid",
-            // True with motion or without it: no walk-away came within the
-            // hour, so nothing started (#226). It promises nothing.
-            body: "You tapped Pay at the car, and an hour passed before you walked away, so nothing was paid. If you're still parked, pay in the app."
+            // True with motion or without it, and when a walk was said but
+            // no fix could show it off the car (#264): no walk-away was
+            // confirmed within the hour, so nothing started (#226). It
+            // promises nothing.
+            body: "You tapped Pay at the car, and we couldn't confirm you'd walked away within the hour, so nothing was paid. If you're still parked, pay in the app."
         )
     }
 

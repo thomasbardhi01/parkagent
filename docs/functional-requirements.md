@@ -1629,8 +1629,10 @@ and the phone's fixes (`POST /location`) are what move it on.
   opens the app, the Park tab shows the held park passively;
 - **the walk-away asks, once, with the server's quote.** The phone has left
   when two fixes are clear of the car allowing for their own error, or the
-  app reports the driver on foot (`left_car`) and no sharp fix has it at
-  the car door. Two fixes faster apart than someone on foot (a car
+  app reports the driver on foot (`left_car`) on a fix whose error doesn't
+  reach within 10 m of the car (one that does is kept, and the next fix off
+  the car reads as a walk-away by distance: a Pay tapped at the car is
+  asked again, never started on it). Two fixes faster apart than someone on foot (a car
   pulling away) are not a walk-away, and one measurement sent twice is one
   fix. The server answers with the prompt, quoted then for the
   stay the session will buy, and the phone shows it as written: "Pay

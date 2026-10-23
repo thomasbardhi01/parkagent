@@ -547,6 +547,11 @@ model PendingPark {
   driveAt        DateTime? @map("drive_at") @db.Timestamptz(6)
   driveDistanceM Float?    @map("drive_distance_m")
   driveSpeedMps  Float?    @map("drive_speed_mps")
+  // The app's left_car, refused on a fix that may have the phone at the
+  // car's door (#264): a later fix off the car takes the walk-away it said.
+  walkSaidAt     DateTime? @map("walk_said_at") @db.Timestamptz(6)
+  // …and whether that fix was usable: a pace since it is read only then.
+  walkSaidUsable Boolean?  @map("walk_said_usable")
   promptedAt    DateTime? @map("prompted_at") @db.Timestamptz(6)
   confirmedAt   DateTime? @map("confirmed_at") @db.Timestamptz(6)
   startingAt    DateTime? @map("starting_at") @db.Timestamptz(6)

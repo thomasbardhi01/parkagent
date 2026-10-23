@@ -214,8 +214,10 @@ test("confirmed_started_without_left_car: an early Pay started with no on-foot r
       inputs: { trigger: "walk_away", fix },
       parkedEventId,
     });
-  started("pe-bare", { distanceM: 90 });
-  started("pe-event", { distanceM: 90, event: "left_car" });
+  started("pe-bare", { distanceM: 90, accuracyM: 8 });
+  started("pe-event", { distanceM: 90, accuracyM: 8, event: "left_car" });
+  // On a left_car its fix's error reaches the car's door from: #264 itself.
+  started("pe-door", { distanceM: 8, accuracyM: 10, event: "left_car" });
   // Its start fix carried none, but the park kept one from before it.
   started("pe-kept", { distanceM: 95 });
   t.state.pendingParks.push(
@@ -238,7 +240,7 @@ test("confirmed_started_without_left_car: an early Pay started with no on-foot r
     rejected: null,
   });
   const f = findingOf(await runAudit(t.deps.db, WINDOW), "confirmed_started_without_left_car");
-  expect(f).toMatchObject({ count: 1, examples: ["pe-bare"] });
+  expect(f).toMatchObject({ count: 2, examples: ["pe-bare", "pe-door"] });
 });
 
 test("dry_run_mismatch: a start that wasn't the dry run the prompt said", async () => {

@@ -100,9 +100,27 @@ export const MAX_WALK_MPS = 3;
  * reads 0 for a phone standing still (a car at a light included), and a
  * few tenths for one sitting in GPS noise. */
 export const MIN_WALK_MPS = 0.5;
-/** The app's "left the car" is refused only by a sharp fix this close. */
+/** The app's "left the car" is refused on a fix whose error reaches this
+ * close to the car (mayBeAtTheDoor). */
 export const DOOR_RADIUS_M = 10;
-export const DOOR_ACCURACY_M = 20;
+
+/**
+ * Whether a fix may have the phone at the car's door, so the app's
+ * `left_car` on it can't be the walk-away: nothing pays on a fix that has
+ * the phone at the car. The phone may be anywhere in the fix's error, and
+ * the whole of that must be clear of the door (`distance − accuracy >
+ * DOOR_RADIUS_M`), sharp or blurry alike: in an urban canyon a seat fix
+ * reads 30–50 m off, 30–50 m blurry (#264). Too blurry to read at all, it
+ * can't show the phone has left. A refused `left_car` is kept
+ * (`walkSaidAt`): the app says it again with its next fix while the driver
+ * is on foot (LocationReporter.taken), and a later fix off the car takes
+ * it as a walk-away by distance (fix_away: asked again, never started) even
+ * once the app has stopped saying it.
+ */
+export function mayBeAtTheDoor(fix: { distanceM: number; accuracyM: number }): boolean {
+  if (fix.accuracyM > FIX_USABLE_ACCURACY_M) return true;
+  return fix.distanceM - fix.accuracyM <= DOOR_RADIUS_M;
+}
 /** A report, or a measurement, older than this describes where the phone
  * was. */
 export const LIFECYCLE_FIX_MAX_AGE_MS = 5 * 60_000;
@@ -257,6 +275,15 @@ export interface WalkState {
   driveAt: Date | null;
   driveDistanceM: number | null;
   driveSpeedMps: number | null;
+  /** Before leaving: the app's `left_car`, refused because its fix may
+   * have had the phone at the car's door (mayBeAtTheDoor), and not yet
+   * taken back. A later fix off the car takes the walk-away it said, as
+   * fix_away: asked again, never started. */
+  walkSaidAt: Date | null;
+  /** …and whether the fix it was said on was usable: only a usable one
+   * places the phone within the door's reach, so only then is a pace since
+   * it a pace (a fix worse than 65 m says nothing of where the walk began). */
+  walkSaidUsable: boolean | null;
 }
 
 export interface WalkFix {
@@ -296,8 +323,10 @@ export interface WalkStep {
  *
  * Leaving: two separate measurements clear of the car even allowing for
  * their own error, at walking pace between them, or the app's own report
- * (on foot) unless a sharp fix has it at the door. A fix at driving speed
- * is never part of leaving.
+ * (on foot) on a fix whose error doesn't reach the car's door — or, said on
+ * one that does, the next fix that doesn't, read as fix_away
+ * (mayBeAtTheDoor, `walkSaidAt`).
+ * A fix at driving speed is never part of leaving.
  * Returning: the app's report beside the car, or a minute of measurements
  * within reach of it — and that only after a fix put the phone clear of
  * the car, so a driver whose errand is right beside the car isn't "back"
@@ -327,8 +356,13 @@ export function advanceWalk(before: WalkState, fix: WalkFix): WalkStep {
     state.driveDistanceM = null;
     state.driveSpeedMps = null;
   };
+  const forgetWalk = () => {
+    state.walkSaidAt = null;
+    state.walkSaidUsable = null;
+  };
   const leave = (why: WalkReason) => {
     state.leftCarAt = fix.at;
+    forgetWalk();
     state.nearSince = null;
     state.atCarSince = null;
     state.backAt = null;
@@ -337,16 +371,72 @@ export function advanceWalk(before: WalkState, fix: WalkFix): WalkStep {
   };
 
   if (state.leftCarAt === null) {
-    if (fix.event === "returned_to_car") return step({ droveOff: true, why: "drove_off" });
+    if (fix.event === "returned_to_car") {
+      forgetWalk();
+      return step({ droveOff: true, why: "drove_off" });
+    }
     if (fast) {
       // In a moving car: nothing about it is a driver on foot, and the
-      // pair it would have finished starts over.
+      // pair it would have finished starts over, and a walk the app said
+      // at the door is over.
+      state.farAt = null;
+      state.farDistanceM = null;
+      forgetWalk();
+      return step({});
+    }
+    const offTheCar = !mayBeAtTheDoor(fix);
+    // Since the walk was said at the door (measured clocks), and whether the
+    // phone has since gone faster than anyone walks: the walk was said
+    // within the door's reach (a usable fix), so it is at least
+    // distance − accuracy − DOOR_RADIUS_M from where it was, whatever the
+    // fix's own speed says (absent, -1, or a car's 2.9). The anchor is the
+    // door fix's measurement, and the app's left_car rides its last fix,
+    // which can be minutes old: a drive-off with no speed can still read as
+    // a walk-away by distance, which only asks again (#264 review).
+    const sinceS =
+      state.walkSaidAt === null
+        ? null
+        : (fix.measuredAt.getTime() - state.walkSaidAt.getTime()) / 1000;
+    const tooFast =
+      sinceS !== null &&
+      sinceS > 0 &&
+      state.walkSaidUsable === true &&
+      usable &&
+      (fix.distanceM - fix.accuracyM - DOOR_RADIUS_M) / sinceS > MAX_WALK_MPS;
+    if (fix.event === "left_car" && !offTheCar) {
+      // On foot, by the app's word, on a fix that may have the phone at
+      // the door: not the walk-away, but kept (the first such).
+      if (state.walkSaidAt === null) {
+        state.walkSaidAt = fix.measuredAt;
+        state.walkSaidUsable = usable;
+      }
+    } else if (fix.event !== "left_car" && sinceS !== null) {
+      if ((near && sinceS >= 0) || tooFast) {
+        // Back within reach of the car since, or gone faster than anyone
+        // walks: that walk ended at the car.
+        forgetWalk();
+      } else if (offTheCar && sinceS > 0) {
+        // Off the car since the app said the driver was on foot, on a fix
+        // that can show it: a walk-away, but read like one by distance
+        // (fix_away), never the app's word. A Pay tapped at the car is
+        // asked again, and only that second tap pays: one blurry seat fix
+        // after a false walking reading must not start it (#264 review).
+        state.farAt = clear ? fix.measuredAt : null;
+        state.farDistanceM = clear ? fix.distanceM : null;
+        return leave("fix_away");
+      }
+    }
+    if (fix.event === "left_car" && offTheCar && tooFast) {
+      // The app's left_car again, but the phone has gone faster than anyone
+      // walks since it first said so at the door: a car pulling away while
+      // CoreMotion's newest confident reading is still the walk. Not taken
+      // (an early Pay, or an agent-bound park, would start in the seat);
+      // the walk stays kept, and the next fix forgets it at this pace.
       state.farAt = null;
       state.farDistanceM = null;
       return step({});
     }
-    const atTheDoor = usable && fix.accuracyM <= DOOR_ACCURACY_M && fix.distanceM <= DOOR_RADIUS_M;
-    if (fix.event === "left_car" && !atTheDoor) {
+    if (fix.event === "left_car" && offTheCar) {
       // The app's own word first, even on a fix that also finishes a pair:
       // only it starts an early Pay. On foot, not necessarily far: a
       // return by distance waits for a fix that is clear of the car.
@@ -391,10 +481,11 @@ export function advanceWalk(before: WalkState, fix: WalkFix): WalkStep {
   if (fix.event === "returned_to_car" && usable && fix.distanceM <= RETURN_EVENT_RADIUS_M) {
     return step({ returned: true, why: "returned_event" });
   }
-  if (fix.event === "left_car" && !fast) {
+  if (fix.event === "left_car" && !fast && !mayBeAtTheDoor(fix)) {
     // The app has the driver on foot again: whatever brought the phone
     // back to the car, it isn't driving off. (Not on a fix at driving
-    // speed, which no rule reads as on foot.)
+    // speed, which no rule reads as on foot, nor on one that may have the
+    // phone at the door: a seat fix would release a tap's hold, #264.)
     state.backAt = null;
     forgetDrive();
   }
@@ -751,6 +842,8 @@ export const walkStateOf = (park: PendingParkRow): WalkState => ({
   driveAt: park.driveAt,
   driveDistanceM: park.driveDistanceM,
   driveSpeedMps: park.driveSpeedMps,
+  walkSaidAt: park.walkSaidAt,
+  walkSaidUsable: park.walkSaidUsable,
 });
 
 /** Written with every move to `started`. A session starts with the phone

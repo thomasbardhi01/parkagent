@@ -28,6 +28,7 @@ import type { AppDeps } from "../app.js";
 import type { PendingParkRow, SessionRow } from "../db.js";
 import type { FixRecord, ParkPrompt } from "../services/pendingSession.js";
 import {
+  MAX_WALK_MPS,
   PARK_OPEN,
   SAME_SPOT_M,
   advanceWalk,
@@ -35,6 +36,7 @@ import {
   endSession,
   fixRejection,
   lifecycleOf,
+  mayBeAtTheDoor,
   metersBetween,
   settlePark,
   startParkSession,
@@ -133,17 +135,27 @@ export function registerLocation(app: FastifyInstance, deps: AppDeps, sessions: 
     const reportedAt = new Date(body.ts);
     const measuredAt = body.measuredAt ? new Date(body.measuredAt) : reportedAt;
     const rejected = fixRejection(park.parkedAt, measuredAt, reportedAt, at);
-    await keep(park, body, at, rejected);
-    if (rejected !== null) return null;
+    if (rejected !== null) {
+      await keep(park, body, at, rejected);
+      return null;
+    }
     const fix = measure(park, body);
+    const speedMps = speedOf(body);
     const step = advanceWalk(walkStateOf(park), {
       distanceM: fix.distanceM,
       accuracyM: fix.accuracyM,
       at: reportedAt,
       measuredAt,
-      speedMps: speedOf(body),
+      speedMps,
       event: body.event,
     });
+    // The fix is read; only its `left_car` isn't taken as the walk-away,
+    // its error reaching the car's door (#264). Said on the trace, why.
+    const atTheDoor =
+      body.event === "left_car" &&
+      !(typeof speedMps === "number" && speedMps > MAX_WALK_MPS) &&
+      mayBeAtTheDoor(fix);
+    await keep(park, body, at, atTheDoor ? "may_be_at_door" : null);
     return { fix, step };
   }
 

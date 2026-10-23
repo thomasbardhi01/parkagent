@@ -276,6 +276,10 @@ final class ParkedNoticeWalkAwayTests: XCTestCase {
         XCTAssertTrue(content.body.contains("nothing was paid"), content.body)
         // Without motion a kept Pay never starts on its own: no promise it would have.
         XCTAssertFalse(content.body.contains("pays when you walk away"), content.body)
+        // A walk said but never shown off the car (#264) is no walk-away: the
+        // body claims none happened, only that none was confirmed.
+        XCTAssertTrue(content.body.contains("couldn't confirm you'd walked away"), content.body)
+        XCTAssertFalse(content.body.contains("before you walked away"), content.body)
         XCTAssertEqual(ParkedNotice.expiredContent(zoneNumber: nil).title, "The meter wasn't paid")
     }
 

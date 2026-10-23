@@ -12,6 +12,7 @@ import { afterEach, expect, test, vi } from "vitest";
 
 import type { PendingParkRow, ZoneTermsRow } from "../src/db.js";
 import { makeExtender } from "../src/jobs/extendTick.js";
+import { confirmedStartedWithoutLeftCar, loadAuditData } from "../src/services/audit/invariants.js";
 import type { Executor, ExecutorResult } from "../src/services/executor.js";
 import { DryRunExecutor } from "../src/services/executor.js";
 import type { ParkStarter } from "../src/services/pendingSession.js";
@@ -20,6 +21,8 @@ import {
   LIFECYCLE_FIX_MAX_AGE_MS,
   START_DEADLINE_MS,
   STARTING_STALE_MS,
+  advanceWalk,
+  mayBeAtTheDoor,
   startParkSession,
 } from "../src/services/pendingSession.js";
 import type { FakeDbState } from "./helpers.js";
@@ -35,6 +38,7 @@ import {
   parkedBody,
   seedProviderAccount,
   seedSession,
+  setFakeRowClock,
 } from "./helpers.js";
 
 const HEADERS = { "x-api-key": API_KEY };
@@ -136,6 +140,8 @@ function shownFor(state: FakeDbState): ShownAtStart {
 // Every start, in every test here: the provider is asked for the zone
 // number, the minutes and the amount the driver was shown, and through the
 // dry-run executor exactly when the driver was told it is a dry run.
+afterEach(() => setFakeRowClock(() => new Date(MONDAY_2PM)));
+
 afterEach(() => {
   for (const t of apps.splice(0)) {
     const starts = t.executorCalls.filter((c) => c.op === "start");
@@ -336,11 +342,485 @@ test("the app's own left_car report is a walk-away too, unless its fix is at the
   const door = await post(t.app, "/location", fix(t, 2, { accuracy: 5, event: "left_car" }));
   expect(door.json()).toMatchObject({ park: { status: "at_car" } });
   t.tick(20);
-  // On foot into the shop the car is parked in front of.
-  const left = await post(t.app, "/location", fix(t, 18, { event: "left_car" }));
+  // On foot into the shop the car is parked in front of. (22 m with 8 m of
+  // error clears the door; 18 m, as this once read, reaches within 10 m of
+  // the car, refused now: #264.)
+  const left = await post(t.app, "/location", fix(t, 22, { event: "left_car" }));
   expect(left.json()).toMatchObject({ park: { status: "prompted" } });
   expect((left.json()["prompt"] as { kind: string }).kind).toBe("confirm");
   expect(t.state.decisions.find((d) => d.kind === "street_prompt")!.rule).toBe("left_car_event");
+});
+
+test("a left_car on a blurry seat fix never starts a Pay tapped at the car; the app's next, clearer one does (#264)", async () => {
+  const t = makeApp();
+  const parked = await park(t.app);
+  await post(t.app, `/parked/${parked.parkedEventId}/confirm`, {});
+  expect(t.state.pendingParks[0]!.status).toBe("confirmed");
+
+  // In the seat between tall buildings: 35 m off, 35 m blurry. The phone
+  // may be in the car, so the app's left_car on it is no walk-away.
+  t.tick(30);
+  const seat = await post(t.app, "/location", fix(t, 35, { accuracy: 35, event: "left_car" }));
+  expect(seat.json()).toMatchObject({ park: { status: "confirmed" } });
+  expect(t.state.pendingParks[0]!.leftCarAt).toBeNull();
+  // Too blurry to place the phone at all is no walk-away either.
+  t.tick(20);
+  const lost = await post(t.app, "/location", fix(t, 300, { accuracy: 80, event: "left_car" }));
+  expect(lost.json()).toMatchObject({ park: { status: "confirmed" } });
+  expect(t.calls.start).toBe(0);
+  expect(t.state.sessions).toEqual([]);
+
+  // The app says it again with the next fix while the driver is still on
+  // foot: 70 m off, 30 m blurry, so not within reach of the door.
+  t.tick(20);
+  const away = await post(t.app, "/location", fix(t, 70, { accuracy: 30, event: "left_car" }));
+  expect(away.json()).toMatchObject({ park: { status: "started" } });
+  expect(t.calls.start).toBe(1);
+});
+
+test("a short walk in an urban canyon asks again about a Pay tapped at the car: the walk said at the door is taken by the next fix off it, and the second tap pays (#264 review, R5)", async () => {
+  const t = makeApp();
+  // Decisions are stamped when they're made, as Postgres stamps them.
+  setFakeRowClock(() => t.clock.now);
+  const parked = await park(t.app);
+  await post(t.app, `/parked/${parked.parkedEventId}/confirm`, {});
+  // Walking 40 m to a door on the same block, every fix 40 m blurry: the
+  // app's left_car rides each, and each may have the phone at the door.
+  for (const d of [15, 30, 45]) {
+    t.tick(15);
+    await post(t.app, "/location", fix(t, d, { accuracy: 40, event: "left_car", speedMps: 1.3 }));
+  }
+  expect(t.state.pendingParks[0]).toMatchObject({ status: "confirmed", leftCarAt: null });
+  expect(t.state.pendingParks[0]!.walkSaidAt).not.toBeNull();
+  expect(t.calls.start).toBe(0);
+  // Each is on the park's trace with why it didn't count.
+  expect(t.state.parkFixes.map((f) => f.rejected)).toEqual([
+    "may_be_at_door",
+    "may_be_at_door",
+    "may_be_at_door",
+  ]);
+  // Indoors and seated: motion still, so the app says no more; Wi-Fi fixes
+  // 40 m ± 15 m, which no error reaches the door from.
+  t.tick(60);
+  const inside = await post(t.app, "/location", fix(t, 40, { accuracy: 15 }));
+  // Read like a walk-away by distance, never the app's word: asked again.
+  expect(inside.json()).toMatchObject({ park: { status: "prompted" } });
+  expect(t.calls.start).toBe(0);
+  expect(t.state.pendingParks[0]!.walkSaidAt).toBeNull();
+  // The driver's own tap, now, is what pays.
+  t.tick(20);
+  const paid = await post(t.app, `/parked/${parked.parkedEventId}/confirm`, {});
+  expect(paid.json()).toMatchObject({ status: "started" });
+  expect(t.calls.start).toBe(1);
+  // The nightly audit sees the left_car the start came from.
+  const window = {
+    from: new Date(t.clock.now.getTime() - 3_600_000),
+    to: new Date(t.clock.now.getTime() + 60_000),
+    now: t.clock.now,
+  };
+  expect(confirmedStartedWithoutLeftCar(await loadAuditData(t.deps.db, window))).toEqual([]);
+});
+
+test("a false walking reading in the seat, then one canyon seat fix: asked again, never started (#264 review, P1)", async () => {
+  const t = makeApp();
+  const parked = await park(t.app);
+  await post(t.app, `/parked/${parked.parkedEventId}/confirm`, {});
+  // Motion flickers to walking in the seat: left_car on an 8 m ± 10 m fix.
+  t.tick(30);
+  await post(t.app, "/location", fix(t, 8, { accuracy: 10, event: "left_car", speedMps: 0 }));
+  expect(t.state.pendingParks[0]!.walkSaidAt).not.toBeNull();
+  // Still again, the app says nothing more; the next seat fix reads
+  // 35 m ± 20 m. A walk-away by distance at most: asked, not paid.
+  t.tick(60);
+  const seat = await post(t.app, "/location", fix(t, 35, { accuracy: 20, speedMps: 0 }));
+  expect(seat.json()).toMatchObject({ park: { status: "prompted" } });
+  expect(t.calls.start).toBe(0);
+});
+
+test("…and fifty minutes of blurry seat fixes later, the same: asked again, never started (P1b)", async () => {
+  const t = makeApp();
+  const parked = await park(t.app);
+  await post(t.app, `/parked/${parked.parkedEventId}/confirm`, {});
+  t.tick(30);
+  await post(t.app, "/location", fix(t, 8, { accuracy: 10, event: "left_car" }));
+  for (let i = 0; i < 49; i += 1) {
+    t.tick(60);
+    await post(t.app, "/location", fix(t, 45, { accuracy: 40 }));
+  }
+  t.tick(60);
+  const late = await post(t.app, "/location", fix(t, 33, { accuracy: 12 }));
+  expect(late.json()).toMatchObject({ park: { status: "prompted" } });
+  expect(t.calls.start).toBe(0);
+});
+
+test("a walk said at the door is forgotten when the phone then moves faster than anyone walks, whatever its speed says (P2)", async () => {
+  for (const speedMps of [undefined, -1, null, 2.9]) {
+    const label = String(speedMps);
+    const t = makeApp();
+    const parked = await park(t.app);
+    await post(t.app, `/parked/${parked.parkedEventId}/confirm`, {});
+    t.tick(30);
+    await post(t.app, "/location", fix(t, 6, { accuracy: 5, event: "left_car" }));
+    // Back in, pulling away: 150 m in 25 s, with no speed (or a wrong one).
+    t.tick(25);
+    await post(
+      t.app,
+      "/location",
+      fix(t, 150, { accuracy: 20, ...(speedMps === undefined ? {} : { speedMps }) }),
+    );
+    expect(t.state.pendingParks[0]!.walkSaidAt, label).toBeNull();
+    expect(t.state.pendingParks[0]!.status, label).toBe("confirmed");
+    expect(t.calls.start, label).toBe(0);
+  }
+});
+
+test("a walk said on a blurry fix within 30 m is forgotten by the next fix within 30 m, so a later seat fix asks nothing (P3)", async () => {
+  // Why "within 30 m" forgets, not "surely at the car": with the stricter
+  // rule the 25 m ± 10 m seat fix would keep the walk and 32 m ± 5 m would
+  // take it.
+  const t = makeApp();
+  const parked = await park(t.app);
+  await post(t.app, `/parked/${parked.parkedEventId}/confirm`, {});
+  t.tick(30);
+  await post(t.app, "/location", fix(t, 20, { accuracy: 20, event: "left_car" }));
+  t.tick(30);
+  await post(t.app, "/location", fix(t, 25, { accuracy: 10 }));
+  expect(t.state.pendingParks[0]!.walkSaidAt).toBeNull();
+  t.tick(30);
+  const r = await post(t.app, "/location", fix(t, 32, { accuracy: 5 }));
+  expect(r.json()).toMatchObject({ park: { status: "confirmed" } });
+  expect(t.calls.start).toBe(0);
+});
+
+test("a fix measured before the walk was said doesn't take it", async () => {
+  // The outbox delivers an older fix late: off the car, but from before
+  // the app said the driver was on foot.
+  const t = makeApp();
+  const parked = await park(t.app);
+  await post(t.app, `/parked/${parked.parkedEventId}/confirm`, {});
+  t.tick(60);
+  await post(t.app, "/location", fix(t, 8, { accuracy: 10, event: "left_car" }));
+  const said = t.state.pendingParks[0]!.walkSaidAt!;
+  const before = new Date(said.getTime() - 30_000).toISOString();
+  const r = await post(t.app, "/location", fix(t, 60, { accuracy: 10, measuredAt: before }));
+  expect(r.json()).toMatchObject({ park: { status: "confirmed" } });
+  expect(t.state.pendingParks[0]!.walkSaidAt).toEqual(said);
+});
+
+test("a left_car on a fix at driving speed is no walk said at the door: nothing kept, and its trace says nothing of the door", async () => {
+  const t = makeApp();
+  const parked = await park(t.app);
+  await post(t.app, `/parked/${parked.parkedEventId}/confirm`, {});
+  t.tick(30);
+  await post(t.app, "/location", fix(t, 8, { accuracy: 10, event: "left_car", speedMps: 9 }));
+  expect(t.state.pendingParks[0]!.walkSaidAt).toBeNull();
+  expect(t.state.parkFixes.at(-1)!.rejected).toBeNull();
+});
+
+test("the nightly audit flags a walk-away start of a Pay tapped at the car with no readable left_car, a door one included (P6)", async () => {
+  const t = makeApp();
+  setFakeRowClock(() => t.clock.now);
+  const parked = await park(t.app);
+  await post(t.app, `/parked/${parked.parkedEventId}/confirm`, {});
+  t.tick(30);
+  await post(t.app, "/location", fix(t, 70, { accuracy: 10, event: "left_car" }));
+  expect(t.calls.start).toBe(1);
+  const window = {
+    from: new Date(t.clock.now.getTime() - 3_600_000),
+    to: new Date(t.clock.now.getTime() + 60_000),
+    now: t.clock.now,
+  };
+  const data = await loadAuditData(t.deps.db, window);
+  expect(confirmedStartedWithoutLeftCar(data)).toEqual([]);
+  const start = data.decisions.find(
+    (d) => d.kind === "session_start_walkaway" && d.rule === "started",
+  )!;
+  const parkRow = data.parks[0]!;
+  const withStart = (
+    fixInput: Record<string, unknown>,
+    keep: (f: Record<string, unknown>) => object,
+  ) => ({
+    ...data,
+    decisions: data.decisions.map((d) =>
+      d === start ? { ...d, inputs: { ...(d.inputs as object), fix: fixInput } } : d,
+    ),
+    parkFixes: new Map([
+      [parkRow.id, (data.parkFixes.get(parkRow.id) ?? []).map((f) => ({ ...f, ...keep(f) }))],
+    ]),
+  });
+  // No left_car anywhere: flagged.
+  const none = withStart({ distanceM: 70, accuracyM: 10 }, () => ({ event: null }));
+  expect(confirmedStartedWithoutLeftCar(none as typeof data)).toEqual([parked.parkedEventId]);
+  // Only a left_car refused at the door, and the start on a door fix: flagged.
+  const door = withStart({ distanceM: 8, accuracyM: 10 }, () => ({ rejected: "may_be_at_door" }));
+  expect(confirmedStartedWithoutLeftCar(door as typeof data)).toEqual([parked.parkedEventId]);
+});
+
+test("a walk said at the door, then the app's left_car again from a car pulling away (no speed): never started (#264 review, Q8)", async () => {
+  const t = makeApp();
+  const parked = await park(t.app);
+  await post(t.app, `/parked/${parked.parkedEventId}/confirm`, {});
+  // In the seat, a walking reading: left_car at the door, kept.
+  t.tick(30);
+  await post(t.app, "/location", fix(t, 6, { accuracy: 5, event: "left_car" }));
+  expect(t.state.pendingParks[0]!.walkSaidAt).not.toBeNull();
+  // Pulling away while CoreMotion's newest confident reading is still the
+  // walk: the app says left_car again, 150 m in 25 s, no speed.
+  t.tick(25);
+  const r = await post(t.app, "/location", fix(t, 150, { accuracy: 20, event: "left_car" }));
+  expect(r.json()).toMatchObject({ park: { status: "confirmed" } });
+  expect(t.calls.start).toBe(0);
+  // The walk stays kept, and the next fix at this pace forgets it.
+  expect(t.state.pendingParks[0]!.walkSaidAt).not.toBeNull();
+  t.tick(10);
+  await post(t.app, "/location", fix(t, 260, { accuracy: 20 }));
+  expect(t.state.pendingParks[0]!.walkSaidAt).toBeNull();
+  expect(t.calls.start).toBe(0);
+});
+
+test("a walk said at the door, then the app's left_car again at a walk off the door: taken (no pace limit for a walker)", async () => {
+  const t = makeApp();
+  const parked = await park(t.app);
+  await post(t.app, `/parked/${parked.parkedEventId}/confirm`, {});
+  t.tick(30);
+  await post(t.app, "/location", fix(t, 6, { accuracy: 5, event: "left_car" }));
+  t.tick(60);
+  const r = await post(t.app, "/location", fix(t, 70, { accuracy: 10, event: "left_car" }));
+  expect(r.json()).toMatchObject({ park: { status: "started" } });
+  expect(t.calls.start).toBe(1);
+});
+
+test("a fix too blurry to read never forgets a walk said at the door; the next readable one off the car asks (Q3)", async () => {
+  const t = makeApp();
+  const parked = await park(t.app);
+  await post(t.app, `/parked/${parked.parkedEventId}/confirm`, {});
+  t.tick(30);
+  await post(t.app, "/location", fix(t, 8, { accuracy: 10, event: "left_car", speedMps: 1.3 }));
+  // Inside a shop: one Wi-Fi fix jumps 400 m, 100 m blurry.
+  t.tick(60);
+  await post(t.app, "/location", fix(t, 400, { accuracy: 100 }));
+  expect(t.state.pendingParks[0]!.walkSaidAt).not.toBeNull();
+  t.tick(60);
+  const r = await post(t.app, "/location", fix(t, 45, { accuracy: 15 }));
+  expect(r.json()).toMatchObject({ park: { status: "prompted" } });
+});
+
+test("a pace is read only from a walk said on a usable fix: one said worse than 65 m isn't forgotten by a fast-looking fix", async () => {
+  // Said on a fix 80 m blurry, the walk can have begun anywhere in it.
+  const t = makeApp();
+  const parked = await park(t.app);
+  await post(t.app, `/parked/${parked.parkedEventId}/confirm`, {});
+  t.tick(30);
+  await post(t.app, "/location", fix(t, 40, { accuracy: 80, event: "left_car", speedMps: 1.3 }));
+  expect(t.state.pendingParks[0]).toMatchObject({ walkSaidUsable: false });
+  t.tick(60);
+  const r = await post(t.app, "/location", fix(t, 300, { accuracy: 10 }));
+  expect(r.json()).toMatchObject({ park: { status: "prompted" } });
+  expect(t.calls.start).toBe(0);
+});
+
+test("a near fix measured before the walk was said doesn't forget it (Q5)", async () => {
+  const t = makeApp();
+  const parked = await park(t.app);
+  await post(t.app, `/parked/${parked.parkedEventId}/confirm`, {});
+  t.tick(60);
+  await post(t.app, "/location", fix(t, 8, { accuracy: 10, event: "left_car" }));
+  const said = t.state.pendingParks[0]!.walkSaidAt!;
+  const before = new Date(said.getTime() - 30_000).toISOString();
+  await post(t.app, "/location", fix(t, 5, { accuracy: 5, measuredAt: before }));
+  expect(t.state.pendingParks[0]!.walkSaidAt).toEqual(said);
+});
+
+test("a fix measured at the very moment the walk was said doesn't take it", async () => {
+  const t = makeApp();
+  const parked = await park(t.app);
+  await post(t.app, `/parked/${parked.parkedEventId}/confirm`, {});
+  t.tick(60);
+  await post(t.app, "/location", fix(t, 8, { accuracy: 10, event: "left_car" }));
+  const said = t.state.pendingParks[0]!.walkSaidAt!.toISOString();
+  t.tick(5);
+  const r = await post(t.app, "/location", fix(t, 60, { accuracy: 10, measuredAt: said }));
+  expect(r.json()).toMatchObject({ park: { status: "confirmed" } });
+});
+
+test.each([
+  // [label, distance, accuracy, measured s after the walk, reported s after, kept]
+  // pace = (distance − accuracy − 10) / measured s
+  ["exactly a walking 3 m/s", 320, 10, 100, 100, true],
+  ["just over 3 m/s", 322, 10, 100, 100, false],
+  ["just over 3 m/s, reported later than measured", 322, 10, 100, 130, false],
+  ["1.6 m/s", 180, 10, 100, 100, true],
+] as const)(
+  "the pace since a walk said at the door: %s",
+  async (_label, distance, accuracy, measuredS, reportedS, kept) => {
+    const t = makeApp();
+    const parked = await park(t.app);
+    await post(t.app, `/parked/${parked.parkedEventId}/confirm`, {});
+    t.tick(30);
+    await post(t.app, "/location", fix(t, 6, { accuracy: 5, event: "left_car" }));
+    const said = t.state.pendingParks[0]!.walkSaidAt!;
+    t.tick(reportedS);
+    const measuredAt = new Date(said.getTime() + measuredS * 1000).toISOString();
+    const r = await post(t.app, "/location", fix(t, distance, { accuracy, measuredAt }));
+    // Kept: the walk-away it said (asked again). Forgotten: nothing.
+    expect(r.json()).toMatchObject({ park: { status: kept ? "prompted" : "confirmed" } });
+    expect(t.calls.start).toBe(0);
+    if (kept) {
+      // The walk-away by distance keeps its clear fix for a return.
+      expect(t.state.pendingParks[0]).toMatchObject({ farDistanceM: expect.any(Number) });
+      expect(t.state.pendingParks[0]!.farAt).toEqual(new Date(measuredAt));
+    }
+  },
+);
+
+test("a walk said on a seat fix minutes old, then a drive-off with no speed: asked again while driving, never started (Q4)", async () => {
+  // The anchor is the door fix's measurement, and the app's left_car rides
+  // its last fix, which can be minutes old: the pace since then looks like
+  // a walk. Harmless: it only asks again, and a tap is what pays.
+  const t = makeApp();
+  const parked = await park(t.app);
+  await post(t.app, `/parked/${parked.parkedEventId}/confirm`, {});
+  t.tick(200);
+  const old = new Date(t.clock.now.getTime() - 180_000).toISOString();
+  await post(t.app, "/location", fix(t, 6, { accuracy: 5, event: "left_car", measuredAt: old }));
+  t.tick(25);
+  const r = await post(t.app, "/location", fix(t, 150, { accuracy: 20 }));
+  expect(r.json()).toMatchObject({ park: { status: "prompted" } });
+  expect(t.calls.start).toBe(0);
+});
+
+test.each([
+  // pace since the walk = (distance − accuracy − 10) / seconds, exactly
+  [320, true], // 3 m/s: a walk, kept
+  [320.01, false], // just over: a car
+])("advanceWalk: a walk said at the door %s m off 100 s later: kept is %s", (distanceM, kept) => {
+  const said = new Date(MONDAY_2PM);
+  const state = {
+    leftCarAt: null,
+    farAt: null,
+    farDistanceM: null,
+    nearSince: null,
+    atCarSince: null,
+    backAt: null,
+    driveAt: null,
+    driveDistanceM: null,
+    driveSpeedMps: null,
+    walkSaidAt: said,
+    walkSaidUsable: true,
+  };
+  const at = new Date(said.getTime() + 100_000);
+  const step = advanceWalk(state, { distanceM, accuracyM: 10, at, measuredAt: at });
+  expect(step.left).toBe(kept);
+  // Taken (left) or forgotten (a car): the walk said at the door is gone.
+  expect(step.state.walkSaidAt).toBeNull();
+  if (kept) expect(step.why).toBe("fix_away");
+});
+
+test("a walk said at the door is forgotten back within reach of the car, or at driving speed", async () => {
+  for (const [label, after] of [
+    ["near", { distance: 20, accuracy: 8 }],
+    ["driving", { distance: 60, accuracy: 10, speedMps: 9 }],
+  ] as const) {
+    const t = makeApp();
+    const parked = await park(t.app);
+    await post(t.app, `/parked/${parked.parkedEventId}/confirm`, {});
+    t.tick(30);
+    await post(t.app, "/location", fix(t, 35, { accuracy: 35, event: "left_car" }));
+    expect(t.state.pendingParks[0]!.walkSaidAt, label).not.toBeNull();
+    t.tick(30);
+    const { distance, ...rest } = after;
+    await post(t.app, "/location", fix(t, distance, rest));
+    expect(t.state.pendingParks[0]!.walkSaidAt, label).toBeNull();
+    // A fix off the car with no word from the app now starts nothing.
+    t.tick(30);
+    await post(t.app, "/location", fix(t, 80, { accuracy: 15 }));
+    expect(t.state.pendingParks[0]!.status, label).toBe("confirmed");
+    expect(t.calls.start, label).toBe(0);
+  }
+});
+
+test("a walk whose every fix is worse than 65 m never starts the Pay: no fix can show it (#264 review, R6, kept)", async () => {
+  // The residual: a fix too blurry to read can't show the phone has left,
+  // and a seat that pays is worse than a walk that waits. A readable fix
+  // asks again; until then the park stays confirmed. (On foot: about
+  // 1.2 m/s, every fix 80 m blurry.)
+  const t = makeApp();
+  const parked = await park(t.app);
+  await post(t.app, `/parked/${parked.parkedEventId}/confirm`, {});
+  for (const d of [40, 110, 180, 250]) {
+    t.tick(60);
+    await post(t.app, "/location", fix(t, d, { accuracy: 80, event: "left_car", speedMps: 1.3 }));
+  }
+  expect(t.state.pendingParks[0]!.status).toBe("confirmed");
+  expect(t.calls.start).toBe(0);
+  t.tick(60);
+  const readable = await post(t.app, "/location", fix(t, 320, { accuracy: 30 }));
+  expect(readable.json()).toMatchObject({ park: { status: "prompted" } });
+  expect(t.calls.start).toBe(0);
+});
+
+test("after the walk-away, a left_car on a seat fix doesn't release the hold: a tap from the seat waits (#264 review, R1)", async () => {
+  const t = makeApp();
+  const parked = await park(t.app);
+  await walkAway(t);
+  expect(t.state.pendingParks[0]!.status).toBe("prompted");
+  // Back in the seat on sharp fixes: the hold is armed.
+  t.tick(120);
+  await post(t.app, "/location", fix(t, 5));
+  t.tick(20);
+  await post(t.app, "/location", fix(t, 4));
+  expect(t.state.pendingParks[0]!.backAt).not.toBeNull();
+  // In the car, GPS degrades, and a late walking reading sends left_car on
+  // a 35 m ± 35 m seat fix: it may have the phone at the door.
+  t.tick(30);
+  await post(t.app, "/location", fix(t, 35, { accuracy: 35, event: "left_car" }));
+  expect(t.state.pendingParks[0]!.backAt).not.toBeNull();
+  t.tick(5);
+  const tap = await post(t.app, `/parked/${parked.parkedEventId}/confirm`, {});
+  expect(tap.json()).toMatchObject({ status: "confirmed", startsAt: "walk_away" });
+  expect(t.calls.start).toBe(0);
+});
+
+test("no accuracy cliff at the door: 25 m ± 20 m and 25 m ± 21 m are both refused (#264 review, R3)", async () => {
+  for (const accuracy of [20, 21]) {
+    const t = makeApp();
+    const parked = await park(t.app);
+    await post(t.app, `/parked/${parked.parkedEventId}/confirm`, {});
+    t.tick(30);
+    const r = await post(t.app, "/location", fix(t, 25, { accuracy, event: "left_car" }));
+    expect(r.json(), `±${accuracy}`).toMatchObject({ park: { status: "confirmed" } });
+    expect(t.calls.start, `±${accuracy}`).toBe(0);
+  }
+});
+
+test("a left_car on a blurry fix within reach of the car asks nothing; one clear of the door asks", async () => {
+  const t = makeApp();
+  await park(t.app);
+  t.tick(30);
+  const seat = await post(t.app, "/location", fix(t, 30, { accuracy: 45, event: "left_car" }));
+  expect(seat.json()).toMatchObject({ park: { status: "at_car" } });
+  expect(seat.json()["prompt"]).toBeUndefined();
+  t.tick(20);
+  const left = await post(t.app, "/location", fix(t, 60, { accuracy: 45, event: "left_car" }));
+  expect(left.json()).toMatchObject({ park: { status: "prompted" } });
+  expect(t.state.decisions.find((d) => d.kind === "street_prompt")!.rule).toBe("left_car_event");
+});
+
+test.each([
+  // [distance, accuracy, may be at the door]: its error reaches within
+  // 10 m of the car, sharp or blurry alike, or it is too blurry to read.
+  [10, 0, true],
+  [11, 0, false],
+  [30, 20, true], // the old sharp exception: refused now, as 30 m ± 21 m
+  [31, 21, true],
+  [32, 21, false],
+  [35, 35, true], // the urban seat fix of #264
+  [46, 35, false],
+  [75, 65, true],
+  [76, 65, false],
+  [300, 66, true], // too blurry to read: never shows the phone has left
+])("mayBeAtTheDoor(%i m, ±%i m) is %s", (distanceM, accuracyM, expected) => {
+  expect(mayBeAtTheDoor({ distanceM, accuracyM })).toBe(expected);
 });
 
 test("candidates that disagree get the side question at walk-away, and Pay needs the side", async () => {
@@ -962,9 +1442,12 @@ test("a tap from the seat waits even after a fix a little past 30 m: the phone w
 test("a tap from the seat waits after a left_car that was never clear of the car", async () => {
   const t = makeApp();
   const parked = await park(t.app);
-  // On foot at 20 m with 25 m of error: left, with no fix clear of the car.
+  // On foot at 40 m with 25 m of error: left (its error stops 15 m short of
+  // the car, past the door), with no fix clear of the car. (At 20 m with
+  // 25 m of error, as this once read, the phone may be in the seat, and
+  // that left_car is refused now: #264.)
   t.tick(30);
-  await post(t.app, "/location", { ...fix(t, 20), accuracy: 25, event: "left_car" });
+  await post(t.app, "/location", { ...fix(t, 40), accuracy: 25, event: "left_car" });
   expect(t.state.pendingParks[0]).toMatchObject({ status: "prompted", farAt: null });
   // Back to the car on sharp fixes, and Pay from the seat.
   t.tick(30);

@@ -23,6 +23,9 @@ import {
 /** This file's own throwaway user (client.ts `ownUser`). */
 const me = ownUser(import.meta.url);
 
+// For pricing only, never for lifecycle: it is usually hours old, and a
+// park more than 5 min off server time is never held for a walk-away
+// (#241). See client.ts.
 const AFTERNOON = mostRecentEasternAt(14, 0);
 
 beforeAll(async () => {

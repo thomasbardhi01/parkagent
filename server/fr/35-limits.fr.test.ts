@@ -32,6 +32,9 @@ import {
 const me = ownUser(import.meta.url);
 const other = ownUser(import.meta.url, "other");
 
+// For pricing only, never for lifecycle: it is usually hours old, and a
+// park more than 5 min off server time is never held for a walk-away
+// (#241). See client.ts.
 const AFTERNOON = mostRecentEasternAt(14, 0);
 // NYC meters are free on Sundays: nothing to cap.
 const SUNDAY = easternWeekday(AFTERNOON) === "Sun";

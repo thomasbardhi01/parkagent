@@ -399,9 +399,11 @@ export async function assistantMessage(
 // ---------------------------------------------------------------------------
 // Time helpers: /parked prices at the request ts, and a ts outside
 // [now-24h, now+10min] is clamped to server time — so the tests phrase
-// "a weekday afternoon" as YESTERDAY at that local Eastern time, which is
-// inside the window whenever the suite runs before that hour (the nightly
-// cron fires ~5am Eastern).
+// "a weekday afternoon" as the most recent 14:00 Eastern already past,
+// inside the window at any run hour. That is for PRICING only: /parked
+// holds a park for its walk-away only when its ts is within 5 minutes of
+// server time (#241), so a lifecycle test sends the real clock and asks
+// nycAutopayNow() whether the block is charging.
 // ---------------------------------------------------------------------------
 
 const ET = "America/New_York";
@@ -545,6 +547,65 @@ export const NYC_AUTOPAY = {
   lat: num("FR_NYC_AUTOPAY_LAT", 40.76264),
   lng: num("FR_NYC_AUTOPAY_LNG", -73.91611),
 };
+
+/** nyc-417371's posted rules (zones.geojson `hours_json`, `max_stay_minutes`):
+ * Mon–Sat 08:30–19:00, free all Sunday, 120 minutes at most. */
+const NYC_AUTOPAY_RULES = {
+  days: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
+  startMinute: 8 * 60 + 30,
+  endMinute: 19 * 60,
+  maxStayMinutes: 120,
+};
+
+const etMinuteFormat = new Intl.DateTimeFormat("en-US", {
+  timeZone: ET,
+  weekday: "short",
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+});
+
+/** Whether the fixture block charges for any minute of a stay of `minutes`
+ * from `from` — what makes /parked's quote nonzero (quote.ts counts the
+ * stay's enforced minutes; none is a free period). */
+function nycAutopayCharges(from: Date, minutes: number): boolean {
+  for (let i = 0; i < minutes; i += 1) {
+    const parts = etMinuteFormat.formatToParts(new Date(from.getTime() + i * 60_000));
+    const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
+    const minute = Number(get("hour")) * 60 + Number(get("minute"));
+    if (
+      NYC_AUTOPAY_RULES.days.includes(get("weekday")) &&
+      minute >= NYC_AUTOPAY_RULES.startMinute &&
+      minute < NYC_AUTOPAY_RULES.endMinute
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Whether a park on the fixture block stamped with the real clock is
+ * charged — for the next five minutes, so a test's walk-away a few
+ * seconds later is quoted the same way — given the policy's default stay
+ * (`gate()`'s policy). "edge" is within five minutes of a stay first or
+ * last touching meter hours, where a test can't tell in advance which it
+ * will be.
+ */
+export function nycAutopayNow(
+  policy: Record<string, unknown>,
+  now = new Date(),
+): "metered" | "free" | "edge" {
+  const defaultStay = policy["default_stay_minutes"];
+  if (typeof defaultStay !== "number" || !(defaultStay > 0)) {
+    throw new Error(`FR: the policy has no default_stay_minutes (${String(defaultStay)})`);
+  }
+  const stay = Math.min(defaultStay, NYC_AUTOPAY_RULES.maxStayMinutes);
+  const later = new Date(now.getTime() + 5 * 60_000);
+  if (nycAutopayCharges(now, stay) && nycAutopayCharges(later, stay)) return "metered";
+  if (!nycAutopayCharges(now, stay + 5)) return "free";
+  return "edge";
+}
 
 /** nyc-100031 (Financial District): $5.50/$9.00 — the ladder tops the
  * $8/hr auto-pay ceiling, so this zone must never auto-pay. */

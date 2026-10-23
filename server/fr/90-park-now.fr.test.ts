@@ -18,7 +18,10 @@
  * phone is at the car; the phone leaving is what asks, with the server's
  * own quote; and the one way to pay it is its tap, POST /parked/:id/confirm,
  * which runs the start path once (refused here: a throwaway has no linked
- * parking account, so nothing can start).
+ * parking account, so nothing can start). A park is held only when its ts
+ * is within 5 minutes of server time (#241), so FR-55 parks on the real
+ * clock: the whole held path runs while the fixture block is metered (the
+ * nightly runs in meter hours), and only the free answer otherwise.
  *
  * The garage case needs the target's garages loaded (`pnpm -C server
  * load:garages`, by hand per city) and skips itself until they are, like
@@ -29,13 +32,13 @@ import { beforeAll, describe, expect, it } from "vitest";
 
 import {
   BOS_GARAGE,
-  easternHourWithin,
   easternWeekday,
   frFetch,
   gate,
   mostRecentEasternAt,
   NOWHERE,
   NYC_AUTOPAY,
+  nycAutopayNow,
   ownUser,
   parkedBody,
   userFetch,
@@ -43,7 +46,12 @@ import {
 
 /** This file's own throwaway user (client.ts `ownUser`). */
 const me = ownUser(import.meta.url);
+/** Parks only late: no park of its own is newer than the late one. */
+const lateUser = ownUser(import.meta.url, "late");
 
+// For pricing only, never for lifecycle: it is usually hours old, and a
+// park more than 5 min off server time is never held for a walk-away
+// (#241). See client.ts.
 const AFTERNOON = mostRecentEasternAt(14, 0);
 /** No enforcement on Sunday: the fixture block is a free period then. */
 const SUNDAY = easternWeekday(AFTERNOON) === "Sun";
@@ -92,8 +100,11 @@ function savedPlace(placeClass: string) {
 /** Whether the target has garages loaded around the fixture garage. */
 let garagesLoaded = false;
 
+/** The active policy (`gate()`): its default stay is what a park is quoted for. */
+let policy: Record<string, unknown>;
+
 beforeAll(async () => {
-  await gate();
+  policy = (await gate())["policy"] as Record<string, unknown>;
   const res = await userFetch(
     me,
     "GET",
@@ -286,18 +297,28 @@ describe("FR-55 street session lifecycle", () => {
     ...extra,
   });
 
-  it("FR-55 a street park starts and asks nothing at the car; walk-away asks with the quote; only its tap reaches the start path", async () => {
+  it("FR-55 a street park starts and asks nothing at the car; walk-away asks with the quote; only its tap reaches the start path", async (ctx) => {
+    const meters = nycAutopayNow(policy);
+    if (meters === "edge") {
+      // Minutes from the block's meter hours: can't say which answer is right.
+      ctx.skip();
+      return;
+    }
     const parked = await userFetch(
       me,
       "POST",
       "/parked",
-      parkedBody(NYC_AUTOPAY, { ts: AFTERNOON, outcomes: [...OUTCOMES, "walk_away"] }),
+      parkedBody(NYC_AUTOPAY, {
+        ts: new Date().toISOString(),
+        outcomes: [...OUTCOMES, "walk_away"],
+      }),
     );
     expect(parked.status).toBe(200);
     expect(parked.body["dryRun"]).toBe(true);
-    if (SUNDAY) {
+    if (meters === "free") {
       // Nothing to pay on the fixture block: nothing waits on a walk-away.
       expect(parked.body["action"]).toBe("ignore");
+      expect(parked.body["rule"]).toBe("free_period");
       expect(parked.body["awaitsWalkAway"]).toBeUndefined();
       return;
     }
@@ -325,17 +346,6 @@ describe("FR-55 street session lifecycle", () => {
     expect(left.status).toBe(200);
     const park = left.body["park"] as { parkedEventId: string; status: string };
     expect(park.parkedEventId).toBe(id);
-    if (park.status === "free") {
-      // The quote is for a stay that starts now, and the meters aren't
-      // charging now (the nightly runs before they do): nothing to ask,
-      // and a park that is over is never paid from.
-      expect(easternHourWithin(10, 17)).toBe(false);
-      expect(left.body["prompt"]).toBeUndefined();
-      const closed = await userFetch(me, "POST", `/parked/${id}/confirm`, {});
-      expect(closed.status).toBe(409);
-      expect(closed.body).toMatchObject({ error: "park_closed", status: "free" });
-      return;
-    }
 
     // Meter hours: asked once, with the server's quote. A throwaway has no
     // linked account, so the prompt says that instead of offering Pay.
@@ -369,6 +379,43 @@ describe("FR-55 street session lifecycle", () => {
     const after = await userFetch(me, "POST", "/location", fix(150));
     expect(after.status).toBe(409);
     expect(after.body).toEqual({ error: "no_active_session" });
+  });
+
+  it("FR-55 a park reported more than 5 minutes after it happened isn't held: it is answered from its quote", async (ctx) => {
+    // #241 (parked.ts heldInTime): its walk-away is behind it, so it is
+    // answered as for an app that doesn't wait, priced when it parked.
+    // Conclusive only for a park that would otherwise be held: one with
+    // something to pay (not Sunday's), and really more than 5 min old.
+    if (SUNDAY || Date.now() - Date.parse(AFTERNOON) <= 6 * 60_000) {
+      ctx.skip();
+      return;
+    }
+    const late = await userFetch(
+      lateUser,
+      "POST",
+      "/parked",
+      parkedBody(NYC_AUTOPAY, { ts: AFTERNOON, outcomes: [...OUTCOMES, "walk_away"] }),
+    );
+    expect(late.status).toBe(200);
+    expect(late.body["awaitsWalkAway"]).toBeUndefined();
+    // Nothing waits at the car for it (asked before any other park of this
+    // user's could close one that did).
+    const fixed = await userFetch(lateUser, "POST", "/location", fix(4));
+    expect(fixed.status).toBe(409);
+    expect(fixed.body).toEqual({ error: "no_active_session" });
+    expect(late.body["action"]).toBe("pay");
+    expect(late.body["rule"]).toBe("auto_pay_ok");
+    expect((late.body["quote"] as Record<string, unknown>)["totalUsd"]).toBeGreaterThan(0);
+    // The answer an app that doesn't wait gets for the same park.
+    const plain = await userFetch(
+      lateUser,
+      "POST",
+      "/parked",
+      parkedBody(NYC_AUTOPAY, { ts: AFTERNOON, outcomes: OUTCOMES }),
+    );
+    for (const key of ["action", "rule", "quote", "candidates"]) {
+      expect(late.body[key], key).toEqual(plain.body[key]);
+    }
   });
 
   it("FR-55 an app that doesn't wait for the walk-away is answered as before", async () => {

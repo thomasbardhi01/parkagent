@@ -13,7 +13,6 @@ import { beforeAll, describe, expect, it } from "vitest";
 
 import {
   easternDaysAgoAt,
-  easternHourWithin,
   easternWeekday,
   gate,
   ladderMeterUsd,
@@ -21,6 +20,7 @@ import {
   NOWHERE,
   NYC_AUTOPAY,
   NYC_PRICEY,
+  nycAutopayNow,
   ownUser,
   parkedBody,
   policyFeeUsd,
@@ -30,6 +30,9 @@ import {
 /** This file's own throwaway user (client.ts `ownUser`). */
 const me = ownUser(import.meta.url);
 
+// For pricing only, never for lifecycle: it is usually hours old, and a
+// park more than 5 min off server time is never held for a walk-away
+// (#241). See client.ts.
 const AFTERNOON = mostRecentEasternAt(14, 0);
 const SUNDAY = easternWeekday(AFTERNOON) === "Sun";
 
@@ -166,18 +169,33 @@ describe("FR-12 auto-pay rate ceiling", () => {
 });
 
 describe("FR-9 timestamp clamping", () => {
-  // Only conclusive while the server's current Eastern time is OUTSIDE
-  // enforcement hours (the nightly window): a clamped ts must then price
-  // as a free period where the stale ts would have priced midday money.
-  it.skipIf(easternHourWithin(8, 20))(
-    "FR-9 a ts three days stale is clamped to server time before pricing",
-    async () => {
-      const stale = easternDaysAgoAt(3, 14, 0);
+  // Conclusive only where the stale ts and server time price differently,
+  // so the stale ts is taken on the other side of the fixture block's
+  // meter hours from now: midday money while the block is free now, the
+  // small hours (free any day) while it charges now.
+  it("FR-9 a ts three days stale is clamped to server time before pricing", async (ctx) => {
+    const now = nycAutopayNow(policy);
+    if (now === "edge") {
+      ctx.skip();
+      return;
+    }
+    const quote = (res: { body: Record<string, unknown> }) =>
+      res.body["quote"] as Record<string, unknown>;
+    if (now === "free") {
+      const daysAgo = easternWeekday(easternDaysAgoAt(3, 14, 0)) === "Sun" ? 4 : 3;
+      const stale = easternDaysAgoAt(daysAgo, 14, 0);
       const res = await userFetch(me, "POST", "/parked", parkedBody(NYC_AUTOPAY, { ts: stale }));
       expect(res.status).toBe(200);
       expect(res.body["action"]).toBe("ignore");
       expect(res.body["rule"]).toBe("free_period");
-      expect((res.body["quote"] as Record<string, unknown>)["totalUsd"]).toBe(0);
-    },
-  );
+      expect(quote(res)["totalUsd"]).toBe(0);
+      return;
+    }
+    const stale = easternDaysAgoAt(3, 3, 0);
+    const res = await userFetch(me, "POST", "/parked", parkedBody(NYC_AUTOPAY, { ts: stale }));
+    expect(res.status).toBe(200);
+    expect(res.body["action"]).toBe("pay");
+    expect(res.body["rule"]).toBe("auto_pay_ok");
+    expect(quote(res)["totalUsd"]).toBeGreaterThan(0);
+  });
 });

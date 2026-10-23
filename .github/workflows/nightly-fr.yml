@@ -1,11 +1,15 @@
 # Nightly functional-requirements run (docs/functional-requirements.md):
 # the executor fixture suite plus the live FR suite against prod, in dry
 # run. Every FR file runs as its own throwaway user, minted here, and the
-# suite runs shuffled (vitest.fr.config.ts). Tue–Sat ~5:17am Eastern so the
-# "yesterday afternoon" pricing fixtures always land on a Mon–Fri
-# enforcement day and outside enforcement hours (the ts-clamp test needs
-# that). On failure one "Nightly FR failures" issue is opened or updated;
-# a green run closes it.
+# suite runs shuffled (vitest.fr.config.ts). Tue–Sat in the daytime, so
+# FR-55's park on the real clock lands in the fixture block's meter hours
+# (Mon–Sat 08:30–19:00 Eastern) and runs the whole walk-away path, and the
+# "most recent 14:00" pricing fixtures land on a Mon–Fri enforcement day.
+# The cron is 14:20 UTC: 10:20 EDT, 09:20 EST. GitHub starts this
+# schedule hours late (the 09:17 UTC cron started 12:58–15:55 UTC), so
+# runs land around 13:00–17:00 Eastern, still metered. FR-9 and FR-55
+# assert whichever side of meter hours a run lands on. On failure one
+# "Nightly FR failures" issue is opened or updated; a green run closes it.
 #
 # Secrets:
 #   FR_API_KEY — api key of the DEDICATED FR user on prod
@@ -23,7 +27,7 @@ name: nightly-fr
 
 on:
   schedule:
-    - cron: "17 9 * * 2-6"
+    - cron: "20 14 * * 2-6"
   workflow_dispatch:
     inputs:
       base:
@@ -204,9 +208,10 @@ jobs:
             echo 'EOF'
           } >> "$GITHUB_OUTPUT"
 
-      # The decisions auditor (GET /admin/audit) over yesterday in New York,
-      # filed as one "Nightly audit" issue. Report-only, and never turns the
-      # run red: a failed call is a warning on the run.
+      # The decisions auditor (GET /admin/audit) over yesterday in New York
+      # (a whole day at any run hour), filed as one "Nightly audit" issue.
+      # Report-only, and never turns the run red: a failed call is a
+      # warning on the run.
       - name: Nightly audit
         if: always() && steps.executor.conclusion != 'cancelled'
         continue-on-error: true

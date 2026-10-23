@@ -2425,6 +2425,14 @@ test("a park reported three hours late isn't held at the car: the walk-away it w
   expect(count(t.state, "street_pending")).toBe(0);
 });
 
+test("a park sent without a ts is the server's time: held, however late the server's clock has run", async () => {
+  const t = makeApp();
+  t.tick(3 * 60 * 60);
+  const parked = await park(t.app, { ts: undefined });
+  expect(parked["awaitsWalkAway"]).toBe(true);
+  expect(t.state.pendingParks).toMatchObject([{ status: "at_car" }]);
+});
+
 test("clock skew: a park is held only when its phone's fixes will be read, with one tolerance for both", async () => {
   // Past the pricing clamp too (over 10 min ahead, over 24 h behind): the
   // park is priced at server time, and its phone's fixes are still off.

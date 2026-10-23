@@ -132,7 +132,8 @@ test("records the ParkBoston receipt as the actual charge, not the estimate", as
   const decision = state.decisions.find(
     (d) => d.kind === "session_start" && d.rule === "start_ok",
   )!;
-  expect(decision.outcome["providerReceipt"]).toEqual(receipt);
+  // The receipt is an input the decision was made on (the receipt bound).
+  expect(decision.inputs["providerReceipt"]).toEqual(receipt);
   const event = state.sessionEvents.find((e) => e.kind === "started")!;
   expect(event.details).toMatchObject({ estimatedTotalUsd: 1.29, receipt });
 });

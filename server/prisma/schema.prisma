@@ -435,6 +435,13 @@ model Session {
   // it changed; a different rule within 5 minutes is held, not acted on.
   lastExtenderRule     String?   @map("last_extender_rule")
   lastExtenderRuleAt   DateTime? @map("last_extender_rule_at") @db.Timestamptz(6)
+  // The provider's receipt disagreed with the price (by more than the
+  // receipt bound, or above what the driver was shown): the session
+  // recorded the price, and a person should look at what was charged.
+  needsReview          Boolean   @default(false) @map("needs_review")
+  // What that receipt said beyond what the session recorded: the caps
+  // count it on top of amount + fee (moneyGate.ts sessionSpentUsd).
+  receiptExcessUsd     Decimal?  @map("receipt_excess_usd") @db.Decimal(10, 2)
   createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt            DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
 

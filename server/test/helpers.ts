@@ -406,6 +406,9 @@ function emptySession(id: string): SessionRow {
     extendCount: 0,
     lastExtenderRule: null,
     lastExtenderRuleAt: null,
+    // Postgres's column defaults, as a real row reads them.
+    needsReview: false,
+    receiptExcessUsd: null,
     createdAt: new Date(MONDAY_2PM),
   };
 }

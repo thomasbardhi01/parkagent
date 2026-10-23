@@ -77,7 +77,7 @@ export function sessionExtendedPush(args: {
   };
 }
 
-export type ExpiringReason = "max_stay" | "budget" | "no_auto_extend";
+export type ExpiringReason = "max_stay" | "budget" | "no_auto_extend" | "receipt_review";
 
 export function sessionExpiringPush(args: {
   zoneNumber: string;
@@ -88,6 +88,9 @@ export function sessionExpiringPush(args: {
     max_stay: "the zone's max stay is up — move the car",
     budget: "extending would blow the budget",
     no_auto_extend: "auto-extend is off or used up",
+    // The receipt bound flagged the session (hold_needs_review).
+    receipt_review:
+      "won't be extended automatically: the parking receipt didn't match what you were shown. Check it, and extend yourself if you need more time",
   }[args.reason];
   return {
     type: "session_expiring",

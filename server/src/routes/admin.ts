@@ -16,6 +16,7 @@ import { buildParkTrace } from "../services/parkTrace.js";
 import { runAudit } from "../services/audit/invariants.js";
 import { summarize } from "../services/audit/summary.js";
 import { PUSH_TEST_TYPES, samplePush } from "../services/apns.js";
+import { sessionSpentUsd } from "../services/moneyGate.js";
 import { providerReliability } from "../services/providerMetrics.js";
 import type { PushTestType } from "../services/apns.js";
 
@@ -24,6 +25,8 @@ interface CitySummary {
   unknownZone: number;
   sessionsStarted: number;
   sessionsFailed: number;
+  /** Started sessions whose provider receipt the receipt bound set aside. */
+  sessionsNeedReview: number;
   extensionsAuto: number;
   extensionsManual: number;
   /** /parked confirms + hard 409s + issuing declines, by rule. */
@@ -40,6 +43,7 @@ function emptyCity(): CitySummary {
     unknownZone: 0,
     sessionsStarted: 0,
     sessionsFailed: 0,
+    sessionsNeedReview: 0,
     extensionsAuto: 0,
     extensionsManual: 0,
     declines: {},
@@ -151,7 +155,9 @@ export function registerAdmin(app: FastifyInstance, deps: AppDeps): void {
       const city = cityOf(session.city);
       if (session.status === "failed") city.sessionsFailed += 1;
       else city.sessionsStarted += 1;
-      city.spendUsd += Number(session.amountUsd ?? 0) + Number(session.feeUsd ?? 0);
+      if (session.needsReview) city.sessionsNeedReview += 1;
+      // What the caps count: a flagged receipt's excess included.
+      city.spendUsd += sessionSpentUsd(session);
       city.extensionsAuto += 0; // counted from extend_tick decisions below
     }
 
@@ -170,7 +176,12 @@ export function registerAdmin(app: FastifyInstance, deps: AppDeps): void {
         case "session_stop":
           if (d.rule === "executor_failed" && outcome.code) {
             bump(city.executorErrors, outcome.code);
-          } else if (d.kind === "session_start" && d.rule !== "start_ok") {
+          } else if (
+            d.kind === "session_start" &&
+            d.rule !== "start_ok" &&
+            // Paid: a start whose receipt was set aside is no decline.
+            d.rule !== "receipt_mismatch"
+          ) {
             bump(city.declines, d.rule);
           }
           break;

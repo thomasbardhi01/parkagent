@@ -43,6 +43,11 @@ export interface SessionRow {
   extendCount: number;
   lastExtenderRule: string | null;
   lastExtenderRuleAt: Date | null;
+  /** The receipt bound set the provider's receipt aside (services/
+   * receiptBound.ts); older fakes may omit it. */
+  needsReview?: boolean;
+  /** What the receipt said beyond the recorded amounts; the caps count it. */
+  receiptExcessUsd?: unknown;
   createdAt: Date;
 }
 
@@ -74,6 +79,8 @@ export interface SessionWrite {
   extendCount?: number;
   lastExtenderRule?: string;
   lastExtenderRuleAt?: Date;
+  needsReview?: boolean;
+  receiptExcessUsd?: number;
 }
 
 export interface SessionWhere {

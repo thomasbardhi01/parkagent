@@ -283,8 +283,11 @@ export async function walletSummary(
   });
 
   // ---- Spending (real money only — dry-run sessions moved none)
-  const sessionTotal = (s: { amountUsd: unknown; feeUsd: unknown }) =>
-    Number(s.amountUsd ?? 0) + Number(s.feeUsd ?? 0);
+  // What the caps count (moneyGate.ts sessionSpentUsd): the recorded
+  // amounts plus what a flagged receipt said beyond them, so the month
+  // never reads less than today.
+  const sessionTotal = (s: { amountUsd: unknown; feeUsd: unknown; receiptExcessUsd?: unknown }) =>
+    Number(s.amountUsd ?? 0) + Number(s.feeUsd ?? 0) + Number(s.receiptExcessUsd ?? 0);
   // Garages approved in Link are spend too; they have no meter city, so
   // they get their own line and the month still adds up.
   const linkMonthUsd = await linkSpentSince(

@@ -46,6 +46,9 @@ export type GateRule =
   | "zone_number_changed"
   | "dry_run_changed"
   | "phone_not_away"
+  /** An auto-extend of a session whose provider receipt the receipt
+   * bound flagged: nothing more is bought for it unasked. */
+  | "receipt_needs_review"
   | "amount_over_daily_cap"
   /** An amount the gate would judge, or a cap it would judge it against,
    * is not a finite number >= 0. */
@@ -148,15 +151,19 @@ export async function spentToday(
       createdAt: { gte: since },
     },
   });
-  const streetUsd = rows.reduce(
-    (sum, s) => sum + Number(s.amountUsd ?? 0) + Number(s.feeUsd ?? 0),
-    0,
-  );
+  const streetUsd = rows.reduce((sum, s) => sum + sessionSpentUsd(s), 0);
   return streetUsd + (await linkSpentSince(db, userId, since, LINK_COMMITTED_STATUSES));
 }
 
+/** A session's spend for the caps: what it recorded, plus what the
+ * provider's receipt said beyond that (the receipt bound,
+ * services/receiptBound.ts), so a charge the ledger trimmed still counts. */
 export function sessionSpentUsd(session: SessionRow): number {
-  return Number(session.amountUsd ?? 0) + Number(session.feeUsd ?? 0);
+  return (
+    Number(session.amountUsd ?? 0) +
+    Number(session.feeUsd ?? 0) +
+    Number(session.receiptExcessUsd ?? 0)
+  );
 }
 
 /** Every comparison here is `amount > cap`, and NaN or undefined makes
@@ -362,6 +369,12 @@ async function decide(
     }
     case "extend": {
       const { session, minutes, price } = intent;
+      // A session whose receipt disagreed with what was shown waits for a
+      // person: the worker buys nothing more for it. The driver's own
+      // extend still runs, against the caps (which count the receipt).
+      if (intent.source === "auto" && session.needsReview === true) {
+        return refuse("receipt_needs_review");
+      }
       if (intent.underLock && intent.source === "auto") {
         // The worker buys time only for a phone known to be away (FR-55),
         // and read that before it took the lock: a phone back within reach

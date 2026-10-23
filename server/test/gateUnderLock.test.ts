@@ -12,14 +12,24 @@ import { describe, expect, test } from "vitest";
 
 import { makeExtender } from "../src/jobs/extendTick.js";
 import { applyPatch, emptyState, parsePatch } from "../src/services/assistant/requestState.js";
-import { HOURS_MON_SAT, NONADMIN_API_KEY, makeTestApp, seedSession } from "./helpers.js";
+import {
+  HOURS_MON_SAT,
+  NONADMIN_API_KEY,
+  makeTestApp,
+  seedProviderAccount,
+  seedSession,
+} from "./helpers.js";
 import type { FakeDbState } from "./helpers.js";
 
 const T = (hhmm: string) => new Date(`2026-01-05T${hhmm}:00-05:00`);
 const CAPS = { session_cap_usd: 10, daily_cap_usd: 20, dry_run: false };
 
-/** A real session, 90 minutes bought at 13:00, priced like Steinway St. */
+/** A real session, 90 minutes bought at 13:00, priced like Steinway St.,
+ * on the owner's linked account (an extension needs one, as a start does). */
 function activeSession(state: FakeDbState, userId: string, expiresAt: Date) {
+  if (!state.providerAccounts.some((a) => a.userId === userId && a.provider === "parknyc")) {
+    seedProviderAccount(state, { userId });
+  }
   return seedSession(state, {
     userId,
     status: "active",

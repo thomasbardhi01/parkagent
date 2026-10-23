@@ -880,16 +880,33 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
       policyHash: deps.policy.hash(),
     };
     if (violation) {
+      const provider = providerForCity(cityForZone(session.zoneId));
       const decision = await deps.db.decision.create({
         data: {
           kind: "session_extend",
-          inputs: decisionInputs,
+          inputs:
+            violation === "provider_not_linked"
+              ? {
+                  ...decisionInputs,
+                  provider: provider?.id ?? null,
+                  accountStatus: gate.accountStatus ?? "none",
+                }
+              : decisionInputs,
           rule: violation,
           outcome: { allowed: false },
           userId: user.id,
           sessionId: session.id,
         },
       });
+      if (violation === "provider_not_linked" && provider) {
+        // As a start answers it, so the app can send them to the link flow.
+        return reply.code(409).send({
+          error: "provider_not_linked",
+          provider: provider.id,
+          displayName: provider.displayName,
+          decisionId: decision.id,
+        });
+      }
       return reply
         .code(409)
         .send({ error: "policy_violation", rule: violation, decisionId: decision.id });
@@ -910,11 +927,14 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
         outcome.code === "daily_cap_exceeded" ||
         outcome.code === "amount_invalid" ||
         outcome.code === "minutes_invalid" ||
+        outcome.code === "provider_not_linked" ||
         outcome.code === "agents_not_allowed")
     ) {
       // The gate refused the fresh row under the lock: another extension
-      // landed between pricing and now, and this one no longer fits. Its
-      // own row, with what the gate read there, not the pre-lock inputs.
+      // landed between pricing and now, and this one no longer fits (or
+      // the account was unlinked or expired meanwhile). Its own row, with
+      // what the gate read there, not the pre-lock inputs.
+      const lockProvider = providerForCity(cityForZone(session.zoneId));
       const decision = await deps.db.decision.create({
         data: {
           kind: "session_extend",
@@ -924,13 +944,33 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
             spentTodayUsd:
               outcome.spentTodayUsd !== undefined ? outcome.spentTodayUsd : spentTodayUsd,
             underLock: true,
+            ...(outcome.code === "provider_not_linked"
+              ? {
+                  provider: lockProvider?.id ?? null,
+                  accountStatus: outcome.accountStatus ?? "none",
+                }
+              : {}),
           },
           rule: outcome.code,
-          outcome: { allowed: false },
+          outcome: {
+            allowed: false,
+            ...(outcome.code === "provider_not_linked"
+              ? { accountStatus: outcome.accountStatus ?? "none" }
+              : {}),
+          },
           userId: user.id,
           sessionId: session.id,
         },
       });
+      if (outcome.code === "provider_not_linked" && lockProvider) {
+        // As the check before the lock answers it: to the link flow.
+        return reply.code(409).send({
+          error: "provider_not_linked",
+          provider: lockProvider.id,
+          displayName: lockProvider.displayName,
+          decisionId: decision.id,
+        });
+      }
       return reply
         .code(409)
         .send({ error: "policy_violation", rule: outcome.code, decisionId: decision.id });

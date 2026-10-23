@@ -18,7 +18,8 @@
 
 import type { SessionRow } from "../db.js";
 import type { ExpiringReason, Push } from "../services/apns.js";
-import { sessionExpiringPush } from "../services/apns.js";
+import { reconnectToExtendPush, sessionExpiringPush } from "../services/apns.js";
+import { cityForZone, providerForCity } from "../providers/registry.js";
 import {
   AT_CAR_RADIUS_M,
   FIX_USABLE_ACCURACY_M,
@@ -335,6 +336,9 @@ export function makeExtender(deps: ExtenderDeps): Extender {
     // Ticket risk is priced with the session's city's ticket (a Boston
     // "Meter Fee Unpaid" is $40 where NYC's is $65 — policy city_overrides).
     const costTicketUsd = cityPolicy(policy, session.city).ticketCostUsd * (1 - pReturn);
+    // The session's provider, from its zone as the gate reads it: named on
+    // a hold for an account that can't pay, and in its reconnect push.
+    const provider = providerForCity(cityForZone(session.zoneId));
     // The money gate's answer for this extension (caps, max stay); the
     // ladder below asks it only once the cheaper holds are ruled out.
     const gate = await moneyGate(
@@ -357,8 +361,13 @@ export function makeExtender(deps: ExtenderDeps): Extender {
     // either too small to be a meaningful extension or already inside the
     // no-extend buffer before the legal limit — warn the driver to move.
     let rule: string;
-    let expiringReason: ExpiringReason | "position_unknown" | "car_moved" | "back_at_car" | null =
-      null;
+    let expiringReason:
+      | ExpiringReason
+      | "position_unknown"
+      | "car_moved"
+      | "back_at_car"
+      | "reconnect_provider"
+      | null = null;
     const nearMaxStay =
       judged.maxStayMinutes !== null &&
       stayLeftMin <=
@@ -407,6 +416,11 @@ export function makeExtender(deps: ExtenderDeps): Extender {
       } else if (violation === "receipt_needs_review") {
         rule = "hold_needs_review";
         expiringReason = "receipt_review";
+      } else if (violation === "provider_not_linked") {
+        // The parking account was unlinked or expired since the start:
+        // nothing can pay more time; the driver is asked to reconnect.
+        rule = "hold_provider_not_linked";
+        expiringReason = "reconnect_provider";
       } else if (violation !== null) {
         // amount_invalid, minutes_invalid, or a rule named after this
         // ladder was written: a refusal holds, never extends.
@@ -444,6 +458,11 @@ export function makeExtender(deps: ExtenderDeps): Extender {
       maxStayMinutes: judged.maxStayMinutes,
       dryRun,
       policyHash: deps.policy.hash(),
+      // The account the gate judged (it refuses before reading today's
+      // spend, so spentTodayUsd is null on this hold).
+      ...(rule === "hold_provider_not_linked"
+        ? { provider: provider?.id ?? null, accountStatus: gate.accountStatus ?? "none" }
+        : {}),
     };
 
     // Hysteresis: a freshly settled rule stands for 5 minutes; a tick that
@@ -496,7 +515,8 @@ export function makeExtender(deps: ExtenderDeps): Extender {
         result.code === "daily_cap_exceeded" ||
         result.code === "max_stay_exceeded" ||
         result.code === "amount_invalid" ||
-        result.code === "minutes_invalid"
+        result.code === "minutes_invalid" ||
+        result.code === "provider_not_linked"
       ) {
         // The gate refused the fresh row under the lock (another extension
         // landed since this one was priced): the matching cap rule, as a
@@ -511,7 +531,9 @@ export function makeExtender(deps: ExtenderDeps): Extender {
               ? "hold_daily_cap"
               : result.code === "amount_invalid" || result.code === "minutes_invalid"
                 ? "hold_gate_refused"
-                : "warn_max_stay";
+                : result.code === "provider_not_linked"
+                  ? "hold_provider_not_linked"
+                  : "warn_max_stay";
         outcome = {
           action: "hold",
           minutes,
@@ -520,6 +542,9 @@ export function makeExtender(deps: ExtenderDeps): Extender {
           message: result.message,
           underLock: true,
           ...(result.spentTodayUsd !== undefined ? { spentTodayUsd: result.spentTodayUsd } : {}),
+          ...(result.code === "provider_not_linked"
+            ? { provider: provider?.id ?? null, accountStatus: result.accountStatus ?? "none" }
+            : {}),
         };
       } else if (result.code === "extension_in_progress" || result.code === "phone_not_away") {
         // The user's own Extend (or a racing tick) got there first, or the
@@ -566,11 +591,19 @@ export function makeExtender(deps: ExtenderDeps): Extender {
               ? carMovedPush(session.providerZoneNumber, minutesLeft)
               : expiringReason === "back_at_car"
                 ? backAtCarPush(session.providerZoneNumber, minutesLeft)
-                : sessionExpiringPush({
-                    zoneNumber: session.providerZoneNumber,
-                    minutesLeft,
-                    reason: expiringReason,
-                  }),
+                : expiringReason === "reconnect_provider" && provider
+                  ? reconnectToExtendPush({
+                      provider: provider.id,
+                      displayName: provider.displayName,
+                      zoneNumber: session.providerZoneNumber,
+                      minutesLeft,
+                    })
+                  : sessionExpiringPush({
+                      zoneNumber: session.providerZoneNumber,
+                      minutesLeft,
+                      reason:
+                        expiringReason === "reconnect_provider" ? "no_auto_extend" : expiringReason,
+                    }),
       );
       outcome = { action: "warn", pushed: expiringReason };
     }

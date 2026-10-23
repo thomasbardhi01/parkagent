@@ -355,8 +355,16 @@ export function compareWithZone(
   return { verdict: "agrees", offerMaxStayMinutes: null, reasons };
 }
 
-/** A max stay, tightened by an accepted sign offer: never longer. */
-export function tightenedMaxStay(zoneMax: number | null, accepted: number | null): number | null {
+/** A max stay, tightened by an accepted sign offer: never longer, and,
+ * for a running session, never below the minutes it has already bought
+ * (`paidMinutes`): time paid for stays paid for, and the stay simply
+ * can't be extended (the money gate holds purchased + more to it). */
+export function tightenedMaxStay(
+  zoneMax: number | null,
+  accepted: number | null,
+  paidMinutes = 0,
+): number | null {
   if (accepted === null) return zoneMax;
-  return zoneMax === null ? accepted : Math.min(zoneMax, accepted);
+  const floored = Math.max(accepted, paidMinutes);
+  return zoneMax === null ? floored : Math.min(zoneMax, floored);
 }

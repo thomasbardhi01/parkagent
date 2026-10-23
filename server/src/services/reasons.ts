@@ -343,6 +343,10 @@ const REASONS: Record<string, Spec> = {
     "an amount it had to check against your limits wasn't one it could read, so it refused rather than guess",
     ["price", "spentToday"],
   ],
+  minutes_invalid: [
+    "the time it was asked to buy wasn't a whole number of minutes above zero, so it bought none",
+    ["stay", "maxStay"],
+  ],
   policy_violation: ["it was over your limits", ["price"], "Check your limits."],
 
   // ---- the assistant: plans, confirms, tools

@@ -647,3 +647,60 @@ describe("a cap the gate can't judge against is refused too (fail closed)", () =
     });
   });
 });
+
+describe("the minutes a start or an extension buys (minutes_invalid)", () => {
+  const BAD_MINUTES: [string, number][] = [
+    ["none", 0],
+    ["less than none", -30],
+    ["a fraction", 1.5],
+    ["not a number", Number.NaN],
+    ["infinite", Number.POSITIVE_INFINITY],
+  ];
+
+  test.each(BAD_MINUTES)("start, %s: refused before anything is read", async (_n, minutes) => {
+    const g = makeGate();
+    g.state.providerAccounts.splice(0);
+    // Refused as minutes_invalid even with no linked account: it comes
+    // before the account and the day's spend are read.
+    expect(await g.gate(USER, start({ minutes }))).toMatchObject({
+      ok: false,
+      rule: "minutes_invalid",
+      spentTodayUsd: null,
+    });
+  });
+
+  test.each(BAD_MINUTES)("extend, %s, by a person or the worker", async (_n, minutes) => {
+    const g = makeGate();
+    // 90 bought, held to 60 (the stay left the worker reads is -30): an
+    // extension of -30 would pass "purchased + minutes > max stay".
+    const s = seedSession(g.state, {
+      userId: "u2",
+      status: "active",
+      amountUsd: 3,
+      purchasedMinutes: 90,
+      maxStayMinutes: 60,
+    });
+    for (const [p, source] of [
+      [USER, "manual"],
+      [JOB, "auto"],
+    ] as const) {
+      const intent: GateIntent = { kind: "extend", session: s, minutes, price: price(1), source };
+      expect(await g.gate(p, intent)).toMatchObject({ ok: false, rule: "minutes_invalid" });
+    }
+  });
+
+  test("a whole number above zero passes this rule; stopping buys none and needs none", async () => {
+    const g = makeGate();
+    expect(await g.gate(USER, start({ minutes: 1 }))).toMatchObject({ ok: true });
+    const s = seedSession(g.state, { userId: "u2", status: "active", amountUsd: 3 });
+    const extend: GateIntent = {
+      kind: "extend",
+      session: s,
+      minutes: 15,
+      price: price(1),
+      source: "manual",
+    };
+    expect(await g.gate(USER, extend)).toMatchObject({ ok: true });
+    expect(await g.gate(USER, { kind: "stop" })).toMatchObject({ ok: true });
+  });
+});

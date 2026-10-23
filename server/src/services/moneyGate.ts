@@ -49,7 +49,10 @@ export type GateRule =
   | "amount_over_daily_cap"
   /** An amount the gate would judge, or a cap it would judge it against,
    * is not a finite number >= 0. */
-  | "amount_invalid";
+  | "amount_invalid"
+  /** The minutes a start or an extension would buy are not a whole
+   * number above 0. */
+  | "minutes_invalid";
 
 export type GateIntent =
   /** A street start (POST /session/start, the tap, the walk-away). */
@@ -164,6 +167,11 @@ function validAmount(usd: unknown): boolean {
   return typeof usd === "number" && Number.isFinite(usd) && usd >= 0;
 }
 
+/** Minutes a start or an extension may buy: a whole number above 0. */
+function validMinutes(minutes: unknown): boolean {
+  return typeof minutes === "number" && Number.isInteger(minutes) && minutes > 0;
+}
+
 /** The amounts an intent asks the gate to judge, before any is compared. */
 function intentAmounts(intent: GateIntent): unknown[] {
   switch (intent.kind) {
@@ -273,6 +281,12 @@ async function decide(
   // comparison: the amounts the intent carries, and the caps they are
   // compared to (a saved cap Postgres stores as 'NaN' would pass them all).
   if (!intentAmounts(intent).every(validAmount)) return refuse("amount_invalid");
+  // And the time a start or an extension buys: none, less than none, a
+  // fraction or NaN is refused, never compared (an extension of -30
+  // passes "purchased + minutes > max stay").
+  if ((intent.kind === "start" || intent.kind === "extend") && !validMinutes(intent.minutes)) {
+    return refuse("minutes_invalid");
+  }
   if (intent.kind === "stop" || intent.kind === "confirm") return allow();
   const caps = [
     policy.session_cap_usd,

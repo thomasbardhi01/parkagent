@@ -12,7 +12,8 @@ import { fileURLToPath } from "node:url";
 
 import { expect, test } from "vitest";
 
-import { haversineM, makeExtender } from "../src/jobs/extendTick.js";
+import { makeExtender } from "../src/jobs/extendTick.js";
+import { metersBetween } from "../src/services/pendingSession.js";
 import type { FakeDbState } from "./helpers.js";
 import { API_KEY, HOURS_MON_SAT, STEINWAY_A, makeTestApp, seedSession } from "./helpers.js";
 
@@ -121,7 +122,7 @@ test("the route's walk back reaches the worker as heading to the car, and it hol
 
 test("the route's spot is the car the walk is measured from", () => {
   const far = ROUTE.find((p) => p.phase === "far")!;
-  expect(Math.round(haversineM(CAR.lat, CAR.lng, far.lat, far.lng))).toBeGreaterThanOrEqual(295);
+  expect(Math.round(metersBetween(CAR.lat, CAR.lng, far.lat, far.lng))).toBeGreaterThanOrEqual(295);
 });
 
 test("a park waiting on the same route is asked about once, as the walk leaves the car", async () => {

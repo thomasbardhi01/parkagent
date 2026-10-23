@@ -227,6 +227,8 @@ export interface FakeFix {
   lng: number;
   accuracyM: number;
   ts: Date;
+  /** Unset on seeded rows: readers fall back to `ts`, as on older rows. */
+  measuredAt?: Date | null;
 }
 
 export interface FakeIssuingAuthorizationRow {
@@ -1742,7 +1744,8 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
         state.locationFixes
           .filter((f) => f.sessionId === where.sessionId)
           .sort((a, b) => b.ts.getTime() - a.ts.getTime())
-          .slice(0, take),
+          .slice(0, take)
+          .map((f) => ({ ...f, measuredAt: f.measuredAt ?? null })),
     },
     parkFix: {
       create: async ({ data }) => {
@@ -2176,6 +2179,51 @@ export function makeFakeProviderOps(
     readSavedCard: async () => ({ ok: true, brand: "Visa", last4: "4242" }),
     ...overrides,
   };
+}
+
+/** The park row a session's walk-away leaves (FR-55): started with the
+ * session, the phone seen leaving at the session's start, nothing since
+ * saying it came back. The extension worker reads "away" only from such a
+ * row (phonePosition); a session with none is `unknown`. */
+export function seedAwayPark(
+  state: FakeDbState,
+  session: SessionRow,
+  overrides: Partial<PendingParkRow> = {},
+): PendingParkRow {
+  const at = session.startedAt ?? session.createdAt;
+  const park: PendingParkRow = {
+    id: `pp${state.pendingParks.length + 1}`,
+    userId: session.userId,
+    parkedEventId: session.parkedEventId ?? null,
+    status: "started",
+    candidates: null,
+    quote: null,
+    prompt: null,
+    shownDryRun: null,
+    zoneId: session.zoneId,
+    carLat: session.carLat ?? 0,
+    carLng: session.carLng ?? 0,
+    parkedAt: at,
+    leftCarAt: at,
+    farAt: null,
+    farDistanceM: null,
+    nearSince: null,
+    atCarSince: null,
+    backAt: null,
+    driveAt: null,
+    driveDistanceM: null,
+    driveSpeedMps: null,
+    promptedAt: null,
+    confirmedAt: null,
+    startingAt: null,
+    sessionId: session.id,
+    carMovedAt: null,
+    closedAt: null,
+    createdAt: at,
+    ...overrides,
+  };
+  state.pendingParks.push(park);
+  return park;
 }
 
 /** Seed a live ParkAgent-card hold (what the Issuing webhook approves

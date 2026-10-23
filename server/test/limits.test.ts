@@ -22,6 +22,7 @@ import {
   STEINWAY_B,
   makeTestApp,
   parkedBody,
+  seedAwayPark,
   seedProviderAccount,
   seedSession,
 } from "./helpers.js";
@@ -376,6 +377,8 @@ describe("sessions read the owner's limits", () => {
       });
     const mine = session("u2");
     const theirs = session("u1");
+    // The parks their walk-aways left: "away" is the lifecycle's.
+    for (const s of [mine, theirs]) seedAwayPark(t.state, s);
     // The driver is far away and walking further: both want an extension.
     for (const s of [mine, theirs]) {
       [100, 300, 600].forEach((m, i) =>
@@ -386,7 +389,7 @@ describe("sessions read the owner's limits", () => {
           lat: 40.7702 + m / 111_320,
           lng: -73.9077,
           accuracyM: 10,
-          ts: new Date(T("14:10").getTime() + i * 60_000),
+          ts: new Date(T("14:16").getTime() + i * 60_000),
         }),
       );
     }

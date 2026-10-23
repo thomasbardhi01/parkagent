@@ -16,6 +16,7 @@ import {
   HOURS_MON_SAT,
   NONADMIN_API_KEY,
   makeTestApp,
+  seedAwayPark,
   seedProviderAccount,
   seedSession,
 } from "./helpers.js";
@@ -63,8 +64,13 @@ const extend = (t: ReturnType<typeof makeTestApp>, sessionId: string) =>
 const extendCalls = (t: ReturnType<typeof makeTestApp>) =>
   t.executorCalls.filter((c) => c.op === "extend").length;
 
-/** The phone far from the car and walking further: the worker wants time. */
+/** The phone far from the car and walking further: the worker wants time.
+ * Walked away from the car first (FR-55): only a park row says "away". */
 function walkingAway(t: ReturnType<typeof makeTestApp>, sessionId: string) {
+  seedAwayPark(
+    t.state,
+    t.state.sessions.find((s) => s.id === sessionId)!,
+  );
   [100, 300, 600].forEach((m, i) =>
     t.state.locationFixes.push({
       id: `f-${i}`,
@@ -73,7 +79,8 @@ function walkingAway(t: ReturnType<typeof makeTestApp>, sessionId: string) {
       lat: 40.7702 + m / 111_320,
       lng: -73.9077,
       accuracyM: 10,
-      ts: new Date(T("14:10").getTime() + i * 60_000),
+      // Sent within the last five minutes: the phone is still reporting.
+      ts: new Date(T("14:17").getTime() + i * 60_000),
     }),
   );
 }

@@ -402,6 +402,19 @@ describe("extend", () => {
       "phone_not_away",
     );
     park.carMovedAt = null;
+    // Away needs the phone still reporting: a fresh usable fix (phonePosition).
+    expect((await g.gate(JOB, extend(s, { source: "auto", underLock: true }))).rule).toBe(
+      "phone_not_away",
+    );
+    g.state.locationFixes.push({
+      id: "f1",
+      sessionId: s.id,
+      userId: "u2",
+      lat: 0.01,
+      lng: 0,
+      accuracyM: 10,
+      ts: AT,
+    });
     expect((await g.gate(JOB, extend(s, { source: "auto", underLock: true }))).ok).toBe(true);
     // The belt (#246): a newer park 1.1 km off since this one, however the
     // park came to hold its session, is read again here, and marks it.

@@ -53,7 +53,7 @@ started at 11:55 ET). "—" means the FR has no live test.
 | FR-6 | Unknown zone answers unknown_zone | nightly + unit | ✅ passed | `server/fr/10-parked-nyc.fr.test.ts`, `server/test/parked.test.ts` |
 | FR-7 | Quote correctness (ladder, observed terms, receipts) | nightly + unit | ✅ passed | `server/fr/10-parked-nyc.fr.test.ts`, `server/test/quote.test.ts`, `server/test/bostonQuote.test.ts`, `server/test/bostonBilling.test.ts`, `server/test/observedTerms.test.ts` |
 | FR-8 | Free periods and the 8 pm boundary | nightly + unit | ✅ passed | `server/fr/20-parked-boston.fr.test.ts`, `server/test/parked.test.ts`, `server/test/bostonSession.test.ts`, `executor/test/passportParse.test.ts` |
-| FR-9 | Timestamp clamping | nightly (off-hours only) + unit | ⏭️ skipped | `server/fr/10-parked-nyc.fr.test.ts`, `server/test/adversarial.test.ts` |
+| FR-9 | Timestamp clamping | nightly + unit | ⏭️ skipped | `server/fr/10-parked-nyc.fr.test.ts`, `server/test/adversarial.test.ts` |
 | FR-10 | Session cap on every payment source | nightly + unit | ✅ passed | `server/fr/00-gate.fr.test.ts`, `server/fr/30-session-providers.fr.test.ts`, `server/test/session.test.ts`, `server/test/paymentSource.test.ts`, `server/test/walletHolds.test.ts`, `server/test/linkWallet.test.ts`, `server/test/issuing.test.ts`, `server/test/authorization.test.ts`; `server/test/limits.test.ts`, `server/test/limitsScan.test.ts`, `server/fr/35-limits.fr.test.ts`; iOS `OnboardingUITests`, `AccountUITests` (each user's own limits), `LimitsDraftTests` |
 | FR-11 | Daily cap on every payment source | nightly + unit | ✅ passed | `server/fr/00-gate.fr.test.ts`, `server/fr/35-limits.fr.test.ts`, `server/test/limits.test.ts`, `server/test/webhookStripe.test.ts`, `server/test/session.test.ts`, `server/test/paymentSource.test.ts`, `server/test/walletHolds.test.ts`, `server/test/issuing.test.ts`, `server/test/card.test.ts`, `server/test/assistantItinerary.test.ts` |
 | FR-12 | Auto-pay rate ceiling | nightly + unit | ✅ passed | `server/fr/10-parked-nyc.fr.test.ts`, `server/test/parked.test.ts` |
@@ -242,15 +242,16 @@ acceptance run's 9:15 pm decision (`cmueb94g0…`).
 A park timestamp more than 24 h past or 10 min future would price the
 wrong enforcement window, so it is clamped to server time and the
 decision records `request_ts_clamped`. **Accepted when** a stale ts
-prices at server time (live: a 3-day-old afternoon ts prices as the
-current off-hours free period) and the decision inputs say why.
+prices at server time (live: in meter hours a 3-day-old 3 am ts prices
+the current meter money; off hours a 3-day-old afternoon ts prices as the
+current free period) and the decision inputs say why.
 
-Evidence: live FR-9 test (runs only outside 08:00–20:00 Eastern);
-`adversarial.test.ts` (all three `pricedAtSource` values). The nightly is
-scheduled for 09:17 UTC (5:17 am Eastern), but GitHub started the
-2026-09-29 and 2026-09-30 scheduled runs at about 15:55 UTC, inside
-enforcement hours, so FR-9 skipped in both. A manual dispatch after 8 pm
-Eastern exercises it.
+Evidence: live FR-9 test, which takes its stale ts on the other side of
+the fixture block's meter hours from the run (it skips only within five
+minutes of their edges); `adversarial.test.ts` (all three
+`pricedAtSource` values). Before 2026-10-23 it ran only outside 08:00–20:00
+Eastern, and GitHub started the 09:17 UTC schedule hours late (15:55 UTC
+on 2026-09-29 and -30), so it mostly skipped.
 
 ## Budget caps
 
@@ -1687,12 +1688,15 @@ park is on the decisions ledger), and "Walk to …" on the session card
 Evidence: `parkedLifecycle.test.ts` and `sessionReturn.test.ts` (each rule
 above, including the retried, raced, replayed, and wrong-car cases);
 `extendTick.test.ts`; `walkAwayRoute.test.ts` (the shared GPX route: the
-park is asked about once as the walk leaves the car); live FR-55 (a held
-park starts and asks nothing at the car; the start route and another
-user can't pay it; the walk-away asks with the quote during meter hours,
-and closes the park as free outside them; the tap reaches the start path
-once and is refused `provider_not_linked` for the unlinked throwaway; Not
-now stops the reporting); iOS `ParkedNoticeTests`, `LocationReporterTests`,
+park is asked about once as the walk leaves the car); live FR-55, parked
+on the real clock because only a park within 5 minutes of server time is
+held (#241) — in the fixture block's meter hours, where the nightly runs,
+a held park starts and asks nothing at the car; the start route and
+another user can't pay it; the walk-away asks with the quote; the tap
+reaches the start path once and is refused `provider_not_linked` for the
+unlinked throwaway; Not now stops the reporting. Outside them the park is
+`ignore` and not held. A park sent hours late is not held either, and is
+answered from its quote as for an app that doesn't wait; iOS `ParkedNoticeTests`, `LocationReporterTests`,
 `LiveAPIRequestTests`, `SessionUITests`. Device: the walk-away and return
 on a real street, and the notification's Pay from a locked phone
 (docs/device-smoke-test.md).
@@ -1749,7 +1753,7 @@ session (the unlinked-start refusal is itself one of its assertions).
 Zone fixture coordinates are env-overridable (`FR_NYC_AUTOPAY_LAT`, …)
 — see `server/fr/client.ts`.
 
-The nightly workflow (`nightly-fr.yml`, Tue–Sat 09:17 UTC + manual
+The nightly workflow (`nightly-fr.yml`, Tue–Sat 14:20 UTC + manual
 `workflow_dispatch`) runs the executor fixture suite and this suite
 against prod, uploads `fr-report.json` + `fr-summary.md` as the
 `fr-report` artifact, and opens/updates a single **"Nightly FR

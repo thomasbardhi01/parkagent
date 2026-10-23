@@ -18,6 +18,9 @@ export const EXTRA_USERS = {
   // Rotation, reuse detection, and DELETE /me burn a session: not the
   // one the file's profile tests run as.
   "60-accounts": ["lifecycle"],
+  // A late park is held only if it is also the user's newest park: a user
+  // whose other parks (stamped now) can't make the late one not newest.
+  "90-park-now": ["late"],
 };
 
 /** The label of an fr/ test file, from its path or file URL. */

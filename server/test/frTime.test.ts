@@ -5,9 +5,48 @@
  */
 import { describe, expect, test } from "vitest";
 
-import { passedClockTime, pinnedDay } from "../fr/client.js";
+import { nycAutopayNow, passedClockTime, pinnedDay } from "../fr/client.js";
 
 const at = (iso: string) => new Date(iso);
+
+describe("nycAutopayNow", () => {
+  const policy = { default_stay_minutes: 90 };
+
+  test("metered when a 90-minute stay from now, and from five minutes on, touches Mon–Sat 08:30–19:00", () => {
+    // Where the nightly lands (the 14:20 UTC cron, started hours late).
+    expect(nycAutopayNow(policy, at("2026-10-20T13:20:00-04:00"))).toBe("metered");
+    expect(nycAutopayNow(policy, at("2026-11-03T16:55:00-05:00"))).toBe("metered");
+    // Saturday is metered; a stay that runs into 08:30 is charged for it.
+    expect(nycAutopayNow(policy, at("2026-10-24T10:00:00-04:00"))).toBe("metered");
+    expect(nycAutopayNow(policy, at("2026-10-19T07:30:00-04:00"))).toBe("metered");
+    expect(nycAutopayNow(policy, at("2026-10-19T18:50:00-04:00"))).toBe("metered");
+  });
+
+  test("free when no minute of the stay is: Sunday, the small hours, after 19:00", () => {
+    expect(nycAutopayNow(policy, at("2026-10-18T13:20:00-04:00"))).toBe("free");
+    expect(nycAutopayNow(policy, at("2026-10-19T00:30:00-04:00"))).toBe("free");
+    expect(nycAutopayNow(policy, at("2026-10-19T06:50:00-04:00"))).toBe("free");
+    expect(nycAutopayNow(policy, at("2026-10-19T19:00:00-04:00"))).toBe("free");
+    // Saturday night into Sunday.
+    expect(nycAutopayNow(policy, at("2026-10-24T22:00:00-04:00"))).toBe("free");
+  });
+
+  test("edge within five minutes of a stay first or last touching meter hours", () => {
+    expect(nycAutopayNow(policy, at("2026-10-19T06:58:00-04:00"))).toBe("edge");
+    expect(nycAutopayNow(policy, at("2026-10-19T18:57:00-04:00"))).toBe("edge");
+  });
+
+  test("the stay is the policy's, at most the block's 120 minutes", () => {
+    // 06:00 + 180 min would reach 08:30, but the block sells 120 at most.
+    expect(nycAutopayNow({ default_stay_minutes: 180 }, at("2026-10-19T06:00:00-04:00"))).toBe(
+      "free",
+    );
+    expect(nycAutopayNow({ default_stay_minutes: 120 }, at("2026-10-19T06:40:00-04:00"))).toBe(
+      "metered",
+    );
+    expect(() => nycAutopayNow({}, at("2026-10-19T13:20:00-04:00"))).toThrow(/default_stay/);
+  });
+});
 
 describe("pinnedDay", () => {
   test("the next Tuesday at least two days out, said the way a person says it", () => {

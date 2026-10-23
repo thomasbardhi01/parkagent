@@ -16,24 +16,25 @@ flowchart LR
   end
 
   subgraph API["Fastify server (Fly, one machine)"]
-    AUTH["makeAuthenticate<br/>JWT or x-api-key → Principal<br/>actor · scopes · trace"]
+    AUTH["makeAuthenticate<br/>JWT, Bearer pak_ or x-api-key → Principal<br/>actor · scopes · trace<br/>path ids parsed first (routes/ids.ts)"]
     R1["/parked · /location<br/>/parked/:id/confirm"]
-    R2["/session/start · extend · stop"]
+    R2["/session/start · extend · stop<br/>receipt bound: needs_review, excess counted"]
     R3["/assistant/message · confirm"]
-    R4["/mcp · stateless 2026-07-28<br/>tools = the /agent calls"]
+    R4["/agent/* REST · OpenAPI 3.1<br/>/mcp · stateless 2026-07-28<br/>seven tools: the /agent calls + explain_decision"]
     R5["/parked/:id/signs · accept"]
-    PS["pendingSession<br/>advanceWalk · settlePark · startParkSession"]
-    GATE["moneyGate<br/>caps · max stay · dry run · link · as shown<br/>consent · phone away (under lock)"]
-    EXT["applyExtension<br/>advisory lock · asks the gate again"]
+    PS["pendingSession<br/>advanceWalk (door rule) · settlePark · movePark<br/>startParkSession · phonePosition"]
+    GATE["moneyGate<br/>consent · fails closed (amount, minutes) · usable account<br/>caps (+ receipt excess) · max stay · dry run · as shown<br/>auto extend: not needs_review; phone away + no newer park (under lock)"]
+    EXT["applyExtension<br/>advisory lock · withAcceptedStay · asks the gate again"]
     AT["AssistantTools (adapter) + loop<br/>execute · ToolContext"]
     CAP["capabilities/*<br/>geocode · quoteStreet · searchGarages<br/>buildItinerary · proposePlan · confirmPlan"]
     RS["capabilities/readSigns<br/>strict SignRules · grounded in the phone's OCR text<br/>SIGN_READER, off by default"]
     POL["policyFor · spentToday"]
     EX["executorFor<br/>DryRunExecutor when dry run"]
-    JOBS["Jobs<br/>extendTick · settle · janitors"]
+    JOBS["Jobs<br/>extendTick (phonePosition · Reconnect push) · settle · janitors"]
     DEC[("decisions<br/>actor · agent_key_id · trace_id")]
     TR["/admin/parks/:id/trace (admin)<br/>trace:export · trace:replay"]
     AUD["/admin/audit · audit invariants<br/>report-only · template summary"]
+    HL["/health<br/>commit · effective dry run · degraded"]
   end
 
   subgraph Out["Outside services"]
@@ -61,7 +62,7 @@ flowchart LR
   R5 --> RS
   RS --> AN
   RS -. "advisory: warn, or a shorter stay on accept" .-> PL
-  R5 -- "accept: max stay, tighten only" --> GATE
+  R5 -- "accept: max stay, never longer, never below what was paid" --> GATE
   AT --> AN
   AT --> CAP
   CAP --> AM & SH
@@ -83,8 +84,9 @@ flowchart LR
   AUD -. "reads" .-> DEC
   AUD -. "reads sessions · pending_parks · park_fixes" .-> DB & PF
   AUD -. "AUDIT_SUMMARY: findings only, grounded" .-> AN
-  AT -. "agent confirm: pending_arrival" .-> PLAN
-  R1 -- "/parked in the plan's zone (as /parked resolves it), in the window, same dry run, a plan for now (park_now): held confirmed, pays on left_car" --> PLAN
+  CAP -. "agent confirm: pending_arrival, no park" .-> PLAN
+  R1 -- "/parked in the plan's zone (as /parked resolves it), in the window, same dry run, a plan for now (park_now), consent still on: bound once, held confirmed, pays on left_car" --> PLAN
+  HL -. "effectiveDryRun, per request" .-> POL
   R1 & R2 & R3 -. "request spans" .-> OT
   AT -. "invoke_agent · chat · execute_tool (no words)" .-> OT
   GATE -. "money_gate span" .-> OT
@@ -105,8 +107,8 @@ Each park the phone reports becomes a `pending_parks` row. Every transition is a
 stateDiagram-v2
   direction LR
   [*] --> at_car: /parked (app lists walk_away)
-  [*] --> confirmed: /parked at an agent's confirmed spot (its zone, its window, its dry run)
-  at_car --> prompted: walk-away by pace
+  [*] --> confirmed: /parked at an agent's confirmed park_now spot (its zone, its window, its dry run, consent still on)
+  at_car --> prompted: walk-away (two fixes clear at a walk, or left_car off the door)
   at_car --> confirmed: Pay tapped at the car
   prompted --> confirmed: Pay tapped, back at car
   prompted --> starting: Pay tapped while away
@@ -115,24 +117,34 @@ stateDiagram-v2
   starting --> started: provider confirmed
   starting --> start_failed: failed, or stale with no live session
   starting --> prompted: refused before provider
+  starting --> confirmed: a walk-away start threw before the provider (waits for the next left_car)
+  starting --> free: the meter stopped charging
+  prompted --> covered: a running session at this spot pays it
   started --> ended: return dwell · returned_to_car (CoreMotion's drive) · drove_off
   at_car --> declined: Not now
   prompted --> declined: Not now
   at_car --> cancelled: drove off before paying
   confirmed --> cancelled: drove off before paying
   at_car --> superseded: newer park
+  confirmed --> superseded: newer park
+  prompted --> superseded: newer park
   prompted --> expired: 60 min, no walk-away
   confirmed --> expired: 60 min
+  at_car --> expired: 60 min
   ended --> [*]
 ```
 
-A newer park supersedes a park still waiting, at any distance. More than 100 m from a running session's car, it marks the car moved (`car_moved_at`), and the extension worker buys that session nothing more. A park that was mid-start or closed when the newer one landed (it had no session yet) is checked the moment it takes one, whether its start settles, a late success adopts it, or a relink does. If the user's newest park since it is more than 100 m away, it's marked then, so the session it starts is never extended for a spot the car left (#246).
+A newer park supersedes a park still waiting, at any distance. More than 100 m from a running session's car, it marks the car moved (`car_moved_at`, `noteCarMoved`), and the extension worker buys that session nothing more. Every move that gives a park its session goes through one helper, `movePark`: a compare-and-set from the state it was read in, then the caller's ledger row, then the newer-park check (`noteNewerParkSince`), whether the start settled, a late success adopted it, a relink did, the stale-start sweep did, or the start threw. So a park that was mid-start or closed when the newer one landed is checked the moment it takes a session, and that session is never extended for a spot the car left (#246, #285). As a belt, the worker and the gate under the extension lock read the newest park again (`checkNewerPark`) before buying time. Accepted: `/parked` doesn't take the extension lock, so a newer park that lands while the provider is charging still buys that one extension, within the caps.
 
-Where the phone is for a running session is the lifecycle's alone (`phonePosition`, `services/pendingSession.ts`): the park row the walk rules keep, plus the newest fix that counts (sent within the last 5 minutes: a still phone's heartbeat keeps it counting). The extension worker reads it, and the money gate reads it again under the extension lock. Neither measures distance itself, and a session with no park row is `unknown`, so nothing is bought for it. The worker's cost model reads only a walk trend from the same place (distance, heading, walk ETA), which prices an extension and never says the phone is away.
+The door rule (#287): the app's `left_car` is not the walk-away when its fix may have the phone at the car's door (`mayBeAtTheDoor`: distance − accuracy ≤ 10 m, or accuracy over 65 m). The refused walk is kept (`walk_said_at`, `walk_said_usable`), and the next fix off the door, at a walk, reads as `fix_away`: it asks again and never pays by itself, so only a second tap pays. A usable fix within 30 m since, a pace over 3 m/s since, or `returned_to_car` forgets it.
 
-## After WS-4: one gate for every caller
+Where the phone is for a running session is the lifecycle's alone (`phonePosition`, `services/pendingSession.ts`, #301): the park row the walk rules keep, plus the newest fix that is still reporting, judged on its report time (`ts`) within the last 5 minutes, so a still phone's heartbeat keeps it counting. A usable fix within 30 m of the car reads `at_car`, whatever the walk rules hold, and `/location` doesn't store a fix sent more than 5 minutes ahead of the server's clock. The extension worker reads it, and the money gate reads it again under the extension lock. Neither measures distance itself, and a session with no park row is `unknown`, so nothing is bought for it. The worker's cost model reads only a walk trend over the last 10 minutes of the same fixes (distance, heading, walk ETA), which prices an extension and never says the phone is away.
 
-The app, the in-app assistant, Grok over REST, and Claude over MCP all become callers of the same capability functions. Who is acting travels as a `Principal`; one money gate decides; the phone stays the only source of arrival.
+Open before `DRY_RUN=false`: a drive-off straight after a return never sets `back_at` (#306); the car-moved rule ignores fix accuracy and zone boundaries (#291); a tap from the seat after a real walk-away pays (#293); a retried tap can pay a park that was asked again (#307).
+
+## WS-4 as built: one gate for every caller
+
+The app, the in-app assistant, Grok over REST, and Claude over MCP are all callers of the same capability functions. Who is acting travels as a `Principal`; one money gate decides; the phone stays the only source of arrival. An agent's street confirm writes no park: it leaves a confirmed `park_now` plan and its consumed mandate, and the phone's next `/parked` at that zone, inside the mandate's 10 minutes and under the same dry run, with the person's consent still on, binds to it once (E3).
 
 ```mermaid
 flowchart LR
@@ -140,7 +152,7 @@ flowchart LR
     APP["iPhone app<br/>JWT"]
     LOOP["In-app assistant<br/>Sonnet 5.5"]
     GROK["Grok bot<br/>REST /agent + OpenAPI"]
-    CL["Claude · any MCP client<br/>/mcp, stateless 2026-07-28"]
+    CL["Claude · any MCP client<br/>/mcp, stateless 2026-07-28<br/>seven tools, annotated"]
     SIRI["Siri App Intents<br/>(after field day)"]
   end
 
@@ -153,8 +165,8 @@ flowchart LR
     C4["explainDecision<br/>template; phrased only with EXPLAIN_MODEL"]
   end
 
-  GATE["moneyGate<br/>caps · dry run · consent · max stay · link"]
-  LIFE["Park lifecycle<br/>pending_parks · arrival from phone only"]
+  GATE["moneyGate<br/>consent · fails closed · caps · dry run · max stay · usable account"]
+  LIFE["Park lifecycle<br/>pending_parks · arrival from phone only<br/>E3: binds a park_now plan once"]
   EXE["Executor · providers"]
   OT["OTel collector<br/>OTLP/HTTP, opt-in"]
   DEC[("decisions<br/>actor · agent_key_id · trace_id")]
@@ -184,6 +196,7 @@ flowchart LR
   C3 --> GATE
   C3 -. "street: pending_arrival (consent + cap, no park)" .-> LIFE
   APP -- "/parked: the only arrival" --> LIFE
+  LIFE -. "E3: a consumed, unexpired agent mandate, same dry run" .-> MAND
   LIFE --> GATE
   GATE --> EXE
   GATE --> DEC
@@ -213,7 +226,7 @@ flowchart TB
     GUARD["guard plugin<br/>blocks merge · push main · fly writes<br/>secret reads · settings edits"]
   end
   GH["GitHub<br/>PRs · ruleset on main"]
-  CI["CI<br/>Linux jobs · ios only if iOS changed<br/>ui-tests by label · server-pg races (not required)"]
+  CI["CI<br/>Linux jobs · ios only if iOS changed<br/>ui-tests by label · server-pg races (required: approved, not yet set)"]
   PROD["Fly: parkagent-api<br/>DRY_RUN=true"]
   FR["nightly FR suite<br/>73 tests vs prod"]
   NA["nightly audit step<br/>(nightly-fr)"]

@@ -3,6 +3,8 @@
 %% Every start, extension, stop, prompt, quote, assistant confirm and
 %% funding move asks the one money gate (services/moneyGate.ts) with who
 %% is acting (Principal); an extension asks again under its lock.
+%% Every path id is parsed before the database (routes/ids.ts), and a NUL
+%% that reaches Postgres anyway answers 400 (services/pgErrors.ts).
 flowchart LR
   subgraph phone["Phone (ios/ParkAgent)"]
     detector["ParkDetector + ParkFusionEngine"]
@@ -31,8 +33,8 @@ flowchart LR
     webhook["POST /webhooks/stripe"]
     traceR["GET /admin/parks/:id/trace (admin)"]
     auditR["GET /admin/audit (admin)"]
-    agentR["/agent/* (REST, Bearer pak_)"]
-    mcpR["/mcp (MCP 2026-07-28, Bearer pak_)"]
+    agentR["/agent/* (REST, Bearer pak_)<br/>GET /agent/openapi.json (OpenAPI 3.1)"]
+    mcpR["/mcp (MCP 2026-07-28, Bearer pak_)<br/>seven tools, annotated · plan and park resources"]
     mcpCard["ui://parkagent/confirm-card<br/>(MCP_APPS, off by default)"]
   end
 
@@ -40,10 +42,10 @@ flowchart LR
 
   subgraph services["Services and jobs (server/src)"]
     zoneLookup["zoneLookup + quote + placeClassification"]
-    pending["pendingSession (rules)"]
-    gate{{"MONEY GATE · services/moneyGate<br/>caps (policyFor + spentToday) · max stay · dry run · provider link<br/>as shown (quote/zone/dry run) · phone away (auto extend) · agent consent<br/>CAS before it: parked.ts confirm · location.ts walk-away<br/>one open session: unique index"}}
-    applyExt["applyExtension<br/>advisory lock · asks the gate again on the fresh row"]
-    extendTick["jobs/extendTick (60 s)<br/>only while the phone is away"]
+    pending["pendingSession (rules)<br/>advanceWalk · mayBeAtTheDoor (door rule) · movePark<br/>phonePosition: the one reader of where the phone is"]
+    gate{{"MONEY GATE · services/moneyGate<br/>agent consent first · fails closed: amount_invalid · minutes_invalid<br/>usable provider account (start, prompt, extend) · caps (policyFor + spentToday, receipt excess on top)<br/>max stay (the accepted sign stay) · dry run · as shown (quote/zone/dry run)<br/>auto extend: not needs_review; under the lock, phone away + no newer park<br/>CAS before it: parked.ts confirm · location.ts walk-away<br/>one open session: unique index"}}
+    applyExt["applyExtension<br/>advisory lock · asks the gate again on the fresh row (withAcceptedStay)"]
+    extendTick["jobs/extendTick (60 s)<br/>only while phonePosition says away<br/>account not usable: Reconnect push"]
     holds["wallet/holds<br/>hold → settle"]
     issuing["issuing.decideAuthorization<br/>daily cap · hold claim"]
     linkWallet["link/linkWallet<br/>spend request (garages only)"]
@@ -138,6 +140,10 @@ flowchart LR
   mcpR --> agentActions
   agentActions -- "confirm: consent · mandate · caps" --> gate
   agentActions -. "street: pending_arrival, pays nothing; arrival only from the phone" .-> lifecycle
+  agentActions -- "confirm: consume the mandate · mark the plan confirmed" --> plans[("assistant_plans · mandates<br/>token hashed · one use · 10 min")]
+  parked -- "E3: the next park at a park_now plan's zone, consent still on: bind once, held confirmed" --> plans
+  signsR -. "accept: a shorter max stay, never longer, never below what was paid" .-> applyExt
+  ids["routes/ids.ts<br/>recordId on every path id but :provider"] -. "400 before the database" .-> routes
   agentActions --> ledger
   agentActions -. "why · explain_decision" .-> explain
 
@@ -157,19 +163,23 @@ flowchart LR
     covered(["covered"])
     expired(["expired"])
 
-    at_car -- "phone left: two fixes clear, or left_car" --> prompted
+    at_car -- "phone left: two fixes clear at a walk, or left_car off the door" --> prompted
     at_car -- "tap at the car (waits for the walk-away)" --> confirmed
-    prompted -- "tap: CAS → starting" --> starting
-    confirmed -- "walk-away: CAS → starting" --> starting
+    prompted -- "tap back at the car" --> confirmed
+    prompted -- "tap away: CAS → starting" --> starting
+    confirmed -- "left_car off the door: CAS → starting" --> starting
+    confirmed -- "pace only, or fix_away after a left_car refused at the door: asked again" --> prompted
+    starting -- "refused before the provider" --> prompted
     starting -- "start ok (via the money gate)" --> started
-    starting -- "start refused or failed" --> start_failed
+    starting -- "failed at the provider, or no answer in time" --> start_failed
     starting -- "quote now $0" --> free
-    started -- "back at the car 60 s, or drive-off" --> ended
+    started -- "back at the car 60 s, returned_to_car, or drive-off" --> ended
     at_car -- "returned or drove off before paying" --> cancelled
     prompted -- "Not now · Wrong spot" --> declined
-    at_car -- "a newer /parked" --> superseded
+    at_car -- "a newer /parked (confirmed, prompted too)" --> superseded
     prompted -- "a running session already covers it" --> covered
-    prompted -- "no tap in time" --> expired
+    prompted -- "no tap in time (at_car, confirmed: 60 min)" --> expired
+    started -- "a newer park > 100 m away: car_moved_at, no more extensions" --> started
   end
 
   pending -. "applies" .-> pp

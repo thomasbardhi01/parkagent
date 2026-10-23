@@ -429,8 +429,11 @@ export function registerSession(app: FastifyInstance, deps: AppDeps): SessionOps
         sessionId: session.id,
         leg: "start",
         quoteUsd: price.totalUsd,
-        // The hold may not exceed what the caps still allow.
-        // A start the gate allowed has read today's spend; unread, no room.
+        // The hold's buffer may not go past what the caps still allow. A
+        // start reaches here only once the gate allowed it, and the gate
+        // allows only after reading today's spend, so it is never null
+        // here; if it were, the room would read as none, and holdAmountFor
+        // still holds the whole quote (never less), just no buffer.
         capRoomUsd: Math.min(
           policy.session_cap_usd,
           policy.daily_cap_usd - (spentTodayUsd ?? policy.daily_cap_usd),

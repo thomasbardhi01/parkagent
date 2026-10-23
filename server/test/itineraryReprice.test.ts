@@ -7,7 +7,7 @@
  * the daily cap.
  */
 
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import type { GarageOption, GarageProvider } from "../src/services/garage/garageProvider.js";
 import type { ItineraryPlan } from "../src/services/assistant/plans.js";
@@ -158,6 +158,25 @@ describe("POST /assistant/plans/:planId/price", () => {
     expect(body).toMatchObject({ totalUsd: 18, capUsd: 60, fitsCap: true, remainingUsd: 60 });
     const decision = t.state.decisions.find((d) => d.rule === "itinerary_repriced")!;
     expect(decision.outcome).toMatchObject({ repriced: [], totalUsd: 18 });
+  });
+
+  test("a day the gate can't judge: today's spend and the room left are unknown, never the whole cap (#276)", async () => {
+    const t = app();
+    // A re-priced stop whose cost isn't a number: the gate refuses before
+    // it reads today's spend (amount_invalid), so there is none to say.
+    const tools = t.deps.assistantTools!;
+    const real = tools.repriceStops.bind(tools);
+    vi.spyOn(tools, "repriceStops").mockImplementation(async (...args) => {
+      const out = await real(...args);
+      return {
+        ...out,
+        stops: out.stops.map((s, i) => (i === 0 ? { ...s, costUsd: Number.NaN } : s)),
+      };
+    });
+    const res = await price(t, edited({}, 0));
+    expect(res.statusCode, res.body).toBe(200);
+    // Not cap − 0 = the whole $60: unknown.
+    expect(res.json()).toMatchObject({ fitsCap: false, spentTodayUsd: null, remainingUsd: null });
   });
 
   test("a longer stay is re-quoted on the server at quote_street's price; the day total follows", async () => {

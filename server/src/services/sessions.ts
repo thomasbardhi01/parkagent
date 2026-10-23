@@ -31,6 +31,8 @@ import type { StripeGateway } from "./stripeGateway.js";
 import type { SettleReason } from "./wallet/holds.js";
 import { placeHold, settleHold } from "./wallet/holds.js";
 import { parkAgentCardReadiness } from "./wallet/parkagentCard.js";
+import type { HoldLog } from "./signs/acceptedStay.js";
+import { holdAcceptedAfter, withAcceptedStay } from "./signs/acceptedStay.js";
 
 export interface SessionDeps {
   db: AppDb;
@@ -41,6 +43,8 @@ export interface SessionDeps {
    * shadow results record stripe_not_configured. */
   stripe?: StripeGateway;
   now?: () => Date;
+  /** Where an extension logs what it couldn't record (a failed hold). */
+  log?: HoldLog;
 }
 
 /**
@@ -206,10 +210,14 @@ export async function applyExtension(
     if (!fresh || fresh.status !== session.status || fresh.extendCount !== session.extendCount) {
       return null;
     }
+    // Judged against a stay accepted from the signs, whatever the row's
+    // stored max stay says: a hold that failed to write can't let this
+    // purchase past the sign (signs/acceptedStay.ts).
+    const judged = await withAcceptedStay(deps.db, fresh);
     const gate = await moneyGate(
       deps,
       principal,
-      { kind: "extend", session: fresh, minutes, price, source, underLock: true },
+      { kind: "extend", session: judged, minutes, price, source, underLock: true },
       deps.now?.() ?? new Date(),
     );
     if (!gate.ok) {
@@ -426,6 +434,18 @@ async function extendLocked(
       extendCount: session.extendCount + 1,
     },
   });
+  // A stay accepted from the signs after this extension read its row:
+  // held to it now, never below what was just bought.
+  if (session.parkedEventId) {
+    await holdAcceptedAfter(
+      deps,
+      session.id,
+      session.userId,
+      session.parkedEventId,
+      "extend",
+      deps.log,
+    );
+  }
   await deps.db.sessionEvent.create({
     data: {
       sessionId: session.id,

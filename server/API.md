@@ -704,11 +704,30 @@ above). It only ever tightens: a running session for this park drops its
 starts under it (the start path and the walk-away prompt read the
 shortest accepted stay). A running session is never held below the
 minutes it has already bought: offered 60 with 90 paid, it is held at 90
-and extends no further. Accepting again is a no-op. → `{accepted: true,
-maxStayMinutes, sessionId}` (`maxStayMinutes` is the accepted offer); a
-`sign_check` decision (`accepted_shorter_stay`) whose outcome, when a
-session is running, also carries `sessionMaxStayMinutes` (what it is
-held to) and `paidMinutes`.
+and extends no further. A start still at the provider (its session
+`pending`) takes the accepted stay the moment it's active, held at no
+less than what it bought; and every extension, once it has bought, holds
+the session to it again, so an accept made while one was buying never
+leaves the stay under what was paid (`services/signs/acceptedStay.ts`).
+Those stored holds are bookkeeping: every extension (the manual route
+before and under its lock, and the worker) is judged against the
+shortest accepted stay itself, never below what's bought, so a hold that
+failed to write can't let a purchase past the sign.
+→ `{accepted: true, maxStayMinutes, acceptedMinutes, sessionId,
+sessionMaxStayMinutes, paidMinutes, holdPending}`: `maxStayMinutes` is
+this check's offer and `acceptedMinutes` the stay that binds the park
+(the shortest accepted, this check's or an earlier one's);
+`sessionMaxStayMinutes` and `paidMinutes` say what the running session is
+held to and has bought in all (null with none running, or while its start
+is pending); `holdPending` is true while the session that will take it
+hasn't yet (its start is at the provider, or its row lost every write). A
+`sign_check` decision (`accepted_shorter_stay`) the first time, and again
+whenever an accept holds a session tighter; its outcome carries
+`acceptedMinutes`, `previousMaxStayMinutes` and the same two numbers, or
+`pendingSession` while the start is pending. The start and the extension
+write their own (`appliedAt: "start"` / `"extend"`, with
+`previousMaxStayMinutes`) when they change the stay, a raise to what was
+paid included.
 
 ### GET /admin/sign-checks
 
@@ -1067,7 +1086,7 @@ guarantees and cannot be confirmed through — raise them via `PUT /policy`):
 | `409 {"error": "policy_violation", "rule": …}` | Condition |
 |---|---|
 | `amount_invalid` | checked first: the price, or the amount the tap was shown, isn't a finite number ≥ 0, or today's spend doesn't sum to one. Every cap compares `amount > cap`, which a missing or NaN amount would pass, so the gate refuses instead (the same holds for extensions, the walk-away prompt, the assistant's caps and funding moves) |
-| `minutes_invalid` | next: the minutes to buy aren't a whole number above 0 (the route's own validation refuses them first; the gate's check is the backstop, and holds the extension worker too, which reads the stay left as max stay − minutes bought) |
+| `minutes_invalid` | next: the minutes to buy aren't a whole number above 0. `POST /session/start`'s and `/session/extend`'s own validation refuses such a body first, but the tap and the walk-away start without it (`ops.start`), the stay can be the policy's default, and the extension worker computes its minutes from the stay left (max stay − minutes bought): the gate is what holds all of them |
 | `max_stay_exceeded` | `minutes` > zone max stay |
 | `free_period` | the whole stay prices to $0 (outside enforcement) — nothing to buy, and typing minutes into the provider anyway could charge money the quote never priced |
 | `session_cap_exceeded` | purchase total > `session_cap_usd` |

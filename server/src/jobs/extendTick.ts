@@ -28,6 +28,7 @@ import {
 import { cityPolicy } from "../services/policy.js";
 import type { SessionDeps } from "../services/sessions.js";
 import { applyExtension, priceExtension } from "../services/sessions.js";
+import { withAcceptedStay } from "../services/signs/acceptedStay.js";
 import { moneyGate, refusedConsent, sessionSpentUsd } from "../services/moneyGate.js";
 import { jobPrincipal, runAs } from "../services/principal.js";
 import { policyFor } from "../services/limits.js";
@@ -317,9 +318,12 @@ export function makeExtender(deps: ExtenderDeps): Extender {
     // What to buy if we extend: to the P80 of predicted remaining dwell,
     // clamped by policy.
     const remainingDwellP80 = Math.max(0, dwell.p80Minutes - elapsedMin);
+    // The stay as the gate judges it: held to a stay accepted from the
+    // signs, whatever the row's stored max stay says (signs/acceptedStay.ts).
+    const judged = await withAcceptedStay(deps.db, session);
     const stayLeftMin =
-      session.maxStayMinutes !== null
-        ? session.maxStayMinutes - session.purchasedMinutes
+      judged.maxStayMinutes !== null
+        ? judged.maxStayMinutes - judged.purchasedMinutes
         : Number.POSITIVE_INFINITY;
     const desiredMinutes = Math.min(
       Math.max(MIN_EXTEND_MINUTES, Math.ceil(remainingDwellP80)),
@@ -338,7 +342,7 @@ export function makeExtender(deps: ExtenderDeps): Extender {
       jobPrincipal(session.userId),
       {
         kind: "extend",
-        session,
+        session: judged,
         minutes: Math.floor(desiredMinutes),
         price,
         source: "auto",
@@ -356,7 +360,7 @@ export function makeExtender(deps: ExtenderDeps): Extender {
     let expiringReason: ExpiringReason | "position_unknown" | "car_moved" | "back_at_car" | null =
       null;
     const nearMaxStay =
-      session.maxStayMinutes !== null &&
+      judged.maxStayMinutes !== null &&
       stayLeftMin <=
         Math.max(MIN_EXTEND_MINUTES - 1, policy.auto_extend.no_extend_within_minutes_of_max_stay);
 
@@ -434,7 +438,7 @@ export function makeExtender(deps: ExtenderDeps): Extender {
       sessionSpentUsd: sessionSpentUsd(session),
       purchasedMinutes: session.purchasedMinutes,
       extendCount: session.extendCount,
-      maxStayMinutes: session.maxStayMinutes,
+      maxStayMinutes: judged.maxStayMinutes,
       dryRun,
       policyHash: deps.policy.hash(),
     };

@@ -8,11 +8,14 @@
 
 import { readFileSync } from "node:fs";
 
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import type { ZoneTermsRow } from "../src/db.js";
 import { makeConversationRetention } from "../src/jobs/conversationRetentionTick.js";
 import { deleteAccount } from "../src/services/accountDeletion.js";
+import type { Executor } from "../src/services/executor.js";
+import { DryRunExecutor } from "../src/services/executor.js";
+import { holdToAcceptedStay } from "../src/services/signs/acceptedStay.js";
 import type {
   ModelClient,
   ModelResponse,
@@ -291,7 +294,7 @@ const answer = (reading: SignRules): Partial<ModelResponse> => ({
   content: [{ type: "text", text: JSON.stringify(reading) }],
 });
 
-function setup(model?: ModelClient, opts: { cap?: number } = {}) {
+function setup(model?: ModelClient, opts: { cap?: number; executor?: Executor } = {}) {
   const t = makeTestApp({
     candidates: [CANDIDATE],
     zones: [ZONE],
@@ -299,6 +302,7 @@ function setup(model?: ModelClient, opts: { cap?: number } = {}) {
     seedLinkedProvider: false,
     ...(model ? { signReaderModel: model } : {}),
     ...(opts.cap !== undefined ? { assistantDailySpendCapUsd: opts.cap } : {}),
+    ...(opts.executor ? { executor: opts.executor } : {}),
   });
   seedProviderAccount(t.state, { provider: "passport" });
   t.state.parkedEvents.push({
@@ -525,12 +529,12 @@ describe("POST /parked/:id/signs", () => {
 });
 
 describe("accepting a shorter stay: only ever tighter", () => {
-  async function stricterCheck() {
+  async function stricterCheck(executor?: Executor) {
     const { model } = scripted([
       answer(ONE_HOUR.modelOutput),
       answer(golden.samples[0]!.modelOutput),
     ]);
-    const s = setup(model);
+    const s = setup(model, executor ? { executor } : {});
     const res = await s.check({ text: ONE_HOUR.text, fix: FIX });
     return { ...s, checkId: res.json().checkId as string };
   }
@@ -604,6 +608,244 @@ describe("accepting a shorter stay: only ever tighter", () => {
     expect(s.t.state.decisions.at(-1)).toMatchObject({
       outcome: { tightenedSession: null, sessionMaxStayMinutes: 30 },
     });
+  });
+
+  /** A start held at the provider until `release`: its session pending. */
+  function heldStart() {
+    let release = () => {};
+    const released = new Promise<void>((resolve) => (release = resolve));
+    const dry = new DryRunExecutor(
+      () => {},
+      () => NOW,
+    );
+    const executor: Executor = {
+      startSession: async (args) => {
+        await released;
+        return dry.startSession(args);
+      },
+      extendSession: (args) => dry.extendSession(args),
+      stopSession: (args) => dry.stopSession(args),
+    };
+    return { executor, release };
+  }
+  const startFor = (s: Awaited<ReturnType<typeof stricterCheck>>, minutes: number) =>
+    s.t.app.inject({
+      method: "POST",
+      url: "/session/start",
+      headers: U1,
+      payload: { parkedEventId: "pe1", zoneId: ZONE.zoneId, minutes },
+    });
+  const extendBy = (s: Awaited<ReturnType<typeof stricterCheck>>, minutes: number) =>
+    s.t.app.inject({
+      method: "POST",
+      url: "/session/extend",
+      headers: U1,
+      payload: { sessionId: s.t.state.sessions.at(-1)!.id, minutes },
+    });
+
+  test.each([
+    ["under the offer: held to it", 45, 60],
+    ["over the offer: held at what it bought", 90, 90],
+  ])(
+    "accepted while the start is still pending, %s once it's active (#297)",
+    async (_case, bought, heldTo) => {
+      const { executor, release } = heldStart();
+      const s = await stricterCheck(executor);
+      const starting = startFor(s, bought);
+      await vi.waitFor(() => expect(s.t.state.sessions.at(-1)?.status).toBe("pending"));
+      const pending = s.t.state.sessions.at(-1)!;
+
+      const res = await accept(s, s.checkId);
+      expect(res.statusCode).toBe(200);
+      // Nothing to hold yet: the start is still at the provider.
+      expect(res.json()).toMatchObject({
+        accepted: true,
+        maxStayMinutes: 60,
+        sessionId: pending.id,
+        sessionMaxStayMinutes: null,
+      });
+      expect(s.t.state.decisions.at(-1)).toMatchObject({
+        rule: "accepted_shorter_stay",
+        outcome: { maxStayMinutes: 60, tightenedSession: null, pendingSession: pending.id },
+      });
+
+      release();
+      expect((await starting).statusCode).toBe(200);
+      const session = s.t.state.sessions.at(-1)!;
+      expect(session).toMatchObject({ status: "active", purchasedMinutes: bought });
+      expect(session.maxStayMinutes).toBe(heldTo);
+      expect(
+        s.t.state.decisions.find(
+          (d) => d.rule === "accepted_shorter_stay" && d.outcome["appliedAt"] === "start",
+        ),
+      ).toMatchObject({
+        outcome: {
+          tightenedSession: session.id,
+          previousMaxStayMinutes: 120,
+          sessionMaxStayMinutes: heldTo,
+          paidMinutes: bought,
+        },
+      });
+      // And no extension past it: before #297 a 60-minute extension went
+      // through here, to 105 against a 60-minute sign. Fifteen past what
+      // it's held to is refused as the max stay, nothing bought.
+      const extend = await extendBy(s, heldTo - bought + 15);
+      expect(extend.statusCode, extend.body).toBe(409);
+      expect(extend.json()).toMatchObject({ rule: "max_stay_exceeded" });
+      expect(s.t.state.sessions.at(-1)!.purchasedMinutes).toBe(bought);
+    },
+  );
+
+  test("a hold that fails after the provider charged: the start answers, it's logged, and the gate still holds the sign (#302)", async () => {
+    const { executor, release } = heldStart();
+    const s = await stricterCheck(executor);
+    const starting = startFor(s, 45);
+    await vi.waitFor(() => expect(s.t.state.sessions.at(-1)?.status).toBe("pending"));
+    expect((await accept(s, s.checkId)).json()).toMatchObject({ holdPending: true });
+    // The start's hold can't write (a transient database error).
+    const real = s.t.deps.db.session.updateMany;
+    vi.spyOn(s.t.deps.db.session, "updateMany").mockImplementation(async (args) => {
+      if ("purchasedMinutes" in args.where) throw new Error("connection reset");
+      return real(args);
+    });
+    const warned = vi.spyOn(s.t.app.log, "warn");
+    release();
+    expect((await starting).statusCode).toBe(200);
+    expect(warned.mock.calls.some((c) => String(c[0]).includes("couldn't hold session"))).toBe(
+      true,
+    );
+    const session = s.t.state.sessions.at(-1)!;
+    // The stored stay is still the zone's: the write failed.
+    expect(session.maxStayMinutes).toBe(120);
+    // But an extension is judged against the accepted stay: 45 + 30 is
+    // past the sign's 60, refused, nothing bought.
+    const extend = await extendBy(s, 30);
+    expect(extend.statusCode, extend.body).toBe(409);
+    expect(extend.json()).toMatchObject({ rule: "max_stay_exceeded" });
+    expect(session.purchasedMinutes).toBe(45);
+    // Refused before the lock, by the route's own judgment of the stay.
+    const row = s.t.state.decisions.filter((d) => d.kind === "session_extend").at(-1)!;
+    expect(row).toMatchObject({ rule: "max_stay_exceeded" });
+    expect(row.inputs["underLock"]).toBeUndefined();
+  });
+
+  test("an accept that lands between the route's check and the lock: the gate under the lock holds the sign", async () => {
+    const s = await stricterCheck();
+    expect((await startFor(s, 45)).statusCode).toBe(200);
+    const session = s.t.state.sessions.at(-1)!;
+    // The route judged the stay with nothing accepted; the extension's
+    // fresh read under the lock is when the accept lands.
+    const real = s.t.deps.db.session.findUnique;
+    let reads = 0;
+    let landed = false;
+    vi.spyOn(s.t.deps.db.session, "findUnique").mockImplementation(async (args) => {
+      // The route reads it first; the second read is the lock's.
+      if (args.where.id === session.id && ++reads === 2) {
+        landed = true;
+        s.t.state.signChecks.find((c) => c.id === s.checkId)!.acceptedAt = NOW;
+      }
+      return real(args);
+    });
+    const extend = await extendBy(s, 30);
+    expect(landed).toBe(true);
+    expect(extend.statusCode, extend.body).toBe(409);
+    expect(extend.json()).toMatchObject({ rule: "max_stay_exceeded" });
+    expect(s.t.state.decisions.filter((d) => d.kind === "session_extend").at(-1)).toMatchObject({
+      rule: "max_stay_exceeded",
+      inputs: { underLock: true },
+    });
+    expect(session.purchasedMinutes).toBe(45);
+  });
+
+  test("the accept names the stay that binds: an earlier, shorter one wins", async () => {
+    const s = await stricterCheck();
+    // An earlier check, accepted, offered 45.
+    s.t.state.signChecks.push({
+      ...s.t.state.signChecks.find((c) => c.id === s.checkId)!,
+      id: "sc-earlier",
+      offerMaxStayMinutes: 45,
+      acceptedAt: NOW,
+    });
+    const res = await accept(s, s.checkId);
+    expect(res.json()).toMatchObject({
+      maxStayMinutes: 60,
+      acceptedMinutes: 45,
+      sessionId: null,
+      holdPending: false,
+    });
+  });
+
+  test("a second tap that holds the session tighter is on the ledger too", async () => {
+    const s = await stricterCheck();
+    expect((await startFor(s, 45)).statusCode).toBe(200);
+    expect((await accept(s, s.checkId)).statusCode).toBe(200);
+    // Loosened somehow since (a hold that failed after a start): the
+    // accept's second tap holds it again, and says so on the ledger.
+    s.t.state.sessions.at(-1)!.maxStayMinutes = 120;
+    const rows = s.t.state.decisions.length;
+    const again = await accept(s, s.checkId);
+    expect(again.json()).toMatchObject({ sessionMaxStayMinutes: 60, paidMinutes: 45 });
+    expect(s.t.state.sessions.at(-1)!.maxStayMinutes).toBe(60);
+    expect(s.t.state.decisions.length).toBe(rows + 1);
+    expect(s.t.state.decisions.at(-1)).toMatchObject({
+      rule: "accepted_shorter_stay",
+      outcome: { tightenedSession: s.t.state.sessions.at(-1)!.id },
+    });
+  });
+
+  test("an extension that buys after an accept re-holds the session to it", async () => {
+    const s = await stricterCheck();
+    expect((await startFor(s, 30)).statusCode).toBe(200);
+    // Accepted after the extension read the session (the accept's own
+    // hold then saw the old row): set straight on the check.
+    s.t.state.signChecks.find((c) => c.id === s.checkId)!.acceptedAt = NOW;
+    expect(s.t.state.sessions.at(-1)!.maxStayMinutes).toBe(120);
+    const extend = await extendBy(s, 15);
+    expect(extend.statusCode, extend.body).toBe(200);
+    const session = s.t.state.sessions.at(-1)!;
+    expect(session.purchasedMinutes).toBe(45);
+    expect(session.maxStayMinutes).toBe(60);
+    expect(
+      s.t.state.decisions.find(
+        (d) => d.rule === "accepted_shorter_stay" && d.outcome["appliedAt"] === "extend",
+      ),
+    ).toMatchObject({ outcome: { sessionMaxStayMinutes: 60, paidMinutes: 45 } });
+  });
+
+  test("an accept whose read a purchase overtakes reads again: never under what's paid", async () => {
+    const s = await stricterCheck();
+    expect((await startFor(s, 90)).statusCode).toBe(200);
+    const session = s.t.state.sessions.at(-1)!;
+    // An extension to 120 commits between the accept's read and its write.
+    const real = s.t.deps.db.session.updateMany;
+    let overtaken = false;
+    vi.spyOn(s.t.deps.db.session, "updateMany").mockImplementation(async (args) => {
+      if (!overtaken && "purchasedMinutes" in args.where) {
+        overtaken = true;
+        session.purchasedMinutes = 120;
+      }
+      return real(args);
+    });
+    const res = await accept(s, s.checkId);
+    expect(overtaken).toBe(true);
+    expect(res.json()).toMatchObject({ sessionMaxStayMinutes: 120, paidMinutes: 120 });
+    expect(session.maxStayMinutes).toBe(120);
+  });
+
+  test("a purchase that lands after the accept's write: the hold raises the stay to what was paid", async () => {
+    const s = await stricterCheck();
+    expect((await startFor(s, 90)).statusCode).toBe(200);
+    expect((await accept(s, s.checkId)).statusCode).toBe(200);
+    const session = s.t.state.sessions.at(-1)!;
+    expect(session.maxStayMinutes).toBe(90);
+    // An extension already past the gate when the accept wrote, buying to
+    // 120: its own hold finds the stay under what it paid.
+    session.purchasedMinutes = 120;
+    const held = await holdToAcceptedStay(s.t.deps.db, session.id);
+    expect(held).toMatchObject({ sessionMaxStayMinutes: 120, paidMinutes: 120, tightened: true });
+    expect(session.maxStayMinutes).toBe(120);
+    // Raised to what was paid, and no further: nothing more can be bought.
+    expect((await extendBy(s, 15)).statusCode).not.toBe(200);
   });
 
   test("a session started later for this park starts under it", async () => {

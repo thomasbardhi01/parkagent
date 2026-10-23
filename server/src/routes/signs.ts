@@ -24,10 +24,10 @@ import { z } from "zod";
 import type { AppDeps } from "../app.js";
 import { requireAdmin } from "../app.js";
 import { readSigns } from "../services/capabilities/readSigns.js";
+import { acceptedSignStay, holdToAcceptedStay } from "../services/signs/acceptedStay.js";
 import { PARK_OPEN, PARK_TTL_MS } from "../services/pendingSession.js";
 import { principalFor } from "../services/principal.js";
 import { makeRateLimiter } from "../services/rateLimit.js";
-import { tightenedMaxStay } from "../services/signs/signRules.js";
 
 /** How long the OCR text, and a photo the driver chose to keep, stay. */
 export const SIGN_CHECK_RETENTION_DAYS = 30;
@@ -202,42 +202,63 @@ export function registerSigns(app: FastifyInstance, deps: AppDeps): void {
     });
     // A running session for this park: its max stay tightens now, and the
     // money gate holds every extension to it. Never loosened, and never
-    // below what the session has already bought.
+    // below what the session has already bought. A start still pending
+    // takes it once its session is active, and an extension buying now
+    // re-holds it once it has bought (signs/acceptedStay.ts).
     const session = await deps.db.session.findFirst({
-      where: { userId, status: "active", parkedEventId: id },
+      where: { userId, status: { in: ["pending", "active"] }, parkedEventId: id },
     });
-    let tightenedSession: string | null = null;
-    // What the session is held to, and what it had bought (the floor).
-    const held = session
-      ? {
-          sessionMaxStayMinutes: tightenedMaxStay(
-            session.maxStayMinutes ?? null,
-            offer,
-            session.purchasedMinutes,
-          ),
-          paidMinutes: session.purchasedMinutes,
-        }
-      : null;
-    if (session && held && held.sessionMaxStayMinutes !== (session.maxStayMinutes ?? null)) {
-      await deps.db.session.update({
-        where: { id: session.id },
-        data: { maxStayMinutes: held.sessionMaxStayMinutes },
-      });
-      tightenedSession = session.id;
+    const result =
+      session?.status === "active" ? await holdToAcceptedStay(deps.db, session.id) : null;
+    // Every write lost to a purchase: the gate still judges against the
+    // accepted stay (withAcceptedStay), and the next purchase holds it.
+    if (result === "missed") {
+      req.log.warn(`signs: session ${session!.id}'s accepted stay lost every write (accept)`);
     }
-    if (won.count > 0) {
+    const held = result === "missed" ? null : result;
+    // The stay that binds the park: the shortest accepted, this one or an
+    // earlier one.
+    const binding = held?.acceptedMinutes ?? (await acceptedSignStay(deps.db, id)) ?? offer;
+    // On the ledger the first time it's accepted, and whenever it held a
+    // session tighter (a second tap after the session started).
+    if (won.count > 0 || held?.tightened) {
       await deps.db.decision.create({
         data: {
           kind: "sign_check",
           inputs: { checkId, parkedEventId: id },
           rule: "accepted_shorter_stay",
-          outcome: { maxStayMinutes: offer, tightenedSession, ...held },
+          outcome: {
+            maxStayMinutes: offer,
+            acceptedMinutes: binding,
+            tightenedSession: held?.tightened ? held.sessionId : null,
+            ...(held
+              ? {
+                  previousMaxStayMinutes: held.previousMaxStayMinutes,
+                  sessionMaxStayMinutes: held.sessionMaxStayMinutes,
+                  paidMinutes: held.paidMinutes,
+                }
+              : {}),
+            ...(session?.status === "pending" ? { pendingSession: session.id } : {}),
+            ...(result === "missed" ? { holdMissed: true } : {}),
+          },
           userId,
           parkedEventId: id,
         },
       });
     }
-    return { accepted: true, maxStayMinutes: offer, sessionId: session?.id ?? null };
+    // What the app says: the stay this check offered, the one that binds
+    // the park, and what the running session is held to and has bought
+    // (the floor). holdPending: a session that will take it, but hasn't
+    // yet (its start is still at the provider, or its row was busy).
+    return {
+      accepted: true,
+      maxStayMinutes: offer,
+      acceptedMinutes: binding,
+      sessionId: session?.id ?? null,
+      sessionMaxStayMinutes: held?.sessionMaxStayMinutes ?? null,
+      paidMinutes: held?.paidMinutes ?? null,
+      holdPending: session?.status === "pending" || result === "missed",
+    };
   });
 
   /** The zone-data review queue: checks whose driver kept a photo, a

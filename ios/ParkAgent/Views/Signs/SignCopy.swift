@@ -58,6 +58,24 @@ enum SignCopy {
         "Done. ParkAgent won't keep this park past \(Format.minutes(minutes))."
     }
 
+    /// The accept's answer in words, naming the stay that binds the park
+    /// (the shortest accepted, which may be an earlier check's):
+    /// - the running session has already bought more than that: what it
+    ///   bought, and that no more is added (the server never cuts below);
+    /// - its start is still at the provider: no time added past the stay;
+    /// - otherwise: the park isn't kept past it.
+    static func accepted(_ answer: SignAcceptResponse) -> String {
+        let binding = answer.acceptedMinutes ?? answer.maxStayMinutes
+        if let held = answer.sessionMaxStayMinutes, held > binding {
+            let bought = answer.paidMinutes ?? held
+            return "Done. \(Format.minutes(bought)) is already bought for this park, so ParkAgent won't add any more."
+        }
+        if answer.holdPending == true {
+            return "Done. ParkAgent won't add time to this park past \(Format.minutes(binding))."
+        }
+        return accepted(binding)
+    }
+
     /// What a reason code means, in words; nil for one this build doesn't know.
     static func reason(_ code: String) -> String? {
         switch code {

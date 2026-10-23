@@ -190,7 +190,7 @@ struct SignCheckSheet: View {
         }
         if let offer = check.offer {
             if let accepted = model.accepted {
-                Text(SignCopy.accepted(accepted.maxStayMinutes))
+                Text(SignCopy.accepted(accepted))
                     .font(.secondaryText)
                     .foregroundStyle(Color.success)
                     .accessibilityIdentifier("signCheck.acceptedNote")

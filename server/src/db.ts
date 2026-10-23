@@ -929,6 +929,11 @@ export interface AppDb {
     findMany(args: {
       where: { ts: { gte: Date } };
     }): Promise<{ id: string; userId: string; signals: unknown; ts: Date }[]>;
+    /** The user's newest park after a time: where the car is now. */
+    findFirst(args: {
+      where: { userId: string; ts: { gt: Date } };
+      orderBy: { ts: "desc" };
+    }): Promise<{ id: string; lat: number; lng: number; ts: Date } | null>;
   };
   conversation: {
     findUnique(args: { where: { id: string } }): Promise<ConversationRow | null>;
@@ -1489,9 +1494,10 @@ export interface AppDb {
     }): Promise<PendingParkRow[]>;
     update(args: { where: { id: string }; data: PendingParkWrite }): Promise<PendingParkRow>;
     /** Compare-and-set: the status in `where` is what makes a transition
-     * happen once however many requests race for it. */
+     * happen once however many requests race for it; `carMovedAt: null`
+     * makes a move recorded once, too. */
     updateMany(args: {
-      where: { id: string; status: string | { in: string[] } };
+      where: { id: string; status: string | { in: string[] }; carMovedAt?: null };
       data: PendingParkWrite;
     }): Promise<{ count: number }>;
   };

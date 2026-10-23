@@ -126,6 +126,8 @@ stateDiagram-v2
   ended --> [*]
 ```
 
+A newer park supersedes a park still waiting, at any distance. More than 100 m from a running session's car, it marks the car moved (`car_moved_at`), and the extension worker buys that session nothing more. A park that was mid-start or closed when the newer one landed (it had no session yet) is checked the moment it takes one, whether its start settles, a late success adopts it, or a relink does. If the user's newest park since it is more than 100 m away, it's marked then, so the session it starts is never extended for a spot the car left (#246).
+
 ## After WS-4: one gate for every caller
 
 The app, the in-app assistant, Grok over REST, and Claude over MCP all become callers of the same capability functions. Who is acting travels as a `Principal`; one money gate decides; the phone stays the only source of arrival.

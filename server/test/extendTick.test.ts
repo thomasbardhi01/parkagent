@@ -443,6 +443,38 @@ test("a phone that left the car and is still reporting away: extended, never pas
   expect(session.purchasedMinutes).toBe(120);
 });
 
+test("the belt: a park holding its session with a newer park elsewhere since, however it got there, buys nothing (#246)", async () => {
+  // Moved to started without the newer-park check (a transition the
+  // lifecycle missed): the worker reads the newest park itself first.
+  const t = makeTickApp();
+  const session = activeSession(t.state);
+  await seedPark(t, session, { leftCarAt: T("13:02") });
+  addFixes(t.state, session.id, [100, 300, 600]);
+  t.state.parkedEvents.push({
+    id: "pe-newer",
+    userId: session.userId,
+    lat: CAR.lat + 0.01,
+    lng: CAR.lng,
+    accuracyM: 10,
+    ts: T("13:30"),
+    signals: [],
+  });
+
+  await t.extender.tick();
+
+  expect(lastTick(t.state)).toMatchObject({
+    rule: "hold_car_moved",
+    inputs: { position: "moved" },
+  });
+  expect(session.extendCount).toBe(0);
+  expect(t.state.decisions.filter((d) => d.kind === "session_car_moved")).toEqual([
+    expect.objectContaining({
+      sessionId: session.id,
+      inputs: expect.objectContaining({ seenAt: "extension_worker" }),
+    }),
+  ]);
+});
+
 test("after the phone came back, nothing more is bought", async () => {
   const t = makeTickApp();
   const session = activeSession(t.state);

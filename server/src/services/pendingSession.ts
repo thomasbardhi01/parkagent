@@ -940,11 +940,9 @@ export async function settlePark(
     }
   }
   if (next === null) return park;
-  const moved = await deps.db.pendingPark.updateMany({
-    where: { id: park.id, status: park.status },
-    data: next,
-  });
-  if (moved.count === 1) {
+  const closing = next;
+  await movePark(deps, park, park.status, closing, at, "swept", async (count) => {
+    if (count !== 1) return;
     const stale = stalePending
       ? {
           sessionId: stalePending.id,
@@ -954,8 +952,8 @@ export async function settlePark(
           },
         }
       : {};
-    await recordParkChange(deps, park, next, rule, at, inputs, stale);
-  }
+    await recordParkChange(deps, park, closing, rule, at, inputs, stale);
+  });
   return (await deps.db.pendingPark.findUnique({ where: { id: park.id } })) ?? park;
 }
 
@@ -984,19 +982,26 @@ export async function lifecycleOf(
       // session, moved only from the state it was read in.
       if (!PARK_RELINKABLE.includes(earlier.status)) return null;
       const next = { status: "started", sessionId: session.id, closedAt: null, ...NOT_BACK };
-      const linked = await db.pendingPark.updateMany({
-        where: { id: earlier.id, status: earlier.status },
-        data: next,
-      });
+      const linked = await movePark(
+        deps,
+        earlier,
+        earlier.status,
+        next,
+        at,
+        "relinked",
+        async (count) => {
+          if (count === 1) {
+            await recordParkChange(deps, earlier, next, "linked_to_session", at, {
+              previousSessionId: earlier.sessionId,
+            });
+          }
+        },
+      );
       // Moved meanwhile: linked by another request, or closed.
-      if (linked.count === 0)
-        return db.pendingPark.findUnique({ where: { sessionId: session.id } });
-      await recordParkChange(deps, earlier, next, "linked_to_session", at, {
-        previousSessionId: earlier.sessionId,
-      });
+      if (linked === 0) return db.pendingPark.findUnique({ where: { sessionId: session.id } });
       return db.pendingPark.findUnique({ where: { id: earlier.id } });
     }
-    return await db.pendingPark.create({
+    const made = await db.pendingPark.create({
       data: {
         userId: session.userId,
         ...(session.parkedEventId ? { parkedEventId: session.parkedEventId } : {}),
@@ -1007,6 +1012,10 @@ export async function lifecycleOf(
         parkedAt: session.startedAt ?? session.createdAt,
       },
     });
+    // Made already holding its session: the same check a move to
+    // `started` gets (movePark).
+    await noteNewerParkSafely(deps, made, session.id, at, "created");
+    return (await db.pendingPark.findUnique({ where: { id: made.id } })) ?? made;
   } catch (err) {
     // Two requests at once: the other one made the row.
     if ((err as { code?: string }).code !== "P2002") throw err;
@@ -1166,7 +1175,12 @@ export async function noteCarMoved(
   if (distanceM <= SAME_SPOT_M) return;
   const row = await lifecycleOf(deps, session, at);
   if (!row || row.carMovedAt !== null) return;
-  await deps.db.pendingPark.update({ where: { id: row.id }, data: { carMovedAt: at } });
+  // Once, however many newer parks race for it.
+  const marked = await deps.db.pendingPark.updateMany({
+    where: { id: row.id, status: row.status, carMovedAt: null },
+    data: { carMovedAt: at },
+  });
+  if (marked.count !== 1) return;
   await deps.db.decision.create({
     data: {
       kind: "session_car_moved",
@@ -1185,6 +1199,143 @@ export async function noteCarMoved(
       parkedEventId,
     },
   });
+}
+
+/** What the newer-park check needs. The hash is optional only in type:
+ * the gate's deps type names no hash, but its callers (applyExtension's
+ * SessionDeps) pass the policy service, so its rows carry one too; a
+ * caller with none writes null. */
+interface NewerParkDeps {
+  db: AppDb;
+  policy: { effectiveDryRun(): boolean; hash?: () => string };
+}
+
+/** Where a park took its session, as its `session_car_moved` row says. */
+type TookSessionAt =
+  | "start_settled"
+  | "late_success"
+  | "relinked"
+  | "swept"
+  | "start_threw"
+  | "created"
+  // The belt: read again before time is bought (checkNewerPark).
+  | "extension_worker"
+  | "extension_gate";
+
+/**
+ * The one way a park moves on (#246): a compare-and-set from the state it
+ * was read in, then the caller's own ledger row (`recorded`, with how many
+ * moved), then, when the move gave the park its session (`started`), the
+ * newer-park check. That check runs after the row and never fails the
+ * move: a paid start is never undone by a ledger read.
+ */
+async function movePark(
+  deps: Pick<LifecycleDeps, "db" | "policy">,
+  park: PendingParkRow,
+  from: string,
+  data: PendingParkWrite & { status: string },
+  at: Date,
+  seenAt: TookSessionAt,
+  recorded: (count: number) => Promise<unknown>,
+): Promise<number> {
+  const moved = await deps.db.pendingPark.updateMany({
+    where: { id: park.id, status: from },
+    data,
+  });
+  await recorded(moved.count);
+  if (moved.count === 1 && data.status === "started" && typeof data.sessionId === "string") {
+    await noteNewerParkSafely(deps, park, data.sessionId, at, seenAt);
+  }
+  return moved.count;
+}
+
+/** noteNewerParkSince, whose failure is logged and goes no further: the
+ * extension worker checks again before buying anything (extendTick). */
+async function noteNewerParkSafely(
+  deps: Pick<LifecycleDeps, "db" | "policy">,
+  park: PendingParkRow,
+  sessionId: string,
+  at: Date,
+  seenAt: TookSessionAt,
+): Promise<void> {
+  try {
+    await noteNewerParkSince(deps, park, sessionId, at, seenAt);
+  } catch (err) {
+    console.warn(`car-moved check failed for park ${park.id}: ${String(err).split("\n")[0]}`);
+  }
+}
+
+/**
+ * A park that just took its session (its start settled, a late success
+ * adopted it, or a relink): a newer /parked may have landed while it was
+ * mid-start or closed (#246). A `starting` park is never superseded, a
+ * `start_failed` or `superseded` one has no session, and noteCarMoved
+ * finds neither. So, the moment it holds a session, the user's newest
+ * park since this one says where the car is: more than SAME_SPOT_M from
+ * this park's car, the car has moved, once (compare-and-set on
+ * `car_moved_at` null), on the ledger against this park and its session.
+ * A newer /parked that lands after this read finds the session running
+ * and marks it itself (noteCarMoved).
+ */
+async function noteNewerParkSince(
+  deps: NewerParkDeps,
+  park: PendingParkRow,
+  sessionId: string,
+  at: Date,
+  seenAt: TookSessionAt,
+): Promise<boolean> {
+  const newer = await deps.db.parkedEvent.findFirst({
+    where: { userId: park.userId, ts: { gt: park.parkedAt } },
+    orderBy: { ts: "desc" },
+  });
+  if (!newer || newer.id === park.parkedEventId) return false;
+  const distanceM = metersBetween(newer.lat, newer.lng, park.carLat, park.carLng);
+  if (distanceM <= SAME_SPOT_M) return false;
+  const marked = await deps.db.pendingPark.updateMany({
+    where: { id: park.id, status: "started", carMovedAt: null },
+    data: { carMovedAt: at },
+  });
+  // Lost to another marker: the car has moved all the same.
+  if (marked.count !== 1) return true;
+  await deps.db.decision.create({
+    data: {
+      kind: "session_car_moved",
+      inputs: {
+        car: { lat: park.carLat, lng: park.carLng },
+        newPark: { lat: newer.lat, lng: newer.lng },
+        distanceM: Math.round(distanceM),
+        newParkedEventId: newer.id,
+        seenAt,
+        dryRun: deps.policy.effectiveDryRun(),
+        policyHash: deps.policy.hash?.() ?? null,
+      },
+      rule: "newer_park_elsewhere",
+      outcome: { autoExtend: false, stopped: false },
+      userId: park.userId,
+      sessionId,
+      ...(park.parkedEventId ? { parkedEventId: park.parkedEventId } : {}),
+    },
+  });
+  return true;
+}
+
+/**
+ * The belt (#246): before time is bought for a street session (the
+ * extension worker, and the gate under the extension lock), the newest park
+ * since its park is read again, so a move to `started` that skipped
+ * movePark can't buy an extension for a car that moved. True when the car
+ * has moved (marked before, or now). A read that fails throws: nothing is
+ * bought on it.
+ */
+export async function checkNewerPark(
+  deps: NewerParkDeps,
+  park: PendingParkRow,
+  at: Date,
+  seenAt: "extension_worker" | "extension_gate",
+): Promise<boolean> {
+  if (park.carMovedAt !== null) return true;
+  if (park.status !== "started" || park.sessionId === null) return false;
+  return noteNewerParkSince(deps, park, park.sessionId, at, seenAt);
 }
 
 /** The start path, as the lifecycle calls it (routes/session.ts SessionOps). */
@@ -1233,8 +1384,14 @@ export async function startParkSession(
 ): Promise<ParkStartOutcome> {
   const shown = park.quote as Quote;
   const parkedEventId = park.parkedEventId as string;
-  const settle = (data: PendingParkWrite) =>
-    deps.db.pendingPark.updateMany({ where: { id: park.id, status: "starting" }, data });
+  /** Every move this start makes, from `starting` (movePark): `recorded`
+   * writes its ledger row first, then a move that gave the park its
+   * session gets the newer-park check. */
+  const settle = (
+    data: PendingParkWrite & { status: string },
+    seenAt: TookSessionAt,
+    recorded: (count: number) => Promise<unknown> = async () => undefined,
+  ) => movePark(deps, park, "starting", data, args.at, seenAt, recorded);
   // An agent-bound park's start rows name the key that consented (E3).
   const agentKeyId = await boundAgentKeyId(deps.db, park.userId, parkedEventId);
   const record = (rule: string, outcome: Record<string, unknown>, sessionId?: string) =>
@@ -1269,17 +1426,22 @@ export async function startParkSession(
   const adopt = async (sessionId: string) => {
     const current = await deps.db.pendingPark.findUnique({ where: { id: park.id } });
     if (!current || !LATE_SUCCESS_FROM.includes(current.status)) return;
-    const moved = await deps.db.pendingPark.updateMany({
-      where: { id: park.id, status: current.status },
-      data: { status: "started", sessionId, closedAt: null, ...NOT_BACK },
-    });
-    if (moved.count === 1) {
-      await record(
-        "late_success",
-        { previousStatus: current.status, parkStatus: "started", sessionId },
-        sessionId,
-      );
-    }
+    await movePark(
+      deps,
+      park,
+      current.status,
+      { status: "started", sessionId, closedAt: null, ...NOT_BACK },
+      args.at,
+      "late_success",
+      async (count) => {
+        if (count !== 1) return;
+        await record(
+          "late_success",
+          { previousStatus: current.status, parkStatus: "started", sessionId },
+          sessionId,
+        );
+      },
+    );
   };
   const sessionIdOf = (body: Record<string, unknown>) =>
     typeof body["sessionId"] === "string" ? body["sessionId"] : null;
@@ -1290,11 +1452,19 @@ export async function startParkSession(
     staleSessionId: session.id,
     sessionFailed: await failStalePending(deps.db, session),
   });
-  /** Settle as `afterStart` said: left `starting` when its next is null. */
-  const settleAfterStart = async (left: StartLeft, reason?: string) => {
-    if (left.next === null) return null;
-    const moved = await settle(left.next);
-    return moved.count === 1 && left.stalePending ? failStale(left.stalePending, reason) : null;
+  /** Settle as `afterStart` said (left `starting` when its next is null),
+   * then `recorded` with what the stale session became. */
+  const settleAfterStart = async (
+    left: StartLeft,
+    reason: string,
+    recorded: (stale: Awaited<ReturnType<typeof failStale>> | null) => Promise<unknown>,
+  ) => {
+    if (left.next === null) return recorded(null);
+    return settle(left.next, "start_threw", async (count) =>
+      recorded(
+        count === 1 && left.stalePending ? await failStale(left.stalePending, reason) : null,
+      ),
+    );
   };
 
   const user = { id: park.userId };
@@ -1321,7 +1491,7 @@ export async function startParkSession(
       running.carLng === null ||
       metersBetween(park.carLat, park.carLng, running.carLat, running.carLng) <= SAME_SPOT_M;
     if (sameSpot) {
-      await settle({ status: "covered", closedAt: args.at });
+      await settle({ status: "covered", closedAt: args.at }, "start_settled");
       await record("covered", { parkStatus: "covered", coveredBy: running.id }, running.id);
       return { kind: "covered", sessionId: running.id };
     }
@@ -1388,17 +1558,22 @@ export async function startParkSession(
                 },
           stalePending: null,
         };
-    const stale = await settleAfterStart(left, "start_threw").catch(() => null);
-    await record(
-      "error",
-      {
-        parkStatus: left.next?.status ?? "starting",
-        reachedProvider: reached,
-        error: String(err).split("\n")[0],
-        ...stale,
-      },
-      left.next?.sessionId ?? undefined,
-    ).catch(() => undefined);
+    let recorded = false;
+    const recordError = async (stale: Awaited<ReturnType<typeof failStale>> | null) => {
+      recorded = true;
+      await record(
+        "error",
+        {
+          parkStatus: left.next?.status ?? "starting",
+          reachedProvider: reached,
+          error: String(err).split("\n")[0],
+          ...stale,
+        },
+        left.next?.sessionId ?? undefined,
+      ).catch(() => undefined);
+    };
+    await settleAfterStart(left, "start_threw", recordError).catch(() => undefined);
+    if (!recorded) await recordError(null);
     throw err;
   } finally {
     clearTimeout(timer);
@@ -1409,7 +1584,7 @@ export async function startParkSession(
     // the park stops waiting on it as a failed start (its session, still
     // pending, is this very start), and an answer that comes later and
     // paid is adopted.
-    await settle({ status: "start_failed", closedAt: args.at });
+    await settle({ status: "start_failed", closedAt: args.at }, "start_settled");
     await record("start_timeout", {
       parkStatus: "start_failed",
       reachedProvider: "unknown",
@@ -1461,23 +1636,30 @@ export async function startParkSession(
               : {}),
           };
   }
-  const moved = next === null ? null : await settle(next);
-  const stale = moved?.count === 1 && stalePending ? await failStale(stalePending) : null;
-  await record(
-    outcome.kind,
-    {
-      status: reply.status,
-      reachedProvider: reply.reachedProvider,
-      parkStatus: next?.status ?? "starting",
-      ...(moved?.count === 0 ? { parkMovedOn: true } : {}),
-      ...stale,
-      ...(sessionId !== null ? { sessionId } : {}),
-      ...(reply.status === 200 ? {} : { error: reply.body["error"], rule: reply.body["rule"] }),
-    },
-    sessionId ?? undefined,
-  );
+  const answered = reply;
+  const finish = async (count: number | null) => {
+    const stale = count === 1 && stalePending ? await failStale(stalePending) : null;
+    await record(
+      outcome.kind,
+      {
+        status: answered.status,
+        reachedProvider: answered.reachedProvider,
+        parkStatus: next?.status ?? "starting",
+        ...(count === 0 ? { parkMovedOn: true } : {}),
+        ...stale,
+        ...(sessionId !== null ? { sessionId } : {}),
+        ...(answered.status === 200
+          ? {}
+          : { error: answered.body["error"], rule: answered.body["rule"] }),
+      },
+      sessionId ?? undefined,
+    );
+  };
+  let count: number | null = null;
+  if (next === null) await finish(null);
+  else count = await settle(next, "start_settled", finish);
   // The park stopped waiting on this start before it answered.
-  if (moved?.count === 0 && outcome.kind === "started" && sessionId !== null) {
+  if (count === 0 && outcome.kind === "started" && sessionId !== null) {
     await adopt(sessionId);
   }
   return outcome;

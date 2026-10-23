@@ -20,6 +20,7 @@ import { providerStatusUsable } from "../providers/registry.js";
 import { nycStartOfDay } from "./hours.js";
 import { policyFor } from "./limits.js";
 import { LINK_COMMITTED_STATUSES, linkSpentSince } from "./link/linkSpend.js";
+import { checkNewerPark } from "./pendingSession.js";
 import type { Policy, PolicyService } from "./policy.js";
 import type { Principal } from "./principal.js";
 import type { StayPrice } from "./quote.js";
@@ -357,6 +358,10 @@ async function decide(
           park &&
           (park.status !== "started" || park.backAt !== null || park.carMovedAt !== null)
         ) {
+          return refuse("phone_not_away");
+        }
+        // The belt (#246): the newest park since this one, read again.
+        if (park && (await checkNewerPark(deps, park, at, "extension_gate"))) {
           return refuse("phone_not_away");
         }
       }

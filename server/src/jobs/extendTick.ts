@@ -19,7 +19,12 @@
 import type { SessionRow } from "../db.js";
 import type { ExpiringReason, Push } from "../services/apns.js";
 import { sessionExpiringPush } from "../services/apns.js";
-import { AT_CAR_RADIUS_M, FIX_USABLE_ACCURACY_M, clockLabel } from "../services/pendingSession.js";
+import {
+  AT_CAR_RADIUS_M,
+  FIX_USABLE_ACCURACY_M,
+  checkNewerPark,
+  clockLabel,
+} from "../services/pendingSession.js";
 import { cityPolicy } from "../services/policy.js";
 import type { SessionDeps } from "../services/sessions.js";
 import { applyExtension, priceExtension } from "../services/sessions.js";
@@ -256,7 +261,14 @@ export function makeExtender(deps: ExtenderDeps): Extender {
     // walking speed or the app's on-foot report clears that. Without a
     // record (an older build, a start through POST /session/start) a fresh
     // fix clear of the car is all there is to go on.
-    const park = await deps.db.pendingPark.findUnique({ where: { sessionId: session.id } });
+    let park = await deps.db.pendingPark.findUnique({ where: { sessionId: session.id } });
+    // The belt (#246): however this park came to hold its session, the
+    // newest park since it says where the car is before anything is bought.
+    if (park && park.carMovedAt === null) {
+      if (await checkNewerPark(deps, park, at, "extension_worker")) {
+        park = await deps.db.pendingPark.findUnique({ where: { sessionId: session.id } });
+      }
+    }
     const latest = chronological.at(-1);
     const sharp = latest !== undefined && latest.accuracyM <= FIX_USABLE_ACCURACY_M;
     const away =

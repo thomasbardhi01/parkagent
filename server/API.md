@@ -1241,7 +1241,24 @@ recorded and nothing more. If a session is still running for a car more
 than 100 m from the new park, a `session_car_moved` decision is written
 and the extension worker stops buying time for it; the session itself is
 not stopped on the phone's say-so (the new park may be a car the phone
-rode in). The tap that pays for the new park is the driver saying where
+rode in). A park mid-start (`starting`, its tap's start still running) is
+never superseded, and one closed before its start answered
+(`start_failed`) has no session either; neither is exempt from this. The
+moment such a park takes its session (its start settles, a late success
+is adopted, or a relink), the user's newest park since it is read, and
+more than 100 m from this park's car it writes the same
+`session_car_moved` (against this park's event and its session,
+`inputs.seenAt`: `start_settled`, `late_success` or `relinked`), so the
+session is one whose car has already moved (#246). Every move of a park
+to `started` goes through one helper (`movePark`): the compare-and-set,
+then its own ledger row, then this check (`inputs.seenAt` also `swept`,
+`start_threw` or `created`), whose failure never fails a paid start. As a
+belt, the extension worker, and the gate under the extension lock, read
+the newest park again before buying any time (`seenAt`:
+`extension_worker`, `extension_gate`), so a move that skipped the helper
+still buys nothing for a car that moved (`hold_car_moved`, or the gate's
+`phone_not_away`). Each car is marked once, however many newer parks race
+for it. The tap that pays for the new park is the driver saying where
 the car is: it ends that session first, the way a return does, but only
 once the new start has passed its own refusals (caps, a changed amount or
 zone number, an unlinked account). A tap whose start would be refused

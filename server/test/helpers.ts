@@ -1005,6 +1005,12 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
       },
       findUnique: async ({ where }) => state.parkedEvents.find((p) => p.id === where.id) ?? null,
       findMany: async ({ where }) => state.parkedEvents.filter((p) => p.ts >= where.ts.gte),
+      findFirst: async ({ where }) => {
+        const newest = state.parkedEvents
+          .filter((p) => p.userId === where.userId && p.ts > where.ts.gt)
+          .sort((a, b) => b.ts.getTime() - a.ts.getTime())[0];
+        return newest ? { ...newest } : null;
+      },
     },
     conversation: {
       findUnique: async ({ where }) => state.conversations.find((c) => c.id === where.id) ?? null,
@@ -1638,6 +1644,7 @@ export function makeFakeDb(): { db: AppDb; state: FakeDbState } {
               ? row.status === where.status
               : where.status.in.includes(row.status);
           if (!statusHit || row.id !== where.id) continue;
+          if ("carMovedAt" in where && row.carMovedAt !== null) continue;
           Object.assign(row, data);
           count += 1;
         }

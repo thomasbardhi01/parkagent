@@ -403,6 +403,78 @@ describe("extend", () => {
     );
     park.carMovedAt = null;
     expect((await g.gate(JOB, extend(s, { source: "auto", underLock: true }))).ok).toBe(true);
+    // The belt (#246): a newer park 1.1 km off since this one, however the
+    // park came to hold its session, is read again here, and marks it.
+    g.state.parkedEvents.push({
+      id: "pe-newer",
+      userId: "u2",
+      lat: 0.01,
+      lng: 0,
+      accuracyM: 10,
+      ts: new Date(AT.getTime() + 60_000),
+      signals: [],
+    });
+    expect((await g.gate(JOB, extend(s, { source: "auto", underLock: true }))).rule).toBe(
+      "phone_not_away",
+    );
+    expect(park.carMovedAt).not.toBeNull();
+    expect(g.state.decisions.filter((d) => d.kind === "session_car_moved")).toEqual([
+      expect.objectContaining({ inputs: expect.objectContaining({ seenAt: "extension_gate" }) }),
+    ]);
+  });
+
+  test("the gate's belt loses its mark to a newer park's own mark: still refused, the car moved all the same (#246)", async () => {
+    const g = makeGate();
+    const s = session(g);
+    const park: PendingParkRow = {
+      id: "p1",
+      userId: "u2",
+      parkedEventId: null,
+      status: "started",
+      candidates: null,
+      quote: null,
+      prompt: null,
+      shownDryRun: null,
+      zoneId: null,
+      carLat: 0,
+      carLng: 0,
+      parkedAt: AT,
+      leftCarAt: AT,
+      farAt: null,
+      farDistanceM: null,
+      nearSince: null,
+      atCarSince: null,
+      backAt: null,
+      driveAt: null,
+      driveDistanceM: null,
+      driveSpeedMps: null,
+      promptedAt: null,
+      confirmedAt: null,
+      startingAt: null,
+      sessionId: s.id,
+      carMovedAt: null,
+      closedAt: null,
+      createdAt: AT,
+    };
+    g.state.pendingParks.push(park);
+    g.state.parkedEvents.push({
+      id: "pe-newer",
+      userId: "u2",
+      lat: 0.01,
+      lng: 0,
+      accuracyM: 10,
+      ts: new Date(AT.getTime() + 60_000),
+      signals: [],
+    });
+    // noteCarMoved (the newer /parked) marks between the gate's read and its CAS.
+    const real = g.deps.db.pendingPark.updateMany;
+    g.deps.db.pendingPark.updateMany = async (args) => {
+      if ("carMovedAt" in args.where) park.carMovedAt = AT;
+      return real(args);
+    };
+    expect((await g.gate(JOB, extend(s, { source: "auto", underLock: true }))).rule).toBe(
+      "phone_not_away",
+    );
   });
 });
 

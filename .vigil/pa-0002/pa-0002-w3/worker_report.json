@@ -1,0 +1,16 @@
+{
+ "task_id": "pa-0002-w3",
+ "job_id": "pa-0002",
+ "files_changed": ["scripts/check-feature-map.mjs", "server/test/checkFeatureMap.test.ts"],
+ "summary": "Added comment rule, name rule and --root CLI (exit 2 + usage on bad args) to check-feature-map.mjs; new vitest suite covers AC1-AC6 with 0755/0644 temp fixtures and explicit roots. Real map is clean.",
+ "self_check": {
+  "test_failed_first": true,
+  "outside_scope": [],
+  "not_done": "No doc changes; the map was already clean under the new rules so none were needed.",
+  "reviewer_would_flag": "Name rule also treats `export ... name` as a declaration (per AC2), slightly broader than the Interfaces regex.",
+  "could_delete": "Nothing."
+ },
+ "provenance": "claude",
+ "test_before": "fail",
+ "test_after": "pass"
+}

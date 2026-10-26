@@ -13,7 +13,7 @@
 // Node built-ins only: the job runs on the runner's own Node, no install.
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -52,6 +52,43 @@ export function extractEndpoints(source) {
 
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+const CODE_EXT = /\.(ts|tsx|mjs|js|swift)$/;
+
+/** For each backticked reference, the identifier token written just before
+ * it (separated by one space or " ("), as raw -> name (last `.` segment). */
+function precedingNames(text) {
+  const out = new Map();
+  let prev = null;
+  for (const m of text.matchAll(/`([^`\n]+)`/g)) {
+    if (prev && /^ \(?$/.test(text.slice(prev.end, m.index))) {
+      const id = prev.raw.match(/^([A-Za-z_$][\w$.]*)(?:\(\))?$/);
+      if (id && !out.has(m[1])) out.set(m[1], id[1].split(".").pop());
+    }
+    prev = { raw: m[1], end: m.index + m[0].length };
+  }
+  return out;
+}
+
+/** The comment rule and the name rule for one `path:line` reference. */
+function checkLine(raw, path, line, abs, name) {
+  if (line === undefined || line <= 1 || !CODE_EXT.test(path)) return [];
+  const body = readFileSync(abs, "utf8");
+  const at = (body.split("\n")[line - 1] ?? "").trim();
+  if (at === "" || /^(\/\/|\/\*|\*)/.test(at)) {
+    return [`\`${raw}\`: line ${line} is a comment or blank`];
+  }
+  if (name) {
+    const n = escape(name);
+    const declared = new RegExp(
+      `\\b(function|const|let|var|class|func|interface|type|enum)\\s+${n}\\b|\\bexport\\b[^\\n]*\\b${n}\\b`,
+    ).test(body);
+    if (declared && !new RegExp(`(?<![\\w$])${n}(?![\\w$])`).test(at)) {
+      return [`\`${raw}\`: line ${line} doesn't mention ${name}`];
+    }
+  }
+  return [];
+}
+
 /** Problems with the map at `root`, one string each; empty means clean. */
 export function checkFeatureMap(root = ROOT) {
   const problems = [];
@@ -59,6 +96,7 @@ export function checkFeatureMap(root = ROOT) {
   if (!existsSync(mapFile)) return [`${MAP} is missing`];
   const text = readFileSync(mapFile, "utf8");
 
+  const names = precedingNames(text);
   const named = new Set();
   for (const { raw, path, line } of extractPaths(text)) {
     named.add(path);
@@ -74,6 +112,8 @@ export function checkFeatureMap(root = ROOT) {
       const lines = readFileSync(abs, "utf8").split("\n").length;
       if (line < 1 || line > lines) {
         problems.push(`\`${raw}\`: ${path} has ${lines} lines`);
+      } else {
+        problems.push(...checkLine(raw, path, line, abs, names.get(raw)));
       }
     }
   }
@@ -99,7 +139,15 @@ export function checkFeatureMap(root = ROOT) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const problems = checkFeatureMap();
+  const USAGE = "usage: node scripts/check-feature-map.mjs [--root <dir>]";
+  const args = process.argv.slice(2);
+  let root = ROOT;
+  if (args.length === 2 && args[0] === "--root") root = resolve(args[1]);
+  else if (args.length) {
+    console.error(USAGE);
+    process.exit(2);
+  }
+  const problems = checkFeatureMap(root);
   if (problems.length) {
     console.error(`${MAP} is out of date:`);
     for (const p of problems) console.error(`  - ${p}`);

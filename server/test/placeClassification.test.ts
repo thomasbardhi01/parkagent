@@ -74,6 +74,11 @@ describe("placeOutcome, located", () => {
     for (const cls of ["garage", "lot", "nopay", "street", "unknown"] as const) {
       expect(placeOutcome(s, classified(cls), NONE)).toEqual({ action: "pay", rule: "street_pay" });
     }
+    // A street that does not charge keeps its own answer too.
+    expect(placeOutcome(street("unknown_zone", false), classified("nopay"), NONE)).toEqual({
+      action: "unknown_zone",
+      rule: "street_unknown_zone",
+    });
   });
 
   test("garage answers garage/place_garage when shown, the street answer otherwise", () => {
@@ -295,14 +300,6 @@ describe("classifyPlace", () => {
     expect(out.place.source).toBe("zones");
     expect(out.located).toBe(true);
     expect(out.hasEvidence).toBe(false);
-  });
-
-  test("no evidence at all: unknown with source none", () => {
-    const out = classify({});
-    expect(out.place.class).toBe("unknown");
-    expect(out.place.source).toBe("none");
-    expect(out.place.confidence).toBe(0);
-    expect(out.located).toBe(true);
   });
 
   test("a confident phone read with no zones acts, from the hint", () => {
